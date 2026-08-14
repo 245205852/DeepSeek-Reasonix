@@ -279,6 +279,8 @@ export const zh: Record<DictKey, string> = {
   "workspace.watchDegraded": "工作区实时监听受限；如有需要可手动刷新当前资源。",
   "workspace.watchUnavailable": "工作区实时监听不可用；请使用刷新按钮核对工作区。",
   "workspace.loadingChanges": "正在加载改动…",
+  "workspace.changesUnavailable": "无法读取工作区改动",
+  "workspace.historyUnavailable": "无法读取提交历史",
   "workspace.noChanges": "暂无改动文件",
   "workspace.gitUnavailable": "当前工作区不可读取 Git 状态。",
   "workspace.gitStatusAdded": "新增",

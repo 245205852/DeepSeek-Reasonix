@@ -11,6 +11,7 @@ import (
 	"reasonix/internal/agent"
 	"reasonix/internal/config"
 	"reasonix/internal/control"
+	"reasonix/internal/history"
 	"reasonix/internal/provider"
 	"reasonix/internal/sessioncatalog"
 )
@@ -476,7 +477,7 @@ func TestContinuePathForOpenFollowsCoveringLeafFromParent(t *testing.T) {
 	}
 }
 
-func TestListProjectTopicsWaitsUntilEveryGlobalDirectoryIsScanned(t *testing.T) {
+func TestListProjectTopicsUsesAvailableProjectionBeforeEveryGlobalDirectoryIsScanned(t *testing.T) {
 	isolateDesktopUserDirs(t)
 	legacy := config.SessionDir()
 	global := desktopSessionDir(globalWorkspaceRoot())
@@ -515,8 +516,59 @@ func TestListProjectTopicsWaitsUntilEveryGlobalDirectoryIsScanned(t *testing.T) 
 		t.Fatal(err)
 	}
 	if len(page.Items) != 1 || page.Items[0].TopicID != "topic-keep" || page.Items[0].Label != "Previous chat" {
-		t.Fatalf("topics after only the empty global dir scanned = %#v, want metadata fallback", page.Items)
+		t.Fatalf("topics after only one global dir scanned = %#v, want merged metadata", page.Items)
 	}
+	if page.Complete || page.ReadyDirectories != 1 || page.PendingDirectories != 1 {
+		t.Fatalf("partial directory completeness = %+v", page)
+	}
+}
+
+func TestAuthoritativeBotStylePersistIndexesSessionImmediately(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	root := t.TempDir()
+	if err := addProject(root, "Bot project"); err != nil {
+		t.Fatal(err)
+	}
+	dir := desktopSessionDir(root)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	app := NewApp()
+	catalog, err := sessioncatalog.Open(context.Background(), sessioncatalog.Options{InMemory: true, DisableRepair: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	app.sessionCatalog.Store(catalog)
+	history.RegisterSessionPersistObserver(desktopSessionCatalogPersistObserverKey, desktopSessionCatalogPersistObserver{app: app})
+	t.Cleanup(func() {
+		history.RegisterSessionPersistObserver(desktopSessionCatalogPersistObserverKey, nil)
+		app.sessionCatalog.CompareAndSwap(catalog, nil)
+		_ = catalog.Close(context.Background())
+	})
+
+	path := filepath.Join(dir, "bot-session.jsonl")
+	if err := agent.SaveBranchMetaPreserveUpdated(path, agent.BranchMeta{
+		ID: agent.BranchID(path), Scope: "project", WorkspaceRoot: root,
+		TopicID: "bot-topic", TopicTitle: "Bot conversation",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	session := agent.NewSession("system")
+	session.SetPersistObserver(history.PersistObserver())
+	session.Add(provider.Message{Role: provider.RoleUser, Content: "hello from bot"})
+	if err := session.Save(path); err != nil {
+		t.Fatal(err)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		page, listErr := app.ListProjectTopics(ProjectTopicPageRequest{Scope: "project", WorkspaceRoot: root, Limit: 50})
+		if listErr == nil && len(page.Items) == 1 && page.Items[0].TopicID == "bot-topic" {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("authoritative bot-style persist did not enter the project catalog immediately")
 }
 
 type retargetRuntimeController struct {

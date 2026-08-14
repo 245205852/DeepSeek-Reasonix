@@ -34,6 +34,10 @@ export interface ProjectTopicPage {
   items: ProjectNode[];
   nextCursor?: string;
   revision: number;
+  complete?: boolean;
+  readyDirectories?: number;
+  pendingDirectories?: number;
+  failedDirectories?: number;
 }
 
 export interface ProjectTopicKey {

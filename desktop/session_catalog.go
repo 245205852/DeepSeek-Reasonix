@@ -19,6 +19,36 @@ import (
 
 const sessionCatalogMetadataSyncTimeout = 30 * time.Second
 
+const desktopSessionCatalogPersistObserverKey = "desktop-session-catalog"
+
+type desktopSessionCatalogPersistObserver struct{ app *App }
+
+func (observer desktopSessionCatalogPersistObserver) EnqueueSessionPersist(event agent.SessionPersistEvent) bool {
+	a := observer.app
+	if a == nil || a.shuttingDown.Load() || strings.TrimSpace(event.Path) == "" {
+		return false
+	}
+	catalog := a.sessionCatalog.Load()
+	if catalog == nil {
+		return false
+	}
+	path := filepath.Clean(event.Path)
+	if event.Removed {
+		go func() {
+			ctx, cancel := context.WithTimeout(a.bootContext(), 5*time.Second)
+			defer cancel()
+			_ = catalog.RemoveSession(ctx, path, "authoritative_persist_removed")
+		}()
+		return true
+	}
+	// IndexSessionPath loads authoritative branch metadata, correcting this
+	// global fallback to the real project scope. Exact-path requests also make
+	// bot/controller saves visible without waiting for the directory sweep.
+	return catalog.RequestIndexSession(sessioncatalog.DirectoryTarget{
+		Path: filepath.Dir(path), Scope: "global",
+	}, path)
+}
+
 type SessionCatalogStatus struct {
 	State           string `json:"state"`
 	Mode            string `json:"mode"`
@@ -56,9 +86,13 @@ type ProjectTopicKey struct {
 }
 
 type ProjectTopicPage struct {
-	Items      []ProjectNode `json:"items"`
-	NextCursor string        `json:"nextCursor,omitempty"`
-	Revision   uint64        `json:"revision"`
+	Items              []ProjectNode `json:"items"`
+	NextCursor         string        `json:"nextCursor,omitempty"`
+	Revision           uint64        `json:"revision"`
+	Complete           bool          `json:"complete"`
+	ReadyDirectories   int           `json:"readyDirectories"`
+	PendingDirectories int           `json:"pendingDirectories"`
+	FailedDirectories  int           `json:"failedDirectories"`
 }
 
 type ProjectTreeChangedV2 struct {
@@ -142,6 +176,7 @@ func (a *App) startSessionCatalog(rebuild bool) {
 	a.catalogDone = done
 	a.catalogRebuilding.Store(rebuild)
 	a.catalogLifecycleMu.Unlock()
+	history.RegisterSessionPersistObserver(desktopSessionCatalogPersistObserverKey, desktopSessionCatalogPersistObserver{app: a})
 
 	go func() {
 		defer close(done)

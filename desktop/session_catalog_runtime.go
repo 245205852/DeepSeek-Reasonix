@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"errors"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -427,50 +426,31 @@ func topicSummaryFromCatalogTopic(topic sessioncatalog.TopicRecord, visible []se
 
 func (a *App) ListProjectTopics(req ProjectTopicPageRequest) (ProjectTopicPage, error) {
 	catalog := a.sessionCatalog.Load()
-	if catalog == nil || !a.catalogWorkspaceScanReady(catalog, req.Scope, req.WorkspaceRoot) {
+	if catalog == nil {
+		return a.metadataTopicPage(req), nil
+	}
+	availability := a.catalogWorkspaceAvailability(catalog, req.Scope, req.WorkspaceRoot)
+	if !availability.usable {
 		// A freshly opened v4 cache is live but empty until the first directory
 		// scan. Treat that the same as "catalog unavailable" so upgrade does
 		// not blank the sidebar that desktop-projects.json still knows about.
 		page := a.metadataTopicPage(req)
-		if catalog == nil {
-			return page, nil
-		}
+		page = availability.decorate(page, catalog.Status().Revision)
 		return a.withLiveTopics(catalog, req, page), nil
 	}
 	page, err := a.catalogTopicPage(catalog, req)
 	if err != nil {
 		return page, err
 	}
+	// Metadata is a continuity source while some directories are pending or
+	// degraded. Once every target has completed, the catalog is authoritative:
+	// retaining metadata-only shells would resurrect recovery copies or deleted
+	// sessions that the completed scan deliberately folded/removed.
+	if !availability.complete {
+		page = a.mergeMetadataTopics(req, page)
+	}
+	page = availability.decorate(page, max(page.Revision, catalog.Status().Revision))
 	return a.withLiveTopics(catalog, req, page), nil
-}
-
-func (a *App) catalogWorkspaceScanReady(catalog *sessioncatalog.Catalog, scope, workspaceRoot string) bool {
-	if a == nil || catalog == nil {
-		return false
-	}
-	ctx, cancel := a.catalogReadContext()
-	defer cancel()
-	scope, workspaceRoot = normalizeDesktopTopicScope(scope, workspaceRoot)
-	matchedExisting := 0
-	for _, target := range a.sessionCatalogTargets() {
-		if target.Scope != scope {
-			continue
-		}
-		if scope == "project" && !sameProjectRoot(target.WorkspaceRoot, workspaceRoot) {
-			continue
-		}
-		if _, err := os.Stat(target.Path); os.IsNotExist(err) {
-			continue
-		}
-		matchedExisting++
-		if !catalog.DirectoryScanReady(ctx, target.Path) {
-			return false
-		}
-	}
-	if matchedExisting > 0 {
-		return true
-	}
-	return catalog.HasWorkspaceRecords(ctx, scope, workspaceRoot)
 }
 
 func normalizeDesktopTopicScope(scope, workspaceRoot string) (string, string) {

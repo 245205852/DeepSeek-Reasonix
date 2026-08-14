@@ -35,8 +35,8 @@ assert.doesNotMatch(
   /event\.revision\s*<=\s*latestRevisionRef\.current/,
   "equal-revision tombstone overlays are not discarded",
 );
-assert.match(panel, /setIndexingDone\(Boolean\(snapshot\.indexingDone\)\)/, "shell snapshot records first-scan completion");
-assert.match(panel, /if \(!indexingDone\) return;/, "first completed scan reloads expanded topic pages");
+assert.doesNotMatch(panel, /setIndexingDone\(/, "topic refresh no longer waits for a global all-directories gate");
+assert.match(panel, /projectTreeEventAffectsFolder\(project, affected\)/, "directory revisions refresh only affected expanded projects");
 assert.match(
   panel,
   /projectTreeShellSignature/,

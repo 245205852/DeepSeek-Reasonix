@@ -13,11 +13,9 @@ import (
 	"io"
 	"log/slog"
 	"maps"
-	"mime"
 	"net/http"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	goruntime "runtime"
@@ -51,6 +49,7 @@ import (
 	"reasonix/internal/notify"
 	"reasonix/internal/plugin"
 	"reasonix/internal/pluginpkg"
+	"reasonix/internal/proc"
 	"reasonix/internal/provider"
 	"reasonix/internal/repair"
 	"reasonix/internal/sessioncatalog"
@@ -363,128 +362,14 @@ type App struct {
 	healthyUpdateTransactionID string
 	// startupReady records that the window reached domReady so LKG config
 	// snapshots and update health are only committed after a real UI boot.
-	startupReady atomic.Bool
+	startupReady     atomic.Bool
+	webView2Recovery *webView2RecoveryCoordinator
 }
 
 type skillRootsCache struct {
 	key   string
 	at    time.Time
 	roots []SkillRootView
-}
-
-// mediaTokenEntry holds metadata for a workspace media file served via temporary URL.
-type mediaTokenEntry struct {
-	absPath   string
-	filename  string
-	mime      string
-	kind      string
-	size      int64
-	modTime   time.Time
-	createdAt time.Time
-	expiresAt time.Time
-}
-
-// mediaTokenStore manages temporary tokens that grant access to workspace files
-// through the AssetServer middleware. Tokens expire after a fixed TTL and are
-// capped at a maximum count; creating a new token evicts the oldest entry when
-// the store is full.
-type mediaTokenStore struct {
-	mu    sync.Mutex
-	byTok map[string]*mediaTokenEntry
-	order []string // oldest first
-	maxN  int
-	ttl   time.Duration
-}
-
-const mediaTokenMax = 256
-
-func newMediaTokenStore() *mediaTokenStore {
-	return &mediaTokenStore{
-		byTok: map[string]*mediaTokenEntry{},
-		maxN:  mediaTokenMax,
-		ttl:   10 * time.Minute,
-	}
-}
-
-func (s *mediaTokenStore) cleanupLocked() {
-	now := time.Now()
-	for len(s.order) > 0 {
-		tok := s.order[0]
-		e := s.byTok[tok]
-		if e == nil {
-			s.order = s.order[1:]
-			continue
-		}
-		if !now.Before(e.expiresAt) {
-			delete(s.byTok, tok)
-			s.order = s.order[1:]
-			continue
-		}
-		break
-	}
-	for len(s.order) > s.maxN {
-		oldest := s.order[0]
-		delete(s.byTok, oldest)
-		s.order = s.order[1:]
-	}
-}
-
-func (s *mediaTokenStore) create(absPath, filename, mime, kind string, size int64, modTime time.Time) string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	s.cleanupLocked()
-
-	tok := make([]byte, 16)
-	if _, err := rand.Read(tok); err != nil {
-		panic("crypto/rand.Read failed: " + err.Error())
-	}
-	token := hex.EncodeToString(tok)
-
-	now := time.Now()
-	s.byTok[token] = &mediaTokenEntry{
-		absPath:   absPath,
-		filename:  filename,
-		mime:      mime,
-		kind:      kind,
-		size:      size,
-		modTime:   modTime,
-		createdAt: now,
-		expiresAt: now.Add(s.ttl),
-	}
-	s.order = append(s.order, token)
-
-	// Trim oldest if the new token pushed us over the limit.
-	for len(s.order) > s.maxN {
-		oldest := s.order[0]
-		delete(s.byTok, oldest)
-		s.order = s.order[1:]
-	}
-
-	return token
-}
-
-func (s *mediaTokenStore) get(token string) *mediaTokenEntry {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	e := s.byTok[token]
-	if e == nil {
-		return nil
-	}
-	if time.Now().After(e.expiresAt) {
-		delete(s.byTok, token)
-		return nil
-	}
-	return e
-}
-
-func (a *App) ensureMediaTokenStore() *mediaTokenStore {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if a.mediaTokens == nil {
-		a.mediaTokens = newMediaTokenStore()
-	}
-	return a.mediaTokens
 }
 
 // jsProfilingMiddleware opts every asset response into the JS Self-Profiling
@@ -496,54 +381,6 @@ func (a *App) jsProfilingMiddleware() func(http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Document-Policy", "js-profiling")
 			next.ServeHTTP(w, r)
-		})
-	}
-}
-
-// workspaceMediaMiddleware returns an HTTP middleware that intercepts
-// /__reasonix_workspace_media/{token}/{filename} requests and serves the
-// corresponding workspace file. All other paths pass through to the Wails
-// default asset handler unchanged.
-func (a *App) workspaceMediaMiddleware() func(http.Handler) http.Handler {
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			prefix := "/__reasonix_workspace_media/"
-			if !strings.HasPrefix(r.URL.Path, prefix) {
-				next.ServeHTTP(w, r)
-				return
-			}
-
-			if r.Method != http.MethodGet && r.Method != http.MethodHead {
-				w.WriteHeader(http.StatusMethodNotAllowed)
-				return
-			}
-
-			rest := strings.TrimPrefix(r.URL.Path, prefix)
-			parts := strings.SplitN(rest, "/", 2)
-			if len(parts) == 0 || parts[0] == "" {
-				http.NotFound(w, r)
-				return
-			}
-			token := parts[0]
-
-			entry := a.ensureMediaTokenStore().get(token)
-			if entry == nil {
-				http.NotFound(w, r)
-				return
-			}
-
-			f, err := os.Open(entry.absPath)
-			if err != nil {
-				http.NotFound(w, r)
-				return
-			}
-			defer f.Close()
-
-			w.Header().Set("Content-Type", entry.mime)
-			w.Header().Set("Content-Disposition", mime.FormatMediaType("inline", map[string]string{"filename": entry.filename}))
-			w.Header().Set("X-Content-Type-Options", "nosniff")
-			w.Header().Set("Cache-Control", "private, max-age=600")
-			http.ServeContent(w, r, entry.filename, entry.modTime, f)
 		})
 	}
 }
@@ -562,6 +399,7 @@ func NewApp() *App {
 		remoteWindows:       newRemoteWindowRegistry(),
 		remoteWindowOwnerID: newRemoteWindowOwnerID(),
 	}
+	a.webView2Recovery = newWebView2RecoveryCoordinator(a)
 	a.workspaceHub = newWorkspaceChangeHub(a)
 	a.terminals = newTerminalManager(a)
 	a.botBridge = a.newBotBridge()
@@ -592,6 +430,7 @@ func (a *App) startup(ctx context.Context) {
 	// OnStartup before its DBus single-instance handoff.
 	initializeLifecycleDiagnostics(a)
 	a.startWindowsWebView2StartupFallback(ctx)
+	a.webView2Recovery.startGuidance(ctx)
 	a.lifecycle.tracker.markAsync("ready")
 	if a.remoteWindowTicket != "" {
 		// Remote web window child: no local tabs, tray, heartbeat, providers,
@@ -1017,6 +856,7 @@ func (a *App) domReady(_ context.Context) {
 		a.domReadyRemoteWindow()
 		return
 	}
+	a.webView2Recovery.reportReady()
 
 	state, ok := loadWindowState()
 	if ok {
@@ -1072,6 +912,16 @@ func (a *App) domReady(_ context.Context) {
 			slog.Info("desktop: archived superseded update transaction")
 		}
 	})
+}
+
+// ReportDesktopWebViewReady is the content-process heartbeat. OnDomReady proves
+// native navigation completed; this bound call additionally proves that React
+// and the Wails bridge are responsive after a renderer reload.
+func (a *App) ReportDesktopWebViewReady() {
+	if a == nil || a.webView2Recovery == nil {
+		return
+	}
+	a.webView2Recovery.reportReady()
 }
 
 func (a *App) commitPendingUpdateHealth() error {
@@ -10748,7 +10598,7 @@ var revealPath = defaultRevealPath
 func defaultRevealPath(path string) error {
 	switch goruntime.GOOS {
 	case "darwin":
-		return exec.Command("open", "-R", path).Start()
+		return proc.VisibleCommand("open", "-R", path).Start()
 	case "windows":
 		// explorer.exe lives in %SystemRoot%, which isn't always on PATH (the
 		// launch environment can strip it), so resolve it directly rather than
@@ -10761,13 +10611,13 @@ func defaultRevealPath(path string) error {
 		if root != "" {
 			explorer = filepath.Join(root, "explorer.exe")
 		}
-		return exec.Command(explorer, "/select,", path).Start()
+		return proc.VisibleCommand(explorer, "/select,", path).Start()
 	default:
 		dir := path
 		if info, err := os.Stat(path); err == nil && !info.IsDir() {
 			dir = filepath.Dir(path)
 		}
-		return exec.Command("xdg-open", dir).Start()
+		return proc.VisibleCommand("xdg-open", dir).Start()
 	}
 }
 

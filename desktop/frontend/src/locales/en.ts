@@ -278,6 +278,8 @@ export const en = {
   "workspace.watchDegraded": "Live workspace watching is limited; refresh visible resources manually if needed.",
   "workspace.watchUnavailable": "Live workspace watching is unavailable; use Refresh to check the workspace.",
   "workspace.loadingChanges": "Loading changes…",
+  "workspace.changesUnavailable": "Workspace changes could not be loaded",
+  "workspace.historyUnavailable": "Commit history could not be loaded",
   "workspace.noChanges": "No changed files",
   "workspace.gitUnavailable": "Git status is unavailable for this workspace.",
   "workspace.gitStatusAdded": "Added",

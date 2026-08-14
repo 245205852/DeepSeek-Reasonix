@@ -15,6 +15,7 @@ import { DEFAULT_STATUS_BAR_ITEMS, normalizeStatusBarItems } from "./statusBarIt
 import { registerTrustedThemeBackgroundURLs } from "./themePack";
 import { modeHasAutoApproveTools, modeWithAutoApproveTools, modeWithPlan, normalizeCollaborationMode, normalizeMode, normalizeTokenMode, normalizeToolApprovalMode } from "./types";
 import { decisionSurfaceMockFromInput, isLongDecisionOptionsMockInput } from "./decisionSurfaceMock";
+import { mockWorkspaceFile } from "./mockWorkspaceFile";
 import type {
   RemoteHostView,
   RemoteHostInput,
@@ -124,6 +125,7 @@ import type {
   WorkspaceView,
   SessionClearResult,
 } from "./types";
+import type { MarkdownImageView } from "./markdownImage";
 
 const GLOBAL_PROJECT_ORDER_KEY = "__global__";
 
@@ -418,6 +420,7 @@ export interface AppBindings extends SessionCatalogBindings, HistoryCatalogBindi
   SearchFileRefsForTab(tabID: string, query: string): Promise<DirEntry[]>;
   ReadFile(rel: string): Promise<FilePreview>;
   ReadFileForTab(tabID: string, rel: string): Promise<FilePreview>;
+  ResolveMarkdownImageForTab(tabID: string, source: string): Promise<MarkdownImageView>;
   WorkspaceRevisionForTab(tabID: string): Promise<{ revisions: WorkspaceRevisions; watchState: "active" | "degraded" | "unavailable" }>;
   WorkspaceChanges(tabID: string): Promise<WorkspaceChangesView>;
   WorkspaceChangeDetail(tabID: string, path: string): Promise<WorkspaceChangeDetailView>;
@@ -555,6 +558,7 @@ export interface AppBindings extends SessionCatalogBindings, HistoryCatalogBindi
   SetDesktopZoomFactor(factor: number): Promise<void>;
   GetDesktopZoomFactor(): Promise<number>;
   RestartApplication(): Promise<void>;
+  ReportDesktopWebViewReady(): Promise<void>;
   SetDesktopCheckUpdates(enabled: boolean): Promise<void>;
   SetDesktopUpdateChannel(channel: string): Promise<void>;
   SetDesktopTelemetry(enabled: boolean): Promise<void>;
@@ -4015,22 +4019,13 @@ function makeMockApp(): AppBindings {
       return this.SearchFileRefs(query);
     },
     async ReadFile(rel: string) {
-      const samples: Record<string, string> = {
-        "README.md": "# Reasonix\n\nBrowser-dev workspace preview.\n\n- Chat in the center\n- Browse files on the right\n- Keep sessions on the left\n",
-        "go.mod": "module reasonix\n\ngo 1.23\n",
-        "desktop/file.go": "package desktop\n\nfunc main() {\n\tprintln(\"workspace preview\")\n}\n",
-        "internal/event.go": "package internal\n\n// mock file used by the browser dev seam\n",
-      };
-      return {
-        path: rel,
-        body: samples[rel] ?? `// ${rel}\n\nMock file body from browser dev.`,
-        size: samples[rel]?.length ?? 42,
-        truncated: false,
-        binary: false,
-      };
+      return mockWorkspaceFile(rel);
     },
     async ReadFileForTab(_tabID: string, rel: string) {
       return this.ReadFile(rel);
+    },
+    async ResolveMarkdownImageForTab(_tabID: string, source: string) {
+      return { url: source, openHref: source };
     },
     async WorkspaceRevisionForTab(_tabID: string) {
       return { revisions: { content: 0, tree: 0, workingTree: 0, gitMeta: 0, session: 0 }, watchState: "active" as const };
@@ -4882,6 +4877,9 @@ function makeMockApp(): AppBindings {
           return mockDesktopZoomFactor;
         },
         async RestartApplication() {
+          // no-op in mock
+        },
+        async ReportDesktopWebViewReady() {
           // no-op in mock
         },
         async SetDesktopCheckUpdates(enabled: boolean) {

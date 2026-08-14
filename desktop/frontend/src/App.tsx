@@ -112,7 +112,6 @@ import {
 } from "./lib/types";
 import type { InvocationMetadataMap, StructuredInvocationSubmit } from "./lib/invocationDisplay";
 import { formatSelectionReference, type SelectedTextInsertRequest } from "./lib/selectedTextContext";
-import { workspaceTreeVisitId } from "./lib/workspaceTreeMemory";
 import { resolveTaskMonitorSession } from "./lib/taskMonitorNavigation";
 import {
   composerProfileFromMeta,
@@ -195,7 +194,7 @@ import { applyConfiguredBaseAppearance, applyThemePack, applyThemeScene, clearTh
 import { ThemeBackground } from "./components/ThemeBackground";
 import { applyTextSize, DEFAULT_TEXT_SIZE, getTextSize, nextTextSize } from "./lib/textSize";
 import { useViewportHeightVar, useWindowStatePersistence } from "./lib/windowState";
-import { availableWorkspacePanelWidth, resolveLiveWorkspacePanelWidth, resolveWorkspacePanelWidth, workspacePanelAriaMinWidth } from "./lib/workspaceLayout";
+import { resolveLiveWorkspacePanelWidth, resolveWorkspacePanelPlacement, workspacePanelAriaMinWidth } from "./lib/workspaceLayout";
 import { createRafResizeUpdater } from "./lib/resizeDrag";
 import { useGlobalShortcut } from "./lib/keyboardShortcuts";
 import { useMountTransition } from "./lib/useMountTransition";
@@ -288,7 +287,13 @@ const SettingsPanel = lazy(() => import("./components/SettingsPanelEntry").then(
 const RemotePanel = lazy(() => import("./components/RemotePanel").then((module) => ({ default: module.RemotePanel })));
 const TerminalPanel = lazy(() => import("./components/TerminalPanel").then((module) => ({ default: module.TerminalPanel })));
 const TaskMonitorPanel = lazy(() => import("./components/TaskMonitorPanel").then((module) => ({ default: module.TaskMonitorPanel })));
-const WorkspacePanel = lazy(() => import("./components/WorkspacePanel").then((module) => ({ default: module.WorkspacePanel })));
+const WorkspacePanel = lazy(async () => {
+  const [module] = await Promise.all([
+    import("./components/WorkspacePanel"),
+    import("./components/WorkspacePanelStability.css"),
+  ]);
+  return { default: module.WorkspacePanel };
+});
 
 const CHAT_MIN_WIDTH = 400;
 const CHAT_COMFORT_MIN_WIDTH = 560;
@@ -1597,32 +1602,18 @@ export default function App() {
     : RIGHT_DOCK_MIN_RENDER_WIDTH;
   const workspacePanelMinWidth = rightDockDetailActive ? RIGHT_DOCK_PREVIEW_MIN_WIDTH : rightDockTreeMinWidth;
   const chatReservedWidth = workspacePanelOpen && !workspacePanelMaximized ? CHAT_COMFORT_MIN_WIDTH : CHAT_MIN_WIDTH;
-  const workspacePanelAvailableWidth = availableWorkspacePanelWidth({
-    viewportWidth,
-    sidebarCollapsed,
-    sidebarWidth,
-    chatMinWidth: chatReservedWidth,
-    resizerWidth: WORKSPACE_RESIZER_WIDTH,
+  const {
+    renderWidth: workspacePanelRenderWidth,
+    overlay: workspacePanelOverlay,
+    renderable: workspacePanelRenderable,
+    gridOpen: workspacePanelGridOpen,
+  } = resolveWorkspacePanelPlacement({
+    viewportWidth, sidebarCollapsed, sidebarWidth, chatMinWidth: chatReservedWidth,
+    resizerWidth: WORKSPACE_RESIZER_WIDTH, open: workspacePanelOpen,
+    maximized: workspacePanelMaximized, preferredWidth: preferredWorkspacePanelWidth,
+    minWidth: workspacePanelMinWidth, minRenderWidth: rightDockMinRenderWidth,
+    liveWidth: liveWorkspacePanelRenderWidth,
   });
-
-  const resolvedWorkspacePanelWidth = resolveWorkspacePanelWidth({
-    open: workspacePanelOpen,
-    maximized: workspacePanelMaximized,
-    preferredWidth: preferredWorkspacePanelWidth,
-    minWidth: workspacePanelMinWidth,
-    availableWidth: workspacePanelAvailableWidth,
-  });
-
-  const storedWorkspacePanelRenderWidth = workspacePanelMaximized ? preferredWorkspacePanelWidth : resolvedWorkspacePanelWidth;
-  const workspacePanelRenderWidth = liveWorkspacePanelRenderWidth ?? storedWorkspacePanelRenderWidth;
-  // The terminal is an independent bottom drawer; workspace panel renderability
-  // no longer depends on terminal mode.
-  const workspacePanelRenderable =
-    workspacePanelOpen && (
-      workspacePanelMaximized ||
-      workspacePanelRenderWidth >= rightDockMinRenderWidth
-    );
-  const workspacePanelGridOpen = workspacePanelRenderable && !workspacePanelMaximized;
   const resolveLiveWorkspacePanelRenderWidth = useCallback(
     (preferredWidth: number, nextSidebarWidth = sidebarWidth) =>
       resolveLiveWorkspacePanelWidth({
@@ -1671,14 +1662,17 @@ export default function App() {
     state.sessionGen,
     workspaceControllerEpoch,
   ].join("\u0000");
-  // A topic may contain multiple saved sessions; the concrete session path is
-  // the runtime conversation identity, with topic/tab ids only as fallbacks.
+  // Workspace navigation belongs to the project, not to a single conversation.
+  // A session switch inside the same project must therefore retain the dock,
+  // tree and selection state.
   const workspaceTreeMemoryKey = [
     activeTab?.scope ?? "",
     activeTab?.workspaceRoot ?? state.meta?.cwd ?? "",
-    activeTab?.sessionPath || state.meta?.sessionPath || activeTab?.topicId || activeTabId || "",
   ].join("\u0000");
-  const workspaceTreeMemoryVisitId = workspaceTreeVisitId(workspaceTreeMemoryKey);
+  const restoreWorkspaceDockWidths = useCallback((treeWidth: number, previewWidth: number) => {
+    setRightDockTreeWidth(rightDockTreeWidthClamp(treeWidth));
+    setRightDockPreviewWidth(clampRightDockPreviewWidth(previewWidth));
+  }, [rightDockTreeWidthClamp]);
   const sidebarImDetailConnection = useMemo(
     () => sidebarImConnections.find((connection) => connection.id === sidebarImDetailConnectionId) ?? null,
     [sidebarImConnections, sidebarImDetailConnectionId],
@@ -4292,6 +4286,7 @@ export default function App() {
           sidebarCollapsed ? "layout--sidebar-collapsed" : "",
           sidebarResizing ? "layout--resizing layout--sidebar-resizing" : "",
           workspacePanelGridOpen ? "layout--workspace-open" : "",
+          workspacePanelOverlay ? "layout--workspace-overlay" : "",
           "layout--terminal-drawer-open",
           terminalPanelOpen ? "layout--terminal-drawer-expanded" : "",
           terminalResizing ? "layout--terminal-resizing" : "",
@@ -5180,6 +5175,7 @@ export default function App() {
             className={[
               "workbench-dock",
               `workbench-dock--${rightDockMode}`,
+              workspacePanelOverlay ? "workbench-dock--overlay" : "",
             ].join(" ")}
             aria-label={t("rightDock.workbench")}
           >
@@ -5262,7 +5258,9 @@ export default function App() {
                     cwd={state.meta?.cwd}
                     workspaceScopeKey={workspaceScopeKey}
                     workspaceMemoryKey={workspaceTreeMemoryKey}
-                    workspaceMemoryVisitId={workspaceTreeMemoryVisitId}
+                    dockTreeWidth={rightDockTreeWidth}
+                    dockPreviewWidth={rightDockPreviewWidth}
+                    onRestoreDockWidths={restoreWorkspaceDockWidths}
                     maximized={workspacePanelMaximized}
                     panelWidth={workspacePanelRenderWidth}
                     onClose={() => setWorkspacePanel(false)}

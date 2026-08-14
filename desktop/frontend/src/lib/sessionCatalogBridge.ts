@@ -39,7 +39,15 @@ export function makeMockSessionCatalogBindings(cloneProjectTree: () => ProjectNo
     const start = Math.max(0, Number.parseInt(req.cursor ?? "0", 10) || 0);
     const limit = Math.min(200, Math.max(1, req.limit ?? 50));
     const items = all.slice(start, start + limit);
-    return { items, nextCursor: start + items.length < all.length ? String(start + items.length) : undefined, revision: 1 };
+    return {
+      items,
+      nextCursor: start + items.length < all.length ? String(start + items.length) : undefined,
+      revision: 1,
+      complete: true,
+      readyDirectories: 1,
+      pendingDirectories: 0,
+      failedDirectories: 0,
+    };
   };
   return {
     async GetProjectTreeSnapshot() {

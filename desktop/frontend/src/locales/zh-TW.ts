@@ -199,6 +199,8 @@ export const zhTW: Record<DictKey, string> = {
   "workspace.watchDegraded": "工作區即時監看受限；如有需要可手動重新整理目前資源。",
   "workspace.watchUnavailable": "工作區即時監看無法使用；請使用重新整理按鈕核對工作區。",
   "workspace.loadingChanges": "正在載入變更…",
+  "workspace.changesUnavailable": "無法讀取工作區變更",
+  "workspace.historyUnavailable": "無法讀取提交歷史",
   "workspace.noChanges": "暫無變更檔案",
   "workspace.gitUnavailable": "當前工作區不可讀取 Git 狀態。",
   "workspace.gitStatusAdded": "新增",
