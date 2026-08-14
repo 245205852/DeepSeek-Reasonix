@@ -1,8 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
+	"io"
 	"mime"
 	"net/http"
 	"os"
@@ -12,15 +15,16 @@ import (
 )
 
 type mediaTokenEntry struct {
-	absPath   string
-	identity  os.FileInfo
-	filename  string
-	mime      string
-	kind      string
-	size      int64
-	modTime   time.Time
-	createdAt time.Time
-	expiresAt time.Time
+	absPath       string
+	identity      os.FileInfo
+	filename      string
+	mime          string
+	kind          string
+	size          int64
+	modTime       time.Time
+	markdownImage bool
+	createdAt     time.Time
+	expiresAt     time.Time
 }
 
 type mediaTokenStore struct {
@@ -65,6 +69,14 @@ func (s *mediaTokenStore) cleanupLocked() {
 }
 
 func (s *mediaTokenStore) create(absPath, filename, mime, kind string, size int64, modTime time.Time) string {
+	return s.createWithPolicy(absPath, filename, mime, kind, size, modTime, false, nil)
+}
+
+func (s *mediaTokenStore) createMarkdownImage(absPath, filename, mime string, identity os.FileInfo) string {
+	return s.createWithPolicy(absPath, filename, mime, "image", identity.Size(), identity.ModTime(), true, identity)
+}
+
+func (s *mediaTokenStore) createWithPolicy(absPath, filename, mime, kind string, size int64, modTime time.Time, markdownImage bool, identity os.FileInfo) string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.cleanupLocked()
@@ -75,10 +87,12 @@ func (s *mediaTokenStore) create(absPath, filename, mime, kind string, size int6
 	}
 	token := hex.EncodeToString(tok)
 	now := time.Now()
-	identity, _ := os.Stat(absPath)
+	if identity == nil {
+		identity, _ = os.Stat(absPath)
+	}
 	s.byTok[token] = &mediaTokenEntry{
 		absPath: absPath, identity: identity, filename: filename, mime: mime, kind: kind,
-		size: size, modTime: modTime, createdAt: now, expiresAt: now.Add(s.ttl),
+		size: size, modTime: modTime, markdownImage: markdownImage, createdAt: now, expiresAt: now.Add(s.ttl),
 	}
 	s.order = append(s.order, token)
 
@@ -88,6 +102,30 @@ func (s *mediaTokenStore) create(absPath, filename, mime, kind string, size int6
 		s.order = s.order[1:]
 	}
 	return token
+}
+
+func readValidatedMarkdownImageSnapshot(f *os.File, mimeType string, size int64) ([]byte, error) {
+	if size <= 0 {
+		return nil, errors.New("empty markdown image")
+	}
+	if size > remoteMarkdownImageMaxBytes {
+		return nil, errMarkdownImageTooLarge
+	}
+	body, err := io.ReadAll(io.LimitReader(f, remoteMarkdownImageMaxBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(body) > remoteMarkdownImageMaxBytes {
+		return nil, errMarkdownImageTooLarge
+	}
+	snapshot, detected := safeRemoteMarkdownImage(body)
+	if detected == "" || detected != mimeType {
+		return nil, errors.New("markdown image MIME does not match the authorized file")
+	}
+	if err := validateMarkdownImageBytes(snapshot, detected); err != nil {
+		return nil, err
+	}
+	return snapshot, nil
 }
 
 func (s *mediaTokenStore) get(token string) *mediaTokenEntry {
@@ -150,6 +188,19 @@ func (a *App) workspaceMediaMiddleware() func(http.Handler) http.Handler {
 				http.NotFound(w, r)
 				return
 			}
+			content := io.ReadSeeker(f)
+			if entry.markdownImage {
+				snapshot, snapshotErr := readValidatedMarkdownImageSnapshot(f, entry.mime, opened.Size())
+				if snapshotErr != nil {
+					if errors.Is(snapshotErr, errMarkdownImageTooLarge) {
+						http.Error(w, "markdown image exceeds the decode budget", http.StatusRequestEntityTooLarge)
+					} else {
+						http.Error(w, "markdown image is invalid", http.StatusUnsupportedMediaType)
+					}
+					return
+				}
+				content = bytes.NewReader(snapshot)
+			}
 
 			w.Header().Set("Content-Type", entry.mime)
 			w.Header().Set("Content-Disposition", mime.FormatMediaType("inline", map[string]string{"filename": entry.filename}))
@@ -160,7 +211,7 @@ func (a *App) workspaceMediaMiddleware() func(http.Handler) http.Handler {
 				w.Header().Set("Cross-Origin-Resource-Policy", "same-origin")
 				w.Header().Set("Referrer-Policy", "no-referrer")
 			}
-			http.ServeContent(w, r, entry.filename, entry.modTime, f)
+			http.ServeContent(w, r, entry.filename, entry.modTime, content)
 		})
 	}
 }

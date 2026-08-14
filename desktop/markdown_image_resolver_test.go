@@ -1,7 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"encoding/base64"
+	"encoding/binary"
+	"hash/crc32"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -9,7 +12,22 @@ import (
 	"testing"
 )
 
-var markdownImageTestPNG = []byte("\x89PNG\r\n\x1a\nreasonix-image")
+var markdownImageTestPNG, _ = base64.StdEncoding.DecodeString("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=")
+
+func markdownImageTestPNGConfig(width, height uint32) []byte {
+	var out bytes.Buffer
+	out.Write([]byte("\x89PNG\r\n\x1a\n"))
+	_ = binary.Write(&out, binary.BigEndian, uint32(13))
+	chunk := make([]byte, 17)
+	copy(chunk, "IHDR")
+	binary.BigEndian.PutUint32(chunk[4:8], width)
+	binary.BigEndian.PutUint32(chunk[8:12], height)
+	chunk[12] = 8 // bit depth
+	chunk[13] = 6 // RGBA
+	out.Write(chunk)
+	_ = binary.Write(&out, binary.BigEndian, crc32.ChecksumIEEE(chunk))
+	return out.Bytes()
+}
 
 func TestResolveMarkdownImageForTabWorkspaceAndRemotePolicy(t *testing.T) {
 	original, _ := os.Getwd()
@@ -95,5 +113,42 @@ func TestResolveMarkdownDataImageMatrix(t *testing.T) {
 	tooLarge := "data:image/png;base64," + strings.Repeat("A", markdownDataImageMaxEncodedBytes)
 	if view := app.ResolveMarkdownImageForTab("", tooLarge); view.ErrorCode != "too-large" {
 		t.Fatalf("oversized data image = %+v", view)
+	}
+	tooManyPixels := "data:image/png;base64," + base64.StdEncoding.EncodeToString(markdownImageTestPNGConfig(10_000, 4_001))
+	if view := app.ResolveMarkdownImageForTab("", tooManyPixels); view.ErrorCode != "too-large" {
+		t.Fatalf("oversized decoded image = %+v", view)
+	}
+}
+
+func TestResolveMarkdownImageForTabRejectsLargeLocalImages(t *testing.T) {
+	original, _ := os.Getwd()
+	defer os.Chdir(original)
+	workspace := t.TempDir()
+	if err := os.Chdir(workspace); err != nil {
+		t.Fatal(err)
+	}
+	app := NewApp()
+
+	largeFile := filepath.Join(workspace, "large.png")
+	f, err := os.Create(largeFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Truncate(remoteMarkdownImageMaxBytes + 1); err != nil {
+		_ = f.Close()
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if view := app.ResolveMarkdownImageForTab("", "large.png"); view.ErrorCode != "too-large" || view.OpenHref == "" {
+		t.Fatalf("large local image = %+v", view)
+	}
+
+	if err := os.WriteFile("wide.png", markdownImageTestPNGConfig(20_000, 2_001), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if view := app.ResolveMarkdownImageForTab("", "wide.png"); view.ErrorCode != "too-large" || view.OpenHref == "" {
+		t.Fatalf("large decoded local image = %+v", view)
 	}
 }

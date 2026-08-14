@@ -12,6 +12,10 @@ process.env.PLAYWRIGHT_BROWSERS_PATH = !process.env.PLAYWRIGHT_BROWSERS_PATH || 
 const { chromium } = await import("playwright");
 const port = Number(process.env.REASONIX_TRANSCRIPT_SCROLL_PORT ?? 4619);
 const url = `http://127.0.0.1:${port}/?mock=bench&bench=1`;
+const maxFrameGapMs = Number(process.env.REASONIX_TRANSCRIPT_MAX_FRAME_GAP_MS ?? 250);
+const p95FrameGapMs = Number(process.env.REASONIX_TRANSCRIPT_P95_FRAME_GAP_MS ?? 80);
+const maxLongTaskMs = Number(process.env.REASONIX_TRANSCRIPT_MAX_LONG_TASK_MS ?? 250);
+const totalLongTaskMs = Number(process.env.REASONIX_TRANSCRIPT_TOTAL_LONG_TASK_MS ?? 750);
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
@@ -223,11 +227,59 @@ try {
   assert(afterGrowth.samples.every((sample) => sample.occupied), "dynamic measurement never exposes a blank transcript viewport");
 
   // Rapid direction changes are the exact user report. Sample every frame and
-  // require that Virtuoso always maintains mounted coverage.
-  for (const delta of [-700, -700, 480, -600, 520, -460]) {
+  // require that Virtuoso always maintains mounted coverage. Keep a real
+  // Chromium long-task budget around 60 events so accidental synchronous
+  // storage/layout work cannot return unnoticed.
+  await page.evaluate(() => {
+    const probe = {
+      active: true,
+      frameGaps: [],
+      lastFrame: null,
+      longTasks: [],
+      observer: null,
+    };
+    if (PerformanceObserver.supportedEntryTypes?.includes("longtask")) {
+      probe.observer = new PerformanceObserver((list) => {
+        for (const entry of list.getEntries()) probe.longTasks.push(entry.duration);
+      });
+      probe.observer.observe({ type: "longtask", buffered: false });
+    }
+    const sampleFrame = (now) => {
+      if (!probe.active) return;
+      if (probe.lastFrame != null) probe.frameGaps.push(now - probe.lastFrame);
+      probe.lastFrame = now;
+      requestAnimationFrame(sampleFrame);
+    };
+    window.__reasonixScrollPerfProbe = probe;
+    requestAnimationFrame(sampleFrame);
+  });
+  const rapidDeltas = Array.from({ length: 10 }, () => [-700, -700, 480, -600, 520, -460]).flat();
+  for (const delta of rapidDeltas) {
     await page.mouse.wheel(0, delta);
-    await page.waitForTimeout(24);
+    await page.waitForTimeout(16);
   }
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  const perf = await page.evaluate(() => {
+    const probe = window.__reasonixScrollPerfProbe;
+    if (!probe) return null;
+    probe.active = false;
+    probe.observer?.disconnect();
+    const gaps = [...probe.frameGaps].sort((left, right) => left - right);
+    const percentileIndex = Math.max(0, Math.ceil(gaps.length * 0.95) - 1);
+    return {
+      frames: gaps.length,
+      maxFrameGap: gaps.at(-1) ?? 0,
+      p95FrameGap: gaps[percentileIndex] ?? 0,
+      maxLongTask: Math.max(0, ...probe.longTasks),
+      totalLongTask: probe.longTasks.reduce((sum, duration) => sum + duration, 0),
+      longTasks: probe.longTasks.length,
+    };
+  });
+  assert(perf && perf.frames >= 30, `rapid-scroll performance probe samples enough frames (${perf?.frames ?? 0})`);
+  assert(perf.maxFrameGap <= maxFrameGapMs, `rapid-scroll maximum frame gap stays within budget (${perf.maxFrameGap.toFixed(1)}ms <= ${maxFrameGapMs}ms)`);
+  assert(perf.p95FrameGap <= p95FrameGapMs, `rapid-scroll p95 frame gap stays within budget (${perf.p95FrameGap.toFixed(1)}ms <= ${p95FrameGapMs}ms)`);
+  assert(perf.maxLongTask <= maxLongTaskMs, `rapid-scroll longest main-thread task stays within budget (${perf.maxLongTask.toFixed(1)}ms <= ${maxLongTaskMs}ms)`);
+  assert(perf.totalLongTask <= totalLongTaskMs, `rapid-scroll total long-task time stays within budget (${perf.totalLongTask.toFixed(1)}ms <= ${totalLongTaskMs}ms; ${perf.longTasks} tasks)`);
   const rapid = await transcript.evaluate((element) => {
     const rect = element.getBoundingClientRect();
     const visible = [...element.querySelectorAll(".transcript__row")].filter((row) => {

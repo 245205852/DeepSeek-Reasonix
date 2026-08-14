@@ -48,6 +48,7 @@ import {
   touchWorkspaceTreeVisit,
   workspaceTreeVisitId,
 } from "../lib/workspaceTreeMemory";
+import { useWorkspaceTreeScrollPersistence } from "../lib/useWorkspaceTreeScrollPersistence";
 import { loadLayoutSize, loadOptionalLayoutSize } from "../lib/layoutPreferences";
 import {
   RIGHT_DOCK_PREVIEW_DEFAULT_WIDTH,
@@ -204,6 +205,7 @@ export function WorkspacePanel({
   const legacyTreeWidth = loadOptionalLayoutSize("workspaceTreeWidth");
   const panelRef = useRef<HTMLElement>(null);
   const treeRef = useRef<HTMLDivElement>(null);
+  const onWorkspaceTreeScroll = useWorkspaceTreeScrollPersistence({ memoryKey: workspaceMemoryKey, open, scrollRef: treeRef });
   const filterRef = useRef<HTMLInputElement>(null);
   const previewBodyRef = useRef<HTMLDivElement>(null);
   const [entriesByDir, setEntriesByDir] = useState<Record<string, DirEntry[]>>({});
@@ -2139,9 +2141,7 @@ export function WorkspacePanel({
           className="workspace-tree"
           ref={treeRef}
           onContextMenu={openTreeBlankMenu}
-          onScroll={(event) => {
-            rememberWorkspaceTreeState(workspaceMemoryKey, { scrollTop: event.currentTarget.scrollTop });
-          }}
+          onScroll={onWorkspaceTreeScroll}
           style={{
             height: "100%",
             overflow: "auto",

@@ -1,3 +1,5 @@
+import { createWorkspaceTreePersistenceScheduler } from "./workspaceTreePersistence";
+
 export type WorkspaceTreeWidthMode = "manual" | "even";
 
 export interface WorkspaceTreeMemorySnapshot {
@@ -113,6 +115,8 @@ function persistWorkspaceTreeMemory(recentKey: string): void {
   }
 }
 
+const deferredScrollPersistence = createWorkspaceTreePersistenceScheduler(persistWorkspaceTreeMemory);
+
 function cloneSnapshot(snapshot: WorkspaceTreeMemorySnapshot): WorkspaceTreeMemorySnapshot {
   return { ...snapshot, openDirs: new Set(snapshot.openDirs) };
 }
@@ -142,7 +146,25 @@ export function rememberWorkspaceTreeState(
     ...patch,
     openDirs: patch.openDirs ? new Set(patch.openDirs) : new Set(current.openDirs),
   });
+  // An immediate state write already includes the latest in-memory scroll
+  // position, so retire any trailing scroll write instead of duplicating it.
+  deferredScrollPersistence.cancel();
   persistWorkspaceTreeMemory(memoryKey);
+}
+
+export function rememberWorkspaceTreeScroll(memoryKey: string, scrollTop: number): void {
+  hydrateWorkspaceTreeMemory();
+  const current = workspaceTreeMemory.get(memoryKey) ?? defaultSnapshot();
+  workspaceTreeMemory.set(memoryKey, {
+    ...current,
+    openDirs: new Set(current.openDirs),
+    scrollTop: Number.isFinite(scrollTop) && scrollTop >= 0 ? scrollTop : current.scrollTop,
+  });
+  deferredScrollPersistence.schedule(memoryKey);
+}
+
+export function flushWorkspaceTreeMemory(): void {
+  deferredScrollPersistence.flush();
 }
 
 export function rememberWorkspaceTreeOpenDirs(memoryKey: string, openDirs: ReadonlySet<string>, visitId: number): void {
@@ -154,6 +176,7 @@ export function touchWorkspaceTreeVisit(memoryKey: string, visitId: number): voi
 }
 
 export function resetWorkspaceTreeMemoryForTests(): void {
+  deferredScrollPersistence.cancel();
   workspaceTreeMemory.clear();
   storageHydrated = false;
   activeWorkspaceTreeKey = "";

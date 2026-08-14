@@ -63,11 +63,14 @@ func (a *App) ResolveMarkdownImageForTab(tabID, source string) MarkdownImageView
 		}
 		return MarkdownImageView{ErrorCode: code}
 	}
-	info, err := os.Stat(path)
+	info, err := os.Lstat(path)
 	if err != nil {
 		return MarkdownImageView{ErrorCode: "not-found"}
 	}
 	openHref := localFileHref(path)
+	if info.Mode()&os.ModeSymlink != 0 {
+		return MarkdownImageView{OpenHref: openHref, ErrorCode: "forbidden"}
+	}
 	if info.IsDir() || !info.Mode().IsRegular() {
 		return MarkdownImageView{OpenHref: openHref, ErrorCode: "not-a-file"}
 	}
@@ -75,12 +78,28 @@ func (a *App) ResolveMarkdownImageForTab(tabID, source string) MarkdownImageView
 	if kind != "image" {
 		return MarkdownImageView{Filename: info.Name(), Size: info.Size(), OpenHref: openHref, ErrorCode: "unsupported-type"}
 	}
-	token := a.ensureMediaTokenStore().create(path, info.Name(), mimeType, kind, info.Size(), info.ModTime())
+	f, err := os.Open(path)
+	if err != nil {
+		return MarkdownImageView{Filename: info.Name(), OpenHref: openHref, ErrorCode: "not-found"}
+	}
+	defer f.Close()
+	opened, err := f.Stat()
+	if err != nil || !opened.Mode().IsRegular() || !os.SameFile(info, opened) {
+		return MarkdownImageView{Filename: info.Name(), OpenHref: openHref, ErrorCode: "invalid-path"}
+	}
+	if err := validateOpenMarkdownImageFile(f, mimeType, opened.Size()); err != nil {
+		code := "invalid-image"
+		if errors.Is(err, errMarkdownImageTooLarge) {
+			code = "too-large"
+		}
+		return MarkdownImageView{Filename: info.Name(), Size: opened.Size(), OpenHref: openHref, ErrorCode: code}
+	}
+	token := a.ensureMediaTokenStore().createMarkdownImage(path, info.Name(), mimeType, opened)
 	return MarkdownImageView{
 		URL:      "/__reasonix_workspace_media/" + token + "/" + url.PathEscape(info.Name()),
 		Filename: info.Name(),
 		Mime:     mimeType,
-		Size:     info.Size(),
+		Size:     opened.Size(),
 		OpenHref: openHref,
 	}
 }
@@ -137,8 +156,14 @@ func resolveMarkdownDataImage(source string) MarkdownImageView {
 	if len(data) > remoteMarkdownImageMaxBytes {
 		return MarkdownImageView{ErrorCode: "too-large"}
 	}
-	_, detected := safeRemoteMarkdownImage(data)
+	validated, detected := safeRemoteMarkdownImage(data)
 	if detected != declared || detected == "image/svg+xml" {
+		return MarkdownImageView{ErrorCode: "invalid-data"}
+	}
+	if err := validateMarkdownImageBytes(validated, detected); err != nil {
+		if errors.Is(err, errMarkdownImageTooLarge) {
+			return MarkdownImageView{ErrorCode: "too-large"}
+		}
 		return MarkdownImageView{ErrorCode: "invalid-data"}
 	}
 	return MarkdownImageView{URL: source, Mime: detected, Size: int64(len(data))}
