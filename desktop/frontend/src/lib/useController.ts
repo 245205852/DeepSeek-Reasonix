@@ -22,6 +22,7 @@ import { isHostRecoveryGuidance } from "./hostRecoverySteer";
 import { duplicateLiveItemIds, hasCachedLiveTurn, hydratedHistoryApplyMode, sameSessionPlaceholderItems, shouldPreferResidentHistory } from "./hydrateHistoryApply";
 import { hydrateIdentityCurrent } from "./sessionIdentity";
 import { sameStringList, sameTodoList } from "./todoVisibility";
+import { useStaleTurnWatchdog } from "./useStaleTurnWatchdog";
 import type { SearchSource } from "./searchSources";
 import { attachWebSearchOutput, historySearchAndAnswer } from "./searchTranscript";
 import { fileDiffFromWire, summarize, summarizeFileDiff, type ToolFileDiff } from "./tools";
@@ -681,7 +682,6 @@ function metaWithoutCanonicalTodos(meta?: Meta): Meta | undefined {
   return { ...meta, canonicalTodos: undefined, dismissedTodoBatches: undefined };
 }
 
-const STALE_TURN_RECONCILE_MS = 30_000;
 const CANCEL_RECONCILE_DELAYS_MS = [0, 100, 300, 1_000] as const;
 // After a stale runtime snapshot is rejected (its fetch predates the live
 // prompt), refetch authoritative backend state once. Short enough to be barely
@@ -690,16 +690,6 @@ const CANCEL_RECONCILE_DELAYS_MS = [0, 100, 300, 1_000] as const;
 const STALE_PROMPT_RECONCILE_MS = 150;
 const STARTUP_READY_META_RECONCILE_MS = 250;
 const STARTUP_READY_META_RECONCILE_ATTEMPTS = 60;
-
-export function shouldReconcileStaleTurn(
-  state: Pick<State, "running" | "turnActive"> | undefined,
-  lastTurnActivityAt: number,
-  now = Date.now(),
-  timeoutMs = STALE_TURN_RECONCILE_MS,
-): boolean {
-  if (!state?.running || !state.turnActive || lastTurnActivityAt <= 0) return false;
-  return Math.max(0, now - lastTurnActivityAt) >= timeoutMs;
-}
 
 function hasReusableCachedTranscript(state: State | undefined, sessionPath?: string, revision?: number, digest?: string): boolean {
   if (!state || state.items.length === 0) return false;
@@ -2662,6 +2652,10 @@ export function useController() {
   const dispatchTo = useCallback((tabId: string, action: Action) => {
     const states = statesRef.current;
     const prev = getOrCreateState(states, tabId);
+    // Activity timestamps belong to one submitted turn. A new optimistic turn
+    // must age from its own turnStartAt if turn_started is lost, not inherit an
+    // old turn's already-stale wire timestamp and probe immediately.
+    if (action.type === "user") lastTurnActivityAtByTab.current.delete(tabId);
     const next = reducer(prev, action);
     if (prev !== next) {
       states.set(tabId, next);
@@ -3252,9 +3246,10 @@ export function useController() {
 
   const reconcileTabRuntime = useCallback(async (
     tabId: string,
-    options: { hydrateSessionData?: boolean } = {},
+    options: { hydrateSessionData?: boolean; refreshAncillary?: boolean } = {},
   ): Promise<TabMeta[] | undefined> => {
     const hydrateSessionData = options.hydrateSessionData ?? true;
+    const refreshAncillary = options.refreshAncillary ?? true;
     const snapshotAt = promptEventClock();
     const tabs = asArray(await app.ListTabs().catch(() => [] as TabMeta[]));
     const tab = tabs.find((candidate) => candidate.id === tabId);
@@ -3272,6 +3267,7 @@ export function useController() {
       });
       return tabs;
     }
+    if (!refreshAncillary) return tabs;
     const [jobs, effort] = await Promise.all([
       app.JobsForTab(tabId).catch(() => undefined),
       app.EffortForTab(tabId).catch(() => undefined),
@@ -3572,30 +3568,19 @@ export function useController() {
     };
   }, [activeTabId, activeState.meta?.ready, activeState.meta?.startupErr, activeState.backendActivationPending, refreshMetaOnlyForTab]);
 
-  // Stale-turn watchdog: if the frontend thinks the agent is running but the
-  // turn stream has gone quiet, reconcile with the backend. This catches cases
-  // where the Wails event channel silently drops turn_done after the final
-  // message or synthetic todo update has already closed the live stream.
-  useEffect(() => {
-    if (!activeTabId) return;
-    const s = statesRef.current.get(activeTabId);
-    const now = Date.now();
-    const lastTurnActivityAt = lastTurnActivityAtByTab.current.get(activeTabId) ?? 0;
-    if (!s?.running || !s.turnActive || lastTurnActivityAt <= 0) return;
-    const since = Math.max(0, now - lastTurnActivityAt);
-    if (shouldReconcileStaleTurn(s, lastTurnActivityAt, now)) {
-      void reconcileTabRuntime(activeTabId);
-      return;
-    }
-    const timer = window.setTimeout(() => {
-      const cur = statesRef.current.get(activeTabId);
-      const lastActivity = lastTurnActivityAtByTab.current.get(activeTabId) ?? 0;
-      if (shouldReconcileStaleTurn(cur, lastActivity)) {
-        void reconcileTabRuntime(activeTabId);
-      }
-    }, STALE_TURN_RECONCILE_MS - since);
-    return () => window.clearTimeout(timer);
-  }, [activeTabId, reconcileTabRuntime, activeState.running, activeState.turnActive]);
+  // Stale-turn watchdog: keep reconciling while the frontend thinks the agent
+  // is running but the event stream is quiet. The optimistic submit timestamp
+  // is evidence too: if Wails drops the entire turn stream (including
+  // turn_started), waiting for a live event would leave the blank assistant
+  // placeholder spinning forever. Re-arm after a still-running snapshot so a
+  // later missed message + turn_done converges without a tab switch.
+  const reconcileStaleTurn = useCallback(async (tabId: string) => {
+    await reconcileTabRuntime(tabId, { refreshAncillary: false });
+  }, [reconcileTabRuntime]);
+  useStaleTurnWatchdog({
+    tabId: activeTabId, visibleState: activeState, activeTabIdRef, statesRef,
+    lastTurnActivityAtByTab, reconcile: reconcileStaleTurn,
+  });
 
   // Replay any pending approval/ask prompts when switching tabs, so a
   // plan-mode session left awaiting confirmation rebuilds its modal (#4275).
