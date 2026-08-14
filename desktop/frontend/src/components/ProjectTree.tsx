@@ -23,6 +23,7 @@ import { ContextMenu, contextMenuPointFromEvent, type ContextMenuItem, type Cont
 import { Tooltip } from "./Tooltip";
 import { WorktreeBadge } from "./WorktreeBadge";
 import { useProjectCreation } from "./useProjectCreation";
+import { useProjectTreeRuntimeProjection } from "../lib/useProjectTreeRuntimeProjection";
 
 interface ProjectTreeProps {
   activeScope?: string;
@@ -446,6 +447,7 @@ export function ProjectTree({
     optimisticallyRemoveTopic: (topicId) => setTree((current) => projectTreeWithoutTopic(current, topicId)),
     closeMenu, onTopicsChanged, showToast,
   });
+  const applyRuntimeProjection = useProjectTreeRuntimeProjection(setTree, currentArchiveTombstones);
   const clickTimerRef = useRef<ProjectTreePendingTopicOpen | null>(null);
   useEffect(() => {
     return () => {
@@ -510,16 +512,16 @@ export function ProjectTree({
       }
       latestRevisionRef.current = Math.max(latestRevisionRef.current, page.revision);
       const items = projectTreeWithoutTopics(asArray(page.items), currentArchiveTombstones());
-      setTree((current) => current.map((node) => {
+      setTree((current) => applyRuntimeProjection(current.map((node) => {
         if (node.key !== key) return node;
         return { ...node, children: mergeProjectTopicPage(asArray(node.children), items, append) };
-      }));
+      })));
       updateTopicPageState(key, { nextCursor: page.nextCursor, loading: false });
     } catch {
       if (topicLoadSeqRef.current[key] !== seq) return;
       updateTopicPageState(key, { ...topicPageStateRef.current[key], loading: false });
     }
-  }, [creationTopics, currentArchiveTombstones, query, timeFilter, updateTopicPageState]);
+  }, [applyRuntimeProjection, creationTopics, currentArchiveTombstones, query, timeFilter, updateTopicPageState]);
   loadProjectTopicsRef.current = loadProjectTopics;
 
   const selectWorkbenchSortMode = useCallback((sortMode: WorkbenchSortMode) => {
@@ -560,20 +562,20 @@ export function ProjectTree({
       const projects = asArray(snapshot.projects);
       setCatalogStatus(snapshot.catalog);
       setIndexingDone(Boolean(snapshot.indexingDone));
-      setTree((current) => projects.map((project) => {
+      setTree((current) => applyRuntimeProjection(projects.map((project) => {
         const previous = current.find((node) => node.key === project.key);
         // Topic pages reload asynchronously. Keep the last painted children
         // until their replacement arrives so a mutation cannot blank every
         // expanded folder for the duration of a catalog scan.
         return { ...project, children: projectTreeShellChildren(previous?.children) };
-      }));
+      })));
       await reloadRequestedProjects(projects);
     } catch {
       // A shell snapshot is metadata-only. If it fails, the resident folder
       // identity can still drive the requested canonical topic reload.
       await reloadRequestedProjects(treeRef.current);
     }
-  }, []);
+  }, [applyRuntimeProjection]);
   refreshRef.current = refresh;
   const { addingProject, handleAddProject, openBlankProjectFlow, blankProjectFlow } = useProjectCreation({
     onAddProject,

@@ -6,6 +6,9 @@ import { fileURLToPath } from "node:url";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const topic = readFileSync(join(root, "lib/projectTreeTopic.ts"), "utf8");
+const runtime = readFileSync(join(root, "lib/projectTreeRuntime.ts"), "utf8");
+const runtimeHook = readFileSync(join(root, "lib/useProjectTreeRuntimeProjection.ts"), "utf8");
+const bridge = readFileSync(join(root, "lib/bridge.ts"), "utf8");
 const panel = readFileSync(join(root, "components/ProjectTree.tsx"), "utf8");
 
 assert.match(topic, /projectTreeShouldApplyShellSnapshot/, "shell race helper exported");
@@ -16,7 +19,16 @@ assert.match(panel, /void refresh\(\)/, "empty-tree event path calls refresh");
 assert.match(
   panel,
   /onProjectTreeChangedV2[\s\S]*projectTreeRevisionIsFresh\(latestRevisionRef\.current, event\.revision\)/,
-  "equal-revision overlay events use the shared freshness contract",
+  "equal-revision catalog events use the shared freshness contract",
+);
+assert.match(runtime, /onProjectTreeRuntimeChanged/, "runtime projection has a dedicated Wails subscription");
+assert.match(runtimeHook, /bindProjectTreeRuntime/, "ProjectTree binds the runtime projection after mount");
+assert.match(runtimeHook, /GetProjectTreeRuntimeSnapshot/, "runtime subscription reconciles with a post-subscribe snapshot");
+assert.match(bridge, /\?\.reason !== "runtime"/, "current frontend ignores tagged legacy runtime invalidations");
+assert.doesNotMatch(
+  runtime,
+  /ListProjectTopics/,
+  "runtime events never reload catalog topic pages",
 );
 assert.doesNotMatch(
   panel,

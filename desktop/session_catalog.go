@@ -67,6 +67,23 @@ type ProjectTreeChangedV2 struct {
 	Reason   string   `json:"reason"`
 }
 
+// ProjectRuntimeTopic is one process-local runtime projected onto its stable
+// logical topic identity. The catalog remains the authority for persisted
+// history; this projection is the authority for what this process is running.
+type ProjectRuntimeTopic struct {
+	Scope         string      `json:"scope"`
+	WorkspaceRoot string      `json:"workspaceRoot,omitempty"`
+	Node          ProjectNode `json:"node"`
+}
+
+// ProjectTreeRuntimeSnapshot is a replace-all, idempotent runtime projection.
+// Its revision is independent from the session catalog revision so clients can
+// order ownership/status changes without reloading any catalog page.
+type ProjectTreeRuntimeSnapshot struct {
+	Revision uint64                `json:"revision"`
+	Topics   []ProjectRuntimeTopic `json:"topics"`
+}
+
 func flushDesktopDerivedCatalogs(ctx context.Context) error {
 	var first error
 	if err := history.FlushSharedCatalog(ctx); err != nil && first == nil {

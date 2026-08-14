@@ -190,6 +190,7 @@ type App struct {
 	// may or may not hold a.mu, so it cannot re-lock). Never write it after
 	// startup.
 	projectTreeChangedHook func()
+	projectTreeRuntime     projectTreeRuntimeState
 
 	// singleSurfaceMu serializes open/reuse plus visible-tab pruning for the
 	// one-conversation layout so overlapping navigation cannot remove the tab

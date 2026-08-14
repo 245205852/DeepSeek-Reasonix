@@ -833,7 +833,7 @@ func applyRuntimeTab(target, source *WorkspaceTab, path string, wailsCtx context
 	}
 }
 
-func (a *App) attachExistingSessionRuntime(tab *WorkspaceTab, path string, wailsCtx context.Context) bool {
+func (a *App) attachExistingSessionRuntimeCore(tab *WorkspaceTab, path string, wailsCtx context.Context) bool {
 	key := sessionRuntimeKey(path)
 	if tab == nil || key == "" {
 		return false
@@ -1575,7 +1575,10 @@ func (s *tabEventSink) Emit(e event.Event) {
 		if status, update := topicActivityStatusFromEvent(e); update {
 			changed := app.setTabActivityStatus(tabID, status)
 			if changed || isBackgroundJobLifecycleNotice(e) {
-				app.emitProjectTreeMetadataChanged()
+				// Runtime status is an in-memory projection, not catalog metadata.
+				// Publish it directly so a turn never fans out into one catalog read
+				// per expanded project folder.
+				app.emitProjectTreeRuntimeChangedWithLegacy()
 			}
 		}
 	}
@@ -2271,25 +2274,18 @@ func (a *App) ListTabs() []TabMeta {
 	return enrichTabMetas(out)
 }
 
-// syncTabWorkspaceRootSpellings repoints open project tabs at the registry's
-// canonical root spelling after a registry write may have rewritten it
-// (addProject and friends adopt the caller's spelling). Tabs, the project
-// tree, and persisted tab state then agree on a single string form of each
-// root, which the frontend compares exactly. Callers must not hold a.mu.
+// syncTabWorkspaceRootSpellings repoints visible and detached project runtimes
+// at the registry spelling. Registry writes may adopt the caller's spelling,
+// while the frontend compares roots exactly. Callers must not hold a.mu.
 func (a *App) syncTabWorkspaceRootSpellings() {
 	projects := loadProjectsFile().Projects
 	a.mu.Lock()
 	changed := false
 	for _, tab := range a.tabs {
-		if tab == nil || tab.Scope != "project" {
-			continue
-		}
-		i := projectIndexByRoot(projects, tab.WorkspaceRoot)
-		if i < 0 || tab.WorkspaceRoot == projects[i].Root {
-			continue
-		}
-		tab.WorkspaceRoot = projects[i].Root
-		changed = true
+		changed = syncRuntimeWorkspaceRootSpelling(tab, projects) || changed
+	}
+	for _, tab := range a.detachedSessions {
+		changed = syncRuntimeWorkspaceRootSpelling(tab, projects) || changed
 	}
 	if changed {
 		a.saveTabsLocked()
@@ -3151,7 +3147,7 @@ func (a *App) CloseTab(tabID string) error {
 	return a.closeTab(tabID, true)
 }
 
-func (a *App) closeTab(tabID string, allowDetach bool) error {
+func (a *App) closeTabRuntime(tabID string, allowDetach bool) error {
 	defer a.lockRuntimeMutation("close-tab")()
 	a.sessionRemovalMu.Lock()
 	defer a.sessionRemovalMu.Unlock()
@@ -6462,6 +6458,7 @@ type ProjectNode struct {
 	RecoveryUnresolvedCount      int           `json:"recoveryUnresolvedCount,omitempty"`
 	RecoveryCleanupEligibleCount int           `json:"recoveryCleanupEligibleCount,omitempty"`
 	IsolatedWorktree             bool          `json:"isolatedWorktree,omitempty"`
+	RuntimeOnly                  bool          `json:"runtimeOnly,omitempty"`
 	Children                     []ProjectNode `json:"children,omitempty"`
 }
 
@@ -6984,21 +6981,6 @@ func (a *App) emitProjectTreeChangedForSessionDirs(dirs ...string) {
 func (a *App) emitProjectTreeMetadataChanged() {
 	a.requestSessionCatalogMetadataSync()
 	a.emitProjectTreeChangedEvent()
-}
-
-func (a *App) emitProjectTreeChangedEvent() {
-	if a.projectTreeChangedHook != nil {
-		a.projectTreeChangedHook()
-		return
-	}
-	a.emitRuntimeEvent("project-tree:changed")
-}
-
-func (a *App) emitRuntimeEvent(name string, payload ...any) {
-	if a == nil || a.ctx == nil {
-		return
-	}
-	a.runtimeEvents.Emit(a.ctx, name, payload...)
 }
 
 // DeleteTopic removes a topic and its title metadata.

@@ -48,8 +48,20 @@ export interface ProjectTreeChangedV2 {
   reason: string;
 }
 
+export interface ProjectRuntimeTopic {
+  scope: "global" | "project" | string;
+  workspaceRoot?: string;
+  node: ProjectNode;
+}
+
+export interface ProjectTreeRuntimeSnapshot {
+  revision: number;
+  topics: ProjectRuntimeTopic[];
+}
+
 export interface SessionCatalogBindings {
   GetProjectTreeSnapshot(): Promise<ProjectTreeSnapshot>;
+  GetProjectTreeRuntimeSnapshot?(): Promise<ProjectTreeRuntimeSnapshot>;
   ListProjectTopics(req: ProjectTopicPageRequest): Promise<ProjectTopicPage>;
   GetTopicSummary(key: ProjectTopicKey): Promise<ProjectNode>;
   GetSessionCatalogStatus(): Promise<SessionCatalogStatus>;

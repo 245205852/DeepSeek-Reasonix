@@ -60,28 +60,9 @@ func catalogRuntimeStatus(activity string, runtimeStatus control.RuntimeStatus) 
 }
 
 func (a *App) catalogRuntimeOverlays() (map[string]catalogRuntimeOverlay, map[string]catalogRuntimeOverlay) {
-	a.mu.RLock()
-	snapshots := make([]catalogRuntimeSnapshot, 0, len(a.tabs)+len(a.detachedSessions))
-	collect := func(tab *WorkspaceTab, open bool) {
-		if tab == nil || strings.TrimSpace(tab.TopicID) == "" {
-			return
-		}
-		snapshots = append(snapshots, catalogRuntimeSnapshot{
-			scope: tab.Scope, workspaceRoot: tab.WorkspaceRoot, topicID: tab.TopicID,
-			sessionPath: tab.SessionPath, activity: tab.ActivityStatus, topicTitle: tab.TopicTitle,
-			ctrl: tab.Ctrl, open: open,
-		})
-	}
-	for _, tab := range a.tabs {
-		collect(tab, true)
-	}
-	for _, tab := range a.detachedSessions {
-		collect(tab, false)
-	}
-	a.mu.RUnlock()
 	topics := map[string]catalogRuntimeOverlay{}
 	sessions := map[string]catalogRuntimeOverlay{}
-	for _, snap := range snapshots {
+	for _, snap := range a.catalogRuntimeSnapshots() {
 		runtimeStatus := control.RuntimeStatus{}
 		path := strings.TrimSpace(snap.sessionPath)
 		if snap.ctrl != nil {
@@ -177,6 +158,7 @@ func (a *App) metadataProjectTopics(scope, workspaceRoot string) []ProjectNode {
 		if seen[runtimeNode.TopicID] || deleted[runtimeNode.TopicID] {
 			continue
 		}
+		runtimeNode.RuntimeOnly = true
 		out = append(out, runtimeNode)
 	}
 	return out
@@ -192,32 +174,21 @@ func (a *App) runtimeOnlyProjectTopics(scope, workspaceRoot string) []ProjectNod
 // in the catalog (a restored tab may carry a legacy topic ID for a re-anchored
 // recovery lineage).
 func (a *App) runtimeOnlyProjectTopicsWithSessions(scope, workspaceRoot string) ([]ProjectNode, map[string][]string) {
-	a.mu.RLock()
 	snapshots := []catalogRuntimeSnapshot{}
-	collect := func(tab *WorkspaceTab, open bool) {
-		if tab == nil || strings.TrimSpace(tab.TopicID) == "" {
-			return
-		}
+	for _, snapshot := range a.catalogRuntimeSnapshots() {
 		if scope == "project" {
-			if tab.Scope != "project" || !sameProjectRoot(tab.WorkspaceRoot, workspaceRoot) {
-				return
+			if snapshot.scope != "project" || !sameProjectRoot(snapshot.workspaceRoot, workspaceRoot) {
+				continue
 			}
-		} else if tab.Scope == "project" {
-			return
+		} else if snapshot.scope == "project" {
+			continue
 		}
-		snapshots = append(snapshots, catalogRuntimeSnapshot{
-			scope: tab.Scope, workspaceRoot: tab.WorkspaceRoot, topicID: tab.TopicID,
-			sessionPath: tab.SessionPath, activity: tab.ActivityStatus,
-			topicTitle: tab.TopicTitle, ctrl: tab.Ctrl, open: open,
-		})
+		snapshots = append(snapshots, snapshot)
 	}
-	for _, tab := range a.tabs {
-		collect(tab, true)
-	}
-	for _, tab := range a.detachedSessions {
-		collect(tab, false)
-	}
-	a.mu.RUnlock()
+	return runtimeProjectTopicNodes(scope, workspaceRoot, snapshots)
+}
+
+func runtimeProjectTopicNodes(scope, workspaceRoot string, snapshots []catalogRuntimeSnapshot) ([]ProjectNode, map[string][]string) {
 	byTopic := map[string][]catalogRuntimeSnapshot{}
 	sessionsByTopic := map[string][]string{}
 	for _, snapshot := range snapshots {
@@ -557,6 +528,7 @@ func (a *App) withLiveTopics(catalog *sessioncatalog.Catalog, req ProjectTopicPa
 		if deleted[node.TopicID] {
 			continue
 		}
+		node.RuntimeOnly = true
 		node.CreatedAt = topicCreatedAtForTree(created, node.TopicID)
 		node.LastActivityAt = node.CreatedAt
 		kept = append(kept, node)

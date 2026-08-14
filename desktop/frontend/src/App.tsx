@@ -52,6 +52,7 @@ import { ClearContextCard } from "./components/ClearContextCard";
 import { RuntimeDecisionCard } from "./components/RuntimeDecisionCard";
 import { decisionSurfaceMockFromInput, type DecisionSurfaceKind as MockDecisionSurfaceKind } from "./lib/decisionSurfaceMock";
 const UndoRewindBanner = lazy(() => import("./components/UndoRewindBanner").then((module) => ({ default: module.UndoRewindBanner })));
+const ProjectTree = lazy(() => import("./components/ProjectTree").then((module) => ({ default: module.ProjectTree })));
 /** Footer decision surface kinds. Runtime blockers are explicit recovery choices. */
 type DecisionSurfaceKind = MockDecisionSurfaceKind | "extension_form";
 import { StatusBar } from "./components/StatusBar";
@@ -68,7 +69,6 @@ import { OnboardingOverlay } from "./components/OnboardingOverlay";
 import { dismissOnboarding, shouldOpenOnboarding } from "./lib/onboarding";
 import { AppChrome } from "./components/AppChrome";
 import { ShortcutsCheatsheet } from "./components/ShortcutsCheatsheet";
-import { ProjectTree } from "./components/ProjectTree";
 import { WorktreeBadge } from "./components/WorktreeBadge";
 import { HeartbeatPanel } from "./custom/features/heartbeat/HeartbeatPanel";
 import "./custom/features/heartbeat/heartbeat.css";
@@ -4423,30 +4423,30 @@ export default function App() {
           )}
 
           <section className="sidebar__section sidebar__section--projects">
-            <ProjectTree
-              activeScope={activeTab?.scope}
-              activeWorkspaceRoot={activeTab?.workspaceRoot}
-              activeTopicId={activeTab?.topicId}
-              activeSessionPath={activeTab?.sessionPath}
-              imTopicSources={imTopicSources}
-              onOpenTopic={handleOpenTopic}
-              onCreateTopic={(scope, workspaceRoot) => openBlankSession(scope, scope === "project" ? workspaceRoot : "")}
-              onCreateDeliveryWorktree={(workspaceRoot) => enqueueNavigation({ kind: "delivery-worktree", workspaceRoot })}
-              onTopicsChanged={refreshProjectsAndTabs}
-              onRenameTopic={renameTopic}
-              refreshSignal={projectRevision}
-              onAddProject={async (path) => {
-                await switchFolder(path);
-              }}
-              timeFilter={topicTimeFilter}
-              onTimeFilterChange={setTopicTimeFilter}
-              variant={sidebarWorkbench ? "workbench" : sidebarCreation ? "creation" : "classic"}
-              searchExpanded={!sidebarCreation || sidebarSearchOpen}
-              searchFocusSignal={sidebarSearchFocusSignal}
-              showShortcutBadges={showTopicBadges}
-              shortcutPlatform={desktopPlatform}
-              onVisibleTopicsChange={handleVisibleTopicsChange}
-            />
+            <Suspense fallback={null}><ProjectTree
+                activeScope={activeTab?.scope}
+                activeWorkspaceRoot={activeTab?.workspaceRoot}
+                activeTopicId={activeTab?.topicId}
+                activeSessionPath={activeTab?.sessionPath}
+                imTopicSources={imTopicSources}
+                onOpenTopic={handleOpenTopic}
+                onCreateTopic={(scope, workspaceRoot) => openBlankSession(scope, scope === "project" ? workspaceRoot : "")}
+                onCreateDeliveryWorktree={(workspaceRoot) => enqueueNavigation({ kind: "delivery-worktree", workspaceRoot })}
+                onTopicsChanged={refreshProjectsAndTabs}
+                onRenameTopic={renameTopic}
+                refreshSignal={projectRevision}
+                onAddProject={async (path) => {
+                  await switchFolder(path);
+                }}
+                timeFilter={topicTimeFilter}
+                onTimeFilterChange={setTopicTimeFilter}
+                variant={sidebarWorkbench ? "workbench" : sidebarCreation ? "creation" : "classic"}
+                searchExpanded={!sidebarCreation || sidebarSearchOpen}
+                searchFocusSignal={sidebarSearchFocusSignal}
+                showShortcutBadges={showTopicBadges}
+                shortcutPlatform={desktopPlatform}
+                onVisibleTopicsChange={handleVisibleTopicsChange}
+              /></Suspense>
           </section>
 
           {sidebarWorkbench ? (

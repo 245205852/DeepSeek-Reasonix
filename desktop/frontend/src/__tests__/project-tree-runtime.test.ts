@@ -28,6 +28,7 @@ import {
   projectTreeShellSignature,
 } from "../components/ProjectTree";
 import { projectTreeTrashingTopics } from "../lib/projectTreeArchive";
+import { normalizeProjectTreeRuntimeSnapshot } from "../lib/projectTreeRuntime";
 import { runProjectTreeSortRuntimeTests } from "./project-tree-sort-runtime.test";
 import type { ProjectNode } from "../lib/types";
 import { readFileSync } from "node:fs";
@@ -48,6 +49,12 @@ function eq(a: unknown, b: unknown, label: string) {
 }
 
 console.log("\nproject tree runtime sessions");
+
+eq(
+  normalizeProjectTreeRuntimeSnapshot({ revision: 0, topics: null }),
+  { revision: 0, topics: [] },
+  "runtime bridge normalizes a legacy/null Wails topic array",
+);
 
 const noTrashingTopics = new Set<string>();
 const topicATrashing = projectTreeTrashingTopics(noTrashingTopics, "topic-a", true);
