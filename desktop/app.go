@@ -3539,8 +3539,8 @@ func (a *App) ResumeSessionForTab(tabID, path string) ([]HistoryMessage, error) 
 	if tab == nil || ctrl == nil {
 		return []HistoryMessage{}, fmt.Errorf("tab is not ready")
 	}
-	if canonical := a.resolveCanonicalSessionPath(path); canonical != "" {
-		path = canonical
+	if continued := a.continuePathForOpen(path); continued != "" {
+		path = continued
 	}
 	sessionPath, _, err := validateSessionPath(controllerSessionDir(ctrl), path)
 	if err != nil {
