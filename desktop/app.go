@@ -2068,6 +2068,7 @@ func (a *App) clearActiveSessionRuntime(tab *WorkspaceTab, oldCtrl control.Sessi
 		SubagentParentLive:       a.subagentParentProbeForBuild(tab),
 		SessionRecoveryMeta:      a.tabSessionRecoveryMeta(tab),
 		OnSessionRecovered:       a.handleTabSessionRecovered(tab),
+		OnSessionTransition:      a.handleTabSessionTransition(tab),
 	})
 	if err != nil {
 		if teardownTimedOut {
@@ -2195,21 +2196,28 @@ type RewindPlanView struct {
 	FileCount          int      `json:"fileCount"`
 	ActiveWriters      int      `json:"activeWriters,omitempty"`
 	Path               string   `json:"path,omitempty"`
+	ConversationAction string   `json:"conversationAction,omitempty"`
 	OK                 bool     `json:"ok"`
 	Error              string   `json:"error,omitempty"`
 }
 
 // RewindResultView is the desktop-facing commit/undo result.
 type RewindResultView struct {
-	OK             bool     `json:"ok"`
-	TransactionID  string   `json:"transactionId,omitempty"`
-	UndoAvailable  bool     `json:"undoAvailable"`
-	Written        []string `json:"written,omitempty"`
-	Deleted        []string `json:"deleted,omitempty"`
-	ConversationOK bool     `json:"conversationOk,omitempty"`
-	Error          string   `json:"error,omitempty"`
-	Conflicts      []string `json:"conflicts,omitempty"`
-	Coverage       string   `json:"coverage,omitempty"`
+	OK                 bool     `json:"ok"`
+	TransactionID      string   `json:"transactionId,omitempty"`
+	UndoAvailable      bool     `json:"undoAvailable"`
+	Written            []string `json:"written,omitempty"`
+	Deleted            []string `json:"deleted,omitempty"`
+	ConversationOK     bool     `json:"conversationOk,omitempty"`
+	ConversationForked bool     `json:"conversationForked,omitempty"`
+	OperationID        string   `json:"operationId,omitempty"`
+	Branch             string   `json:"branch,omitempty"`
+	Partial            bool     `json:"partial,omitempty"`
+	TabID              string   `json:"tabId,omitempty"`
+	Tab                *TabMeta `json:"tab,omitempty"`
+	Error              string   `json:"error,omitempty"`
+	Conflicts          []string `json:"conflicts,omitempty"`
+	Coverage           string   `json:"coverage,omitempty"`
 }
 
 const checkpointFilePreviewLimit = 60
@@ -2339,24 +2347,14 @@ func (a *App) Rewind(turn int, scope string) error {
 
 // RewindForTab rewinds the requested tab instead of resolving the active tab at
 // execution time, which may have changed after frontend confirmation.
-// Compatibility wrapper over the transactional path when available; falls back
-// to Controller.Rewind which prechecks conversation before files for both scope.
+// Compatibility wrapper over the structured fork-first path. Conversation
+// rewind opens the fork as a new tab; it never retargets the source controller.
 func (a *App) RewindForTab(tabID string, turn int, scope string) error {
-	tab, ctrl := a.tabAndCtrlByID(tabID)
-	if a.tabIsReadOnly(tab) {
-		return readOnlyChannelErr()
-	}
-	if ctrl == nil {
+	result := a.CommitRewindForTab(tabID, "", turn, scope)
+	if result.OK {
 		return nil
 	}
-	s := control.RewindBoth
-	switch scope {
-	case "code":
-		s = control.RewindCode
-	case "conversation":
-		s = control.RewindConversation
-	}
-	return ctrl.Rewind(turn, s)
+	return errors.New(nonEmptyStr(result.Error, "rewind failed"))
 }
 
 // PreviewRewindForTab returns a structured precheck without mutating state.
@@ -2425,6 +2423,10 @@ func (a *App) CommitRewindForTab(tabID, planID string, turn int, scope string) R
 		if view.Error == "" {
 			view.Error = err.Error()
 		}
+		return view
+	}
+	if view.OK && view.ConversationForked && strings.TrimSpace(view.Branch) != "" && tab != nil {
+		view = a.attachForkedRewindTab(tab, view)
 	}
 	return view
 }
@@ -2523,6 +2525,7 @@ func rewindPlanToView(plan checkpoint.RewindPlan, scope string) RewindPlanView {
 		FileCount:          plan.FileCount,
 		ActiveWriters:      len(plan.ActiveWriters),
 		Path:               plan.Path,
+		ConversationAction: plan.ConversationAction,
 	}
 }
 
@@ -2547,16 +2550,24 @@ func rewindResultToView(result checkpoint.RewindResult) RewindResultView {
 			conflicts = append(conflicts, c.Reason)
 		}
 	}
+	txID := result.TransactionID
+	if result.OperationID != "" {
+		txID = result.OperationID
+	}
 	return RewindResultView{
-		OK:             result.OK,
-		TransactionID:  result.TransactionID,
-		UndoAvailable:  result.UndoAvailable,
-		Written:        result.Written,
-		Deleted:        result.Deleted,
-		ConversationOK: result.ConversationOK,
-		Error:          result.Error,
-		Conflicts:      conflicts,
-		Coverage:       string(result.Coverage),
+		OK:                 result.OK,
+		TransactionID:      txID,
+		OperationID:        nonEmptyStr(result.OperationID, result.TransactionID),
+		UndoAvailable:      result.UndoAvailable,
+		Written:            result.Written,
+		Deleted:            result.Deleted,
+		ConversationOK:     result.ConversationOK || result.ConversationForked,
+		ConversationForked: result.ConversationForked,
+		Branch:             result.Branch,
+		Partial:            result.Partial,
+		Error:              result.Error,
+		Conflicts:          conflicts,
+		Coverage:           string(result.Coverage),
 	}
 }
 
@@ -2594,71 +2605,13 @@ func (a *App) ForkForTab(tabID string, turn int) (TabMeta, error) {
 		return TabMeta{}, nil
 	}
 	ctrl = sourceTab.Ctrl
-	scope := sourceTab.Scope
-	workspaceRoot := sourceTab.WorkspaceRoot
-	sourceTitle := sourceTab.TopicTitle
-	model := sourceTab.model
-	effort := cloneStringPtr(sourceTab.effort)
-	mode := currentTabMode(sourceTab)
-	toolApprovalMode := currentTabToolApprovalMode(sourceTab)
-	disabledMCP := cloneServerViewMap(sourceTab.disabledMCP)
-	mcpOrder := append([]string(nil), sourceTab.mcpOrder...)
 	a.mu.RUnlock()
 
 	newPath, err := ctrl.ForkSession(turn, "")
 	if err != nil {
 		return TabMeta{}, err
 	}
-	topicID := newTopicID()
-	topicTitle := a.forkTopicTitle(sourceTitle)
-	titleRoot := workspaceRoot
-	if scope == "global" {
-		titleRoot = ""
-	}
-	if err := setTopicTitle(titleRoot, topicID, topicTitle); err != nil {
-		return TabMeta{}, err
-	}
-	m, _ := agent.EnsureBranchMeta(newPath)
-	m.Scope = scope
-	m.WorkspaceRoot = workspaceRoot
-	m.TopicID = topicID
-	m.TopicTitle = topicTitle
-	if err := agent.SaveBranchMeta(newPath, m); err != nil {
-		return TabMeta{}, err
-	}
-	invalidateTopicSessionIndexForPath(newPath)
-
-	a.mu.Lock()
-	newTabID := a.newUniqueTabIDLocked()
-	tab := &WorkspaceTab{
-		ID:               newTabID,
-		Scope:            scope,
-		WorkspaceRoot:    workspaceRoot,
-		TopicID:          topicID,
-		TopicTitle:       topicTitle,
-		topicTitleSource: topicTitleSourceManual,
-		SessionPath:      newPath,
-		model:            model,
-		effort:           effort,
-		mode:             mode,
-		toolApprovalMode: toolApprovalMode,
-		disabledMCP:      disabledMCP,
-		mcpOrder:         mcpOrder,
-	}
-	tab.sink = &tabEventSink{tabID: newTabID, app: a}
-	a.tabs[newTabID] = tab
-	a.tabOrder = append(a.tabOrder, newTabID)
-	activateFork := a.activeTabID == sourceTab.ID
-	if activateFork {
-		a.activeTabID = newTabID
-	}
-	a.saveTabsLocked()
-	meta := a.tabMeta(tab, activateFork)
-	a.mu.Unlock()
-
-	a.emitProjectTreeChangedForSessionDirs(sessionDirectoryForPath(newPath))
-	a.startTabControllerBuild(tab)
-	return meta, nil
+	return a.openForkedSessionTab(sourceTab, newPath)
 }
 
 // SummarizeFrom / SummarizeUpTo compress model context after / before the start
@@ -4123,6 +4076,7 @@ func (a *App) buildSessionRebindCandidate(
 		SubagentParentLive:       a.subagentParentProbeForBuild(tab),
 		SessionRecoveryMeta:      a.tabSessionRecoveryMeta(tab),
 		OnSessionRecovered:       a.handleTabSessionRecovered(tab),
+		OnSessionTransition:      a.handleTabSessionTransition(tab),
 	})
 	if err != nil {
 		sink.clearContext()
@@ -9745,8 +9699,8 @@ func (a *App) SetModelForTab(tabID, name string) (retErr error) {
 		SubagentParentLive:       a.subagentParentProbeForBuild(tab),
 		SessionRecoveryMeta:      a.tabSessionRecoveryMeta(tab),
 		OnSessionRecovered:       a.handleTabSessionRecovered(tab),
-		// Same logical session: keep the private temporary directory across
-		// model switches (Issue #7575).
+		OnSessionTransition:      a.handleTabSessionTransition(tab),
+		// Keep the private temporary directory across model switches (#7575).
 		SessionTemp: sessionTempFromController(oldCtrl),
 	})
 	if err != nil {
@@ -9931,8 +9885,8 @@ func (a *App) SetEffortForTab(tabID, level string) error {
 		SubagentParentLive:       a.subagentParentProbeForBuild(tab),
 		SessionRecoveryMeta:      a.tabSessionRecoveryMeta(tab),
 		OnSessionRecovered:       a.handleTabSessionRecovered(tab),
-		// Same logical session: keep the private temporary directory across
-		// effort switches (Issue #7575).
+		OnSessionTransition:      a.handleTabSessionTransition(tab),
+		// Keep the private temporary directory across effort switches (#7575).
 		SessionTemp: sessionTempFromController(oldCtrl),
 	})
 	if err != nil {

@@ -43,6 +43,7 @@ import type {
   Meta,
   Mode,
   QuestionAnswer,
+  RewindResultView,
   SessionMeta,
   TabMeta,
   ToolApprovalMode,
@@ -4297,15 +4298,34 @@ export function useController() {
   const forget = useCallback(async (name: string) => { await app.Forget(name).catch(() => {}); }, []);
   const saveDoc = useCallback(async (path: string, body: string) => { await app.SaveDoc(path, body).catch(() => {}); }, []);
 
-  type RewindOutcome = {
-    ok: boolean;
-    transactionId?: string;
-    undoAvailable?: boolean;
-    written?: string[];
-    deleted?: string[];
+  const adoptReturnedTab = async (tab: TabMeta, sourceTabId: string, navigationSeq: number, reason: string): Promise<string | undefined> => {
+    const snapshotAt = promptEventClock();
+    const navigationUnchanged = activeNavigationSeqRef.current === navigationSeq;
+    const activateFork = tab.active && navigationUnchanged && activeTabIdRef.current === sourceTabId;
+    if (!activateFork) {
+      dispatchTo(tab.id, { type: "optimistic_meta", meta: metaFromTab(tab, statesRef.current.get(tab.id)?.meta) });
+      dispatchRuntimeStatusForTab(tab.id, tab, snapshotAt);
+      const currentTabId = activeTabIdRef.current;
+      if (tab.active) {
+        await reassertVisibleTabAfterStaleNavigation(reason, tab.id);
+      } else if (!tab.active && navigationUnchanged && currentTabId === sourceTabId) {
+        await syncActiveTabFromBackend(false, true);
+      }
+      addBreadcrumb(reason, `stale completion ${tab.id} current=${currentTabId ?? ""}`);
+      await waitForTabReady(tab.id);
+      return tab.id;
+    }
+    beginActiveNavigation();
+    setActiveTabId(tab.id);
+    activeTabIdRef.current = tab.id;
+    confirmBackendActiveTab(tab.id);
+    dispatchRuntimeStatusForTab(tab.id, tab, snapshotAt);
+    await waitForTabReady(tab.id);
+    await loadSessionDataForTab(tab.id, true);
+    await reconcileTabRuntime(tab.id, { hydrateSessionData: false });
+    return tab.id;
   };
-
-  const rewindForTabDetailed = useCallback(async (sourceTabId: string, turn: number, scope: string): Promise<RewindOutcome> => {
+  const rewindForTabDetailed = useCallback(async (sourceTabId: string, turn: number, scope: string): Promise<RewindResultView & { ok: boolean }> => {
     if (!sourceTabId) return { ok: false };
     const forkNavigationSeq = activeNavigationSeqRef.current;
     await waitForTabReady(sourceTabId);
@@ -4314,54 +4334,34 @@ export function useController() {
     dispatchTo(sourceTabId, { type: "local_notice", level: "info", text: messageActionBusyText(actionScope) });
     try {
       if (actionScope === "fork") {
-        const snapshotAt = promptEventClock();
         const tab = await app.ForkForTab(sourceTabId, turn);
         if (tab?.id) {
-          const navigationUnchanged = activeNavigationSeqRef.current === forkNavigationSeq;
-          const activateFork = tab.active && navigationUnchanged && activeTabIdRef.current === sourceTabId;
-          if (!activateFork) {
-            dispatchTo(tab.id, { type: "optimistic_meta", meta: metaFromTab(tab, statesRef.current.get(tab.id)?.meta) });
-            dispatchRuntimeStatusForTab(tab.id, tab, snapshotAt);
-            const currentTabId = activeTabIdRef.current;
-            if (tab.active) {
-              await reassertVisibleTabAfterStaleNavigation("tab.fork", tab.id);
-            } else if (!tab.active && navigationUnchanged && currentTabId === sourceTabId) {
-              await syncActiveTabFromBackend(false, true);
-            }
-            addBreadcrumb("tab.fork", `stale completion ${tab.id} current=${currentTabId ?? ""}`);
-            return { ok: true };
-          }
-          beginActiveNavigation();
-          setActiveTabId(tab.id);
-          activeTabIdRef.current = tab.id;
-          confirmBackendActiveTab(tab.id);
-          dispatchRuntimeStatusForTab(tab.id, tab, snapshotAt);
-          await waitForTabReady(tab.id);
-          await loadSessionDataForTab(tab.id, true);
-          await reconcileTabRuntime(tab.id, { hydrateSessionData: false });
+          await adoptReturnedTab(tab, sourceTabId, forkNavigationSeq, "tab.fork");
         } else {
           await syncActiveTabFromBackend(true);
         }
-        return { ok: true };
+        return { ok: true, tabId: tab?.id, tab };
       }
 
-      let outcome: RewindOutcome = { ok: true };
+      let outcome: RewindResultView & { ok: boolean } = { ok: true };
+      let partialNotice = "";
       if (actionScope === "summ-from") await app.SummarizeFromForTab(sourceTabId, turn);
       else if (actionScope === "summ-upto") await app.SummarizeUpToForTab(sourceTabId, turn);
       else {
-        const { commitRewindWithPreview } = await import("./rewindCommit");
+        const { commitRewindWithPreview, partialRewindNotice, rewindFailureDetail, rewindOutcome, settleRewindTarget } = await import("./rewindCommit");
         const result = await commitRewindWithPreview(sourceTabId, turn, actionScope);
         if (!result?.ok) {
-          const detail = result?.error
-            || (result?.conflicts?.length ? result.conflicts.join("; ") : "")
-            || "rewind failed";
-          dispatchTo(sourceTabId, { type: "local_notice", level: "warn", text: detail });
+          dispatchTo(sourceTabId, { type: "local_notice", level: "warn", text: rewindFailureDetail(result) });
           return { ok: false, written: result?.written, deleted: result?.deleted };
         }
-        outcome = result as RewindOutcome;
+        outcome = rewindOutcome(result);
+        outcome.tabId = await settleRewindTarget(result, tab => adoptReturnedTab(tab, sourceTabId, forkNavigationSeq, "tab.rewind"), waitForTabReady);
+        partialNotice = partialRewindNotice(result);
       }
 
       await loadSessionDataForTab(sourceTabId, true, "rewind");
+      if (partialNotice) await import("./rewindCommit").then(({ dispatchPartialRewindNotice }) =>
+        dispatchPartialRewindNotice(partialNotice, sourceTabId, outcome.tabId, (tabId, text) => dispatchTo(tabId, { type: "local_notice", level: "warn", text })));
       return outcome;
     } catch {
       return { ok: false };

@@ -984,30 +984,6 @@ func (rw *responseWriter) Flush() {
 	}
 }
 
-// rewind rewinds the session to a checkpoint.
-func (s *Server) rewind(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		Turn  int    `json:"turn"`
-		Scope string `json:"scope"` // "code", "conversation", "both"
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Turn < 0 {
-		http.Error(w, "missing turn", http.StatusBadRequest)
-		return
-	}
-	scope := control.RewindBoth
-	switch body.Scope {
-	case "code":
-		scope = control.RewindCode
-	case "conversation":
-		scope = control.RewindConversation
-	}
-	if err := s.ctl().Rewind(body.Turn, scope); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
-}
-
 // fork creates a new branch at a checkpoint.
 func (s *Server) fork(w http.ResponseWriter, r *http.Request) {
 	var body struct {

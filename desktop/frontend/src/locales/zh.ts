@@ -2978,6 +2978,7 @@ export const zh: Record<DictKey, string> = {
   "rewind.confirmCode": "确认回滚代码",
   "rewind.confirmPartialCoverage": "Reasonix 无法追踪所有可能的文件写入，只会恢复已捕获的文件。\n\n覆盖缺口：\n{gaps}\n\n是否继续？",
   "rewind.partialCoverageUnknown": "部分写入无法关联到具体文件路径。",
+  "rewind.partialRestoreFailed": "对话已分叉，但代码未能完整恢复。",
   "rewind.busyFork": "正在从这条消息分叉…",
   "rewind.busySummFrom": "正在压缩此消息之后的模型上下文…",
   "rewind.busySummUpto": "正在压缩此消息之前的模型上下文…",

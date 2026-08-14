@@ -3868,7 +3868,6 @@ func (a *App) buildTabControllerWithContextCore(tab *WorkspaceTab, loadedSession
 		goal:             buildGoal,
 		toolApprovalMode: buildToolApprovalMode,
 	}).normalizedRuntime()
-
 	// Capture the extension generation before the shared host is mutated by
 	// boot.Build. A concurrent plugin delete/update/reauth bumps the counter;
 	// if it moves before publication we abandon this controller rather than
@@ -3893,6 +3892,7 @@ func (a *App) buildTabControllerWithContextCore(tab *WorkspaceTab, loadedSession
 		SubagentParentLive:       a.subagentParentProbeForBuild(tab),
 		SessionRecoveryMeta:      a.tabSessionRecoveryMeta(tab),
 		OnSessionRecovered:       a.handleTabSessionRecovered(tab),
+		OnSessionTransition:      a.handleTabSessionTransition(tab),
 	})
 	if a.handleTabControllerBootError(tab, registration, rootKey, buildGeneration, wailsCtx, err) {
 		return

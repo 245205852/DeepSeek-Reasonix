@@ -156,6 +156,7 @@ type Controller struct {
 	onRememberPlanModeReadOnlyCommand func(prefix string) PlanModeReadOnlyCommandTrustResult
 	sessionRecoveryMeta               func(SessionRecoveryRequest) agent.BranchMeta
 	onSessionRecovered                func(SessionRecoveryInfo) error
+	onSessionTransition               func(SessionTransitionInfo) error
 
 	// balanceURL/balanceKey target the active provider's optional wallet-balance
 	// endpoint (empty when the provider declares none). Captured at build so a
@@ -295,11 +296,6 @@ type Controller struct {
 	// by Bash calls. Retained for this Controller's lifetime; rotated on
 	// /new, /clear, resume of another session, and branch switches.
 	sessionTemp *sessiontemp.Manager
-	// recoveryDepthCapNotices records session paths that already surfaced the
-	// depth-cap recovery warning. Repeated saves on the same conflict copy are
-	// diagnostic noise for the UI; keep logging/diagnostics, but emit the user
-	// notice once per controller/session path.
-	recoveryDepthCapNotices map[string]bool
 	// snapshotMu serializes the whole save/recovery handoff for this controller.
 	// Agent-level path locks protect individual files, but recovery also moves
 	// controller-owned state (sessionPath, guardianPath, checkpoints, rewrite
@@ -533,6 +529,9 @@ type Options struct {
 	// OnSessionRecovered is called after a stale runtime's transcript has been
 	// saved as a recovery branch, before the controller commits to that branch.
 	OnSessionRecovered func(SessionRecoveryInfo) error
+	// OnSessionTransition transfers write ownership before an intentional
+	// fork, branch, or switch publishes a different Session.
+	OnSessionTransition func(SessionTransitionInfo) error
 	// ApprovalTimeout bounds how long a tool-approval or ask prompt blocks waiting
 	// for a user decision. Zero (default) waits forever — right for an interactive
 	// terminal. Bot/headless frontends set a positive value so an unanswered
@@ -617,6 +616,7 @@ func New(opts Options) *Controller {
 		onRememberPlanModeReadOnlyCommand: opts.OnRememberPlanModeReadOnlyCommand,
 		sessionRecoveryMeta:               opts.SessionRecoveryMeta,
 		onSessionRecovered:                opts.OnSessionRecovered,
+		onSessionTransition:               opts.OnSessionTransition,
 		balanceURL:                        opts.BalanceURL,
 		balanceKey:                        opts.BalanceKey,
 		balanceClient:                     opts.BalanceClient,
@@ -643,7 +643,6 @@ func New(opts Options) *Controller {
 		c.sessionTemp = sessiontemp.New()
 	}
 	c.sessionTemp.Retain()
-
 	if strings.TrimSpace(opts.WorkspaceRoot) != "" {
 		c.legacyResearchArchive = legacyResearchArchive{store: autoresearch.NewStore(opts.WorkspaceRoot)}
 	}
@@ -2963,23 +2962,30 @@ func (c *Controller) NewSession() error {
 	}
 	c.hooks.SessionEnd(context.Background(), "clear")
 	c.extensionSessionEvent(extension.PointSessionEnd, dispatch.PhaseEnd, oldPath)
+	freshPath := oldPath
+	if c.sessionDir != "" {
+		freshPath = agent.NewSessionPath(c.sessionDir, c.label)
+	}
+	freshSession := agent.NewSession(c.systemPrompt)
+	if freshPath != oldPath {
+		if err := c.prepareSessionTransition(freshPath, "new", freshSession); err != nil {
+			return fmt.Errorf("bind new session: %w", err)
+		}
+	}
 	// Hold snapshotMu across the swap so an in-flight save cannot pair the old
 	// path with the fresh session (or the fresh path with the old session).
 	c.snapshotMu.Lock()
-	if c.sessionDir != "" {
-		c.mu.Lock()
-		c.sessionPath = agent.NewSessionPath(c.sessionDir, c.label)
-		c.guardianPath = guardian.PathFor(c.sessionPath)
-		c.mu.Unlock()
-	}
+	c.mu.Lock()
+	c.sessionPath = freshPath
+	c.guardianPath = guardian.PathFor(freshPath)
+	c.mu.Unlock()
 	c.setActiveJobSession(c.SessionPath())
-	c.executor.SetSession(agent.NewSession(c.systemPrompt))
+	c.executor.SetSession(freshSession)
 	c.bindExecutorProjection(c.SessionPath(), false)
 	if c.guardianSess != nil {
 		c.guardianSess.Reset()
 	}
 	c.ResetPlannerSession()
-	freshPath := c.SessionPath()
 	c.rebindCheckpoints(freshPath)
 	c.resetRecoveryForNewSession(freshPath)
 	c.rotateSessionTemp()
@@ -3052,22 +3058,33 @@ func (c *Controller) ClearSession() error {
 		}
 		destroy.Finish()
 	}
+	freshPath := oldPath
+	if c.sessionDir != "" {
+		freshPath = agent.NewSessionPath(c.sessionDir, c.label)
+	}
+	freshSession := agent.NewSession(c.systemPrompt)
+	if freshPath != oldPath {
+		if err := c.prepareSessionTransition(freshPath, "clear", freshSession); err != nil {
+			if destroy.Async {
+				destroy.Finish()
+			}
+			c.snapshotMu.Unlock()
+			return fmt.Errorf("bind cleared session: %w", err)
+		}
+	}
 	c.hooks.SessionEnd(context.Background(), "clear")
 	c.extensionSessionEvent(extension.PointSessionEnd, dispatch.PhaseEnd, oldPath)
-	if c.sessionDir != "" {
-		c.mu.Lock()
-		c.sessionPath = agent.NewSessionPath(c.sessionDir, c.label)
-		c.guardianPath = guardian.PathFor(c.sessionPath)
-		c.mu.Unlock()
-	}
+	c.mu.Lock()
+	c.sessionPath = freshPath
+	c.guardianPath = guardian.PathFor(freshPath)
+	c.mu.Unlock()
 	c.setActiveJobSession(c.SessionPath())
-	c.executor.SetSession(agent.NewSession(c.systemPrompt))
+	c.executor.SetSession(freshSession)
 	c.bindExecutorProjection(c.SessionPath(), false)
 	if c.guardianSess != nil {
 		c.guardianSess.Reset()
 	}
 	c.ResetPlannerSession()
-	freshPath := c.SessionPath()
 	c.rebindCheckpoints(freshPath)
 	c.resetRecoveryForNewSession(freshPath)
 	c.rotateSessionTemp()
@@ -3226,15 +3243,6 @@ func (c *Controller) ForkSession(turn int, name string) (string, error) {
 }
 
 func (c *Controller) forkNamed(turn int, name string, switchToFork bool) (string, error) {
-	if c.executor == nil {
-		return "", c.rewindFail(fmt.Errorf("checkpoints unavailable"))
-	}
-	if c.sessionDir == "" {
-		return "", c.rewindFail(fmt.Errorf("fork needs session persistence, which is disabled"))
-	}
-	// Hold the rotation gate from before the pre-fork Snapshot through the
-	// switch below: a bare Running() check released here would let a turn start
-	// during the snapshot and then be switched onto the fork.
 	if err := c.beginRotation(); err != nil {
 		if errors.Is(err, errTurnRunningRotation) {
 			return "", c.rewindFail(fmt.Errorf("cannot fork while a turn is running"))
@@ -3242,6 +3250,16 @@ func (c *Controller) forkNamed(turn int, name string, switchToFork bool) (string
 		return "", c.rewindFail(err)
 	}
 	defer c.endRotation()
+	return c.forkNamedReady(turn, name, switchToFork)
+}
+
+func (c *Controller) forkNamedReady(turn int, name string, switchToFork bool) (string, error) {
+	if c.executor == nil {
+		return "", c.rewindFail(fmt.Errorf("checkpoints unavailable"))
+	}
+	if c.sessionDir == "" {
+		return "", c.rewindFail(fmt.Errorf("fork needs session persistence, which is disabled"))
+	}
 	boundary, hasBound := c.checkpoints.boundary(turn)
 	if !hasBound {
 		return "", c.rewindFail(fmt.Errorf("fork unavailable for turn %d (resumed session)", turn))
@@ -3279,6 +3297,9 @@ func (c *Controller) forkNamed(turn int, name string, switchToFork bool) (string
 		return "", c.rewindFail(err)
 	}
 	if switchToFork {
+		if err := c.prepareSessionTransition(newPath, "fork", sess); err != nil {
+			return "", c.rewindFail(fmt.Errorf("bind fork session: %w", err))
+		}
 		// See snapshotMu: the swap must not interleave with an in-flight save.
 		c.snapshotMu.Lock()
 		c.executor.SetSession(sess)
@@ -3366,6 +3387,9 @@ func (c *Controller) Branch(name string) (string, error) {
 	}); err != nil {
 		return "", c.rewindFail(err)
 	}
+	if err := c.prepareSessionTransition(newPath, "branch", sess); err != nil {
+		return "", c.rewindFail(fmt.Errorf("bind branch session: %w", err))
+	}
 	// See snapshotMu: the swap must not interleave with an in-flight save.
 	c.snapshotMu.Lock()
 	c.executor.SetSession(sess)
@@ -3427,6 +3451,9 @@ func (c *Controller) SwitchBranch(ref string) (agent.BranchInfo, error) {
 	loaded, err := agent.LoadSession(match.Path)
 	if err != nil {
 		return agent.BranchInfo{}, c.rewindFail(err)
+	}
+	if err := c.prepareSessionTransition(match.Path, "switch", loaded); err != nil {
+		return agent.BranchInfo{}, c.rewindFail(fmt.Errorf("bind switched session: %w", err))
 	}
 	// See snapshotMu: the swap must not interleave with an in-flight save.
 	c.snapshotMu.Lock()
@@ -3913,8 +3940,6 @@ const (
 	conflictForkedBranch
 )
 
-const recoveryDepthCapNoticeText = "repeated save conflicts were detected; saved the current conflict copy in an isolated recovery branch"
-
 func sessionRecoveryNotice(code, text string) event.Event {
 	return event.Event{
 		Kind:     event.Notice,
@@ -3923,21 +3948,6 @@ func sessionRecoveryNotice(code, text string) event.Event {
 		Code:     code,
 		Text:     text,
 	}
-}
-
-func (c *Controller) emitRecoveryDepthCapNotice(path string) {
-	key := filepath.Clean(strings.TrimSpace(path))
-	c.mu.Lock()
-	if c.recoveryDepthCapNotices == nil {
-		c.recoveryDepthCapNotices = make(map[string]bool)
-	}
-	if c.recoveryDepthCapNotices[key] {
-		c.mu.Unlock()
-		return
-	}
-	c.recoveryDepthCapNotices[key] = true
-	c.mu.Unlock()
-	c.sink.Emit(sessionRecoveryNotice(event.NoticeCodeSessionRecoveryDepthCap, recoveryDepthCapNoticeText))
 }
 
 func (c *Controller) recoverSnapshotConflict(path string, saveErr error, forceRewrite bool) (string, conflictOutcome, error) {
@@ -3973,27 +3983,6 @@ func (c *Controller) recoverSnapshotConflict(path string, saveErr error, forceRe
 		BranchMeta:   meta,
 	})
 	if err != nil {
-		if errors.Is(err, agent.ErrSessionRecoveryDepthExceeded) {
-			// The canonical branch may have advanced since this runtime loaded it.
-			// Never force-write the stale in-memory snapshot back onto that path just
-			// to stop a recovery chain. Preserve it in a writer-specific isolated
-			// branch instead; the depth cap limits lineage fan-out, not data safety.
-			isolated, isolatedErr := c.executor.Session().SaveConflictRecoveryBranch(agent.RecoveryBranchOptions{
-				OriginalPath: path,
-				Reason:       reason,
-				BranchMeta:   meta,
-			})
-			if isolatedErr != nil {
-				return "", conflictDropped, fmt.Errorf("recovery chain depth exceeded; isolated copy failed: %w", isolatedErr)
-			}
-			if err := c.commitRecoveredSession(path, reason, isolated); err != nil {
-				return "", conflictDropped, err
-			}
-			appendSnapshotConflictDiagnostic(path, mode, "recovery_depth_cap_isolated", saveErr, isolated.Path, isolated.Existing)
-			slog.Warn("controller: snapshot conflict; recovery depth cap reached, isolated stale transcript", append(logAttrs, "recovery", isolated.Path)...)
-			c.emitRecoveryDepthCapNotice(path)
-			return isolated.Path, conflictForkedBranch, nil
-		}
 		if errors.Is(err, agent.ErrSessionRecoveryNotNeeded) {
 			if c.adoptDiskSession(path) {
 				appendSnapshotConflictDiagnostic(path, mode, "recovery_not_needed_adopted_disk_transcript", saveErr, "", false)

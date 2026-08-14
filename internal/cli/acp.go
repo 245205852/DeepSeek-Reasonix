@@ -172,6 +172,7 @@ func (f *acpFactory) sessionBootOptions(p acp.SessionParams) (boot.Options, erro
 		ExtraPlugins:             p.MCPServers,
 		CleanupPendingReconciler: acp.ReconcileCleanupPending,
 		OnSessionRecovered:       p.OnSessionRecovered,
+		OnSessionTransition:      p.OnSessionTransition,
 		FileOverlay:              p.FileOverlay,
 		TerminalRunner:           p.Terminal,
 		Ablation:                 f.ablationSet(),

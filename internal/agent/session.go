@@ -67,6 +67,10 @@ type Session struct {
 	// on, saves fail closed without a live authority rather than forking
 	// recovery under a stale controller.
 	authRequired bool
+	// persistedMessages is the last paired on-disk view for persistedViewPath.
+	persistedMessages []provider.Message
+	// persistedViewPath is empty when the persist baseline has no paired view.
+	persistedViewPath string
 	// recoveryLane is a session-instance identity, allocated lazily on the
 	// first true conflict. It bounds repeated saves by this live controller to
 	// one recovery file without letting a replacement controller overwrite it.

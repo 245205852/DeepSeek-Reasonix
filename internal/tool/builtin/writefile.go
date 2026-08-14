@@ -68,6 +68,12 @@ func (w writeFile) Execute(ctx context.Context, args json.RawMessage) (string, e
 	if rerr == nil && src.content == p.Content {
 		return fmt.Sprintf("%s already contains the exact content; no changes made", p.Path), nil
 	}
+	if rerr != nil && !os.IsNotExist(rerr) {
+		return "", rerr
+	}
+	if err := src.assertUnchanged(ctx, w.overlay, p.Path); err != nil {
+		return "", err
+	}
 	// The host overlay applies the write to the editor buffer and the file in
 	// one step. Text-only, so it handles plain UTF-8 targets (and new files);
 	// non-UTF-8 files stay on the local encoding-preserving path below.

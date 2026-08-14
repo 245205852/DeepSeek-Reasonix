@@ -165,10 +165,10 @@ type Options struct {
 	// different mode than they passed here should also pass it here, or
 	// sub-agent gates will not match the parent executor's mode.
 	HeadlessApprovalMode string
-	// SessionRecoveryMeta and OnSessionRecovered let richer frontends attach
-	// local UI metadata to automatic transcript recovery branches.
+	// Session recovery and transition hooks let frontends keep local ownership metadata aligned.
 	SessionRecoveryMeta func(control.SessionRecoveryRequest) agent.BranchMeta
 	OnSessionRecovered  func(control.SessionRecoveryInfo) error
+	OnSessionTransition func(control.SessionTransitionInfo) error
 	// SubagentParentLive reports whether this process currently owns or is
 	// building the parent session. Desktop uses it to avoid probing a live tab's
 	// lease during stale-subagent cleanup. Nil preserves lease-only cleanup.
@@ -1798,8 +1798,8 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 		},
 		SessionRecoveryMeta: opts.SessionRecoveryMeta,
 		OnSessionRecovered:  opts.OnSessionRecovered,
-		// The merged catalog (nil without provider-declaring sidecars) lets
-		// frontends enumerate plugin/... models through ProviderCatalog.
+		OnSessionTransition: opts.OnSessionTransition,
+		// The merged catalog lets frontends enumerate sidecar providers.
 		ProviderResolver:  extensionResolver,
 		RuntimeGeneration: generation,
 		RuntimeOwner:      owner,

@@ -204,17 +204,18 @@ type botController interface {
 }
 
 type sessionState struct {
-	lifecycleMu      sync.Mutex
-	retired          bool
-	ctrl             botController
-	sink             *sessionEventSink
-	leases           *control.SessionLeaseKeeper
-	platform         Platform
-	connectionID     string
-	model            string
-	workspaceRoot    string
-	toolApprovalMode string
-	sessionPath      string
+	lifecycleMu         sync.Mutex
+	retired             bool
+	ctrl                botController
+	sink                *sessionEventSink
+	leases              *control.SessionLeaseKeeper
+	platform            Platform
+	connectionID        string
+	model               string
+	workspaceRoot       string
+	toolApprovalMode    string
+	sessionPath         string
+	onSessionTransition func(control.SessionTransitionInfo) error
 	// mappingDegraded records that this state intentionally runs on a fresh
 	// session because its session_mappings target could not be used at build
 	// time. It keeps later messages (whose profile re-resolves the mapping)
@@ -2284,10 +2285,8 @@ func (gw *BotGateway) getOrCreateSession(ctx context.Context, key string, msg In
 		gw.mu.Unlock()
 	}
 
-	// Create the lease owner before the controller so automatic conflict
-	// recovery can move ownership to the recovery branch before the controller
-	// commits to writing it. Without this callback the bot kept guarding the
-	// original path while continuing on an unleased recovery path.
+	// Create the lease owner first so recovery or intentional transitions can
+	// move ownership before the controller commits to the target path.
 	sessionSink := &sessionEventSink{}
 	leases := control.NewSessionLeaseKeeper()
 	state := &sessionState{
@@ -2303,18 +2302,20 @@ func (gw *BotGateway) getOrCreateSession(ctx context.Context, key string, msg In
 		createdAt:        time.Now(),
 		lastActive:       time.Now(),
 	}
+	state.onSessionTransition = gw.botSessionTransitionHandler(key, msg, state)
 	gw.logger.Info("bot session creating", "platform", msg.Platform, "chat_type", msg.ChatType, "chat", hashID(msg.ChatID), "session", key[:8], "model", profile.model, "workspace_set", profile.workspaceRoot != "", "tool_approval_mode", profile.toolApprovalMode)
 	ctrl, err := boot.Build(ctx, boot.Options{
-		Model:              profile.model,
-		MaxSteps:           gw.cfg.MaxSteps,
-		MaxStepsKey:        "bot.max_steps",
-		RequireKey:         true,
-		Sink:               sessionSink,
-		StatsSource:        "bot",
-		WorkspaceRoot:      profile.workspaceRoot,
-		SessionDir:         botSessionDir(profile.workspaceRoot),
-		ApprovalTimeout:    gw.approvalTimeout(),
-		OnSessionRecovered: gw.botSessionRecoveredHandler(key, msg, state),
+		Model:               profile.model,
+		MaxSteps:            gw.cfg.MaxSteps,
+		MaxStepsKey:         "bot.max_steps",
+		RequireKey:          true,
+		Sink:                sessionSink,
+		StatsSource:         "bot",
+		WorkspaceRoot:       profile.workspaceRoot,
+		SessionDir:          botSessionDir(profile.workspaceRoot),
+		ApprovalTimeout:     gw.approvalTimeout(),
+		OnSessionRecovered:  gw.botSessionRecoveredHandler(key, msg, state),
+		OnSessionTransition: state.onSessionTransition,
 	})
 	if err != nil {
 		leases.Release()
@@ -2361,13 +2362,12 @@ func (gw *BotGateway) getOrCreateSession(ctx context.Context, key string, msg In
 	ctrl.EnableInteractiveApproval()
 	ctrl.SetToolApprovalMode(profile.toolApprovalMode)
 	ctrl.EnsureSessionPath()
-	if err := rebindBotControllerWriteAuthority(leases, ctrl); err != nil {
+	if err := rebindBotSessionWriteAuthority(state, ctrl.SessionPath()); err != nil {
 		ctrl.Close()
 		leases.Release()
 		gw.logger.Error("bot session lease failed", "err", control.SessionInUseMessage(err))
 		return nil
 	}
-
 	var replace *sessionState
 	gw.mu.Lock()
 	// Re-check under the lock: while we were off-lock in boot.Build, a second

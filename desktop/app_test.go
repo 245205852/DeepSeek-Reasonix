@@ -2957,10 +2957,10 @@ func TestSetEffortForTabReanchorsDepthCapRecoveryBranch(t *testing.T) {
 
 	lines := readConflictLogLines(t, store.SessionConflictLog(recoveryPath))
 	if len(lines) != 1 {
-		t.Fatalf("conflict log lines = %v, want one depth-cap diagnostic", lines)
+		t.Fatalf("conflict log lines = %v, want one recovery diagnostic", lines)
 	}
-	if !strings.Contains(lines[0], `"outcome":"recovery_depth_cap_isolated"`) {
-		t.Fatalf("conflict diagnostic = %s, want depth-cap outcome", lines[0])
+	if !strings.Contains(lines[0], `"outcome":"forked_recovery_branch"`) {
+		t.Fatalf("conflict diagnostic = %s, want stable recovery fork", lines[0])
 	}
 	if strings.Contains(lines[0], dir) || strings.Contains(lines[0], recoveryPath) {
 		t.Fatalf("conflict diagnostic leaked local path: %s", lines[0])

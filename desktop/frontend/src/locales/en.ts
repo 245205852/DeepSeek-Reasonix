@@ -2975,6 +2975,7 @@ export const en = {
   "rewind.confirmCode": "Confirm rewind code",
   "rewind.confirmPartialCoverage": "Reasonix could not track every possible file write. Only captured files will be restored.\n\nCoverage gaps:\n{gaps}\n\nContinue?",
   "rewind.partialCoverageUnknown": "Some writes could not be attributed to a file path.",
+  "rewind.partialRestoreFailed": "The conversation was forked, but code could not be fully restored.",
   "rewind.busyFork": "Forking from this message…",
   "rewind.busySummFrom": "Compressing model context after this message…",
   "rewind.busySummUpto": "Compressing model context before this message…",

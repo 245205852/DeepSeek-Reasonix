@@ -697,8 +697,8 @@ func TestTurnOrchestratorCheckpointBoundaryPrecedesUserMessage(t *testing.T) {
 	if err := c.Rewind(0, RewindConversation); err != nil {
 		t.Fatal(err)
 	}
-	if len(sess.Messages) != 1 {
-		t.Fatalf("session messages after rewind = %d, want boundary before user message", len(sess.Messages))
+	if live := exec.Session(); len(sess.Messages) != 2 || live == nil || len(live.Messages) != 1 || c.SessionPath() == path {
+		t.Fatalf("parent unchanged / fork switch failed")
 	}
 }
 

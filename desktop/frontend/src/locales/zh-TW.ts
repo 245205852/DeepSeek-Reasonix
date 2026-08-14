@@ -2095,6 +2095,7 @@ export const zhTW: Record<DictKey, string> = {
   "rewind.confirmCode": "確認回滾程式碼",
   "rewind.confirmPartialCoverage": "Reasonix 無法追蹤所有可能的檔案寫入，只會還原已擷取的檔案。\n\n覆蓋缺口：\n{gaps}\n\n是否繼續？",
   "rewind.partialCoverageUnknown": "部分寫入無法關聯到具體檔案路徑。",
+  "rewind.partialRestoreFailed": "對話已分叉，但程式碼未能完整還原。",
   "rewind.busyFork": "正在從這條訊息分叉…",
   "rewind.busySummFrom": "正在壓縮此訊息之後的模型上下文…",
   "rewind.busySummUpto": "正在壓縮此訊息之前的模型上下文…",

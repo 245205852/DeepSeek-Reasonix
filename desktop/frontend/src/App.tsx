@@ -110,6 +110,7 @@ import {
   type WorkspaceConflictView,
 } from "./lib/types";
 import type { InvocationMetadataMap, StructuredInvocationSubmit } from "./lib/invocationDisplay";
+import type { RewindUndoState } from "./lib/rewindTypes";
 import { formatSelectionReference, type SelectedTextInsertRequest } from "./lib/selectedTextContext";
 import { resolveTaskMonitorSession } from "./lib/taskMonitorNavigation";
 import {
@@ -3271,21 +3272,14 @@ export default function App() {
   // On confirm, call Go prepare+commit immediately. Only after success does
   // the UI truncate the transcript, refresh files, and fill the composer.
   // Real backend undo uses UndoRewindForTab when a transaction id is available.
-  type RewindState = {
-    turnDiff: number;      // turns rolled back
-    transactionId?: string;
-    undoAvailable?: boolean;
-    filesRestored?: string[];
-    filesRemoved?: string[];
-  };
-  const [rewindStatesByTab, setRewindStatesByTab] = useState<Record<string, RewindState>>({});
+  const [rewindStatesByTab, setRewindStatesByTab] = useState<Record<string, RewindUndoState>>({});
   const rewindStatesByTabRef = useRef(rewindStatesByTab);
   rewindStatesByTabRef.current = rewindStatesByTab;
   const [rewindCommittingByTab, setRewindCommittingByTab] = useState<Record<string, boolean>>({});
   const rewindState = activeTabId ? rewindStatesByTab[activeTabId] ?? null : null;
   const rewindCommitting = Boolean(activeTabId && rewindCommittingByTab[activeTabId]);
 
-  const setRewindStateForTab = useCallback((tabId: string, nextState: RewindState | null) => {
+  const setRewindStateForTab = useCallback((tabId: string, nextState: RewindUndoState | null) => {
     if (!tabId) return;
     const next = { ...rewindStatesByTabRef.current };
     if (nextState) next[tabId] = nextState;
@@ -3482,17 +3476,19 @@ export default function App() {
         // Keep conversation/files as-is; notices already carry the reason.
         return;
       }
-      setRewindStateForTab(sourceTabId, {
-        turnDiff,
+      const targetTabId = outcome.tabId || sourceTabId;
+      setRewindStateForTab(targetTabId, {
+        turnDiff: outcome.tabId ? 0 : turnDiff,
         transactionId: outcome.transactionId,
         undoAvailable: outcome.undoAvailable,
+        undoTabId: sourceTabId,
         filesRestored: outcome.written ?? [],
         filesRemoved: outcome.deleted ?? [],
       });
       const insertId = Date.now();
       setComposerInsertRequestsByTab((current) => ({
         ...current,
-        [sourceTabId]: { id: insertId, text: prompt, mode: "replace" },
+        [targetTabId]: { id: insertId, text: prompt, mode: "replace" },
       }));
       setRewindSignal((v) => v + 1);
       if (scope === "both" || scope === "code") {
@@ -3520,16 +3516,17 @@ export default function App() {
       }
       userCount++;
     }
-    const ok = await rewindForTab(sourceTabId, turn, "conversation");
-    if (!ok) return false;
+    const outcome = await rewindForTabDetailed(sourceTabId, turn, "conversation");
+    if (!outcome.ok) return false;
     setRewindSignal((v) => v + 1);
+    const targetTabId = outcome.tabId || sourceTabId;
     try {
-      await sendToTab(sourceTabId, next, submit, original);
+      await sendToTab(targetTabId, next, submit, original);
       return true;
     } catch {
       return false;
     }
-  }, [activeTab?.readOnly, activeTabId, clearContextPending, controllerReady, hydratePlaceholderActive, sendToTab, state.approval, state.ask, state.items, state.messageAction, state.running, rewindForTab]);
+  }, [activeTab?.readOnly, activeTabId, clearContextPending, controllerReady, hydratePlaceholderActive, sendToTab, state.approval, state.ask, state.items, state.messageAction, state.running, rewindForTabDetailed]);
 
   const openTrash = useCallback(async () => {
     closeTransientOverlays();
@@ -4798,7 +4795,8 @@ export default function App() {
                     const tabId = activeTabId;
                     if (!tabId) return;
                     const tx = rewindState.transactionId;
-                    const undo = tx && rewindState.undoAvailable ? undoRewindForTab(tabId, tx) : Promise.resolve(true);
+                    const undoTabId = rewindState.undoTabId || tabId;
+                    const undo = tx && rewindState.undoAvailable ? undoRewindForTab(undoTabId, tx) : Promise.resolve(true);
                     void undo.then((ok) => {
                       if (!ok) return;
                       setRewindStateForTab(tabId, null);

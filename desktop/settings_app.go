@@ -1934,8 +1934,7 @@ func (a *App) rebuildSettingTurnLockedWithModel(setting string, tab *WorkspaceTa
 	return nil
 }
 
-// buildSettingReplacementController builds the replacement controller for
-// rebuildSettingTurnLocked and migrates the session onto it, returning the
+// buildSettingReplacementController builds and migrates the replacement for rebuildSettingTurnLocked, returning the
 // controller, the runtime posture actually restored, and the session path it
 // bound. reload=false is the legacy settings path (boot.Build plus the
 // desktop's manual migration); reload=true is the stage-3b runtime reload,
@@ -1959,6 +1958,7 @@ func (a *App) buildSettingReplacementController(tab *WorkspaceTab, snap tabRunti
 		SubagentParentLive:       a.subagentParentProbeForBuild(tab),
 		SessionRecoveryMeta:      a.tabSessionRecoveryMeta(tab),
 		OnSessionRecovered:       a.handleTabSessionRecovered(tab),
+		OnSessionTransition:      a.handleTabSessionTransition(tab),
 	}
 	if reload && oldCtrl != nil {
 		old, ok := oldCtrl.(*control.Controller)

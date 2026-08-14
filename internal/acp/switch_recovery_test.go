@@ -293,6 +293,99 @@ func TestACPLoadAfterRestartFollowsRecoveryTranscript(t *testing.T) {
 	}
 }
 
+// TestACPLoadAfterRestartFollowsIntentionalBranch verifies that the same
+// restart redirect used for conflict recovery is written when an ACP session
+// intentionally changes paths. Without it, the live process owns the branch
+// correctly, but session/load after restart falls back to the stale id-keyed
+// parent transcript.
+func TestACPLoadAfterRestartFollowsIntentionalBranch(t *testing.T) {
+	dir := t.TempDir()
+	id := "sess-branch-restart"
+	originalPath := transcriptPath(dir, id)
+	original := agent.NewSession("sys prompt")
+	original.Add(provider.Message{Role: provider.RoleUser, Content: "parent"})
+	if err := original.Save(originalPath); err != nil {
+		t.Fatalf("save original session: %v", err)
+	}
+	loaded, err := agent.LoadSession(originalPath)
+	if err != nil {
+		t.Fatalf("load original session: %v", err)
+	}
+
+	svc := &service{
+		factory:  &configurableFactory{dir: dir},
+		sessions: map[string]*acpSession{},
+	}
+	sess := &acpSession{
+		id:         id,
+		sink:       newUpdateSink(&fakeNotifier{}, id),
+		cwd:        dir,
+		model:      "fast",
+		transcript: originalPath,
+	}
+	lease, err := agent.TryAcquireSessionLease(originalPath)
+	if err != nil {
+		t.Fatalf("acquire original session lease: %v", err)
+	}
+	sess.lease = lease
+	svc.sessions[id] = sess
+	ctrl := control.New(control.Options{
+		Executor:            agent.New(nil, nil, loaded, agent.Options{}, event.Discard),
+		SessionDir:          dir,
+		SessionPath:         originalPath,
+		Label:               "fast",
+		OnSessionTransition: svc.sessionTransitionHandler(id),
+	})
+	sess.ctrl = ctrl
+	if err := bindACPWriteAuthority(ctrl, lease); err != nil {
+		t.Fatalf("bind original authority: %v", err)
+	}
+
+	branchPath, err := ctrl.Branch("restart target")
+	if err != nil {
+		t.Fatalf("branch session: %v", err)
+	}
+	if branchPath == originalPath {
+		t.Fatalf("branch path = original path %q", originalPath)
+	}
+	sess.mu.Lock()
+	activePath := sess.transcript
+	activeLease := sess.lease
+	sess.mu.Unlock()
+	if activePath != branchPath {
+		t.Fatalf("ACP transcript = %q, want branch %q", activePath, branchPath)
+	}
+	if activeLease == nil || activeLease.Path() != agent.CanonicalSessionPath(branchPath) {
+		t.Fatalf("ACP lease does not cover branch %q", branchPath)
+	}
+
+	sess.releaseSessionLease()
+	ctrl.Close()
+	if got := resolveTranscriptPath(dir, id); got != branchPath {
+		t.Fatalf("restart transcript = %q, want branch %q", got, branchPath)
+	}
+
+	restarted := &service{
+		conn:     NewConn(strings.NewReader(""), io.Discard),
+		factory:  &configurableFactory{dir: dir},
+		sessions: map[string]*acpSession{},
+	}
+	if _, err := restarted.openExistingSession(context.Background(), "session/load", id, dir, nil, false); err != nil {
+		t.Fatalf("open intentional branch after restart: %v", err)
+	}
+	reloaded := restarted.session(id)
+	if reloaded == nil {
+		t.Fatal("session not registered after restart")
+	}
+	t.Cleanup(func() {
+		reloaded.releaseSessionLease()
+		reloaded.ctrl.Close()
+	})
+	if reloaded.transcript != branchPath || reloaded.ctrl.SessionPath() != branchPath {
+		t.Fatalf("reloaded paths = transcript %q, controller %q; want %q", reloaded.transcript, reloaded.ctrl.SessionPath(), branchPath)
+	}
+}
+
 // TestACPDeleteAfterRestartRemovesRecoveryAndIDKeyedFiles: session/delete on a
 // non-live recovered session must remove both the recovery transcript (the
 // session's live file) and the id-keyed original, or the survivor resurfaces

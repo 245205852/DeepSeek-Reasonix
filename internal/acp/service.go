@@ -41,17 +41,17 @@ import (
 // Cwd roots the session's file tools and bash (built via builtin.Workspace).
 // Model, EffortOverride, and RuntimeProfile are optional session-local selectors
 // from ACP config options. MCPServers are the MCP servers the client asked the
-// agent to connect for this session. OnSessionRecovered is the service's
-// bookkeeping hook for automatic transcript recovery branches (see
-// sessionRecoveredHandler); factories must wire it into the controller they build.
+// agent to connect for this session. The path hooks keep service bookkeeping
+// aligned; factories must wire both into the controller they build.
 type SessionParams struct {
-	Cwd                string
-	MCPServers         []plugin.Spec
-	Sink               event.Sink
-	Model              string
-	EffortOverride     *string
-	RuntimeProfile     string
-	OnSessionRecovered func(control.SessionRecoveryInfo) error
+	Cwd                 string
+	MCPServers          []plugin.Spec
+	Sink                event.Sink
+	Model               string
+	EffortOverride      *string
+	RuntimeProfile      string
+	OnSessionRecovered  func(control.SessionRecoveryInfo) error
+	OnSessionTransition func(control.SessionTransitionInfo) error
 	// FileOverlay and Terminal are non-nil when the client advertised the
 	// matching capability at initialize: file tools then see unsaved editor
 	// buffers, and foreground bash can run in a client-owned terminal.
@@ -675,14 +675,14 @@ func (s *service) sessionNew(ctx context.Context, raw json.RawMessage) (any, err
 	sink.bindCwd(cwd)
 	sink.bindExtensionSurface(s.extensionSurfaceSupported())
 	sessionParams := SessionParams{
-		Cwd:                cwd,
-		MCPServers:         mcpServers,
-		Sink:               sink,
-		Model:              cfgState.Model,
-		EffortOverride:     cloneStringPtr(cfgState.EffortOverride),
-		RuntimeProfile:     cfgState.RuntimeProfile,
-		OnSessionRecovered: s.sessionRecoveredHandler(id),
+		Cwd:            cwd,
+		MCPServers:     mcpServers,
+		Sink:           sink,
+		Model:          cfgState.Model,
+		EffortOverride: cloneStringPtr(cfgState.EffortOverride),
+		RuntimeProfile: cfgState.RuntimeProfile,
 	}
+	s.bindSessionPathHandlers(id, &sessionParams)
 	s.bindClientIO(&sessionParams, id)
 	ctrl, err := s.factory.NewSession(ctx, sessionParams)
 	if err != nil {
@@ -978,14 +978,14 @@ func (s *service) openExistingSession(ctx context.Context, method, id, cwdParam 
 	sink.bindCwd(cwd)
 	sink.bindExtensionSurface(s.extensionSurfaceSupported())
 	sessionParams := SessionParams{
-		Cwd:                cwd,
-		MCPServers:         mcpServers,
-		Sink:               sink,
-		Model:              cfgState.Model,
-		EffortOverride:     cloneStringPtr(cfgState.EffortOverride),
-		RuntimeProfile:     cfgState.RuntimeProfile,
-		OnSessionRecovered: s.sessionRecoveredHandler(id),
+		Cwd:            cwd,
+		MCPServers:     mcpServers,
+		Sink:           sink,
+		Model:          cfgState.Model,
+		EffortOverride: cloneStringPtr(cfgState.EffortOverride),
+		RuntimeProfile: cfgState.RuntimeProfile,
 	}
+	s.bindSessionPathHandlers(id, &sessionParams)
 	s.bindClientIO(&sessionParams, id)
 	ctrl, err := s.factory.NewSession(ctx, sessionParams)
 	if err != nil {
@@ -1353,14 +1353,14 @@ func (s *service) reloadSessionExtensionsLocked(ctx context.Context, sess *acpSe
 		return nil, &RPCError{Code: ErrInternal, Message: sessionReloadExtensionsMethod + ": session controller does not support rebuild"}
 	}
 	rebuildParams := SessionParams{
-		Cwd:                cwd,
-		MCPServers:         mcpServers,
-		Sink:               sink,
-		Model:              model,
-		EffortOverride:     effortOverride,
-		RuntimeProfile:     runtimeProfile,
-		OnSessionRecovered: s.sessionRecoveredHandler(sess.id),
+		Cwd:            cwd,
+		MCPServers:     mcpServers,
+		Sink:           sink,
+		Model:          model,
+		EffortOverride: effortOverride,
+		RuntimeProfile: runtimeProfile,
 	}
+	s.bindSessionPathHandlers(sess.id, &rebuildParams)
 	// The rebuilt controller must keep the client-capability wiring (fs
 	// overlay, host terminal) — mirrors rebuildSessionLocked.
 	s.bindClientIO(&rebuildParams, sess.id)
@@ -1815,14 +1815,14 @@ func (s *service) rebuildSessionLocked(ctx context.Context, sess *acpSession, cf
 	}
 
 	rebuildParams := SessionParams{
-		Cwd:                cwd,
-		MCPServers:         mcpServers,
-		Sink:               sink,
-		Model:              cfgState.Model,
-		EffortOverride:     cloneStringPtr(cfgState.EffortOverride),
-		RuntimeProfile:     cfgState.RuntimeProfile,
-		OnSessionRecovered: s.sessionRecoveredHandler(sess.id),
+		Cwd:            cwd,
+		MCPServers:     mcpServers,
+		Sink:           sink,
+		Model:          cfgState.Model,
+		EffortOverride: cloneStringPtr(cfgState.EffortOverride),
+		RuntimeProfile: cfgState.RuntimeProfile,
 	}
+	s.bindSessionPathHandlers(sess.id, &rebuildParams)
 	// The rebuilt controller must keep the client-capability wiring (fs
 	// overlay, host terminal) a model/effort switch would otherwise drop.
 	s.bindClientIO(&rebuildParams, sess.id)
