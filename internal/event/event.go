@@ -511,8 +511,8 @@ type CacheDiagnostics struct {
 // Missing values are stable category ids; user-facing detail stays localized in
 // the frontend instead of scraping the diagnostic error string.
 type FinalReadiness struct {
-	Attempts int
-	Missing  []string
+	Attempts int      `json:"attempts,omitempty"`
+	Missing  []string `json:"missing,omitempty"`
 }
 
 const (

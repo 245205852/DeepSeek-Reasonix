@@ -66,6 +66,11 @@ import (
 // while one is already active in the same Controller.
 var ErrTurnRunning = errors.New("turn already running")
 
+// ErrNoFinalReadinessRecovery means an explicit continuation did not match the
+// immediately preceding paused readiness check (for example, an old card after
+// a newer user turn). It must not silently become an ordinary turn.
+var ErrNoFinalReadinessRecovery = errors.New("no pending final-readiness check to continue")
+
 // ErrRuntimeDraining reports that a caller targeted a controller generation
 // superseded by a successful rebuild.
 var ErrRuntimeDraining = errors.New("runtime is draining after rebuild")
@@ -1236,19 +1241,6 @@ func (c *Controller) SubmitDisplay(display, input string) {
 	c.submit(input, display, "")
 }
 
-// SubmitDeliveryRecovery runs the same visible prompt path as SubmitDisplay but
-// first authorizes the executor to retain the immediately preceding exhausted
-// delivery ledger. The agent consumes that authorization once; if the card came
-// from an older/reloaded session this safely degrades to an ordinary turn.
-func (c *Controller) SubmitDeliveryRecovery(display, input string) {
-	c.runGuarded(func(ctx context.Context) error {
-		if c.executor != nil {
-			c.executor.PrepareDeliveryRecovery()
-		}
-		return c.runGoalLoopWithRawDisplay(ctx, input, input, display)
-	})
-}
-
 // SubmitInvocationDisplay executes composer-selected invocation entities
 // independently of slash-command parsing. Plain string submit entry points keep
 // their existing behavior for CLI, HTTP, and backward-compatible clients.
@@ -1426,6 +1418,9 @@ func (c *Controller) submitCommandOrTurnReady(trimmed, input, display string, sc
 		runGoalLoop = func(ctx context.Context, input, raw, display string) error {
 			return c.runEditedGoalLoopWithRawDisplay(ctx, input, raw, display, editedOriginal)
 		}
+	}
+	if c.submitFinalReadinessCommand(trimmed, display) {
+		return
 	}
 	switch {
 	case trimmed == "/compact" || strings.HasPrefix(trimmed, "/compact "):

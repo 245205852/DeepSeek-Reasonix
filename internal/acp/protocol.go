@@ -475,6 +475,10 @@ func FlattenPrompt(blocks []ContentBlock) string {
 type SessionPromptParams struct {
 	SessionID string         `json:"sessionId"`
 	Prompt    []ContentBlock `json:"prompt"`
+	// Action is an optional Reasonix extension. Empty preserves ACP's standard
+	// prompt behavior; final_readiness_recovery explicitly resumes the newest
+	// paused host check without trusting ordinary prose as authorization.
+	Action string `json:"action,omitempty"`
 }
 
 // SessionSteerParams is the Reasonix ACP v1 extension for injecting user

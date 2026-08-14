@@ -4714,6 +4714,8 @@ func (m *chatTUI) ingestEvent(e event.Event) {
 		m.clearSubmittedPastes()
 		if e.Outcome == event.TurnOutcomeRecoveryPaused {
 			m.commitLine(wrapForViewport("⏸ "+i18n.M.RecoveryPaused, m.width, activeCLITheme.info))
+		} else if e.Outcome == event.TurnOutcomeFinalReadiness {
+			m.commitLine(wrapForViewport("ⓘ "+i18n.M.FinalReadinessRecovery, m.width, activeCLITheme.info))
 		} else if e.Err != nil && e.Err.Error() != "" && !strings.Contains(e.Err.Error(), "context canceled") {
 			m.commitLine(wrapForViewport(i18n.M.ErrorPrefix+" "+e.Err.Error(), m.width, activeCLITheme.warn))
 		}
@@ -4754,6 +4756,11 @@ func (m *chatTUI) runSlashCommand(input string) tea.Cmd {
 	cmd := canonicalBuiltinSlashCommand(typedCmd)
 
 	switch cmd {
+	case control.ContinueChecksCommand:
+		prompt, _ := control.ParseFinalReadinessRecoveryCommand(input)
+		return m.startControllerTurn(input, input, func() {
+			m.ctrl.SubmitFinalReadinessRecovery(input, prompt)
+		})
 	case "/compact":
 		m.echoLocalCommand(input)
 		// Compaction makes a (network) summarizer call; run it off the Update loop
@@ -5468,6 +5475,10 @@ func replaySectionsForWithAssistantRenderer(
 	var out []string
 	for _, m := range history {
 		if m.LocalOnly {
+			if m.FinalReadinessRecovery != nil && m.FinalReadinessRecovery.Pending {
+				out = append(out, fmt.Sprintf("  · %s\n\n", i18n.M.FinalReadinessRecovery))
+				continue
+			}
 			if reasoning := strings.TrimSpace(m.ReasoningContent); reasoning != "" {
 				out = append(out, dim("  ▎ "+i18n.M.ChatThinking)+"\n"+reasoningBlock(reasoning, width, 0)+"\n\n")
 			}

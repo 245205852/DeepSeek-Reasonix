@@ -434,7 +434,7 @@ func TestFinalReadinessFailsImmediatelyWithoutRetries(t *testing.T) {
 	if stalled.call != 1 {
 		t.Fatalf("provider calls = %d, want 1 (no hidden retry messages)", stalled.call)
 	}
-	if !a.pending.deliveryRecovery {
+	if !a.pending.finalReadinessRecovery {
 		t.Fatal("delivery recovery must be pending for an explicit continuation")
 	}
 

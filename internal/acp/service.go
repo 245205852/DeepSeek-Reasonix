@@ -1139,7 +1139,16 @@ func (s *service) sessionPrompt(ctx context.Context, raw json.RawMessage) (any, 
 	if text == "" {
 		return nil, &RPCError{Code: ErrInvalidParams, Message: "session/prompt: empty prompt"}
 	}
-	text = s.resolveSlashPrompt(ctx, sess, text)
+	recovery := p.Action == control.FinalReadinessRecoveryAction
+	if p.Action != "" && !recovery {
+		return nil, &RPCError{Code: ErrInvalidParams, Message: "session/prompt: unsupported action " + p.Action}
+	}
+	if prompt, ok := control.ParseFinalReadinessRecoveryCommand(text); ok {
+		recovery = true
+		text = prompt
+	} else {
+		text = s.resolveSlashPrompt(ctx, sess, text)
+	}
 
 	runCtx, cancel, ok := sess.begin(ctx)
 	if !ok {
@@ -1160,7 +1169,13 @@ func (s *service) sessionPrompt(ctx context.Context, raw json.RawMessage) (any, 
 		s.finishTurn(ctx, sess)
 		cancel()
 	}()
-	runErr := drainACPInbox(runCtx, sess.ctrl, sess.ctrl.RunTurn(runCtx, text))
+	var runErr error
+	if recovery {
+		runErr = sess.ctrl.RunFinalReadinessRecovery(runCtx, text)
+	} else {
+		runErr = sess.ctrl.RunTurn(runCtx, text)
+	}
+	runErr = drainACPInbox(runCtx, sess.ctrl, runErr)
 
 	statusEvent := sess.status.finishTurn(
 		runErr,

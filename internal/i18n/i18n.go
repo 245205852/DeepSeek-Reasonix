@@ -32,14 +32,15 @@ type Messages struct {
 	InitHint string
 
 	// chat REPL
-	ChatTip             string // tip line under the chat banner
-	TurnCancelled       string // shown when Ctrl-C aborts the in-flight turn but the chat keeps running
-	InterruptedRecovery string // replay notice for a durable interrupted turn
-	RecoveryPaused      string // controlled Auto retry pause; user can continue in the next message
-	ReceiptVerified     string // end-of-turn receipt, nothing unproven
-	ReceiptGapsHeader   string // end-of-turn receipt, header above the unproven list
-	ReceiptRisksHeader  string // end-of-turn receipt, header above declared risks
-	ReceiptMore         string // end-of-turn receipt, "and N more" tail
+	ChatTip                string // tip line under the chat banner
+	TurnCancelled          string // shown when Ctrl-C aborts the in-flight turn but the chat keeps running
+	InterruptedRecovery    string // replay notice for a durable interrupted turn
+	FinalReadinessRecovery string // replay hint for a durable final-readiness pause
+	RecoveryPaused         string // controlled Auto retry pause; user can continue in the next message
+	ReceiptVerified        string // end-of-turn receipt, nothing unproven
+	ReceiptGapsHeader      string // end-of-turn receipt, header above the unproven list
+	ReceiptRisksHeader     string // end-of-turn receipt, header above declared risks
+	ReceiptMore            string // end-of-turn receipt, "and N more" tail
 	// ReceiptGapKinds maps a completion gap kind to its short human phrase.
 	ReceiptGapKinds   map[string]string
 	NoSessionToResume string // shown when --continue / --resume finds nothing
@@ -232,6 +233,7 @@ type Messages struct {
 	CmdClear            string // /clear
 	CmdCls              string // /cls
 	CmdCompact          string // /compact
+	CmdContinueChecks   string // /continue-checks
 	CmdContext          string // /context
 	CmdRewind           string // /rewind
 	CmdTree             string // /tree

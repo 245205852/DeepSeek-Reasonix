@@ -166,6 +166,13 @@ Hosts should keep the `session/prompt` request open until Reasonix returns its
 stop reason, while continuing to process requests and notifications in both
 directions.
 
+When the status phase is `readiness_paused`, resume that exact check with a
+`session/prompt` request whose optional `action` is
+`"final_readiness_recovery"`. Sending `/continue-checks` as the sole text block
+is the compatibility form. Both forms consume a one-shot, persisted host
+checkpoint; ordinary prompt text never inherits it, and a stale action after a
+newer user turn is rejected.
+
 ## Mid-turn steering extension
 
 Reasonix exposes mid-turn guidance as an ACP v1 vendor extension. It is not a

@@ -5041,6 +5041,7 @@ type HistoryMessage struct {
 	Summary         string                      `json:"summary,omitempty"`
 	Archive         string                      `json:"archive,omitempty"`
 	DecisionReceipt *provider.DecisionReceipt   `json:"decisionReceipt,omitempty"`
+	Readiness       *event.FinalReadiness       `json:"readiness,omitempty"`
 	ServerSearch    []provider.ServerSearchCall `json:"serverSearch,omitempty"`
 }
 
@@ -5440,10 +5441,8 @@ func (state *historyMessageConvertState) convertHistoryMessage(
 			DecisionReceipt: cloneDecisionReceipt(m.DecisionReceipt),
 		})
 	}
-	if m.LocalOnly {
-		if rows, handled := historySteerRows(agent.UserMessageText(m), true); handled {
-			return append(out, rows...)
-		}
+	if rows, handled := historyLocalOnlyRows(m); handled {
+		return append(out, rows...)
 	}
 	if state.suppressCanonicalTurn {
 		if m.Role != provider.RoleUser || !agent.IsUserAuthoredTurn(agent.UserMessageText(m)) {

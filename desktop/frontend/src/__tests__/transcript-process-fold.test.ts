@@ -83,7 +83,7 @@ const warningTurn: Item[] = [
         id: "n-delivery",
         level: "info",
         variant: "delivery",
-        title: "Delivery checks are not complete",
+        title: "Task completion checks are not complete",
         text: "The response was generated, but verification and review still need to be completed.",
         detail: "final-answer readiness failed 3 times: missing verification",
         action: "continue_delivery",

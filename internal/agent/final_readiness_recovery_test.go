@@ -1,0 +1,118 @@
+package agent
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"path/filepath"
+	"testing"
+
+	"reasonix/internal/event"
+	"reasonix/internal/provider"
+)
+
+func TestTargetedVerificationRecoveryPreservesEvidenceOnce(t *testing.T) {
+	reg := evidenceRegistry()
+	prov := &scriptedProvider{name: "balanced", turns: [][]provider.Chunk{
+		{toolCallChunk("write", "write_file", `{"path":"verify_v070.py"}`), {Type: provider.ChunkDone}},
+		{toolCallChunk("custom-check", "bash", `{"command":"python3 verify_v070.py"}`), {Type: provider.ChunkDone}},
+		{{Type: provider.ChunkText, Text: "validation script passed"}, {Type: provider.ChunkDone}},
+		{toolCallChunk("recognized-check", "bash", `{"command":"git diff --check"}`), {Type: provider.ChunkDone}},
+		{{Type: provider.ChunkText, Text: "checks complete"}, {Type: provider.ChunkDone}},
+	}}
+	a := New(prov, reg, NewSession("sys"), Options{AgentPreset: "balanced"}, event.Discard)
+
+	var readinessErr *FinalReadinessError
+	if err := a.Run(context.Background(), "write verify_v070.py and run the validation script"); !errors.As(err, &readinessErr) {
+		t.Fatalf("first Run error = %v, want targeted-verification readiness failure", err)
+	}
+	if a.deliveryProfile {
+		t.Fatal("balanced targeted-verification turn unexpectedly elevated to Delivery")
+	}
+	if !a.PrepareDeliveryRecovery() {
+		t.Fatal("targeted-verification recovery should preserve the failed turn's evidence")
+	}
+	if a.PrepareDeliveryRecovery() {
+		t.Fatal("targeted-verification recovery authorization must be one-shot")
+	}
+	if err := a.Run(context.Background(), "continue the remaining checks"); err != nil {
+		t.Fatalf("recovery Run: %v", err)
+	}
+	writer, ok := a.task.ledger.LatestSuccessfulWriterIndex()
+	if !ok || !a.task.ledger.HasSuccessfulVerificationCommandAfter(writer) {
+		t.Fatal("recovery turn did not retain write-before-verification evidence")
+	}
+}
+
+func TestTargetedVerificationRecoverySurvivesAgentRebuild(t *testing.T) {
+	reg := evidenceRegistry()
+	first := &scriptedProvider{name: "balanced", turns: [][]provider.Chunk{
+		{toolCallChunk("write", "write_file", `{"path":"verify_v070.py","content":"sensitive-payload"}`), {Type: provider.ChunkDone}},
+		{toolCallChunk("opaque-check", "bash", `{"command":"python3 verify_v070.py"}`), {Type: provider.ChunkDone}},
+		{{Type: provider.ChunkText, Text: "validation script passed"}, {Type: provider.ChunkDone}},
+	}}
+	session := NewSession("sys")
+	a := New(first, reg, session, Options{AgentPreset: "balanced"}, event.Discard)
+
+	var readinessErr *FinalReadinessError
+	if err := a.Run(context.Background(), "write verify_v070.py and run the validation script"); !errors.As(err, &readinessErr) {
+		t.Fatalf("first Run error = %v, want final readiness failure", err)
+	}
+	var marker *provider.FinalReadinessRecovery
+	for _, message := range session.Snapshot() {
+		if message.FinalReadinessRecovery != nil {
+			marker = message.FinalReadinessRecovery
+		}
+	}
+	if marker == nil || bytes.Contains(marker.Checkpoint, []byte("sensitive-payload")) {
+		t.Fatal("recovery checkpoint missing or duplicated writer content")
+	}
+	path := filepath.Join(t.TempDir(), "readiness-recovery.jsonl")
+	if err := session.Save(path); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	loaded, err := LoadSession(path)
+	if err != nil {
+		t.Fatalf("LoadSession: %v", err)
+	}
+
+	recoveryProvider := &scriptedProvider{name: "balanced-reloaded", turns: [][]provider.Chunk{
+		{toolCallChunk("recognized-check", "bash", `{"command":"git diff --check"}`), {Type: provider.ChunkDone}},
+		{{Type: provider.ChunkText, Text: "checks complete"}, {Type: provider.ChunkDone}},
+	}}
+	reloaded := New(recoveryProvider, reg, loaded, Options{AgentPreset: "balanced"}, event.Discard)
+	if !reloaded.PrepareFinalReadinessRecovery() || reloaded.PrepareFinalReadinessRecovery() {
+		t.Fatal("rebuilt recovery authorization was not one-shot")
+	}
+	if err := reloaded.Run(context.Background(), "continue the remaining checks"); err != nil {
+		t.Fatalf("reloaded recovery Run: %v", err)
+	}
+	for _, message := range loaded.Snapshot() {
+		if message.FinalReadinessRecovery != nil && message.FinalReadinessRecovery.Pending {
+			t.Fatal("started recovery left its durable action pending")
+		}
+	}
+	writer, ok := reloaded.task.ledger.LatestSuccessfulWriterIndex()
+	if !ok || !reloaded.task.ledger.HasSuccessfulVerificationCommandAfter(writer) {
+		t.Fatal("reloaded recovery did not preserve write-before-verification ordering")
+	}
+}
+
+func TestFinalReadinessRecoveryRejectsStaleMarkerAfterUserTurn(t *testing.T) {
+	reg := evidenceRegistry()
+	prov := &scriptedProvider{name: "balanced", turns: [][]provider.Chunk{
+		{toolCallChunk("write", "write_file", `{"path":"a.go"}`), {Type: provider.ChunkDone}},
+		{{Type: provider.ChunkText, Text: "done"}, {Type: provider.ChunkDone}},
+	}}
+	session := NewSession("sys")
+	a := New(prov, reg, session, Options{AgentPreset: "balanced"}, event.Discard)
+	var readinessErr *FinalReadinessError
+	if err := a.Run(context.Background(), "change a.go"); !errors.As(err, &readinessErr) {
+		t.Fatalf("Run error = %v, want final readiness failure", err)
+	}
+	session.Add(provider.Message{Role: provider.RoleUser, Content: "unrelated follow-up"})
+	reloaded := New(nil, reg, session, Options{AgentPreset: "balanced"}, event.Discard)
+	if reloaded.PrepareFinalReadinessRecovery() {
+		t.Fatal("stale readiness marker after a newer user turn must be rejected")
+	}
+}

@@ -435,6 +435,7 @@ the displayed list matches the commands the TUI accepts.
 
 | Command | Purpose |
 | --- | --- |
+| `/continue-checks [guidance]` | Resume the immediately preceding paused task-completion check while preserving its verified tool evidence. The command is one-shot and refuses stale cards after another user turn. |
 | `/model` | Search configured models and switch the active model. |
 | `/provider` | Choose a provider, then choose one of its configured models. |
 | `/resume` | Search recent sessions and switch to one. |

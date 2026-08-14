@@ -4,6 +4,7 @@ import (
 	"slices"
 	"strings"
 
+	"reasonix/internal/control"
 	"reasonix/internal/i18n"
 )
 
@@ -65,6 +66,7 @@ func builtinSlashSpecs() []builtinSlashSpec {
 		{name: "/forget", insert: "/forget ", hint: i18n.M.CmdForget},
 		{name: "/quit", aliases: []string{"/exit"}, insert: "/quit", hint: i18n.M.CmdQuit},
 		{name: "/copy", insert: "/copy", hint: i18n.M.CmdCopy, showInHelp: true},
+		{name: control.ContinueChecksCommand, insert: control.ContinueChecksCommand, hint: i18n.M.CmdContinueChecks, showInHelp: true},
 		{name: "/export", insert: "/export", hint: i18n.M.CmdExport, showInHelp: true},
 	}
 }

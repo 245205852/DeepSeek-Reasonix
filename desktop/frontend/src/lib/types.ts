@@ -698,6 +698,7 @@ export interface HistoryMessage {
   summary?: string;
   archive?: string;
   decisionReceipt?: WireDecisionReceipt;
+  readiness?: WireFinalReadiness;
   serverSearch?: HistoryServerSearch[];
 }
 

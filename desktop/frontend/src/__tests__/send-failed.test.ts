@@ -3,7 +3,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { acceptsRuntimeEventEpoch, initialState, normalizeTurnSubmit, reducer, replayPendingPromptsForActiveTab, runtimeReadyForSubmit } from "../lib/useController";
+import { acceptsRuntimeEventEpoch, historyMessagesToItems, initialState, normalizeTurnSubmit, reducer, replayPendingPromptsForActiveTab, runtimeReadyForSubmit } from "../lib/useController";
 import { continueDelivery } from "../lib/deliveryContinue";
 import {
   activateGoalAndSubmit,
@@ -181,13 +181,24 @@ const readinessNotice = readinessState.items[readinessState.items.length - 1];
 eq(readinessNotice.kind, "notice", "final readiness appends a notice");
 eq(readinessNotice.kind === "notice" && readinessNotice.level, "info", "final readiness uses informational severity");
 eq(readinessNotice.kind === "notice" && readinessNotice.variant, "delivery", "final readiness uses the delivery status treatment");
-eq(readinessNotice.kind === "notice" && readinessNotice.title, "Delivery checks are not complete", "final readiness uses localized product copy");
+eq(readinessNotice.kind === "notice" && readinessNotice.title, "Task completion checks are not complete", "final readiness uses localized product copy");
 eq(readinessNotice.kind === "notice" && readinessNotice.detail, "Still needed: verification, change review", "structured requirements produce localized detail");
 eq(readinessNotice.kind === "notice" && readinessNotice.action, "continue_delivery", "final readiness offers a recovery action");
 const readinessUser = readinessState.items.find((it) => it.kind === "user");
 eq(readinessUser?.kind === "user" && Boolean(readinessUser.failed), false, "final readiness does not mark the delivered user message as failed");
 eq(readinessState.running, false, "an unclicked continue-check action does not keep the turn running");
 eq(readinessState.pendingPrompt, false, "an unclicked continue-check action does not create a pending prompt");
+
+const reloadedReadiness = historyMessagesToItems([{
+  role: "notice",
+  content: "Task status needs one more check; continue the remaining work.",
+  code: "final_readiness",
+  level: "info",
+  pending: true,
+  readiness: { attempts: 1, missing: ["verification"] },
+}], "h").items[0];
+eq(reloadedReadiness.kind === "notice" && reloadedReadiness.action, "continue_delivery", "reloaded readiness metadata restores the explicit action");
+eq(reloadedReadiness.kind === "notice" && reloadedReadiness.detail, "Still needed: verification", "reloaded readiness metadata restores structured detail");
 
 const recovering = reducer(readinessState, { type: "user", text: "Continue checks", seq: readinessState.seq, submissionId: "recovery-submit", deliveryRecovery: true });
 const recovered = reducer(recovering, { type: "event", e: { kind: "turn_done", submissionId: "recovery-submit" } as WireEvent });

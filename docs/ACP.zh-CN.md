@@ -153,6 +153,11 @@ Reasonix 把互不相关的选择拆成独立控制轴，而不是混在一个 m
 Host 应让 `session/prompt` 请求保持打开，直到 Reasonix 返回停止原因；期间仍需同时处理
 双向 request 和 notification。
 
+状态 phase 为 `readiness_paused` 时，可发送新的 `session/prompt`，并把可选 `action`
+设为 `"final_readiness_recovery"`，以继续这一次检查。只发送 `/continue-checks` 文本 block
+是兼容写法。两种方式都会消费一次持久化的 host checkpoint；普通 prompt 不会继承该
+证据，出现更新的用户消息后再提交旧 action 会被拒绝。
+
 ## 回合中引导扩展
 
 Reasonix 通过 ACP v1 厂商扩展提供回合中引导。它不是 ACP 核心方法，也不是仍未发布的

@@ -615,6 +615,9 @@ func (a *Agent) SetSession(s *Session) {
 	// answer to beginRunTurn's scope check rather than to this seam.
 	a.task.repeatFailures = nil
 	a.task.repeatScope = ""
+	a.pending.preserveEvidence = false
+	a.pending.finalReadinessRecovery = false
+	a.pending.finalReadinessRecoveryPrepared = false
 	if s != nil {
 		a.rebuildTodoState(s.Snapshot())
 	}
@@ -1266,6 +1269,10 @@ func (a *Agent) Run(ctx context.Context, input string) (runErr error) {
 	// agent.before_start: an extension may abort the run before the user turn
 	// is appended. The redacted reason surfaces like a normal run error.
 	if err := a.interceptAgentStart(ctx); err != nil {
+		// Explicit readiness recovery is consumed only once beginRunTurn starts.
+		// If an extension blocks earlier, release the in-memory reservation so
+		// the still-pending durable marker can authorize a later retry.
+		a.pending.finalReadinessRecoveryPrepared = false
 		return err
 	}
 
@@ -1333,18 +1340,6 @@ func (a *Agent) RestoreDeliveryCheckpoint(checkpoint evidence.DeliveryCheckpoint
 	}
 	a.task.checkpoint = checkpoint
 	a.task.scopeID = checkpoint.ScopeID
-}
-
-// PrepareDeliveryRecovery preserves the exhausted turn's evidence for exactly
-// one explicit continuation. It returns false when there is no matching
-// readiness failure, so normal follow-up turns cannot inherit stale mutations.
-func (a *Agent) PrepareDeliveryRecovery() bool {
-	if !a.deliveryProfile || !a.pending.deliveryRecovery {
-		return false
-	}
-	a.pending.preserveEvidence = true
-	a.pending.deliveryRecovery = false
-	return true
 }
 
 func (a *Agent) updateDeliveryCheckpoint(runErr error) {
