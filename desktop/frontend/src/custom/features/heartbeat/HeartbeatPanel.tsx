@@ -146,21 +146,21 @@ function formatInterval(interval: string, t: Translator): string {
   if (cycleMatch) {
     const [, , type, days, time] = cycleMatch;
     // 格式参考：周一（时间：9:00）；每天直接「每天 22:00」，不套（时间：）包装
-    const timeStr = time ? `（${t("heartbeat.cycleTime" as any)}：${time}）` : "";
+    const timeStr = time ? t("heartbeat.cycleTimeAt", { time }) : "";
     const dayNames = (d: string) => {
       const wd = WEEKDAYS.find((w) => w.key === d);
-      return wd ? t(wd.labelKey as any) : d;
+      return wd ? t(wd.labelKey) : d;
     };
     if (type === "daily") return time ? `${t("heartbeat.cycleDaily")} ${time}` : t("heartbeat.cycleDaily");
     if (type === "weekly") {
-      const list = (days || "").split(",").filter(Boolean).map(dayNames).join("、");
+      const list = (days || "").split(",").filter(Boolean).map(dayNames).join(t("heartbeat.joinComma"));
       return `${list || t("heartbeat.cycleWeekly")}${timeStr}`;
     }
     if (type === "biweekly") {
-      const list = (days || "").split(",").filter(Boolean).map(dayNames).join("、");
+      const list = (days || "").split(",").filter(Boolean).map(dayNames).join(t("heartbeat.joinComma"));
       return `${t("heartbeat.cycleBiweekly")}${list ? ` ${list}` : ""}${timeStr}`;
     }
-    if (type === "monthly") return `${t("heartbeat.cycleMonthly")}${days ? ` ${days} 日` : ""}${timeStr}`;
+    if (type === "monthly") return `${t("heartbeat.cycleMonthly")}${days ? ` ${days}${t("heartbeat.monthDay")}` : ""}${timeStr}`;
     if (type === "yearly") {
       const parts = (days || "").split("-");
       return `${t("heartbeat.cycleYearly")} ${parts[0] || "1"}/${parts[1] || "1"}${timeStr}`;
@@ -200,17 +200,20 @@ function isCronExpr(s: string): boolean {
   if (fields.length !== 5) return false;
   if (!fields.every((f) => f !== "" && /^[0-9*/\-,]+$/.test(f))) return false;
   // Reject out-of-range values (e.g. "99 * * * *") that never match.
+  // dom/month are 1-based (0 can never match getDate()/getMonth()); dow is
+  // 0-7 with 7 accepted as the Sunday alias — mirror the Go engine exactly.
   const limits = [59, 23, 31, 12, 7]; // min, hour, dom, month, dow
+  const mins = [0, 0, 1, 1, 0];
   return fields.every((f, i) =>
     f.split(",").every((part) => {
       const base = part.includes("/") ? part.slice(0, part.indexOf("/")) : part;
       if (base === "*") return true;
       if (base.includes("-")) {
         const [lo, hi] = base.split("-").map(Number);
-        return Number.isInteger(lo) && Number.isInteger(hi) && lo >= 0 && hi <= limits[i];
+        return Number.isInteger(lo) && Number.isInteger(hi) && lo >= mins[i] && hi <= limits[i];
       }
       const v = Number(base);
-      return Number.isInteger(v) && v >= 0 && v <= limits[i];
+      return Number.isInteger(v) && v >= mins[i] && v <= limits[i];
     })
   );
 }
@@ -262,7 +265,8 @@ function nextCronRunAt(expr: string, from = Date.now()): number | null {
     const domRestricted = domP !== "*";
     const dowRestricted = dowP !== "*";
     const domMatch = cronFieldMatch(domP, d.getDate());
-    const dowMatch = cronFieldMatch(dowP, d.getDay());
+    // 7 is the standard Sunday alias in the dow field (getDay() is 0-6).
+    const dowMatch = cronFieldMatch(dowP, d.getDay()) || (d.getDay() === 0 && cronFieldMatch(dowP, 7));
     const dayMatch = domRestricted && dowRestricted ? domMatch || dowMatch
       : domRestricted ? domMatch
       : dowRestricted ? dowMatch
@@ -349,14 +353,19 @@ export function intervalToCron(interval: string, timeWindowStart?: string, timeW
 }
 
 // cronToInterval reverse-converts a cron expression back to a simple interval.
-function cronToInterval(cron: string): string {
+// Returns null when the expression cannot be expressed as a plain "every N
+// minutes/hours" interval without changing semantics (dom/dow/month-restricted
+// or fixed-time schedules) — callers must keep the cron instead of silently
+// rewriting e.g. a weekly "0 9 * * 1" into "1h".
+export function cronToInterval(cron: string): string | null {
   const f = cron.trim().split(/\s+/);
-  if (f.length !== 5) return "30m";
+  if (f.length !== 5) return null;
+  // Only pure every-N minute/hour schedules round-trip losslessly.
+  if (f[2] !== "*" || f[3] !== "*" || f[4] !== "*") return null;
   const min = f[0], hour = f[1];
-  if (min.startsWith("*/")) return `${min.slice(2)}m`;
+  if (min.startsWith("*/") && hour === "*") return `${min.slice(2)}m`;
   if (min === "0" && hour.startsWith("*/")) return `${hour.slice(2)}h`;
-  if (min === "0") return "1h";
-  return "30m";
+  return null;
 }
 
 // describeCron renders a human-readable description of a 5-field cron
@@ -403,7 +412,7 @@ function describeCron(expr: string, t: Translator): string {
       "0": t("heartbeat.cronWeekdaySun"), "1": t("heartbeat.cronWeekdayMon"),
       "2": t("heartbeat.cronWeekdayTue"), "3": t("heartbeat.cronWeekdayWed"),
       "4": t("heartbeat.cronWeekdayThu"), "5": t("heartbeat.cronWeekdayFri"),
-      "6": t("heartbeat.cronWeekdaySat"),
+      "6": t("heartbeat.cronWeekdaySat"), "7": t("heartbeat.cronWeekdaySun"),
     };
     const days = dow.split(",").map((d) => weekdays[d] || d).join(t("heartbeat.joinComma"));
     const suffix = wd ? ` (${wd})` : "";
@@ -434,8 +443,16 @@ export function nextCycleRunAt(interval: string, from = Date.now(), createdAt?: 
     r.setHours(hh, mm, 0, 0);
     return r;
   };
-  // Biweekly anchor: the backend alternates on the task's creation week.
-  const anchorWeek = createdAt ? Math.floor(createdAt / WEEK_MS) : Math.floor(from / WEEK_MS);
+  // Biweekly anchor: mirror the Go engine's weekStart (Monday) parity so the
+  // displayed next run matches actual scheduling. An epoch-floor week (Thu)
+  // would disagree with the engine for tasks created on most weekdays.
+  const weekStart = (ts: number): number => {
+    const d = new Date(ts);
+    d.setDate(d.getDate() - ((d.getDay() + 6) % 7));
+    d.setHours(0, 0, 0, 0);
+    return d.getTime();
+  };
+  const anchorWeek = createdAt ? weekStart(createdAt) : weekStart(from);
 
   // Search forward up to 400 days (covers yearly + biweekly parity windows).
   for (let offset = 0; offset <= 400; offset++) {
@@ -448,8 +465,8 @@ export function nextCycleRunAt(interval: string, from = Date.now(), createdAt?: 
       const days = rule.split(",").map((x) => dayMap[x.trim().toLowerCase()]);
       matches = days.includes(day.getDay());
       if (matches && kind === "biweekly") {
-        const candWeek = Math.floor(day.getTime() / WEEK_MS);
-        if ((candWeek - anchorWeek) % 2 !== 0) matches = false;
+        const candWeek = weekStart(day.getTime());
+        if (Math.round((candWeek - anchorWeek) / WEEK_MS) % 2 !== 0) matches = false;
       }
     } else if (kind === "monthly") {
       matches = day.getDate() === (parseInt(rule, 10) || 1);
@@ -495,7 +512,8 @@ function taskNextRun(task: HeartbeatTask, t: Translator): string | null {
       return null;
     }
   }
-  if (next === null || next <= Date.now()) return null;
+  if (next === null) return null;
+  if (next <= Date.now()) return t("heartbeat.dueSoon");
   const diff = next - Date.now();
   // 剩余时间：如「下次运行 26 分钟后」/「下次运行 2 小时后」/「下次运行 2天3小时后」/「即将触发」
   const days = Math.floor(diff / 86400000);
@@ -785,7 +803,6 @@ export function HeartbeatView({ onOpenTopic }: HeartbeatPanelProps) {
   }, []);
 
   // 列表行点击状态图标切换任务启用/暂停（即时保存）
-  // 列表行点击状态图标切换任务启用/暂停（即时保存）
   const handleToggle = useCallback((task: HeartbeatTask) => {
     const idx = tasks.findIndex((t) => t.id === task.id);
     if (idx < 0) return;
@@ -907,7 +924,7 @@ export function HeartbeatView({ onOpenTopic }: HeartbeatPanelProps) {
                     className={`heartbeat-status-tabs__tab${statusFilter === key ? " heartbeat-status-tabs__tab--on" : ""}`}
                     onClick={() => setStatusFilter(key)}
                   >
-                    {key === "all" ? t("heartbeat.filterAll" as any) : key === "enabled" ? t("heartbeat.filterEnabled" as any) : t("heartbeat.filterDisabled" as any)}
+                    {key === "all" ? t("heartbeat.filterAll") : key === "enabled" ? t("heartbeat.filterEnabled") : t("heartbeat.filterDisabled")}
                   </button>
                 ))}
               </div>
@@ -1013,7 +1030,7 @@ export function HeartbeatView({ onOpenTopic }: HeartbeatPanelProps) {
                   onKeyDown={(e) => {
                     if (e.key === "Escape") setSearchQuery("");
                   }}
-                  placeholder={t("heartbeat.searchPlaceholder" as any)}
+                  placeholder={t("heartbeat.searchPlaceholder")}
                 />
                 {searchQuery && (
                   <button className="heartbeat-list-search__clear" onClick={() => setSearchQuery("")}>
@@ -1134,7 +1151,7 @@ export function HeartbeatView({ onOpenTopic }: HeartbeatPanelProps) {
                                 </button>
                               </Tooltip>
                             </span>
-                            <span className="worktree-node__label">{task.title || "(untitled)"}</span>
+                            <span className="worktree-node__label">{task.title || t("heartbeat.untitled")}</span>
                             <span className="worktree-node__actions">
                               <button
                                 className="worktree-node__action-btn"
@@ -1154,7 +1171,7 @@ export function HeartbeatView({ onOpenTopic }: HeartbeatPanelProps) {
                                     onOpenTopic(task.scope || "global", task.workspaceRoot || "", task.topicId);
                                   }
                                 }}
-                                title={task.topicId ? t("heartbeat.openTopic" as any) : ""}
+                                title={task.topicId ? t("heartbeat.openTopic") : ""}
                               >
                                 <MessageSquare size={14} strokeWidth={1.9} />
                               </button>
@@ -1239,7 +1256,7 @@ export function HeartbeatView({ onOpenTopic }: HeartbeatPanelProps) {
                                       </button>
                                     </Tooltip>
                                   </span>
-                                  <span className="worktree-node__label">{task.title || "(untitled)"}</span>
+                                  <span className="worktree-node__label">{task.title || t("heartbeat.untitled")}</span>
                                   <span className="worktree-node__actions">
                                   <button
                                     className="worktree-node__action-btn"
@@ -1258,7 +1275,7 @@ export function HeartbeatView({ onOpenTopic }: HeartbeatPanelProps) {
                                         onOpenTopic(task.scope || "global", task.workspaceRoot || "", task.topicId);
                                       }
                                     }}
-                                    title={task.topicId ? t("heartbeat.openTopic" as any) : ""}
+                                    title={task.topicId ? t("heartbeat.openTopic") : ""}
                                   >
                                     <MessageSquare size={14} strokeWidth={1.9} />
                                   </button>
@@ -1759,8 +1776,11 @@ function TaskEditor({
         // expressed in cron — keep the current interval instead of corrupting it.
         return converted === null ? prev : { ...prev, interval: converted };
       }
-      // interval：从周期/自定义还原为简单间隔
-      if (isCronExpr(cur)) return { ...prev, interval: cronToInterval(cur) };
+      // interval：从周期/自定义还原为简单间隔；不可无损表达的 cron 保持原样
+      if (isCronExpr(cur)) {
+        const converted = cronToInterval(cur);
+        return converted === null ? prev : { ...prev, interval: converted };
+      }
       if (cur.includes("|")) return { ...prev, interval: cur.replace(/\|.*$/, "") };
       return prev;
     });
@@ -2129,7 +2149,7 @@ function TaskEditor({
           在 runHistory 字段引入前执行过，topicId 仍指向最近对话 */}
       <div className="heartbeat-run-history">
         <div className="heartbeat-run-history__header">
-          <span>{t("heartbeat.runHistory" as any)}</span>
+          <span>{t("heartbeat.runHistory")}</span>
         </div>
         {(() => {
           const history = (task.runHistory || []).length > 0
@@ -2138,7 +2158,7 @@ function TaskEditor({
               ? [{ at: task.lastRunAt || task.createdAt || Date.now(), topicId: task.topicId }]
               : [];
           if (history.length === 0) {
-            return <div className="heartbeat-run-history__empty">{t("heartbeat.runHistoryEmpty" as any)}</div>;
+            return <div className="heartbeat-run-history__empty">{t("heartbeat.runHistoryEmpty")}</div>;
           }
           return (
             <div className="heartbeat-run-history__list">
@@ -2153,18 +2173,18 @@ function TaskEditor({
                       onOpenTopic(task.scope || "global", task.workspaceRoot || "", run.topicId);
                     }
                   }}
-                  title={run.topicId ? t("heartbeat.openTopic" as any) : ""}
+                  title={run.topicId ? t("heartbeat.openTopic") : ""}
                 >
-                  <span className="heartbeat-run-history__title">{task.title || t("heartbeat.untitled" as any)}</span>
+                  <span className="heartbeat-run-history__title">{task.title || t("heartbeat.untitled")}</span>
                   <span className="heartbeat-run-history__scope">
                     {task.scope === "project" && task.workspaceRoot
                       ? (workspaces.find((w) => w.path === task.workspaceRoot)?.name
                         || task.workspaceRoot.split("/").pop() || task.workspaceRoot)
-                      : t("heartbeat.scopeGlobal" as any)}
+                      : t("heartbeat.scopeGlobal")}
                   </span>
                   <span className="heartbeat-run-history__rel">{formatRelativeTime(run.at, Date.now(), t)}</span>
                   {!run.topicId && (
-                    <span className="heartbeat-run-history__notopic">{t("heartbeat.runHistoryNoTopic" as any)}</span>
+                    <span className="heartbeat-run-history__notopic">{t("heartbeat.runHistoryNoTopic")}</span>
                   )}
                 </button>
               ))}

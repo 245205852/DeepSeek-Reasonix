@@ -1,6 +1,6 @@
 // Run: tsx src/__tests__/heartbeat-next-run.test.ts
 
-import { heartbeatBuildCycleInterval, heartbeatNextRunAt, intervalToCron, nextCycleRunAt } from "../custom/features/heartbeat/HeartbeatPanel";
+import { cronToInterval, heartbeatBuildCycleInterval, heartbeatNextRunAt, intervalToCron, nextCycleRunAt } from "../custom/features/heartbeat/HeartbeatPanel";
 
 let passed = 0;
 let failed = 0;
@@ -178,4 +178,82 @@ eq(
   nextCycleRunAt("8760h|yearly:1-1@09:00", localMs(2026, 8, 11, 10, 0)),
   localMs(2027, 1, 1, 9, 0),
   "yearly next run is next Jan 1st 09:00",
+);
+
+// ── review fixes 回归 ──
+
+console.log("cron dow=7 Sunday alias");
+
+eq(
+  heartbeatNextRunAt(
+    { interval: "0 9 * * 7", lastRunAt: 0 },
+    localMs(2026, 8, 10, 10, 0), // Monday
+  ),
+  localMs(2026, 8, 16, 9, 0), // next Sunday 09:00
+  "dow=7 (Sunday alias) computes the next Sunday run",
+);
+
+eq(
+  heartbeatNextRunAt(
+    { interval: "0 9 * * 0,7", lastRunAt: 0 },
+    localMs(2026, 8, 10, 10, 0), // Monday
+  ),
+  localMs(2026, 8, 16, 9, 0),
+  "dow=0,7 both spellings compute the next Sunday run",
+);
+
+console.log("biweekly parity mirrors the Go engine (Monday week anchor)");
+
+// 2026-08-06 is a Thursday; engine parity is anchored on the Monday of the
+// creation week (2026-08-03). Candidate Monday 2026-08-10 is week 1 away →
+// skipped; next fire is Monday 2026-08-17 (week 2).
+eq(
+  nextCycleRunAt("336h|biweekly:mon@09:00", localMs(2026, 8, 10, 10, 0), localMs(2026, 8, 6, 9, 0)),
+  localMs(2026, 8, 17, 9, 0),
+  "biweekly with Thursday anchor skips the first Monday (Monday-anchored parity)",
+);
+
+// Anchor on a Monday itself: creation week = 2026-08-10; next fire is 2026-08-24.
+eq(
+  nextCycleRunAt("336h|biweekly:mon@09:00", localMs(2026, 8, 10, 10, 0), localMs(2026, 8, 10, 9, 0)),
+  localMs(2026, 8, 24, 9, 0),
+  "biweekly with Monday anchor fires every other Monday",
+);
+
+console.log("cronToInterval refuses lossy conversions");
+
+eq(cronToInterval("0 9 * * 1"), null, "weekly cron refuses interval conversion");
+eq(cronToInterval("0 9 * * *"), null, "fixed-time cron refuses interval conversion");
+eq(cronToInterval("0 0 1 * *"), null, "dom-restricted cron refuses interval conversion");
+eq(cronToInterval("*/15 * * * *"), "15m", "every-N-minutes cron converts");
+eq(cronToInterval("0 */2 * * *"), "2h", "every-N-hours cron converts");
+eq(cronToInterval("0 * * * *"), null, "top-of-every-hour is not a simple interval");
+
+console.log("frontend isCronExpr field bounds (dom/month 1-based)");
+
+eq(
+  heartbeatNextRunAt(
+    { interval: "0 0 0 * *", lastRunAt: 0 }, // dom=0 — "midnight every day" typo
+    localMs(2026, 8, 10, 10, 0),
+  ),
+  null,
+  "dom=0 is rejected: no next run is computed for an invalid expression",
+);
+
+eq(
+  heartbeatNextRunAt(
+    { interval: "0 0 1 0 *", lastRunAt: 0 }, // month=0
+    localMs(2026, 8, 10, 10, 0),
+  ),
+  null,
+  "month=0 is rejected",
+);
+
+eq(
+  heartbeatNextRunAt(
+    { interval: "0 0 1 * *", lastRunAt: 0 },
+    localMs(2026, 8, 10, 10, 0),
+  ),
+  localMs(2026, 9, 1, 0, 0),
+  "valid dom expression still computes a next run",
 );

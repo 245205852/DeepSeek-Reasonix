@@ -989,6 +989,8 @@ export const zh: Record<DictKey, string> = {
   "heartbeat.cycleBiweekly": "双周",
   "heartbeat.cycleMonthly": "每月",
   "heartbeat.cycleYearly": "每年",
+  "heartbeat.monthDay": "日",
+  "heartbeat.cycleTimeAt": "（时间：{time}）",
   "heartbeat.justNow": "刚刚",
   "heartbeat.due": "即将执行",
   "heartbeat.soon": "1分钟内",

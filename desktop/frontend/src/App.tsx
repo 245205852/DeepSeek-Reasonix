@@ -1298,10 +1298,14 @@ export default function App() {
   // enqueueNavigation.
   useEffect(() => {
     if (mainView !== "automation") return;
-    if (settingsTarget !== null || paletteOpen || sidebarSearchOpen || histView !== null) {
+    // Any chat-side overlay/surface counts as "returning to the chat
+    // workspace": settings, palette, sidebar search, history, the shortcuts
+    // cheatsheet and the topic export menu all switch mainView back to chat.
+    if (settingsTarget !== null || paletteOpen || sidebarSearchOpen || histView !== null
+      || shortcutsOpen || topicExportOpen) {
       setMainView("chat");
     }
-  }, [mainView, settingsTarget, paletteOpen, sidebarSearchOpen, histView, setMainView]);
+  }, [mainView, settingsTarget, paletteOpen, sidebarSearchOpen, histView, shortcutsOpen, topicExportOpen, setMainView]);
   const sidebarSearchFocusSignal = useOverlayStore((s) => s.sidebarSearchFocusSignal);
   const setSidebarSearchFocusSignal = useOverlayStore((s) => s.setSidebarSearchFocusSignal);
   const [sidebarTogglePressed, setSidebarTogglePressed] = useState(false);

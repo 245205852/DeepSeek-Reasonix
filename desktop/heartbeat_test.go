@@ -1025,3 +1025,54 @@ func TestHeartbeatConfigForwardProtection(t *testing.T) {
 		t.Fatalf("future config was overwritten: %s", data)
 	}
 }
+
+func TestCronDueDowSevenSundayAlias(t *testing.T) {
+	// "0 9 * * 7": 7 is the standard Sunday alias in the dow field — it must
+	// fire on Sundays (time.Weekday() == 0), not silently never match.
+	sunday := time.Date(2026, 8, 9, 9, 0, 0, 0, time.Local) // 2026-08-09 is a Sunday
+	if !cronDue("0 9 * * 7", sunday) {
+		t.Fatalf("Sunday 09:00 should match dow=7 (Sunday alias)")
+	}
+	// "0 9 * * 0,7": both Sunday spellings together
+	if !cronDue("0 9 * * 0,7", sunday) {
+		t.Fatalf("Sunday 09:00 should match dow=0,7")
+	}
+	// A non-Sunday must not match dow=7
+	monday := time.Date(2026, 8, 10, 9, 0, 0, 0, time.Local)
+	if cronDue("0 9 * * 7", monday) {
+		t.Fatalf("Monday should not match dow=7")
+	}
+	// "0 9 * * 6-7": dow range ending in 7 covers Sunday (6=Sat, 7=Sun)
+	if !cronDue("0 9 * * 6-7", sunday) {
+		t.Fatalf("Sunday should match dow range 6-7")
+	}
+}
+
+func TestIsCronExprFieldBounds(t *testing.T) {
+	// dom/month are 1-based: 0 can never match and must be rejected so the
+	// UI refuses the expression instead of silently scheduling a task that
+	// never fires (e.g. "0 0 0 * *" typed as "midnight every day").
+	rejected := []string{
+		"0 0 0 * *",    // dom 0
+		"0 0 1 0 *",    // month 0
+		"0 0 32 * *",   // dom 32
+		"0 0 1 13 *",   // month 13
+		"0 0 * 0-13 *", // month range with 0
+	}
+	for _, expr := range rejected {
+		if isCronExpr(expr) {
+			t.Fatalf("isCronExpr(%q) should be false (out-of-bounds field)", expr)
+		}
+	}
+	accepted := []string{
+		"0 9 * * 7",   // dow 7 is a valid Sunday alias
+		"0 9 1 1 0-7", // dow range 0-7 valid
+		"*/15 * * * *",
+		"0 9 1-31 * *",
+	}
+	for _, expr := range accepted {
+		if !isCronExpr(expr) {
+			t.Fatalf("isCronExpr(%q) should be true", expr)
+		}
+	}
+}

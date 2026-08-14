@@ -783,23 +783,30 @@ func mergeHeartbeatRunUpdates(tasks []HeartbeatTask, updates map[string]Heartbea
 		// edits or a tick that raced), so union by execution timestamp and keep
 		// the most recent maxRunHistory entries.
 		if len(update.RunHistory) > 0 {
-			merged := append([]HeartbeatRun(nil), tasks[i].RunHistory...)
-			seen := make(map[int64]bool, len(merged))
-			for _, r := range merged {
-				seen[r.At] = true
-			}
-			for _, r := range update.RunHistory {
-				if !seen[r.At] {
-					merged = append(merged, r)
-				}
-			}
-			sort.Slice(merged, func(a, b int) bool { return merged[a].At < merged[b].At })
-			if len(merged) > maxRunHistory {
-				merged = merged[len(merged)-maxRunHistory:]
-			}
-			tasks[i].RunHistory = merged
+			tasks[i].RunHistory = mergeRunHistory(tasks[i].RunHistory, update.RunHistory)
 		}
 	}
+}
+
+// mergeRunHistory unions two run-history lists by execution timestamp (At),
+// dedupes, sorts oldest-first and keeps the newest maxRunHistory entries. Used
+// by both the update-merge and the disk-protection paths below.
+func mergeRunHistory(base, extra []HeartbeatRun) []HeartbeatRun {
+	merged := append([]HeartbeatRun(nil), base...)
+	seen := make(map[int64]bool, len(merged))
+	for _, r := range merged {
+		seen[r.At] = true
+	}
+	for _, r := range extra {
+		if !seen[r.At] {
+			merged = append(merged, r)
+		}
+	}
+	sort.Slice(merged, func(a, b int) bool { return merged[a].At < merged[b].At })
+	if len(merged) > maxRunHistory {
+		merged = merged[len(merged)-maxRunHistory:]
+	}
+	return merged
 }
 
 // mergeHeartbeatDiskRunHistory protects engine-owned run history during a
@@ -832,21 +839,7 @@ func mergeHeartbeatDiskRunHistory(submitted, disk []HeartbeatTask) []HeartbeatTa
 		// 历史满 maxRunHistory 封顶时，磁盘新 run 会挤掉最旧一条，
 		// 长度不变但内容已更新——按长度比较会误判"前端已是最新"，
 		// 把引擎刚写入的 run 丢弃。
-		merged := append([]HeartbeatRun(nil), out[i].RunHistory...)
-		seen := make(map[int64]bool, len(merged))
-		for _, r := range merged {
-			seen[r.At] = true
-		}
-		for _, r := range diskHistory {
-			if !seen[r.At] {
-				merged = append(merged, r)
-			}
-		}
-		sort.Slice(merged, func(a, b int) bool { return merged[a].At < merged[b].At })
-		if len(merged) > maxRunHistory {
-			merged = merged[len(merged)-maxRunHistory:]
-		}
-		out[i].RunHistory = merged
+		out[i].RunHistory = mergeRunHistory(out[i].RunHistory, diskHistory)
 	}
 	return out
 }
@@ -879,7 +872,10 @@ func isCronExpr(s string) bool {
 	if len(fields) != 5 {
 		return false
 	}
-	limits := []int{59, 23, 31, 12, 7} // min, hour, dom, month, dow (0-7)
+	// min, hour, dom, month, dow — dom/month are 1-based (0 can never match
+	// time.Day()/time.Month()), dow is 0-7 (7 = Sunday alias, matched in cronDue).
+	limits := []int{59, 23, 31, 12, 7}
+	mins := []int{0, 0, 1, 1, 0}
 	for i, f := range fields {
 		if f == "" {
 			return false
@@ -902,12 +898,12 @@ func isCronExpr(s string) bool {
 			if idx := strings.Index(base, "-"); idx >= 0 {
 				lo, err1 := strconv.Atoi(base[:idx])
 				hi, err2 := strconv.Atoi(base[idx+1:])
-				if err1 != nil || err2 != nil || lo < 0 || hi > limits[i] {
+				if err1 != nil || err2 != nil || lo < mins[i] || hi > limits[i] {
 					return false
 				}
 			} else {
 				v, err := strconv.Atoi(base)
-				if err != nil || v < 0 || v > limits[i] {
+				if err != nil || v < mins[i] || v > limits[i] {
 					return false
 				}
 			}
@@ -985,7 +981,10 @@ func cronDue(expr string, t time.Time) bool {
 	domRestricted := fields[2] != "*"
 	dowRestricted := fields[4] != "*"
 	domMatch := cronMatchField(fields[2], t.Day())
-	dowMatch := cronMatchField(fields[4], int(t.Weekday()))
+	// Standard cron allows 7 as a Sunday alias in the dow field (weekday is
+	// 0-6 in Go); a pattern like "0 9 * * 7" must still fire on Sundays.
+	weekday := int(t.Weekday())
+	dowMatch := cronMatchField(fields[4], weekday) || (weekday == 0 && cronMatchField(fields[4], 7))
 	dayMatch := !domRestricted || !dowRestricted
 	if domRestricted && dowRestricted {
 		dayMatch = domMatch || dowMatch

@@ -758,6 +758,8 @@ export const zhTW: Record<DictKey, string> = {
   "heartbeat.cycleBiweekly": "雙週",
   "heartbeat.cycleMonthly": "每月",
   "heartbeat.cycleYearly": "每年",
+  "heartbeat.monthDay": "日",
+  "heartbeat.cycleTimeAt": "（時間：{time}）",
   "heartbeat.justNow": "剛剛",
   "heartbeat.due": "即將執行",
   "heartbeat.soon": "1分鐘內",
