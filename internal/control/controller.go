@@ -259,11 +259,12 @@ type Controller struct {
 
 	// mu guards the run state; every critical section under it is short and
 	// non-blocking.
-	mu        sync.Mutex
-	cancel    context.CancelFunc
-	running   bool
-	finishing bool // TurnDone is still being delivered; park a replacement turn
-	canceling bool
+	mu                sync.Mutex
+	cancel            context.CancelFunc
+	running           bool
+	finishing         bool // TurnDone is still being delivered; park a replacement turn
+	finishingBoundary turnFinishingBoundary
+	canceling         bool
 	// closed marks the controller as terminally torn down (close() ran). It
 	// seals turn admission: without it, a submit arriving AFTER close cleared
 	// the parked queue — but while a still-running turn's TurnDone delivery
@@ -966,6 +967,7 @@ func (c *Controller) finishGuardedTurn(err error, completion *guardedTurnComplet
 	// Close has already sealed admission permanently, so a late completion must
 	// not resurrect a finishing state after teardown.
 	c.finishing = !c.closed
+	c.finishingBoundary.begin(c.finishing)
 	c.cancel = nil
 	c.canceling = false
 	c.mu.Unlock()
@@ -973,6 +975,7 @@ func (c *Controller) finishGuardedTurn(err error, completion *guardedTurnComplet
 	defer func() {
 		c.mu.Lock()
 		c.finishing = false
+		c.finishingBoundary.end()
 		if c.closed {
 			c.mu.Unlock()
 			return
@@ -2057,13 +2060,6 @@ func (c *Controller) Cancel() {
 	if c.goals.active() {
 		c.stopGoal(GoalStatusStopped)
 	}
-}
-
-// Running reports whether a turn is currently in flight.
-func (c *Controller) Running() bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.running || c.finishing
 }
 
 // beginRotation claims the session-rotation gate. It fails if a turn is running
@@ -5523,6 +5519,7 @@ func (c *Controller) close(fireSessionEnd bool, jobsMode closeJobsMode) {
 		// foreground goroutine actually exits; clearing it here would report idle
 		// while tools and prompt waiters were still live.
 		c.finishing = false
+		c.finishingBoundary.end()
 		if cancel != nil {
 			c.canceling = true
 		}
