@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"math/rand"
 	"strings"
@@ -29,6 +28,7 @@ type streamedTurn struct {
 	signature          string
 	reasoningID        string
 	reasoningStatus    string
+	reasoningComplete  bool
 	calls              []provider.ToolCall
 	responsesItems     []json.RawMessage
 	serverSearch       []provider.ServerSearchCall
@@ -38,6 +38,14 @@ type streamedTurn struct {
 	partialCalls       []provider.ToolCall
 	maxArgChars        int // peak streaming tool-arg size for failed-attempt estimates
 	err                error
+}
+
+func (s streamedTurn) assistantMessage() provider.Message {
+	return provider.Message{
+		Role: provider.RoleAssistant, Content: s.text, ReasoningContent: s.reasoning,
+		ReasoningSignature: s.signature, ReasoningID: s.reasoningID, ReasoningStatus: s.reasoningStatus,
+		ToolCalls: s.calls, ResponsesItems: s.responsesItems, ServerSearch: s.serverSearch,
+	}
 }
 
 // deferredStreamSink keeps selected stream events local until the caller
@@ -76,9 +84,15 @@ func (s *deferredStreamSink) Emit(e event.Event) {
 		s.flushBuffered()
 		return
 	}
-	if s.waitingForReasoning && !s.sawReasoning && e.Kind == event.ToolDispatch {
-		s.events = append(s.events, e)
-		return
+	if s.waitingForReasoning && !s.sawReasoning {
+		switch e.Kind {
+		case event.ToolDispatch, event.ToolResult, event.Text, event.Message:
+			// Keep every user-visible speculative event private until reasoning
+			// proves the turn replayable. Healthy DeepSeek responses emit
+			// reasoning first, so their live-streaming fast path is unchanged.
+			s.events = append(s.events, e)
+			return
+		}
 	}
 	s.inner.Emit(e)
 }
@@ -202,6 +216,7 @@ func (a *Agent) beginRunTurn(ctx context.Context, input string) (rawInput string
 	// A cancelled/error turn leaves a provider-excluded recovery record at the
 	// transcript tail. Fold its bounded facts into this new user turn exactly
 	// once; the user's raw text remains the classifier source above.
+	a.ensureUnreplayableHistoryRecovery()
 	providerInput = withInterruptedRecovery(providerInput, a.pendingInterruptedRecovery())
 	a.task.prepareScope(scoped, scope.ID)
 	a.svc.sink.Emit(event.Event{Kind: event.TurnStarted})
@@ -282,12 +297,8 @@ func (a *Agent) runToolLoop(ctx context.Context, state *turnRuntime) error {
 		if err != nil {
 			a.emitTurnUsage(usage, &cacheDiagnostics)
 			a.observeRunBudget(state, usage)
-			// The byte-limit sentinel is already the user-facing turn error.
-			// Emitting the finish-reason notice as well doubles the same warning.
-			if !errors.Is(err, errReasoningByteLimitExceeded) {
-				if msg, ok := finishReasonMessage(usage); ok {
-					a.svc.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: msg})
-				}
+			if msg, ok := finishReasonMessage(usage); ok {
+				a.svc.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: msg})
 			}
 			// Exhausted stream retries (or a non-retryable error): persist one
 			// bounded LocalOnly recovery record for the next real user message.
@@ -409,12 +420,30 @@ func (a *Agent) streamWithSamplingRecovery(ctx context.Context, turn int) stream
 			return terminal
 		}
 
-		// Clean terminal. Optionally repair missing reasoning with one extra
-		// exact replay of the same frozen request (no synthetic prompt).
-		missing, shouldRetry := a.observeMissingToolCallReasoning(result.calls, result.reasoning)
+		// Clean terminal. Repair missing replay-required reasoning with one exact
+		// replay of the same frozen request (no synthetic prompt). A visible text
+		// prefix does not make a tool turn replayable.
+		issue := a.reasoningReplayIssue(result)
+		missing, shouldRetry := false, false
+		switch issue {
+		case ReasoningReplayMissing:
+			missing = true
+			_, shouldRetry = a.observeMissingAssistantReasoning(result.assistantMessage(), result.reasoningComplete)
+		case "":
+			// Healthy replay-required turns advance the persisted anti-flapping
+			// streak and eventually re-arm recovery for a future regression.
+			a.observeMissingAssistantReasoning(result.assistantMessage(), result.reasoningComplete)
+		}
+		if issue == ReasoningReplayOverflow {
+			event.RecordProtocolRecovery(a.svc.sink, event.ProtocolRecoveryAudit{Kind: event.ProtocolRecoveryReasoningOverflowDetected})
+			result.usage = finalizeSamplingUsage(billable, result.usage)
+			terminal := a.finishUnreplayableReasoning(result, streamSink, issue)
+			a.emitReasoningReplayAttemptOutcome(attemptID, attempt, terminal.err)
+			return terminal
+		}
 		if missing {
 			event.RecordProtocolRecovery(a.svc.sink, event.ProtocolRecoveryAudit{Kind: event.ProtocolRecoveryMissingReasoningDetected})
-			if shouldRetry && strings.TrimSpace(result.text) == "" {
+			if shouldRetry {
 				event.RecordProtocolRecovery(a.svc.sink, event.ProtocolRecoveryAudit{Kind: event.ProtocolRecoveryMissingReasoningRetryAttempted})
 				retrySink := newDeferredStreamSink(a.svc.sink)
 				retry := runAttempt(attemptID, retrySink)
@@ -428,35 +457,27 @@ func (a *Agent) streamWithSamplingRecovery(ctx context.Context, turn int) stream
 						// FinishReason=interrupted is preserved for accounting.
 						return streamedTurn{usage: finalizeSamplingUsage(billable, retry.usage), err: retry.err}
 					}
-					// Fall back to the first complete response; no tool ran.
-					streamSink.Flush()
+					// Classify the first complete response without executing an
+					// unreplayable client tool.
 					a.storeLatestRequestUsage(result.usage)
 					result.usage = finalizeSamplingUsage(billable, result.usage)
 					event.RecordProtocolRecovery(a.svc.sink, event.ProtocolRecoveryAudit{Kind: event.ProtocolRecoveryMissingReasoningFallback})
-					a.emitStreamAttempt(attemptID, event.StreamAttemptCommit, attempt, "", nil)
-					return result
+					terminal := a.finishUnreplayableReasoning(result, streamSink, issue)
+					a.emitReasoningReplayAttemptOutcome(attemptID, attempt, terminal.err)
+					return terminal
 				}
 				streamSink.Discard()
-				retrySink.Flush()
-				a.storeLatestRequestUsage(retry.usage)
-				retry.usage = finalizeSamplingUsage(billable, retry.usage)
-				retryMissing, _ := a.observeMissingToolCallReasoning(retry.calls, retry.reasoning)
-				if retryMissing {
-					event.RecordProtocolRecovery(a.svc.sink, event.ProtocolRecoveryAudit{Kind: event.ProtocolRecoveryMissingReasoningDetected})
-					event.RecordProtocolRecovery(a.svc.sink, event.ProtocolRecoveryAudit{Kind: event.ProtocolRecoveryMissingReasoningFallback})
-				} else if len(retry.calls) == 0 {
-					event.RecordProtocolRecovery(a.svc.sink, event.ProtocolRecoveryAudit{Kind: event.ProtocolRecoveryMissingReasoningRetryReplaced})
-				} else {
-					event.RecordProtocolRecovery(a.svc.sink, event.ProtocolRecoveryAudit{Kind: event.ProtocolRecoveryMissingReasoningRetryRecovered})
-				}
-				a.emitStreamAttempt(attemptID, event.StreamAttemptCommit, attempt, "", nil)
+				retry = a.finishReasoningReplayRetry(retry, retrySink, billable)
+				a.emitReasoningReplayAttemptOutcome(attemptID, attempt, retry.err)
 				return retry
 			}
-			if !shouldRetry || strings.TrimSpace(result.text) != "" {
+			if !shouldRetry {
 				event.RecordProtocolRecovery(a.svc.sink, event.ProtocolRecoveryAudit{Kind: event.ProtocolRecoveryMissingReasoningRetrySuppressed})
 				event.RecordProtocolRecovery(a.svc.sink, event.ProtocolRecoveryAudit{Kind: event.ProtocolRecoveryMissingReasoningFallback})
-			} else {
-				event.RecordProtocolRecovery(a.svc.sink, event.ProtocolRecoveryAudit{Kind: event.ProtocolRecoveryMissingReasoningFallback})
+				result.usage = finalizeSamplingUsage(billable, result.usage)
+				terminal := a.finishUnreplayableReasoning(result, streamSink, issue)
+				a.emitReasoningReplayAttemptOutcome(attemptID, attempt, terminal.err)
+				return terminal
 			}
 		}
 
