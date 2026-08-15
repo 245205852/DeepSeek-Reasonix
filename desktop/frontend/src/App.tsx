@@ -142,7 +142,6 @@ import {
   CREATION_RIGHT_DOCK_TREE_MIN_WIDTH,
   CREATION_SIDEBAR_MIN_WIDTH,
   RIGHT_DOCK_MIN_RENDER_WIDTH,
-  RIGHT_DOCK_TREE_MAX_WIDTH,
   RIGHT_DOCK_TREE_MIN_WIDTH,
   type RightDockMode,
   SIDEBAR_MAX_WIDTH,
@@ -152,6 +151,7 @@ import {
   applyLayoutStyleDefaults,
   clampCreationRightDockTreeWidth,
   clampCreationSidebarWidth,
+  clampRightDockPreviewWidth,
   clampRightDockTreeWidth,
   clampSidebarWidth,
   clampTerminalHeight,
@@ -191,7 +191,7 @@ import { applyConfiguredBaseAppearance, applyThemePack, applyThemeScene, clearTh
 import { ThemeBackground } from "./components/ThemeBackground";
 import { applyTextSize, DEFAULT_TEXT_SIZE, getTextSize, nextTextSize } from "./lib/textSize";
 import { useViewportHeightVar, useWindowStatePersistence } from "./lib/windowState";
-import { resolveLiveWorkspacePanelWidth, resolveWorkspacePanelPlacement, workspacePanelAriaMinWidth } from "./lib/workspaceLayout";
+import { availableWorkspacePanelWidth, resolveLiveWorkspacePanelWidth, resolveWorkspacePanelPlacement, workspacePanelAriaMinWidth } from "./lib/workspaceLayout";
 import { createPointerResizeLifecycle, createRafResizeUpdater } from "./lib/resizeDrag";
 import { formatShortcutCombo, resolvedShortcutCombo, useGlobalShortcut } from "./lib/keyboardShortcuts";
 import { useWarmTerminalPanel } from "./lib/useWarmTerminalPanel";
@@ -1195,6 +1195,8 @@ export default function App() {
   const setWorkspacePanelOpen = useLayoutStore((s) => s.setWorkspacePanelOpen);
   const rightDockTreeWidth = useLayoutStore((s) => s.rightDockTreeWidth);
   const setRightDockTreeWidth = useLayoutStore((s) => s.setRightDockTreeWidth);
+  const rightDockPreviewWidth = useLayoutStore((s) => s.rightDockPreviewWidth);
+  const setRightDockPreviewWidth = useLayoutStore((s) => s.setRightDockPreviewWidth);
   const workspacePreviewActive = useLayoutStore((s) => s.workspacePreviewActive);
   const setWorkspacePreviewActive = useLayoutStore((s) => s.setWorkspacePreviewActive);
   const attentionChimeEvents = useRef(new Set<string>());
@@ -1582,6 +1584,18 @@ export default function App() {
     sidebarWidth,
     chatMinWidth: chatReservedWidth,
     resizerWidth: WORKSPACE_RESIZER_WIDTH,
+  });
+  const {
+    renderWidth: workspacePanelRenderWidth,
+    overlay: workspacePanelOverlay,
+    renderable: workspacePanelRenderable,
+    gridOpen: workspacePanelGridOpen,
+  } = resolveWorkspacePanelPlacement({
+    viewportWidth, sidebarCollapsed, sidebarWidth, chatMinWidth: chatReservedWidth,
+    resizerWidth: WORKSPACE_RESIZER_WIDTH, open: workspacePanelOpen,
+    maximized: workspacePanelMaximized, preferredWidth: preferredWorkspacePanelWidth,
+    minWidth: workspacePanelMinWidth, minRenderWidth: rightDockMinRenderWidth,
+    liveWidth: liveWorkspacePanelRenderWidth,
   });
   const resolveLiveWorkspacePanelRenderWidth = useCallback(
     (preferredWidth: number, nextSidebarWidth = sidebarWidth) =>
@@ -4197,8 +4211,7 @@ export default function App() {
     ? defaultCreationRightDockTreeWidth()
     : defaultRightDockTreeWidth();
   const workspacePanelResizeMinWidth = workspacePanelAriaMinWidth(workspacePanelMinWidth, workspacePanelRenderWidth);
-  const workspacePanelMaxWidth = RIGHT_DOCK_TREE_MAX_WIDTH;
-  const workspacePanelResizeMaxWidth = Math.max(workspacePanelMaxWidth, workspacePanelAvailableWidth);
+  const workspacePanelResizeMaxWidth = workspacePanelAvailableWidth;
   const sidebarCreation = desktopLayoutStyle === "creation";
   // Command palette shortcut label (⌘K / Ctrl+K), platform-aware.
   const commandPaletteShortcut = formatShortcutCombo(
