@@ -267,12 +267,15 @@ const warningTurn: Item[] = [
     await harness.waitFor(
       () => Boolean(
         container.querySelector(".turn-collapse--open")
-          && container.querySelector(".turn-collapse__reasoning-phase--open .md"),
+          && container.querySelector(".turn-collapse__reasoning-phase--open .reasoning__stream-text"),
       ),
       "expanded live reasoning",
     );
     ok(Boolean(container.querySelector(".turn-collapse--open")), "expanded reasoning starts with its running parent fold open");
-    ok(Boolean(container.querySelector(".turn-collapse__reasoning-phase--open .md")), "expanded running reasoning renders its full body");
+    ok(
+      container.querySelector(".turn-collapse__reasoning-phase--open .reasoning__stream-text")?.textContent?.includes("completed reasoning should remain visible") ?? false,
+      "expanded running reasoning streams its full body as plain text",
+    );
 
     const completedItems: Item[] = runningItems.map((item) => item.kind === "assistant"
       ? { ...item, streaming: false, reasoningComplete: true }

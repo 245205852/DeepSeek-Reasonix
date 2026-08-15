@@ -1968,7 +1968,8 @@ textarea {
 
 /* Independent typography regions. Missing custom properties deliberately fall
    back to the global appearance settings, preserving existing installations. */
-.transcript {
+.transcript,
+.transcript__live-region {
   --font-scale: var(--typography-conversation-scale, var(--global-font-scale));
   --text-base: var(--typography-conversation-size, calc(14px * var(--font-scale)));
   --font-content: var(--text-base);
@@ -2012,6 +2013,7 @@ textarea {
    tokens at each semantic region root to make independent scaling real. */
 body,
 .transcript,
+.transcript__live-region,
 .composer-wrap,
 .code,
 .md-code,
@@ -3396,6 +3398,31 @@ a[href] {
   flex: 1 1 auto;
   min-height: 0;
   height: 100%;
+}
+/* The active turn streams as the virtual list's in-flow Footer: inside the
+   scroller, right after the last history row, but outside Virtuoso's
+   measured size tree — unbounded growth never reaches the list's anchors or
+   recovery machinery (#8657/#8688). */
+.transcript__live-region {
+  position: relative;
+  width: 100%;
+}
+.transcript__live-content {
+  position: relative;
+  width: 100%;
+}
+.transcript__live-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  box-sizing: border-box;
+  width: 100%;
+  max-width: var(--maxw);
+  margin-left: auto;
+  margin-right: auto;
+  padding: 4px var(--transcript-inline-pad, 32px) 12px;
+  color: var(--fg-dim);
+  font-size: var(--text-sm);
 }
 .transcript > * {
   max-width: var(--maxw);
@@ -5029,6 +5056,15 @@ button.reasoning-summary:focus-visible {
   font-size: inherit;
   line-height: inherit;
   white-space: normal;
+}
+/* Streaming reasoning renders as plain append-only text (#8657/#8688). */
+.reasoning__stream-text {
+  margin: 0;
+  font-family: inherit;
+  font-size: inherit;
+  line-height: inherit;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 .reasoning__body > .md p,
 .turn-collapse__inline-reasoning > .md p,

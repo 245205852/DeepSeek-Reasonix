@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from "react";
 import { ChevronRight } from "lucide-react";
-import { displayReasoningText, STREAMING_REASONING_WINDOW_STEP_CHARS, STREAMING_REASONING_WINDOW_STEP_LINES } from "../lib/reasoningDisplay";
 import { useReasoningDisplayMode } from "../lib/reasoningDisplayPreference";
 import { useCollapseAnimation } from "../lib/useCollapseAnimation";
 import { useT } from "../lib/i18n";
@@ -8,6 +7,7 @@ import type { Item } from "../lib/useController";
 import { Markdown } from "./Markdown";
 import { ProcessBrainIcon } from "./ProcessCard";
 import { ReasoningSummary } from "./ReasoningSummary";
+import { StreamingReasoningText } from "./StreamingReasoningText";
 
 type AssistantItem = Extract<Item, { kind: "assistant" }>;
 
@@ -20,12 +20,10 @@ export function AssistantReasoningPanel({
   item,
   defaultExpanded,
   expandWhileStreaming,
-  truncateStreamingReasoning,
 }: {
   item: AssistantItem;
   defaultExpanded: boolean;
   expandWhileStreaming: boolean;
-  truncateStreamingReasoning: boolean;
 }) {
   const t = useT();
   const displayMode = useReasoningDisplayMode();
@@ -65,12 +63,6 @@ export function AssistantReasoningPanel({
   };
   useCollapseAnimation(bodyRef, open);
   if (displayMode === "hidden" || displayMode === "pending") return null;
-  const visibleReasoning = open ? displayReasoningText(item.reasoning, {
-    streaming: running,
-    truncateStreaming: truncateStreamingReasoning,
-    stableWindowChars: STREAMING_REASONING_WINDOW_STEP_CHARS,
-    stableWindowLines: STREAMING_REASONING_WINDOW_STEP_LINES,
-  }) : "";
   const meta = running ? "" : reasoningDurationLabel(item.reasoningDurationMs, t);
   return (
     <div className="reasoning">
@@ -80,8 +72,15 @@ export function AssistantReasoningPanel({
         {meta && <span className="reasoning__meta">{meta}</span>}
         <ChevronRight className={`reasoning__chevron${open ? " reasoning__chevron--open" : ""}`} size={12} />
       </button>
-      {open ? <div ref={bodyRef} className="reasoning__body" data-transcript-selectable="reasoning"><Markdown text={visibleReasoning} streaming={running} /></div>
-        : <ReasoningSummary text={item.reasoning} streaming={running} onOpen={toggle} />}
+      {open ? (
+        <div ref={bodyRef} className="reasoning__body" data-transcript-selectable="reasoning">
+          {running
+            ? <StreamingReasoningText text={item.reasoning} />
+            : <Markdown text={item.reasoning} streaming={false} />}
+        </div>
+      ) : (
+        <ReasoningSummary text={item.reasoning} streaming={running} onOpen={toggle} />
+      )}
     </div>
   );
 }
