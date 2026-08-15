@@ -2,9 +2,9 @@
 // One event channel carries every kind; `kind` discriminates the payload.
 import type { HistoryServerSearch } from "./searchSources";
 import type { Todo } from "./tools";
-import type { ContextMaintenanceInfo, WireContextMaintenance } from "./contextMaintenanceTypes";
+import type { ContextBudgetInfo, ContextMaintenanceInfo, WireContextMaintenance } from "./contextMaintenanceTypes";
 import type { WireApproval } from "./approvalTypes";
-export type { ContextMaintenanceInfo, ContextMaintenanceReceipt, WireContextMaintenance } from "./contextMaintenanceTypes";
+export type { ContextBudgetInfo, ContextMaintenanceInfo, ContextMaintenanceReceipt, WireContextMaintenance } from "./contextMaintenanceTypes";
 export type { ProjectRuntimeTopic, ProjectTopicKey, ProjectTopicPage, ProjectTopicPageRequest, ProjectTreeChangedV2, ProjectTreeRuntimeSnapshot, ProjectTreeSnapshot, SessionCatalogBindings, SessionCatalogStatus, SessionReference } from "./sessionCatalogTypes";
 export type EventKind =
   | "turn_started"
@@ -632,6 +632,7 @@ export interface ContextPanelInfo {
   mock?: boolean;
   readFiles: ReadFileRecord[];
   changedFiles: ChangedFileInfo[];
+  contextBudget?: ContextBudgetInfo;
 }
 
 export interface UsageSourceStats {
@@ -892,6 +893,7 @@ export interface ContextInfo {
   sessionCostQuote?: CostQuote;
   sources?: Record<string, UsageSourceStats>;
   maintenance?: ContextMaintenanceInfo;
+  contextBudget?: ContextBudgetInfo;
 }
 
 export interface Meta {

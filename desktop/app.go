@@ -6270,7 +6270,11 @@ func (a *App) ContextUsageForTab(tabID string) ContextInfo {
 	info.Used = used
 	info.Window = window
 	info.CompactRatio = ctrl.CompactRatio()
-	info.Maintenance = contextMaintenanceInfo(ctrl.ContextMaintenanceSnapshot())
+	snapshot := ctrl.ContextMaintenanceSnapshot()
+	info.Maintenance = contextMaintenanceInfo(snapshot)
+	if snapshot.ContextBudget != nil {
+		info.ContextBudget = contextBudgetInfo(snapshot.ContextBudget)
+	}
 	return info
 }
 
