@@ -25,13 +25,13 @@ func (a *Agent) ContextMaintenanceSnapshot() ContextMaintenanceSnapshot {
 	if a == nil || a.sess.conversation == nil {
 		return ContextMaintenanceSnapshot{}
 	}
-	canonical, version := a.sess.conversation.snapshotMessagesVersion()
+	canonical, _ := a.sess.conversation.snapshotMessagesVersion()
 	a.sess.compactionMu.Lock()
 	state := a.sess.compactionState
 	checkpointState := a.sess.checkpointState
 	a.sess.compactionMu.Unlock()
 	visible := canonical
-	valid := projectionValid(state, canonical, version, a.currentPromptCacheKey())
+	valid := projectionValid(state, canonical, a.currentPromptCacheKey())
 	if valid {
 		if projected := modelVisibleFromProjection(state.Projection, canonical); len(projected) > 0 {
 			visible = projected

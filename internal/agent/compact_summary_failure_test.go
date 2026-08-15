@@ -66,7 +66,7 @@ func prepareContext(ctx context.Context, a *Agent, trigger string) error {
 // foldRegionOf is the region the next compaction would hand the summarizer.
 func foldRegionOf(a *Agent) []provider.Message {
 	canonical, version := a.sess.conversation.snapshotMessagesVersion()
-	msgs := a.visibleInputForFold(a.sess.compactionState, canonical, version)
+	msgs, _ := a.visibleInputForFold(a.sess.compactionState, canonical, version)
 	head, start, ok := a.planFoldRegion(msgs, false)
 	if !ok {
 		return nil
