@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
 
@@ -13,6 +14,7 @@ import (
 type phaseSink struct {
 	phases      []string
 	completions int
+	summaries   []event.CompletionSummaryInfo
 }
 
 func (s *phaseSink) Emit(e event.Event) {
@@ -21,6 +23,9 @@ func (s *phaseSink) Emit(e event.Event) {
 	}
 	if e.Kind == event.CompletionSummary {
 		s.completions++
+		if e.Completion != nil {
+			s.summaries = append(s.summaries, *e.Completion)
+		}
 	}
 }
 
@@ -62,6 +67,13 @@ func TestCompletionSummaryEmittedOnMutationContract(t *testing.T) {
 		t.Log("no completion summary (readiness may have blocked finalize); phases=", sink.phases)
 		return
 	}
+	if len(sink.summaries) != 1 || !slices.Contains(sink.summaries[0].GapKinds, "unreviewed_change") {
+		t.Fatalf("completion summaries = %+v, want host-reported unreviewed change", sink.summaries)
+	}
+}
+
+func containsString(values []string, want string) bool {
+	return slices.Contains(values, want)
 }
 
 func TestExecutionPolicyPresentOnMutationTurn(t *testing.T) {

@@ -232,7 +232,7 @@ console.log("\nuse controller meta");
   );
   eq(
     localizedNoticeText("reworded workspace contention copy", "workspace_lease"),
-    "Another Delivery session is writing to this workspace; this session will continue automatically when it is safe.",
+    "Another session is writing to this workspace; this session will continue automatically when it is safe.",
     "workspace lease contention uses its stable localized notice code",
   );
   eq(

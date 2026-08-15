@@ -18,7 +18,11 @@ branch.
   calls stay accepted for one compatibility version as no-ops. New persisted
   compat fields pin `agentPreset=balanced` and `tokenMode=full`. Isolated
   worktrees keep their on-disk directory; the UI no longer forces a Delivery
-  mode. Deprecated fields will be removed after that compatibility window.
+  mode. Ordinary targeted tasks now surface missing verification or review as
+  a host-authored non-complete/unverified summary instead of stopping on
+  a recovery card; high-risk, persistent, security, explicit full-verification,
+  and Goal work retain hard evidence closure. Deprecated fields will be removed
+  after that compatibility window.
 
 ### Fixed
 

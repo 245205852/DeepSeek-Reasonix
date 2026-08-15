@@ -11,7 +11,7 @@ import (
 	"reasonix/internal/provider"
 )
 
-func TestTargetedVerificationRecoveryPreservesEvidenceOnce(t *testing.T) {
+func TestTargetedVerificationGapDoesNotArmRecovery(t *testing.T) {
 	reg := evidenceRegistry()
 	prov := &scriptedProvider{name: "standard", turns: [][]provider.Chunk{
 		{toolCallChunk("write", "write_file", `{"path":"docs/verify_v070.md"}`), {Type: provider.ChunkDone}},
@@ -21,31 +21,25 @@ func TestTargetedVerificationRecoveryPreservesEvidenceOnce(t *testing.T) {
 	}}
 	a := New(prov, reg, NewSession("sys"), Options{}, event.Discard)
 
-	var readinessErr *FinalReadinessError
-	if err := a.Run(context.Background(), "write docs/verify_v070.md and run the validation script"); !errors.As(err, &readinessErr) {
-		t.Fatalf("first Run error = %v, want targeted-verification readiness failure", err)
+	if err := a.Run(context.Background(), "write docs/verify_v070.md and run the validation script"); err != nil {
+		t.Fatalf("targeted Run returned a readiness failure: %v", err)
 	}
 	if policy, ok := a.TurnPolicy(); !ok || policy.ClosedLoop() {
 		t.Fatalf("targeted standard turn unexpectedly elevated to closed loop: %+v", policy)
 	}
-	if !a.PrepareDeliveryRecovery() {
-		t.Fatal("targeted-verification recovery should preserve the failed turn's evidence")
-	}
 	if a.PrepareDeliveryRecovery() {
-		t.Fatal("targeted-verification recovery authorization must be one-shot")
+		t.Fatal("a soft targeted-verification gap must not create a recovery card")
 	}
-	if err := a.Run(context.Background(), "continue the remaining checks"); err != nil {
-		t.Fatalf("recovery Run: %v", err)
-	}
-	writer, ok := a.task.ledger.LatestSuccessfulWriterIndex()
-	if !ok || !a.task.ledger.HasSuccessfulVerificationCommandAfter(writer) {
-		t.Fatal("recovery turn did not retain write-before-verification evidence")
+	receipt := a.CompletionReceipt()
+	if receipt == nil || receipt.Verdict == "complete" {
+		t.Fatalf("completion receipt = %+v, want a visible non-complete verdict", receipt)
 	}
 }
 
 func TestTargetedVerificationRecoverySurvivesAgentRebuild(t *testing.T) {
 	reg := evidenceRegistry()
 	first := &scriptedProvider{name: "standard", turns: [][]provider.Chunk{
+		{toolCallChunk("todo", "todo_write", `{"todos":[{"content":"Write verification notes","status":"in_progress"}]}`), {Type: provider.ChunkDone}},
 		{toolCallChunk("write", "write_file", `{"path":"docs/verify_v070.md","content":"sensitive-payload"}`), {Type: provider.ChunkDone}},
 		{{Type: provider.ChunkText, Text: "validation script passed"}, {Type: provider.ChunkDone}},
 	}}
@@ -53,7 +47,7 @@ func TestTargetedVerificationRecoverySurvivesAgentRebuild(t *testing.T) {
 	a := New(first, reg, session, Options{}, event.Discard)
 
 	var readinessErr *FinalReadinessError
-	if err := a.Run(context.Background(), "write docs/verify_v070.md and run the validation script"); !errors.As(err, &readinessErr) {
+	if err := a.Run(withClosedLoopContext(context.Background()), "write docs/verify_v070.md and run the validation script"); !errors.As(err, &readinessErr) {
 		t.Fatalf("first Run error = %v, want final readiness failure", err)
 	}
 	var marker *provider.FinalReadinessRecovery
@@ -76,6 +70,8 @@ func TestTargetedVerificationRecoverySurvivesAgentRebuild(t *testing.T) {
 
 	recoveryProvider := &scriptedProvider{name: "standard-reloaded", turns: [][]provider.Chunk{
 		{toolCallChunk("recognized-check", "bash", `{"command":"git diff --check"}`), {Type: provider.ChunkDone}},
+		{toolCallChunk("signoff", "complete_step", `{"step":"Write verification notes","result":"done","evidence":[{"kind":"verification","summary":"diff check passed","command":"git diff --check"}]}`), {Type: provider.ChunkDone}},
+		{toolCallChunk("todo-done", "todo_write", `{"todos":[{"content":"Write verification notes","status":"completed"}]}`), {Type: provider.ChunkDone}},
 		{{Type: provider.ChunkText, Text: "checks complete"}, {Type: provider.ChunkDone}},
 	}}
 	reloaded := New(recoveryProvider, reg, loaded, Options{}, event.Discard)
@@ -105,7 +101,7 @@ func TestFinalReadinessRecoveryRejectsStaleMarkerAfterUserTurn(t *testing.T) {
 	session := NewSession("sys")
 	a := New(prov, reg, session, Options{}, event.Discard)
 	var readinessErr *FinalReadinessError
-	if err := a.Run(context.Background(), "change README.md"); !errors.As(err, &readinessErr) {
+	if err := a.Run(withClosedLoopContext(context.Background()), "change README.md"); !errors.As(err, &readinessErr) {
 		t.Fatalf("Run error = %v, want final readiness failure", err)
 	}
 	session.Add(provider.Message{Role: provider.RoleUser, Content: "unrelated follow-up"})

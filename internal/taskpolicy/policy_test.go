@@ -34,11 +34,11 @@ func TestStandardPolicyMatrix(t *testing.T) {
 			},
 		},
 		{
-			name: "multi-file same-surface modification gets light plan and closure",
+			name: "multi-file same-surface modification gets light plan and soft quality reporting",
 			in:   Input{Raw: "update the parser and its tests to accept empty input", MultiFile: true},
 			want: TaskPolicy{
 				Intent: taskintent.Mutation, Risk: RiskMedium, Route: RouteLightPlan,
-				Evidence: EvidenceClosedLoop, Verification: VerifyFull, Review: ReviewConditional,
+				Evidence: EvidenceTargeted, Verification: VerifyFull, Review: ReviewConditional,
 				AllowExploreSubagent: true, SemanticRouterAllowed: true,
 			},
 		},
@@ -206,8 +206,14 @@ func TestEscalateConditionalReview(t *testing.T) {
 	if p.Review != ReviewForced {
 		t.Fatalf("review = %v, want forced after escalation", p.Review)
 	}
-	if p.Evidence != EvidenceClosedLoop {
-		t.Fatalf("evidence = %v, want closed loop after escalation", p.Evidence)
+	if p.Evidence != EvidenceTargeted {
+		t.Fatalf("evidence = %v, want targeted quality reporting after ordinary review escalation", p.Evidence)
+	}
+	high := Derive(Input{Raw: "fix the authentication bypass", HighRiskHints: true})
+	high.Evidence = EvidenceTargeted
+	high.EscalateConditionalReview("weak_evidence_coverage")
+	if high.Evidence != EvidenceClosedLoop {
+		t.Fatalf("high-risk evidence = %v, want closed loop", high.Evidence)
 	}
 	// Read-only turns never escalate into review.
 	ro := Derive(Input{Raw: "review the payment flow, analyze only"})

@@ -225,9 +225,9 @@ func Derive(in Input) TaskPolicy {
 }
 
 // evidenceFor assigns the evidence closed-loop level per the standard matrix:
-// conversation needs none; plain read-only queries and single-file atomic
-// modifications stay targeted; multi-file or fuzzy-scope mutations, persistent
-// actions, cross-surface work, active Goals, and anything high-risk,
+// conversation needs none; ordinary read-only work and same-surface mutations
+// stay targeted so quality gaps can be reported without interrupting the turn.
+// Persistent actions, cross-surface work, active Goals, and anything high-risk,
 // security-class, or user-required fully verified close the loop.
 func evidenceFor(intent Intent, risk Risk, closedLoopTriggers bool, in Input, constraints Constraints) Evidence {
 	switch {
@@ -246,10 +246,10 @@ func evidenceFor(intent Intent, risk Risk, closedLoopTriggers bool, in Input, co
 	case intent == taskintent.PersistentAction:
 		return EvidenceClosedLoop
 	case intent == taskintent.Mutation:
-		// Closed-loop is a risk/structure floor, not a planning-route floor.
-		// Unanchored low-risk edits still take LightPlan, but they stay on
-		// targeted checks until a medium/high-risk or structural signal appears.
-		if closedLoopTriggers || risk >= RiskMedium || in.MultiFile || in.Structured || in.CrossSurface {
+		// Planning complexity and completion enforcement are separate axes.
+		// Same-surface structured work may plan and review more while missing
+		// quality evidence remains visible. High assurance still hard-stops.
+		if closedLoopTriggers {
 			return EvidenceClosedLoop
 		}
 		return EvidenceTargeted
@@ -340,7 +340,8 @@ func (p *TaskPolicy) EscalateConditionalReview(reason string) {
 	if p.SecurityClass && p.Review < ReviewForcedSecurity {
 		p.Review = ReviewForcedSecurity
 	}
-	if p.Evidence < EvidenceClosedLoop {
+	if (p.Risk >= RiskHigh || p.SecurityClass || p.Constraints.RequireFullVerification) &&
+		p.Evidence < EvidenceClosedLoop {
 		p.Evidence = EvidenceClosedLoop
 	}
 }
@@ -401,10 +402,6 @@ func (p *TaskPolicy) reevaluateFloors() {
 		if !p.SemanticRouterAllowed {
 			p.SemanticRouterAllowed = true
 		}
-	}
-	if p.Risk >= RiskMedium && p.Intent == taskintent.Mutation &&
-		p.Evidence < EvidenceClosedLoop && !p.Constraints.ForbidMutation {
-		p.Evidence = EvidenceClosedLoop
 	}
 }
 

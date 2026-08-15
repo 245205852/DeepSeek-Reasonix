@@ -92,16 +92,17 @@ func (a *Agent) finalReadinessCheckFor() finalReadinessCheck {
 		return out
 	}
 	a.escalatePolicyFromEvidence()
-	{
-		incomplete, hasTodos := a.task.ledger.IncompleteLatestTodos()
-		if !hasTodos && a.task.ledger.HasAnySuccessfulReceipt() {
-			incomplete, hasTodos = a.incompleteCanonicalTodos()
-		}
-		if hasTodos && len(incomplete) > 0 && a.task.ledger.HasSuccessfulTodoProgressReceipt() {
-			out.applies = true
-			out.incompleteTodos = len(incomplete)
-			missing = append(missing, finalReadinessIncompleteTodos(incomplete))
-		}
+	closedLoop, qualityGated := a.finalReadinessPolicyState()
+	// An unfinished todo is a direct contradiction of a final answer, not a
+	// quality-evidence gap. Keep blocking it even on ordinary targeted turns.
+	incomplete, hasTodos := a.task.ledger.IncompleteLatestTodos()
+	if !hasTodos && a.task.ledger.HasAnySuccessfulReceipt() {
+		incomplete, hasTodos = a.incompleteCanonicalTodos()
+	}
+	if hasTodos && len(incomplete) > 0 && a.task.ledger.HasSuccessfulTodoProgressReceipt() {
+		out.applies = true
+		out.incompleteTodos = len(incomplete)
+		missing = append(missing, finalReadinessIncompleteTodos(incomplete))
 	}
 	writer, hasWriter := a.task.ledger.LatestSuccessfulWriterIndex()
 	atomicMutationMissing := false
@@ -117,7 +118,6 @@ func (a *Agent) finalReadinessCheckFor() finalReadinessCheck {
 	deliveryVerificationOnly := false
 	checkpoint := a.task.checkpoint
 	checkpointApplies := a.turn.deliveryScopeActive && checkpoint.ScopeID == a.task.scopeID
-	closedLoop := a.closedLoopActive()
 	if closedLoop {
 		if mutation, ok := a.task.ledger.LatestSuccessfulMutationIndex(); ok {
 			writer, hasWriter = mutation, true
@@ -176,12 +176,16 @@ func (a *Agent) finalReadinessCheckFor() finalReadinessCheck {
 		}
 		return out
 	}
-	if !closedLoop && a.turn.policySet && a.turn.policy.Verification >= taskpolicy.VerifyTargeted &&
-		a.turn.policy.AllowsTests() && toolPresent(a.svc.tools, "bash") &&
-		!a.task.ledger.HasSuccessfulVerificationCommandAfter(writer) {
-		out.applies = true
-		out.missingVerification++
-		missing = append(missing, "run a relevant verification command after the latest write for the current role setting")
+	// Targeted standard turns report missing checks without opening a recovery
+	// card. Hard readiness remains for high-assurance and Goal execution.
+	if !qualityGated {
+		if len(missing) > 0 {
+			if a.loopGuardAllowsFinal() && !atomicMutationMissing {
+				return finalReadinessCheck{}
+			}
+			out.reason = strings.Join(missing, "; ")
+		}
+		return out
 	}
 	hasProjectChecks := len(a.projectChecks) > 0
 	hasTodoReceipt := a.task.ledger.HasSuccessfulTodoWrite()
@@ -219,6 +223,15 @@ func (a *Agent) finalReadinessCheckFor() finalReadinessCheck {
 	}
 	out.reason = strings.Join(missing, "; ")
 	return a.applyPartialCheckWaiver(out)
+}
+
+// finalReadinessPolicyState keeps Goal mutation closure runtime-only, preserving
+// provider-visible prompt bytes and the explicit EvidenceNone test escape hatch.
+func (a *Agent) finalReadinessPolicyState() (closedLoop, qualityGated bool) {
+	_, goalMutationObserved := a.task.ledger.LatestSuccessfulMutationIndex()
+	closedLoop = a.closedLoopActive() ||
+		(a.turn.deliveryScopeActive && goalMutationObserved && a.turn.policy.Evidence != taskpolicy.EvidenceNone)
+	return closedLoop, closedLoop || a.turn.deliveryScopeActive || !a.turn.policySet
 }
 
 func (a *Agent) appendClosedLoopReadiness(out *finalReadinessCheck, missing []string, writer int, deliveryMutation, checkpointApplies bool, checkpoint evidence.DeliveryCheckpoint) []string {

@@ -175,7 +175,7 @@ func TestTaskPolicyBlocksResolvedExternalCapability(t *testing.T) {
 	}
 }
 
-func TestTaskPolicyRequiresPostMutationVerification(t *testing.T) {
+func TestTaskPolicyReportsPostMutationVerificationGapWithoutBlockingTargetedTurn(t *testing.T) {
 	reg := tool.NewRegistry()
 	reg.Add(fakeTool{name: "bash", readOnly: true})
 	writer := evidence.Receipt{ToolName: "write_file", Success: true, Write: true, Mutation: true, Paths: []string{"notes.txt"}}
@@ -188,8 +188,8 @@ func TestTaskPolicyRequiresPostMutationVerification(t *testing.T) {
 			policySet: true,
 		},
 	}
-	if got := a.finalReadinessCheckFor(); !strings.Contains(got.reason, "verification command") {
-		t.Fatalf("readiness = %+v, want post-mutation verification", got)
+	if got := a.finalReadinessCheckFor(); got.reason != "" {
+		t.Fatalf("targeted readiness = %+v, want quality gap to remain non-blocking", got)
 	}
 	a.task.ledger.Record(check)
 	if got := a.finalReadinessCheckFor(); got.reason != "" {
