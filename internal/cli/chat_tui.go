@@ -33,7 +33,6 @@ import (
 	"reasonix/internal/memory"
 	"reasonix/internal/migration"
 	"reasonix/internal/outputstyle"
-	"reasonix/internal/permission"
 	"reasonix/internal/plugin"
 	"reasonix/internal/provider"
 	"reasonix/internal/recovery"
@@ -3172,100 +3171,6 @@ func flushableMarkdownPrefix(buf string) string {
 // [plan] tag in sync when the user starts execution or exits without executing.
 const planApprovalTool = "exit_plan_mode"
 
-type approvalChoice struct {
-	label           string
-	allow           bool
-	allowForSession bool
-	persistToConfig bool
-	exitPlan        bool
-}
-
-func approvalChoices(a *event.Approval) []approvalChoice {
-	if a == nil {
-		return nil
-	}
-	var decisions []approvalChoice
-	fresh := a.Fresh || control.RequiresFreshHumanApprovalTool(a.Tool)
-	switch {
-	case isRecoveryApprovalEvent(a):
-		if a.Recovery != nil && a.Recovery.CanGrantTask {
-			// allowForSession is reused only as a local UI marker. The recovery
-			// handler maps it to a task-scoped semantic grant, never a session rule.
-			decisions = []approvalChoice{{allow: true}, {allow: true, allowForSession: true}, {}}
-		} else {
-			decisions = []approvalChoice{{allow: true}, {}}
-		}
-	case a.Tool == planApprovalTool:
-		decisions = []approvalChoice{{allow: true}, {}, {exitPlan: true}}
-	case fresh && freshApprovalAllowsSession(a.Tool):
-		decisions = []approvalChoice{{allow: true}, {allow: true, allowForSession: true}, {}}
-	case fresh:
-		decisions = []approvalChoice{{allow: true}, {}}
-	default:
-		decisions = []approvalChoice{
-			{allow: true},
-			{allow: true, allowForSession: true},
-			{allow: true, allowForSession: true, persistToConfig: true},
-			{},
-		}
-	}
-	labels := approvalChoiceLabels(a)
-	for i := range decisions {
-		if i < len(labels) {
-			decisions[i].label = labels[i]
-		}
-	}
-	return decisions
-}
-
-func approvalChoiceLabels(a *event.Approval) []string {
-	choices := i18n.M.FreshHumanApprovalChoices
-	fresh := a.Fresh || control.RequiresFreshHumanApprovalTool(a.Tool)
-	if isRecoveryApprovalEvent(a) {
-		if isRecoveryPlanChangeApproval(a) {
-			choices = i18n.M.RecoveryPlanChangeChoices
-		} else {
-			choices = i18n.M.RecoveryApprovalChoices
-		}
-		if !isRecoveryPlanChangeApproval(a) && a.Recovery != nil && a.Recovery.CanGrantTask {
-			choices = i18n.M.RecoveryTaskGrantChoices
-		}
-	} else if a.Tool == planApprovalTool {
-		choices = i18n.M.PlanApprovalChoices
-	} else if !fresh {
-		exactSessionRule := permission.SessionGrantRuleForScope(a.Tool, a.Subject)
-		exactPersistentRule := permission.RememberRuleForScope(a.Tool, a.Subject)
-		choices = fmt.Sprintf(i18n.M.ToolApprovalChoices, exactSessionRule, exactPersistentRule)
-	}
-	if a.Tool == control.SandboxEscapeApprovalTool {
-		choices = i18n.M.SandboxEscapeApprovalChoices
-	}
-	if a.Tool == control.ManagedConfigWriteApprovalTool {
-		choices = i18n.M.ConfigWriteApprovalChoices
-	}
-	if a.Tool == agent.PlanModeReadOnlyCommandApprovalTool {
-		choices = i18n.M.PlanModeReadOnlyCommandChoices
-	}
-	if !fresh && a.Tool == "bash" && permission.BashCommandPrefix(a.Subject) != "" {
-		prefixRule := permission.RememberRuleForScope(a.Tool, a.Subject)
-		choices = fmt.Sprintf(i18n.M.BashPrefixChoices, prefixRule, prefixRule)
-	}
-	var labels []string
-	for line := range strings.SplitSeq(choices, "\n") {
-		line = strings.TrimSpace(line)
-		if len(line) < 3 || line[0] < '1' || line[0] > '9' || line[1] != '.' {
-			continue
-		}
-		labels = append(labels, strings.TrimSpace(line[2:]))
-	}
-	if isRecoveryApprovalEvent(a) && a.Recovery != nil && a.Recovery.CanGrantTask && len(labels) > 1 {
-		if scope := strings.TrimSpace(a.Recovery.TaskGrantScope); scope != "" {
-			labels[1] += " — " + scope
-		}
-	}
-	return labels
-}
-
 // handleApprovalKey resolves a pending approval from a keystroke and re-arms the
 // listener. 1/y/Enter allows once, 2/a allows for the rest of the session,
 // 3/p writes an "always allow" rule to the config file for ordinary tool
@@ -3871,6 +3776,7 @@ func (m chatTUI) renderApprovalBanner() string {
 			planDetails = append(planDetails, body)
 		}
 	}
+	planDetails = append(planDetails, writeAccessBannerDetails(m.pendingApproval)...)
 	if reason := strings.TrimSpace(m.pendingApproval.Reason); reason != "" {
 		text += " · " + truncateSubject(reason, w)
 	}

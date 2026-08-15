@@ -147,6 +147,10 @@ type Messages struct {
 	ConfigWriteReason                      string // reason shown for managed config write approval
 	ConfigWriteDeclined                    string // model-facing denial when the user declines a managed config write
 	ConfigWriteApprovalChoices             string // approval choice list for managed config write prompts
+	WriteAccessApprovalChoices             string // four-choice list for extending writable roots
+	WriteAccessHomeWarning                 string // high-risk warning when granting the whole home directory
+	WriteAccessMergedPermissionHint        string // note that the same choice also grants ordinary tool permission
+	WriteAccessProjectHint                 string // note that project persist edits reasonix.toml
 	PermissionSavedFmt                     string // permission rule saved notice: path, rule
 	PermissionAlreadyAllowedFmt            string // permission rule already covered notice: path, rule
 	PermissionSaveFailedFmt                string // permission rule save failure notice: rule, error

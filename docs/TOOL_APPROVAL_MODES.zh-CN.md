@@ -60,6 +60,7 @@ Reasonix 桌面端输入框下方的“询问 / 自动 / Yolo”控制的是工�
 - 计划模式的“开始执行”确认仍然需要你选择。
 - 交互式 `remember`/`forget` 使用普通 Auto fallback，因此默认调用不弹窗，显式
   `ask` / `deny` 规则仍生效。无头记忆仍只保留有界 create-only 例外，其余 fail closed。
+- 扩展工作区外的可写根。Auto、Ask 和 YOLO 都不会在没有「扩展写入范围」审批卡的情况下突破沙箱边界。文件工具会自动申请目标父目录；Bash 必须传 `additional_write_dirs` 和 `justification`。批准只会扩展沙箱可写根，不会把命令改成无沙箱运行。
 - 嵌套或间接 Bash 即使处于获批计划执行窗口也需要人工审批，Guardian 与 hook allow 不能代替用户批准；普通展开、赋值、重定向和 glob 仍走 Auto 快速路径。
 - 用户安装或明确授权的 MCP 直接执行，不再受这套逐调用模式影响；显式 `deny`、Plan 和严格只读子会话边界仍然生效。
 - ask 问题仍然等待你回答，不会由自动模式代选。

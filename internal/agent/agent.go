@@ -521,16 +521,6 @@ func (a *Agent) SetSandboxEscapeApprover(g sandbox.EscapeApprover) {
 	a.svc.sandboxEscape = g
 }
 
-// SetConfigWriteApprover installs the optional per-write approval path used by
-// the file tools when a target is a Reasonix-managed config file outside the
-// workspace write roots.
-func (a *Agent) SetConfigWriteApprover(g tool.ConfigWriteApprover) {
-	if nilutil.IsNil(g) {
-		g = nil
-	}
-	a.svc.configWrite = g
-}
-
 func (a *Agent) withTurnPreferences(input string) string {
 	if a == nil {
 		return input
@@ -943,6 +933,17 @@ type Options struct {
 	WriteScheduler *SubagentScheduler
 	// WriteWorkspaceRoot normalizes parent write reservations.
 	WriteWorkspaceRoot string
+	// WriteRoots is the session-scoped writable directory manager.
+	WriteRoots *sandbox.WritableRootSet
+	// WriteAccessGate authorizes extra writable directories. nil is fail-closed
+	// for missing dirs when WriteRoots is set.
+	WriteAccessGate WriteAccessGate
+	// DisableWriteAccessExpand prevents this agent from requesting new write
+	// directories. Sub-agents set this.
+	DisableWriteAccessExpand bool
+	// HomeDir and StateRoot are used to normalize and reject write directories.
+	HomeDir   string
+	StateRoot string
 
 	// WorkspaceLease serializes writer mutations across sessions that target
 	// the same workspace. nil preserves source compatibility for direct Agent

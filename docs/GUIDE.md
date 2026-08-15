@@ -720,10 +720,17 @@ The sandbox remains a second boundary after authorization; confinement cannot
 make ambiguous command parsing safe to authorize automatically.
 
 Permissions are *policy* (which calls to allow / prompt). The **sandbox** is
-*enforcement*: the file-writers (`write_file` / `edit_file` / `multi_edit` / `move_file`)
+*enforcement*: they are two layers. A permitted call still cannot write outside
+the approved roots. The file-writers (`write_file` / `edit_file` / `multi_edit` / `move_file`)
 refuse any path outside `[sandbox] workspace_root` (default: the current dir, so
 edits stay in the project), resolving symlinks and `..` so a link can't tunnel
-out. `forbid_read` optionally hides sensitive files or directories from the agent's
+out. Writing outside the workspace is an interactive *extend write access*
+approval (once / this session / add to project `reasonix.toml` / deny), not a
+sandbox escape. Bash must name those directories with `additional_write_dirs`
+plus a `justification`; the host does not infer paths from the command text.
+Headless `reasonix run` does not prompt: pass `--add-dir` or configure
+`[sandbox].allow_write`. The whole home directory can be approved with a
+high-risk warning; the filesystem root and Reasonix session/state paths cannot. `forbid_read` optionally hides sensitive files or directories from the agent's
 read/list/search tools; use absolute paths or `${HOME}` / `${VAR}` references,
 not `~`, because config expansion is environment-variable based. `bash` is
 itself jailed by default when an OS sandbox is available (`[sandbox] bash`,

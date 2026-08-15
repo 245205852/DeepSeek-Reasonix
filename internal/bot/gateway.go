@@ -1200,24 +1200,6 @@ func chatUsesGroupAllowlist(chatType ChatType) bool {
 	}
 }
 
-func (gw *BotGateway) normalizeApprovalShortcut(key, text string) (string, bool) {
-	approvalID := gw.currentPendingApprovalID(key)
-	if approvalID == "" {
-		return "", false
-	}
-	if gw.pendingApprovalIsRecovery(key, approvalID) {
-		if command, ok := recoveryShortcutCommand(text, gw.pendingRecoveryCanGrantTask(key, approvalID)); ok {
-			return command + " " + approvalID, true
-		}
-		return "", false
-	}
-	command, ok := approvalShortcutCommand(text)
-	if !ok {
-		return "", false
-	}
-	return command + " " + approvalID, true
-}
-
 func approvalShortcutCommand(text string) (string, bool) {
 	switch strings.ToLower(strings.TrimSpace(text)) {
 	case "1", "y", "yes", "ok", "同意", "批准", "允许", "允许一次":
@@ -1367,7 +1349,7 @@ func (gw *BotGateway) currentPendingAskIDForReply(key string) string {
 	return ""
 }
 
-func (gw *BotGateway) handleSlashCommand(ctx context.Context, adapter Adapter, key string, msg InboundMessage) {
+func (gw *BotGateway) handleSlashCommandCore(ctx context.Context, adapter Adapter, key string, msg InboundMessage) {
 	switch {
 	case strings.HasPrefix(msg.Text, "/stop"):
 		var cancel context.CancelFunc
@@ -1705,25 +1687,7 @@ func (gw *BotGateway) handleSlashCommand(ctx context.Context, adapter Adapter, k
 		_ = gw.sendText(ctx, adapter, msg, fmt.Sprintf("活跃任务数: %d\n保留会话数: %d\n工具审批模式: %s\n队列模式: %s\n当前会话排队: %d\n连接健康: %s", active, sessions, toolApprovalModeLabel(mode), queueModeLabel(gw.queueMode(key, msg)), pending, gw.adapterHealthSummaryText()))
 
 	case strings.HasPrefix(msg.Text, "/help"):
-		help := "可用命令:\n" +
-			"/stop - 停止当前任务\n" +
-			"/new - 开始新会话\n" +
-			"/reset - 重置会话\n" +
-			"/approve <id> - 批准操作\n" +
-			"/deny <id> - 拒绝操作\n" +
-			"/answer <id> <选项> - 回答 ask 问题\n" +
-			"/yolo on|off|auto|status - 切换或查看工具审批模式\n" +
-			"/mode yolo|ask|auto - 切换工具审批模式\n" +
-			"/queue steer|followup|collect|interrupt|status - 切换或查看队列模式\n" +
-			"/projects [关键词] - 查看可切换项目索引\n" +
-			"/use project <id|名称> - 将当前远端会话切到某个项目\n" +
-			"/sessions search <关键词> - 搜索可 attach 的历史会话\n" +
-			"/attach session <id|关键词> - 绑定当前远端会话到已有历史会话\n" +
-			"/search all <关键词> - 跨已索引项目检索文件内容\n" +
-			"/desktop status|watch|approve|deny|answer - 桌面端上帝视角(需内嵌运行)\n" +
-			"/status - 查看状态\n" +
-			"/help - 显示帮助"
-		_ = gw.sendText(ctx, adapter, msg, help)
+		_ = gw.sendText(ctx, adapter, msg, botHelpText())
 	}
 }
 

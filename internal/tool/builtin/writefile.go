@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 
 	fileenc "reasonix/internal/fileutil/encoding"
+	"reasonix/internal/sandbox"
 	"reasonix/internal/tool"
 )
 
@@ -20,6 +21,7 @@ func init() { tool.RegisterBuiltin(writeFile{}) }
 // non-empty, is the directory a relative path resolves against (see resolveIn).
 type writeFile struct {
 	roots   []string
+	rootSet *sandbox.WritableRootSet
 	guard   SessionDataGuard
 	managed ManagedConfigPaths
 	workDir string
@@ -45,6 +47,10 @@ func (writeFile) Schema() json.RawMessage {
 
 func (writeFile) ReadOnly() bool { return false }
 
+func (w writeFile) DeclareWriteAccess(args json.RawMessage) (tool.WriteAccessDeclaration, error) {
+	return declareFilePathWriteAccess(w.workDir, args)
+}
+
 func (w writeFile) Execute(ctx context.Context, args json.RawMessage) (string, error) {
 	var p struct {
 		Path    string `json:"path"`
@@ -57,7 +63,7 @@ func (w writeFile) Execute(ctx context.Context, args json.RawMessage) (string, e
 		return "", fmt.Errorf("path is required")
 	}
 	p.Path = resolveIn(w.workDir, p.Path)
-	if err := confineWrite(ctx, w.roots, w.guard, w.managed, p.Path); err != nil {
+	if err := confineWrite(ctx, effectiveWriteRoots(ctx, w.rootSet, w.roots), w.guard, w.managed, p.Path); err != nil {
 		return "", err
 	}
 	// Preserve the existing file's encoding (GBK/UTF-16/BOM) on overwrite instead
