@@ -110,3 +110,91 @@ func TestFinalReadinessRecoveryRejectsStaleMarkerAfterUserTurn(t *testing.T) {
 		t.Fatal("stale readiness marker after a newer user turn must be rejected")
 	}
 }
+
+func TestTodoOnlyReadinessMarkerConsumedOnReloadWhenTodosComplete(t *testing.T) {
+	session := NewSession("sys")
+	// A completed todo list already lives in the transcript, and a todo-only
+	// readiness marker is still pending (the gated turn was the last one).
+	session.Add(provider.Message{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{
+		{ID: "todo-done", Name: "todo_write", Arguments: `{"todos":[{"content":"Write verification notes","status":"completed"}]}`},
+	}})
+	session.Add(provider.Message{Role: provider.RoleTool, ToolCallID: "todo-done", Content: "task list updated"})
+	session.Add(provider.Message{
+		Role:       provider.RoleTool,
+		ToolCallID: provider.LocalOnlyToolID,
+		Name:       provider.LocalOnlyToolName,
+		LocalOnly:  true,
+		FinalReadinessRecovery: &provider.FinalReadinessRecovery{
+			Pending: true,
+			Missing: []string{"todo"},
+		},
+	})
+
+	reloaded := New(nil, evidenceRegistry(), session, Options{}, event.Discard)
+	reloaded.SetSession(session)
+	for _, message := range session.Snapshot() {
+		if message.FinalReadinessRecovery != nil && message.FinalReadinessRecovery.Pending {
+			t.Fatal("todo-only readiness marker stayed pending after the rebuilt canonical list showed every todo complete")
+		}
+	}
+}
+
+func TestReadinessMarkerSurvivesReloadWhenGapExceedsTodos(t *testing.T) {
+	session := NewSession("sys")
+	session.Add(provider.Message{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{
+		{ID: "todo-done", Name: "todo_write", Arguments: `{"todos":[{"content":"Write verification notes","status":"completed"}]}`},
+	}})
+	session.Add(provider.Message{Role: provider.RoleTool, ToolCallID: "todo-done", Content: "task list updated"})
+	session.Add(provider.Message{
+		Role:       provider.RoleTool,
+		ToolCallID: provider.LocalOnlyToolID,
+		Name:       provider.LocalOnlyToolName,
+		LocalOnly:  true,
+		FinalReadinessRecovery: &provider.FinalReadinessRecovery{
+			Pending: true,
+			Missing: []string{"todo", "verification"},
+		},
+	})
+
+	reloaded := New(nil, evidenceRegistry(), session, Options{}, event.Discard)
+	reloaded.SetSession(session)
+	pending := 0
+	for _, message := range session.Snapshot() {
+		if message.FinalReadinessRecovery != nil && message.FinalReadinessRecovery.Pending {
+			pending++
+		}
+	}
+	if pending != 1 {
+		t.Fatalf("pending markers = %d, want 1: a marker listing non-todo gaps must survive", pending)
+	}
+}
+
+func TestTodoOnlyReadinessMarkerSurvivesReloadWhileTodosIncomplete(t *testing.T) {
+	session := NewSession("sys")
+	session.Add(provider.Message{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{
+		{ID: "todo-open", Name: "todo_write", Arguments: `{"todos":[{"content":"Write verification notes","status":"in_progress"}]}`},
+	}})
+	session.Add(provider.Message{Role: provider.RoleTool, ToolCallID: "todo-open", Content: "task list updated"})
+	session.Add(provider.Message{
+		Role:       provider.RoleTool,
+		ToolCallID: provider.LocalOnlyToolID,
+		Name:       provider.LocalOnlyToolName,
+		LocalOnly:  true,
+		FinalReadinessRecovery: &provider.FinalReadinessRecovery{
+			Pending: true,
+			Missing: []string{"todo"},
+		},
+	})
+
+	reloaded := New(nil, evidenceRegistry(), session, Options{}, event.Discard)
+	reloaded.SetSession(session)
+	pending := 0
+	for _, message := range session.Snapshot() {
+		if message.FinalReadinessRecovery != nil && message.FinalReadinessRecovery.Pending {
+			pending++
+		}
+	}
+	if pending != 1 {
+		t.Fatalf("pending markers = %d, want 1: incomplete todos keep the marker actionable", pending)
+	}
+}

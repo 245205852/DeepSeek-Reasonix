@@ -13,6 +13,7 @@ export type EventKind =
   | "message"
   | "tool_dispatch"
   | "tool_result"
+  | "tool_result_preview"
   | "tool_progress"
   | "usage"
   | "notice"

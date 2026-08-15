@@ -3,7 +3,9 @@ package agent
 import (
 	"encoding/json"
 
+	"reasonix/internal/event"
 	"reasonix/internal/evidence"
+	"reasonix/internal/provider"
 	"reasonix/internal/tool"
 )
 
@@ -14,6 +16,20 @@ func (a *Agent) finalizeObservedToolReceipts(plan *toolCallPlan, result string, 
 	a.observeAfterMutation(plan)
 	plan.mutationAfterDone = true
 	a.recordToolReceipts(plan, result, execution, err)
+}
+
+// emitTodoResultPreview flips the todo_write card to done the moment the call
+// executes without publishing a second terminal result. Batch ToolResult
+// events still wait for the whole provider batch and remain the only terminal
+// events observed by append-only sinks.
+func (a *Agent) emitTodoResultPreview(call provider.ToolCall, output string) {
+	if a == nil || a.svc.sink == nil {
+		return
+	}
+	a.svc.sink.Emit(event.Event{
+		Kind: event.ToolResultPreview,
+		Tool: event.Tool{ID: call.ID, Name: call.Name, Args: call.Arguments, ReadOnly: true, Output: output},
+	})
 }
 
 func (a *Agent) recordToolReceipts(plan *toolCallPlan, result string, execution *tool.ShellExecution, err error) {
@@ -45,6 +61,7 @@ func (a *Agent) recordToolReceipts(plan *toolCallPlan, result string, execution 
 			if len(rec.Todos) > 0 {
 				a.turn.deliveryCriteriaEstablished = true
 			}
+			a.emitTodoResultPreview(call, result)
 		}
 	}
 }

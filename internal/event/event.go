@@ -118,6 +118,11 @@ const (
 	// CompletionSummary reports a content-free end-of-turn quality summary for
 	// role-setting strategies (preset, verdict, check counts, review status).
 	CompletionSummary
+	// ToolResultPreview reports that a tool has finished locally before its
+	// provider-ordered ToolResult can be emitted. Upsert-capable frontends may
+	// render the successful state early; append-only consumers should ignore it.
+	// The later ToolResult remains the call's only terminal event.
+	ToolResultPreview
 	// KindCount is a sentinel one past the last real Kind. New event kinds must
 	// be inserted above it so completeness tests cover them automatically.
 	KindCount

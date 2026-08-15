@@ -109,7 +109,7 @@ func ToWire(e event.Event) Event {
 		} else {
 			w.Level = "info"
 		}
-	case event.ToolDispatch, event.ToolResult, event.ToolProgress:
+	case event.ToolDispatch, event.ToolResult, event.ToolProgress, event.ToolResultPreview:
 		wt := &Tool{
 			ID: e.Tool.ID, Name: e.Tool.Name, Args: e.Tool.Args,
 			ResolvedName: e.Tool.ResolvedName, CapabilityID: e.Tool.CapabilityID,
@@ -573,6 +573,7 @@ var kindNames = map[event.Kind]string{
 	event.WorkspaceChanged:        "workspace_changed",
 	event.TurnPhase:               "turn_phase",
 	event.CompletionSummary:       "completion_summary",
+	event.ToolResultPreview:       "tool_result_preview",
 }
 
 // ContextMaintenance is the JSON form of event.ContextMaintenance.
