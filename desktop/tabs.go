@@ -3893,6 +3893,7 @@ func (a *App) buildTabControllerWithContextCore(tab *WorkspaceTab, loadedSession
 		SessionRecoveryMeta:      a.tabSessionRecoveryMeta(tab),
 		OnSessionRecovered:       a.handleTabSessionRecovered(tab),
 		OnSessionTransition:      a.handleTabSessionTransition(tab),
+		OnSessionTitleChanged:    a.onSessionTitleChanged,
 	})
 	if a.handleTabControllerBootError(tab, registration, rootKey, buildGeneration, wailsCtx, err) {
 		return
@@ -6452,6 +6453,7 @@ type ProjectNode struct {
 	Root                         string        `json:"root,omitempty"` // project workspace root
 	TopicID                      string        `json:"topicId,omitempty"`
 	SessionPath                  string        `json:"sessionPath,omitempty"`
+	Preview                      string        `json:"preview,omitempty"`
 	ProjectColor                 string        `json:"projectColor,omitempty"`
 	Turns                        int           `json:"turns,omitempty"`
 	TurnsState                   string        `json:"turnsState,omitempty"`

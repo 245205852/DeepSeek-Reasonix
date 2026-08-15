@@ -16,6 +16,7 @@ import { registerTrustedThemeBackgroundURLs } from "./themePack";
 import { modeHasAutoApproveTools, modeWithAutoApproveTools, modeWithPlan, normalizeCollaborationMode, normalizeMode, normalizeToolApprovalMode } from "./types";
 import { decisionSurfaceMockFromInput, isLongDecisionOptionsMockInput } from "./decisionSurfaceMock";
 import { mockWorkspaceFile } from "./mockWorkspaceFile";
+import { mockAIRenameSession, type SessionTitleBindings } from "./mockSessionTitle";
 import type {
   RemoteHostView,
   RemoteHostInput,
@@ -126,7 +127,6 @@ import type {
   SessionClearResult,
 } from "./types";
 import type { MarkdownImageView } from "./markdownImage";
-
 const GLOBAL_PROJECT_ORDER_KEY = "__global__";
 
 function stripLegacyGoalBudgetFlags(arg: string): string {
@@ -167,7 +167,7 @@ interface DesktopWindowState {
 // added or renamed, the generated types shift, and a key present in GeneratedApp
 // but missing from AppBindings causes a type error here. Fix: add the new method
 // to AppBindings, then run `pnpm typecheck` to verify.
-export interface AppBindings extends SessionCatalogBindings, HistoryCatalogBindings, TaskCatalogBindings, BlankProjectBindings {
+export interface AppBindings extends SessionCatalogBindings, HistoryCatalogBindings, TaskCatalogBindings, BlankProjectBindings, SessionTitleBindings {
   Platform(): Promise<string>;
   MinimiseMainWindow(): Promise<void>;
   ToggleMaximiseMainWindow(): Promise<void>;
@@ -5330,6 +5330,7 @@ function makeMockApp(): AppBindings {
         tab.topicId === topicID ? { ...tab, topicTitle: nextTitle } : tab,
       );
     },
+    async AIRenameSession(topicID: string) { return mockAIRenameSession(findMockTopic(topicID)); },
     async DeleteTopic(topicID: string) {
       deleteMockTopic(topicID);
     },

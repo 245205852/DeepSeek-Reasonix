@@ -590,7 +590,7 @@ func (c *Catalog) ListTopics(ctx context.Context, req TopicPageRequest) (TopicPa
 				continue
 			}
 			item.Sessions = sessions
-			item.RepresentativePath = topicRepresentativePath(sessions)
+			hydrateTopicDisplay(&item)
 			out.Items = append(out.Items, item)
 			if len(out.Items) > req.Limit {
 				overflow = true
@@ -697,7 +697,7 @@ func (c *Catalog) GetTopic(ctx context.Context, key TopicKey) (TopicRecord, bool
 	if len(item.Sessions) == 0 {
 		return TopicRecord{Sessions: []SessionRecord{}}, false, nil
 	}
-	item.RepresentativePath = topicRepresentativePath(item.Sessions)
+	hydrateTopicDisplay(&item)
 	return item, true, nil
 }
 

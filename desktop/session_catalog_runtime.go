@@ -243,7 +243,7 @@ func (a *App) runtimeProjectTopicNodes(scope, workspaceRoot string, snapshots []
 			}
 			node.Children = append(node.Children, ProjectNode{
 				Key: projectSessionNodeKey(scope, path), Kind: sessionKind, Label: sessionLabel,
-				Root: workspaceRoot, TopicID: topicID, SessionPath: path,
+				Root: workspaceRoot, TopicID: topicID, SessionPath: path, Preview: sessionPreviewForPath(path),
 				Open: session.open, Running: running, Status: status,
 				TurnsState: string(sessioncatalog.TurnsUnknown), Health: string(sessioncatalog.HealthOK),
 				Children: []ProjectNode{},
@@ -326,6 +326,7 @@ func (a *App) projectNodeFromCatalogTopic(topic sessioncatalog.TopicRecord, topi
 	node := ProjectNode{
 		Key: kind + "_" + topic.TopicID, Kind: kind, Label: a.localizedTopicTitle(topic.Title, topic.TitleSource),
 		Root: topic.WorkspaceRoot, TopicID: topic.TopicID, Turns: topic.Turns,
+		Preview:    topicSessionPreview(topic.Sessions, topic.RepresentativePath),
 		TurnsState: string(topic.TurnsState), Health: string(topic.Health),
 		CreatedAt: topic.CreatedAt, LastActivityAt: topic.LastActivityAt,
 		Pinned: topic.Pinned, Open: overlay.open, Running: overlay.running, Status: overlay.status,
