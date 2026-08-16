@@ -125,8 +125,12 @@ func (a *Agent) buildSamplingRequest(ctx context.Context, trigger string) (sampl
 // explicit range compression can continue to resolve anchors across calls.
 func (a *Agent) providerProjectionMessages(msgs []provider.Message) []provider.Message {
 	if a != nil {
-		if repaired, changed := repairUnreplayableReasoningHistory(a.svc.prov, msgs); changed {
-			msgs = repaired
+		// The provider-declared fallback owns this tool loop. Strict projection
+		// here would erase its completed tool round before adapter serialization.
+		if !a.sess.missingReasoning.fallbackActive || !provider.SupportsMissingReasoningFallback(a.svc.prov) {
+			if repaired, changed := provider.ProjectReplaySafeMessages(a.svc.prov, msgs); changed {
+				msgs = repaired
+			}
 		}
 		if a.strictAlternatingRoles {
 			return coalesceProjectionUserRuns(msgs)

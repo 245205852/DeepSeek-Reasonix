@@ -307,7 +307,7 @@ func (c *client) RequiresToolCallReasoning() bool {
 }
 
 func (c *client) AllowsEmptyReasoningFallback() bool {
-	return c.RequiresToolCallReasoning()
+	return c != nil && (c.RequiresToolCallReasoning() || c.glmThinkingEnabled())
 }
 
 func (c *client) RequiresReasoningRoundTrip() bool {
@@ -721,11 +721,10 @@ func (c *client) buildRequest(req provider.Request) chatRequest {
 				if c.RequiresToolCallReasoning() || m.ReasoningContent != "" {
 					cm.ReasoningContent = &m.ReasoningContent
 				}
-			case c.zhipu && m.ReasoningContent != "":
+			case c.zhipu && (m.ReasoningContent != "" || (c.glmThinkingEnabled() && len(m.ToolCalls) > 0)):
 				// GLM interleaved and preserved thinking require provider-issued
-				// reasoning content to be returned unchanged in later history. Keep
-				// an existing value even after thinking is turned off so an
-				// enabled→disabled session retains its valid history bytes.
+				// reasoning unchanged. Coding Plan includes the field on tool turns
+				// even when empty; preserve non-empty history after disabling too.
 				cm.ReasoningContent = &m.ReasoningContent
 			}
 		}

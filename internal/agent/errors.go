@@ -11,7 +11,7 @@ import (
 type ReasoningReplayFailure string
 
 const (
-	ReasoningReplayMissing      ReasoningReplayFailure = "missing_reasoning"
+	ReasoningReplayMissing      ReasoningReplayFailure = "missing_required_reasoning"
 	ReasoningReplayOverflow     ReasoningReplayFailure = "reasoning_overflow"
 	ReasoningReplayUnreplayable ReasoningReplayFailure = "unreplayable_history"
 )
@@ -27,7 +27,7 @@ func (e *ReasoningReplayError) Error() string {
 	if e != nil && e.Kind == ReasoningReplayOverflow {
 		return "The provider reasoning exceeded the client safety limit, so Reasonix did not run the requested tools. Existing work was kept; retry to continue safely."
 	}
-	return "The provider omitted reasoning required to replay this tool turn, so Reasonix did not run the requested tools. Existing work was kept; retry to continue safely."
+	return "The provider repeatedly omitted reasoning required to replay this tool turn. Reasonix exhausted its safe automatic recovery and did not run the requested tools. Existing work was kept; switch provider or protocol if this continues."
 }
 
 // PauseClass names the guard that deliberately ended a run, so a host can
