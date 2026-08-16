@@ -21,7 +21,7 @@ function mockRect(
 }
 
 function keyEvent(overrides: Partial<ConstructorParameters<typeof KeyboardEvent>[1]> & { key: string }) {
-  return { key: overrides.key, ctrlKey: false, metaKey: false, altKey: false, shiftKey: false, ...overrides };
+  return { ctrlKey: false, metaKey: false, altKey: false, shiftKey: false, ...overrides };
 }
 
 // handleTerminalCopyKey: Ctrl+C copies a live selection and swallows the chord;

@@ -69,14 +69,14 @@ try {
   check(JSON.stringify(pausable) === JSON.stringify([1, 2]), "inactive terminal does not consume hidden PTY output");
   pausableSubscription.setActive(true);
   check(
-    pausable.length === terminalEventBufferLimit + 2 && pausable[2] === 18 && pausable.at(-1) === 33,
+    pausable.length === terminalEventBufferLimit + 2 && pausable[2] === 18 && pausable[pausable.length - 1] === 33,
     "reactivated terminal replays only the retained missed output once",
   );
   const replayedLength = pausable.length;
   pausableSubscription.setActive(true);
   check(pausable.length === replayedLength, "repeated activation does not duplicate terminal output");
   __emitMockTerminalOutput({ id: "pausable", data: base64(new Uint8Array([99])) });
-  check(pausable.at(-1) === 99, "reactivated terminal resumes live output after replay");
+  check(pausable[pausable.length - 1] === 99, "reactivated terminal resumes live output after replay");
   pausableSubscription.dispose();
 
   __emitMockTerminalOutput({ id: "forgotten", data: base64(new Uint8Array([9])) });
