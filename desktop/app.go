@@ -965,6 +965,19 @@ func (a *App) SubmitToTab(tabID, input string) error {
 // reclaim remote control first — typing locally is the grab-back gesture.
 func (a *App) submitToTab(tabID, input string, fromBridge bool, submissionID ...string) error {
 	trimmed := strings.TrimSpace(input)
+	if trimmed == "/reload" {
+		tab, _ := a.tabAndCtrlByID(tabID)
+		if a.tabIsReadOnly(tab) {
+			return readOnlyChannelErr()
+		}
+		if tab == nil {
+			return a.workspaceNotReadyErr(tab)
+		}
+		if !fromBridge && a.botBridge != nil {
+			a.botBridge.reclaimFromDesktop(tab.ID)
+		}
+		return a.ReloadRuntime(tab.ID)
+	}
 	if trimmed == "/effort" || strings.HasPrefix(trimmed, "/effort ") {
 		tab, _ := a.tabAndCtrlByID(tabID)
 		if a.tabIsReadOnly(tab) {
@@ -6797,6 +6810,7 @@ func (a *App) Commands() []CommandInfo {
 		{Name: "theme", Description: i18n.M.CmdTheme, Kind: "builtin", Group: "management"},
 		{Name: "skill", Description: i18n.M.CmdSkill, Kind: "builtin", Group: "skills"},
 		{Name: "reload-cmd", Description: i18n.M.CmdReloadCmd, Kind: "builtin", Group: "management"},
+		{Name: "reload", Description: i18n.M.CmdReload, Kind: "builtin", Group: "management"},
 	}
 	a.mu.RLock()
 	ctrl := a.activeCtrlLocked()
