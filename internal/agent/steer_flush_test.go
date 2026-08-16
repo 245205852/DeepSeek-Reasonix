@@ -94,6 +94,9 @@ func TestRunFlushesUnconsumedSteersOnCancel(t *testing.T) {
 	if n := a.steerQueueLen(); n != 0 {
 		t.Fatalf("steer queue should be empty after the turn, len=%d", n)
 	}
+	if !a.HasUnappliedSteer() {
+		t.Fatal("host should observe that the cancelled turn left unapplied guidance")
+	}
 	if a.Steer("after the turn") {
 		t.Fatalf("Steer must be rejected once the turn has exited")
 	}
@@ -116,6 +119,9 @@ func TestCloseSteerIntakeIfIdleMakesAdmissionLinearizable(t *testing.T) {
 	}
 	if n := a.steerQueueLen(); n != 0 {
 		t.Fatalf("rejected steer remained queued, len=%d", n)
+	}
+	if a.HasUnappliedSteer() {
+		t.Fatal("closing an empty steer intake must not report unapplied guidance")
 	}
 }
 
