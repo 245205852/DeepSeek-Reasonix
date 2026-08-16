@@ -137,6 +137,18 @@ type App struct {
 	catalogDone        chan struct{}
 	catalogRebuilding  atomic.Bool
 	shuttingDown       atomic.Bool
+	// catalogReconcileJobs coalesces both the legacy pre-scan and catalog scan.
+	// Catalog deduplicates its worker; this also prevents callers from
+	// stampeding the otherwise-unbounded pre-scan goroutines.
+	catalogReconcileMu   sync.Mutex
+	catalogReconcileJobs map[string]*desktopCatalogReconcileJob
+	// Test-only deterministic boundary, set before concurrent requests.
+	catalogReconcileHook     func(sessioncatalog.DirectoryTarget)
+	catalogReconcileDoneHook func(sessioncatalog.DirectoryTarget)
+	// catalogRegisteredProjectRoots bounds activation-triggered discovery to
+	// once per project per process. Failed pre-catalog attempts are removed so
+	// a later activation retries after the asynchronous catalog opens.
+	catalogRegisteredProjectRoots sync.Map
 
 	// taskCtrl is the process-wide task-monitor control service (lazy; see
 	// taskControl). One instance serializes control operations in-process.
@@ -389,15 +401,16 @@ func (a *App) jsProfilingMiddleware() func(http.Handler) http.Handler {
 // last session's desktop-tabs.json.
 func NewApp() *App {
 	a := &App{
-		tabs:                map[string]*WorkspaceTab{},
-		runtimeByID:         map[string]*desktopSessionRuntime{},
-		runtimeBySessionKey: map[string]*desktopSessionRuntime{},
-		detachedSessions:    map[string]*WorkspaceTab{},
-		mediaTokens:         newMediaTokenStore(),
-		botInstalls:         map[string]*botInstallSession{},
-		botRuntime:          newDesktopBotRuntime(),
-		remoteWindows:       newRemoteWindowRegistry(),
-		remoteWindowOwnerID: newRemoteWindowOwnerID(),
+		tabs:                 map[string]*WorkspaceTab{},
+		runtimeByID:          map[string]*desktopSessionRuntime{},
+		runtimeBySessionKey:  map[string]*desktopSessionRuntime{},
+		catalogReconcileJobs: map[string]*desktopCatalogReconcileJob{},
+		detachedSessions:     map[string]*WorkspaceTab{},
+		mediaTokens:          newMediaTokenStore(),
+		botInstalls:          map[string]*botInstallSession{},
+		botRuntime:           newDesktopBotRuntime(),
+		remoteWindows:        newRemoteWindowRegistry(),
+		remoteWindowOwnerID:  newRemoteWindowOwnerID(),
 	}
 	a.webView2Recovery = newWebView2RecoveryCoordinator(a)
 	a.workspaceHub = newWorkspaceChangeHub(a)

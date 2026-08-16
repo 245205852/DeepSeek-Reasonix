@@ -14,6 +14,7 @@ import { providerIsConfigured, providerRequiresKey, removeProviderAccessesForMoc
 import { DEFAULT_STATUS_BAR_ITEMS, normalizeStatusBarItems } from "./statusBarItems";
 import { registerTrustedThemeBackgroundURLs } from "./themePack";
 import { modeHasAutoApproveTools, modeWithAutoApproveTools, modeWithPlan, normalizeCollaborationMode, normalizeMode, normalizeToolApprovalMode } from "./types";
+import { makeMockProjectTreeOrganizationBindings } from "./mockProjectTreeOrganization";
 import { decisionSurfaceMockFromInput, isLongDecisionOptionsMockInput } from "./decisionSurfaceMock";
 import { mockWorkspaceFile } from "./mockWorkspaceFile";
 import { mockAIRenameSession, type SessionTitleBindings } from "./mockSessionTitle";
@@ -87,6 +88,7 @@ import type {
   PluginInstallOptions,
   PluginView,
   ProjectNode,
+  ProjectTreeOrganizationBindings,
   RecoveryLineageView,
   RecoveryCleanupRequest,
   RecoveryCleanupResult,
@@ -162,12 +164,9 @@ interface DesktopWindowState {
   maximised: boolean;
 }
 
-// AppBindings is the hand-written contract between React and Go. Components use
-// local types instead of generated model classes. _CheckGeneratedBindings catches drift: when a Go method is
-// added or renamed, the generated types shift, and a key present in GeneratedApp
-// but missing from AppBindings causes a type error here. Fix: add the new method
-// to AppBindings, then run `pnpm typecheck` to verify.
-export interface AppBindings extends SessionCatalogBindings, HistoryCatalogBindings, TaskCatalogBindings, BlankProjectBindings, SessionTitleBindings {
+// AppBindings is the hand-written React-to-Go contract. _CheckGeneratedBindings
+// catches generated methods missing here; update this interface and typecheck.
+export interface AppBindings extends SessionCatalogBindings, ProjectTreeOrganizationBindings, HistoryCatalogBindings, TaskCatalogBindings, BlankProjectBindings, SessionTitleBindings {
   Platform(): Promise<string>;
   MinimiseMainWindow(): Promise<void>;
   ToggleMaximiseMainWindow(): Promise<void>;
@@ -928,7 +927,7 @@ export function onReady(cb: (tabId?: string) => void): () => void {
 
 export function onProjectTreeChanged(cb: () => void): () => void {
   if (realApp() && typeof window !== "undefined" && window.runtime) {
-    return window.runtime.EventsOn("project-tree:changed", (payload?: unknown) => (payload as { reason?: unknown } | undefined)?.reason !== "runtime" && cb());
+    return window.runtime.EventsOn("project-tree:changed", (payload?: unknown) => (payload as { reason?: unknown } | undefined)?.reason !== "runtime" && (payload as { reason?: unknown } | undefined)?.reason !== "catalog-v2" && cb());
   }
   return () => {};
 }
@@ -5342,6 +5341,7 @@ function makeMockApp(): AppBindings {
     async SetTopicPinned(topicID: string, pinned: boolean) {
       setMockTopicPinned(topicID, pinned);
     },
+    ...makeMockProjectTreeOrganizationBindings(mockProjectTree),
     async SaveWindowState(_state) {
       // no-op in browser dev — no real window geometry to persist
     },
