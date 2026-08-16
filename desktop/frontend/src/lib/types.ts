@@ -352,6 +352,8 @@ export interface WireEvent {
   completion?: WireCompletionSummary;
   tabId?: string; // Go's tabEventSink tags events for the correct per-tab reducer.
   runtimeEpoch?: string;
+  /** Unix milliseconds recorded by the desktop host when this turn began. */
+  turnStartedAt?: number;
   sessionHitTokens?: number;
   sessionMissTokens?: number;
   sessionCost?: number;
@@ -442,6 +444,8 @@ export interface TabMeta {
   ready: boolean;
   runtime?: SessionRuntimeView;
   running: boolean;
+  /** Unix milliseconds for the currently active foreground turn. */
+  turnStartedAt?: number;
   pendingPrompt?: boolean;
   backgroundJobs?: number;
   cancelRequested?: boolean;

@@ -945,14 +945,6 @@ func (t *WorkspaceTab) recordReadFile(rec readFileRecord) {
 	t.telemMu.Unlock()
 }
 
-func (t *WorkspaceTab) recordTurnStarted(now int64) {
-	t.telemMu.Lock()
-	if t.usageTelemetry.activeTurnStartedAt == 0 {
-		t.usageTelemetry.activeTurnStartedAt = now
-	}
-	t.telemMu.Unlock()
-}
-
 func (t *WorkspaceTab) recordTurnDone(now int64) {
 	t.telemMu.Lock()
 	if started := t.usageTelemetry.activeTurnStartedAt; started > 0 && now >= started {
@@ -1541,6 +1533,7 @@ func (s *tabEventSink) Emit(e event.Event) {
 		s.mu.Unlock()
 	}
 	tabID, app := s.binding()
+	var turnStartedAt int64
 	if app != nil {
 		if e.Kind == event.TurnDone {
 			// Keep the legacy completion as a cheap missed-event safety net. The
@@ -1550,7 +1543,7 @@ func (s *tabEventSink) Emit(e event.Event) {
 		switch e.Kind {
 		case event.TurnStarted:
 			s.resetDisplayTurn()
-			s.recordTurnStarted()
+			turnStartedAt = s.recordTurnStarted()
 		case event.Usage:
 			s.recordUsageTelemetry(e)
 		case event.TurnDone:
@@ -1570,7 +1563,7 @@ func (s *tabEventSink) Emit(e event.Event) {
 			s.flushDisplay(e.Cancelled)
 		}
 	}
-	s.emitRuntimeEvent(eventChannel, toWireTabWithSubmission(e, tabID, s.runtimeEpochSnapshot(), s.submissionIDSnapshot()))
+	s.emitRuntimeEvent(eventChannel, toWireTabWithSubmission(e, tabID, s.runtimeEpochSnapshot(), s.submissionIDSnapshot(), turnStartedAt))
 	if app != nil {
 		if status, update := topicActivityStatusFromEvent(e); update {
 			changed := app.setTabActivityStatus(tabID, status)
@@ -1957,18 +1950,19 @@ func (s *tabEventSink) recordReadTelemetry(e event.Event) {
 	}
 }
 
-func (s *tabEventSink) recordTurnStarted() {
+func (s *tabEventSink) recordTurnStarted() int64 {
 	tab, sp := s.telemetryTab()
 	if tab == nil {
-		return
+		return 0
 	}
 	if sp != "" {
 		tab.syncTelemetryToSession(sp)
 	}
-	tab.recordTurnStarted(time.Now().UnixMilli())
+	startedAt := tab.recordTurnStarted(time.Now().UnixMilli())
 	if sp != "" {
 		_ = saveTelemetry(sp+".telemetry.json", tab.telemetrySnapshot())
 	}
+	return startedAt
 }
 
 func (s *tabEventSink) recordTurnDone() {
@@ -2130,8 +2124,9 @@ func toWireTab(e event.Event, tabID string, runtimeEpoch ...string) wireEventTab
 // uses tabId to dispatch to the correct per-tab state.
 type wireEventTab struct {
 	eventwire.Event
-	TabID        string `json:"tabId"`
-	RuntimeEpoch string `json:"runtimeEpoch,omitempty"`
+	TabID         string `json:"tabId"`
+	RuntimeEpoch  string `json:"runtimeEpoch,omitempty"`
+	TurnStartedAt int64  `json:"turnStartedAt,omitempty"`
 	// Session-cumulative tokens per tab.
 	SessionHitTokens  int `json:"sessionHitTokens,omitempty"`
 	SessionMissTokens int `json:"sessionMissTokens,omitempty"`
@@ -2166,6 +2161,7 @@ type TabMeta struct {
 	Ready             bool               `json:"ready"`
 	Runtime           SessionRuntimeView `json:"runtime"`
 	Running           bool               `json:"running"`
+	TurnStartedAt     int64              `json:"turnStartedAt,omitempty"`
 	PendingPrompt     bool               `json:"pendingPrompt,omitempty"`
 	RemoteControlled  bool               `json:"remoteControlled,omitempty"`
 	BackgroundJobs    int                `json:"backgroundJobs,omitempty"`
@@ -2228,6 +2224,7 @@ func (a *App) tabMeta(tab *WorkspaceTab, active bool) TabMeta {
 		Label:             tab.Label,
 		Ready:             runtimeView.Phase == sessionRuntimeReady && tab.Ctrl != nil,
 		Runtime:           runtimeView,
+		TurnStartedAt:     tab.turnStartedAt(),
 		Mode:              currentTabMode(tab),
 		CollaborationMode: currentTabCollaborationMode(tab),
 		ToolApprovalMode:  currentTabToolApprovalMode(tab),
