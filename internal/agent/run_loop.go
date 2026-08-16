@@ -647,8 +647,8 @@ func (a *Agent) handleToolRound(ctx context.Context, state *turnRuntime, step in
 			ToolCallID: call.ID,
 			Name:       call.Name,
 		}
-		// First-visible Content is always the bounded form in results[i].
-		// Full originals ride on RawContent only when truncation applied.
+		// Content is the old-reader-safe bounded form. Full originals ride on
+		// RawContent and are promoted only on the new provider request copy.
 		if i < len(batch.outcomes) && batch.outcomes[i].rawOutput != "" && batch.outcomes[i].rawOutput != results[i] {
 			msg.RawContent = batch.outcomes[i].rawOutput
 		}

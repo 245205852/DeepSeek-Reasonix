@@ -503,7 +503,7 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 	if multiThresholdMigrated || multiThresholdMigErr != nil {
 		level := event.LevelInfo
 		text := "上下文维护已简化为单一自动压缩阈值。"
-		detail := "Context maintenance now uses a single automatic compact_ratio (default 0.85). soft_compact_ratio, tool_result_snip_ratio, compact_force_ratio, cold_resume_prune, and context_editing were removed from config."
+		detail := "Context maintenance now uses a single automatic compact_ratio (default 0.80). soft_compact_ratio, tool_result_snip_ratio, compact_force_ratio, cold_resume_prune, and context_editing were removed from config."
 		if multiThresholdMigErr != nil {
 			level = event.LevelWarn
 			text = "Deprecated multi-threshold compaction keys were ignored."

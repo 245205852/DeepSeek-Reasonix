@@ -561,7 +561,7 @@ func TestContextPanelUsesLastUsageBreakdownWithTelemetryTotal(t *testing.T) {
 		usageProvider{usage: lastUsage},
 		tool.NewRegistry(),
 		agent.NewSession("system"),
-		agent.Options{ContextWindow: 200},
+		agent.Options{},
 		event.Discard,
 	)
 	if err := ag.Run(context.Background(), "hello"); err != nil {

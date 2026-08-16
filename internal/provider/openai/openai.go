@@ -47,7 +47,7 @@ import (
 // live streams emit tokens/keepalives far more often. Stored per-client
 // (client.idleTimeout) so a test can shorten it without a shared global that
 // would race other streams' watchdogs.
-const defaultStreamIdleTimeout = 120 * time.Second
+const defaultStreamIdleTimeout = 300 * time.Second
 
 // maxPrefixContinuations keeps automatic recovery bounded. A second length
 // finish is surfaced through the existing truncation notice instead of opening
@@ -259,7 +259,7 @@ func newHTTPClient(cfg provider.Config) (*http.Client, error) {
 		DialTimeout:           30 * time.Second,
 		KeepAlive:             30 * time.Second,
 		TLSHandshakeTimeout:   15 * time.Second,
-		ResponseHeaderTimeout: 120 * time.Second, // models can think for a while before the first token
+		ResponseHeaderTimeout: 300 * time.Second, // unified provider response-header idle guard
 	})
 }
 
