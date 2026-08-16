@@ -18,6 +18,7 @@ import { makeMockProjectTreeOrganizationBindings } from "./mockProjectTreeOrgani
 import { decisionSurfaceMockFromInput, isLongDecisionOptionsMockInput } from "./decisionSurfaceMock";
 import { mockWorkspaceFile } from "./mockWorkspaceFile";
 import { mockAIRenameSession, type SessionTitleBindings } from "./mockSessionTitle";
+import { mockHistoryContentField, mockHistorySlice } from "./bridgeHistoryFixtures";
 import type {
   RemoteHostView,
   RemoteHostInput,
@@ -1826,6 +1827,7 @@ function makeMockApp(): AppBindings {
         { key: "topic_bench_tools", kind: "topic", label: "● bench:tools-38t", root: "~/projects/reasonix", topicId: "topic_bench_tools", projectColor: "blue", turns: 38, lastActivityAt: mockNow - 120_000, open: true },
         { key: "topic_bench_small", kind: "topic", label: "bench:small-6t", root: "~/projects/reasonix", topicId: "topic_bench_small", projectColor: "green", turns: 6, lastActivityAt: mockNow - 180_000 },
         { key: "topic_bench_giant_turn", kind: "topic", label: "bench:giant-turn", root: "~/projects/reasonix", topicId: "topic_bench_giant_turn", projectColor: "amber", turns: 1, lastActivityAt: mockNow - 240_000 },
+        { key: "topic_bench_storm", kind: "topic", label: "bench:storm-40t", root: "~/projects/reasonix", topicId: "topic_bench_storm", projectColor: "red", turns: 40, lastActivityAt: mockNow - 300_000 },
       ],
     },
   ] : [
@@ -2082,77 +2084,6 @@ function makeMockApp(): AppBindings {
 	      return turn >= startTurn && turn < endTurn;
 	    });
 	    return { messages: pageMessages, startTurn, endTurn, totalTurns, hasOlder: startTurn > 0 };
-	  };
-	  // Windowed sibling of mockHistoryPage: same turn windowing, but returns
-	  // entryId-keyed rows and an opaque older-cursor, mirroring the real
-	  // HistorySliceForTab contract closely enough for dev/tests.
-	  const mockHistorySlice = (tabID: string, messages: HistoryMessage[], req: HistorySliceRequest): HistorySlice => {
-	    const turnsOf: number[] = [];
-	    let turn = 0;
-	    for (const message of messages) {
-	      if (message.role === "user") turn += 1;
-	      turnsOf.push(turn);
-	    }
-	    let before = messages.length;
-	    if (req.cursor) {
-	      try {
-	        const decoded = JSON.parse(atob(req.cursor)) as { before?: number };
-	        if (typeof decoded.before === "number" && decoded.before >= 0 && decoded.before < before) before = decoded.before;
-	      } catch { /* unknown cursor: serve the latest page */ }
-	    }
-	    const empty: HistorySlice = { entries: [], nextCursor: "", hasOlder: false, totalTurns: turn, startTurn: 0, endTurn: 0, stale: false, revision: 0 };
-	    if (before <= 0 || messages.length === 0) return empty;
-	    const turns = Math.max(1, Math.floor(req.turns || 12));
-	    const newestTurn = turnsOf[before - 1];
-	    const oldestTurn = newestTurn > 0 ? Math.max(newestTurn - turns + 1, 1) : 0;
-	    let lo = 0;
-	    if (oldestTurn > 1) {
-	      lo = before;
-	      for (let i = 0; i < before; i += 1) {
-	        if (turnsOf[i] >= oldestTurn) { lo = i; break; }
-	      }
-	    }
-	    // Keep the newest suffix within the real backend's entry cap.
-	    const maxEntries = Math.max(1, Math.floor(req.entries || 120));
-	    if (before - lo > maxEntries) lo = before - maxEntries;
-	    const entries = messages.slice(lo, before).map((message, index) => {
-	      const entryId = `smock-${tabID}:r0:m${lo + index}:o0`;
-	      const content = message.content ?? "";
-	      const lazyContent = benchMock && content.includes("ASYNC LAYOUT EXPANSION COMPLETE");
-	      return {
-	        entryId, turn: turnsOf[lo + index], order: lo + index,
-	        message: lazyContent ? { ...message, content: content.slice(0, 4 * 1024) } : message,
-	        refs: lazyContent ? [{ entryId, field: "content", size: content.length, chunks: 1, revision: 0, revKnown: false, digest: "" }] : [],
-	      };
-	    });
-	    const visibleTurns = entries.map((entry) => entry.turn).filter((value) => value > 0);
-	    return {
-	      entries,
-	      nextCursor: lo > 0 ? btoa(JSON.stringify({ v: 1, before: lo })) : "",
-	      hasOlder: lo > 0,
-	      totalTurns: turn,
-	      startTurn: visibleTurns.length > 0 ? Math.min(...visibleTurns) : 0,
-	      endTurn: visibleTurns.length > 0 ? Math.max(...visibleTurns) : 0,
-	      stale: false,
-	      revision: 0,
-	    };
-	  };
-	  const mockHistoryContentField = (message: HistoryMessage, ref: HistoryContentRef): string => {
-	    switch (ref.field) {
-	      case "content": return message.content ?? "";
-	      case "reasoning": return message.reasoning ?? "";
-	      case "submitText": return message.submitText ?? "";
-	      case "detail": return message.detail ?? "";
-	      case "code": return message.code ?? "";
-	      case "summary": return message.summary ?? "";
-	      case "archive": return message.archive ?? "";
-	      case "toolResultError": return message.toolResultError ?? "";
-	      case "toolArguments": return (message.toolCalls ?? []).find((tc) => tc.id === ref.toolCallId)?.arguments ?? "";
-	      case "toolSubject": return (message.toolCalls ?? []).find((tc) => tc.id === ref.toolCallId)?.subject ?? "";
-	      case "toolSummary": return (message.toolCalls ?? []).find((tc) => tc.id === ref.toolCallId)?.summary ?? "";
-	      case "toolDiff": return (message.toolCalls ?? []).find((tc) => tc.id === ref.toolCallId)?.diff ?? "";
-	      default: return "";
-	    }
 	  };
 	  const mockRuntimeInjected = new Set<string>();
   const queueMockTopicRuntime = (tab: TabMeta) => {
@@ -3262,7 +3193,7 @@ function makeMockApp(): AppBindings {
           return turns;
         },
         async HistorySliceForTab(tabID: string, req: HistorySliceRequest) {
-          return mockHistorySlice(tabID, await this.HistoryForTab(tabID), req);
+          return mockHistorySlice(tabID, await this.HistoryForTab(tabID), req, benchMock);
         },
         async HistoryContentForTab(tabID: string, ref: HistoryContentRef, chunkIndex: number): Promise<HistoryContentChunk> {
           const out: HistoryContentChunk = { entryId: ref.entryId, field: ref.field, chunk: Math.max(0, chunkIndex), chunks: 1, data: "", done: true, stale: false };
@@ -3271,6 +3202,12 @@ function makeMockApp(): AppBindings {
           const messages = await this.HistoryForTab(tabID);
           const message = messages[Number(match[1])];
           if (benchMock && message?.content?.includes("ASYNC LAYOUT EXPANSION COMPLETE")) await delay(1_500);
+          // Storm fixture: pace ref resolutions deterministically by entry
+          // index so opening the session produces a seconds-long patch storm
+          // instead of a single burst (#8657).
+          if (benchMock && (message?.content?.includes("BENCH STORM HYDRATION RESOLVED") || message?.reasoning?.includes("BENCH STORM HYDRATION RESOLVED"))) {
+            await delay(50 + (Number(match[1]) % 24) * 120);
+          }
           if (!message) return { ...out, stale: true };
           out.data = mockHistoryContentField(message, ref);
           out.chunks = 1;

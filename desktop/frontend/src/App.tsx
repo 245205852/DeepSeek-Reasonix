@@ -4762,7 +4762,6 @@ export default function App() {
                   actionHoverMenus={sidebarCreation && !hydratePlaceholderActive}
                   rewindSignal={rewindSignal}
                   revealSignal={transcriptRevealSignal}
-                  historyLayoutRevision={state.historyLayoutRevision}
                   hydrating={transcriptHydrating}
                   hasOlderHistory={state.historyHasOlder && !rewindState}
                   olderHistoryCount={state.historyStartTurn}
