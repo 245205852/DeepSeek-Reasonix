@@ -2,6 +2,357 @@
   "schemaVersion": 1,
   "releases": [
     {
+      "version": "1.25.3",
+      "date": "2026-08-16",
+      "channel": "stable",
+      "title": {
+        "en": "Reasonix v1.25.3: Adaptive execution, smoother streaming, and more robust recovery",
+        "zh": "Reasonix v1.25.3：自适应执行、更流畅的流式体验与更稳健的恢复"
+      },
+      "summary": {
+        "en": "This release replaces execution modes with a unified adaptive standard policy, makes desktop streaming and scrolling more reliable, and strengthens context recovery, session ownership, and provider compatibility.",
+        "zh": "本次发布用统一的自适应标准策略取代执行模式，让桌面端流式输出与滚动更可靠，并强化了上下文恢复、会话所有权与提供商兼容性。"
+      },
+      "surfaces": [
+        "desktop"
+      ],
+      "guides": [],
+      "highlights": [
+        {
+          "kind": "new",
+          "title": {
+            "en": "Unified adaptive execution replaces Light, Balanced, and Delivery modes",
+            "zh": "统一自适应执行策略取代轻量、均衡与交付模式"
+          },
+          "body": {
+            "en": "Reasonix no longer asks you to pick an execution mode. Each turn derives a policy from intent, risk, structure, and constraints, then uses it for planning, verification, and evidence closure.",
+            "zh": "Reasonix 不再要求选择执行模式。每轮根据意图、风险、结构与约束推导策略，并用于规划、验证与证据闭环。"
+          },
+          "refs": [
+            8866
+          ]
+        },
+        {
+          "kind": "improved",
+          "title": {
+            "en": "Desktop streaming and scrolling are now stable",
+            "zh": "桌面端流式输出与滚动现已稳定"
+          },
+          "body": {
+            "en": "The active turn renders outside the virtual list, eliminating flicker, snap-back, and tail loss on Windows and WebView2. The todo panel updates live.",
+            "zh": "活跃轮次在虚拟列表外渲染，消除了 Windows 与 WebView2 上的闪烁、回跳与尾部丢失。待办面板实时更新。"
+          },
+          "refs": [
+            8903,
+            8925
+          ]
+        },
+        {
+          "kind": "fixed",
+          "title": {
+            "en": "Context overflow recovery keeps progressing",
+            "zh": "上下文溢出恢复持续推进"
+          },
+          "body": {
+            "en": "Repeated hard context overflows in long tool turns can now recover after a token-saving checkpoint instead of aborting with an error.",
+            "zh": "长工具轮次中反复出现的硬上下文溢出现在可在节省令牌的检查点后恢复，而不是报错中止。"
+          },
+          "refs": [
+            8874,
+            8921
+          ]
+        },
+        {
+          "kind": "fixed",
+          "title": {
+            "en": "DeepSeek Anthropic reasoning replay fixed",
+            "zh": "修复 DeepSeek Anthropic 推理回放"
+          },
+          "body": {
+            "en": "Tool-bound assistant turns now replay required thinking blocks, avoiding HTTP 400 errors on follow-up requests.",
+            "zh": "工具绑定的助手轮次现在会回放所需的思考块，避免后续请求出现 HTTP 400 错误。"
+          },
+          "refs": [
+            8924,
+            7763
+          ]
+        },
+        {
+          "kind": "new",
+          "title": {
+            "en": "On-demand write-access grants for sandboxed tools",
+            "zh": "沙箱工具按需写入授权"
+          },
+          "body": {
+            "en": "File tools and Bash can request write access to directories outside the workspace, with once, session, project, or deny decisions.",
+            "zh": "文件工具与 Bash 可请求工作区外目录的写入权限，支持一次、会话、项目或拒绝等决策。"
+          },
+          "refs": [
+            8884
+          ]
+        }
+      ],
+      "changes": {
+        "new": [
+          {
+            "title": {
+              "en": "Adaptive standard execution policy",
+              "zh": "自适应标准执行策略"
+            },
+            "body": {
+              "en": "Replaces Light, Balanced, and Delivery modes with a single policy derived per turn from intent, risk, and structure.",
+              "zh": "用根据意图、风险与结构逐轮推导的单一策略取代轻量、均衡与交付模式。"
+            },
+            "refs": [
+              8866
+            ]
+          },
+          {
+            "title": {
+              "en": "On-demand write-access grants",
+              "zh": "按需写入授权"
+            },
+            "body": {
+              "en": "File tools and Bash can request write access to directories outside the workspace, with once, session, project, or deny decisions.",
+              "zh": "文件工具与 Bash 可请求工作区外目录的写入权限，支持一次、会话、项目或拒绝等决策。"
+            },
+            "refs": [
+              8884
+            ]
+          },
+          {
+            "title": {
+              "en": "Expanded reasoning display mode",
+              "zh": "持续展开推理显示模式"
+            },
+            "body": {
+              "en": "Adds an explicit expanded mode that keeps completed reasoning open, applied consistently across assistant messages, inline transcript reasoning, and sub-agent previews.",
+              "zh": "新增显式的展开模式，使已完成的推理保持展开，并一致应用于助手消息、内联转录推理和子代理预览。"
+            },
+            "refs": [
+              8732
+            ]
+          },
+          {
+            "title": {
+              "en": "SCNet provider presets",
+              "zh": "SCNet 提供商预设"
+            },
+            "body": {
+              "en": "Adds curated presets for the National Supercomputing Internet (SCNet) Token Plan, including OpenAI-compatible and Anthropic-compatible endpoints.",
+              "zh": "新增国家超算互联网（SCNet）Token Plan 的内置预设，包括 OpenAI 兼容和 Anthropic 兼容端点。"
+            },
+            "refs": [
+              8886
+            ]
+          },
+          {
+            "title": {
+              "en": "Unified AI and agent-driven session titles",
+              "zh": "统一 AI 与 Agent 会话命名"
+            },
+            "body": {
+              "en": "Adds a cache-stable set_session_title capability and a Desktop AI rename action, with consistent title updates across catalog, history, and project tree.",
+              "zh": "新增缓存稳定的 set_session_title 能力和桌面端 AI 重命名操作，并在目录、历史记录和项目树中一致更新标题。"
+            },
+            "refs": [
+              8920
+            ]
+          }
+        ],
+        "improved": [
+          {
+            "title": {
+              "en": "Desktop streaming and scrolling stability",
+              "zh": "桌面端流式输出与滚动稳定性"
+            },
+            "body": {
+              "en": "Active turn renders outside the virtual list, eliminating flicker, snap-back, and tail loss; todo panel updates live.",
+              "zh": "活跃轮次在虚拟列表外渲染，消除闪烁、回跳和尾部丢失；待办面板实时更新。"
+            },
+            "refs": [
+              8903,
+              8925
+            ]
+          },
+          {
+            "title": {
+              "en": "Context budgeting and overflow recovery",
+              "zh": "上下文预算与溢出恢复"
+            },
+            "body": {
+              "en": "Provider-aware shared-window budgeting prevents exceeding physical limits, and repeated hard overflows can recover after token-saving checkpoints.",
+              "zh": "提供商感知的共享窗口预算防止超出物理限制，反复出现的硬溢出可在节省令牌的检查点后恢复。"
+            },
+            "refs": [
+              8921,
+              8874
+            ]
+          },
+          {
+            "title": {
+              "en": "Session ownership and recovery",
+              "zh": "会话所有权与恢复"
+            },
+            "body": {
+              "en": "Isolates writers, fork-first rewind, and stable recovery branches across all frontends, with compaction projections preserved across restarts.",
+              "zh": "在所有前端隔离写入者、分叉优先回溯和稳定恢复分支，并在重启后保留压缩投影。"
+            },
+            "refs": [
+              8878,
+              8923
+            ]
+          },
+          {
+            "title": {
+              "en": "Fact-driven execution",
+              "zh": "事实驱动执行"
+            },
+            "body": {
+              "en": "Replaces task-mode routing with fact-driven execution, where the model decides investigation, todos, or sub-agents, and the host builds verification obligations from concrete tool calls.",
+              "zh": "用事实驱动执行替代任务模式路由，模型决定调查、待办或子代理，主机从具体工具调用构建验证义务。"
+            },
+            "refs": [
+              8930
+            ]
+          },
+          {
+            "title": {
+              "en": "Ordinary readiness quality gaps softened",
+              "zh": "普通任务质量证据缺口不再中断"
+            },
+            "body": {
+              "en": "Ordinary same-surface mutations proceed on targeted evidence, and missing verification evidence is surfaced in the completion summary instead of blocking.",
+              "zh": "普通同表面变更基于目标证据继续，缺失的验证证据在完成摘要中显示，而不是阻断。"
+            },
+            "refs": [
+              8901
+            ]
+          },
+          {
+            "title": {
+              "en": "ACP v1-compliant prompt outcomes",
+              "zh": "符合 ACP v1 的提示结果"
+            },
+            "body": {
+              "en": "Returns proper end_turn outcomes for readiness errors and JSON-RPC InternalError for genuine failures, with credential redaction.",
+              "zh": "对就绪错误返回正确的 end_turn 结果，对真实故障返回 JSON-RPC InternalError，并进行凭据脱敏。"
+            },
+            "refs": [
+              8916
+            ]
+          },
+          {
+            "title": {
+              "en": "Windows workspace watching",
+              "zh": "Windows 工作区监视"
+            },
+            "body": {
+              "en": "Uses one recursive ReadDirectoryChangesW subscription per workspace root, avoiding nested directory locks.",
+              "zh": "每个工作区根目录使用一个递归 ReadDirectoryChangesW 订阅，避免嵌套目录锁定。"
+            },
+            "refs": [
+              8922
+            ]
+          },
+          {
+            "title": {
+              "en": "SSH remote window native frame on Windows",
+              "zh": "Windows 上 SSH 远程窗口原生框架"
+            },
+            "body": {
+              "en": "Remote windows keep the native OS frame, providing titlebar and window controls, and no longer inherit the saved main-window size.",
+              "zh": "远程窗口保留原生操作系统框架，提供标题栏和窗口控件，不再继承保存的主窗口大小。"
+            },
+            "refs": [
+              8913
+            ]
+          },
+          {
+            "title": {
+              "en": "Localized new-session sidebar titles",
+              "zh": "侧边栏新会话标题本地化"
+            },
+            "body": {
+              "en": "Auto-generated default titles now localize to the desktop language in the sidebar catalog.",
+              "zh": "自动生成的默认标题现在在侧边栏目录中根据桌面语言本地化。"
+            },
+            "refs": [
+              8824
+            ]
+          }
+        ],
+        "fixed": [
+          {
+            "title": {
+              "en": "DeepSeek Anthropic reasoning replay",
+              "zh": "DeepSeek Anthropic 推理回放"
+            },
+            "body": {
+              "en": "Fixes HTTP 400 errors on tool-bound assistant turns by replaying required thinking blocks and handling missing reasoning with a bounded retry.",
+              "zh": "通过回放所需的思考块并以有界重试处理缺失推理，修复工具绑定助手轮次的 HTTP 400 错误。"
+            },
+            "refs": [
+              8924,
+              7763
+            ]
+          },
+          {
+            "title": {
+              "en": "Compaction projections preserved across restart",
+              "zh": "重启后保留压缩投影"
+            },
+            "body": {
+              "en": "Long conversations no longer resend and rebill full pre-compaction history after a restart; valid projections are restored.",
+              "zh": "长对话在重启后不再重新发送和计费完整的压缩前历史；有效投影被恢复。"
+            },
+            "refs": [
+              8923
+            ]
+          },
+          {
+            "title": {
+              "en": "Windows and policy blockers cleared",
+              "zh": "清除 Windows 与策略阻断"
+            },
+            "body": {
+              "en": "Fixes invalid TOML fixture for Windows absolute paths and clause-aware mutation constraints that blocked authorized outputs.",
+              "zh": "修复 Windows 绝对路径的无效 TOML 夹具和阻止授权输出的子句感知变更约束。"
+            },
+            "refs": [
+              8934
+            ]
+          }
+        ]
+      },
+      "upgrade": [],
+      "risks": [],
+      "contributors": [
+        "SivanCola",
+        "XTLine",
+        "innocarpe",
+        "Doonut",
+        "RayySummers",
+        "SweetenedSuzuka",
+        "ShumzZzZz",
+        "kaidiren"
+      ],
+      "links": {
+        "github": "https://github.com/esengine/DeepSeek-Reasonix/releases/tag/desktop-v1.25.3",
+        "compare": "https://github.com/esengine/DeepSeek-Reasonix/compare/desktop-v1.25.2...desktop-v1.25.3",
+        "download": "https://reasonix.io/?download=desktop&channel=stable#start"
+      },
+      "releaseId": "1.25.3",
+      "baseVersion": "1.25.3",
+      "status": "reviewed",
+      "previousRelease": "1.25.2",
+      "builds": {
+        "cli": "v1.25.3",
+        "desktop": "v1.25.3",
+        "npm": "1.25.3"
+      }
+    },
+    {
       "version": "1.25.2",
       "date": "2026-08-14",
       "channel": "stable",
