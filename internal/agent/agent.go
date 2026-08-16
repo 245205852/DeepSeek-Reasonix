@@ -684,6 +684,11 @@ type steerEntry struct {
 	text string
 }
 
+// ErrSteerWithdrawn tells the agent that a durable steer was intentionally
+// removed by a concurrent user cancellation. It must not be recorded as an
+// unapplied failure in the transcript.
+var ErrSteerWithdrawn = errors.New("steer withdrawn")
+
 // Steer queues a message for mid-turn injection. It reports whether an active
 // turn accepted the text; on false nothing was queued and the caller must
 // deliver it another way (typically as a new turn). Without the active check,
@@ -748,6 +753,9 @@ func (a *Agent) consumeSteer() (text, itemID string, ok bool) {
 	if e.load != nil {
 		t, err := e.load()
 		if err != nil {
+			if errors.Is(err, ErrSteerWithdrawn) {
+				return "", "", false
+			}
 			return "", e.itemID, false
 		}
 		return t, e.itemID, true
@@ -788,7 +796,9 @@ func (a *Agent) flushSteerQueue() {
 	for _, e := range pending {
 		text := e.text
 		if e.load != nil {
-			if t, err := e.load(); err == nil {
+			if t, err := e.load(); errors.Is(err, ErrSteerWithdrawn) {
+				continue
+			} else if err == nil {
 				text = t
 			}
 		}

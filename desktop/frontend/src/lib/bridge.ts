@@ -244,6 +244,7 @@ export interface AppBindings extends SessionCatalogBindings, HistoryCatalogBindi
   Cancel(): Promise<void>;
   CancelTab(tabID: string): Promise<void>;
   CancelTabWithInboxItems(tabID: string, itemIDs: string[]): Promise<void>;
+  CancelTabWithInboxItemsResult?(tabID: string, itemIDs: string[]): Promise<{ discardedItemIds: string[]; warning?: string }>;
   Approve(id: string, allow: boolean, session: boolean, persist: boolean): Promise<void>;
   ApproveTab(tabID: string, id: string, allow: boolean, session: boolean, persist: boolean): Promise<void>;
   ResolvePlanDecision(id: string, action: "start_execution" | "revise_plan" | "exit_plan"): Promise<void>;
@@ -2986,6 +2987,7 @@ function makeMockApp(): AppBindings {
         async CancelTabWithInboxItems(_tabID, _itemIDs) {
           await withMockTabScope(_tabID, () => this.Cancel());
         },
+        async CancelTabWithInboxItemsResult(_tabID, itemIDs) { await withMockTabScope(_tabID, () => this.Cancel()); return { discardedItemIds: [...itemIDs] }; },
         async Approve(_id, allow, session, persist) {
           if (!pendingApprovalPreview) return;
           pendingApprovalPreview = false;
