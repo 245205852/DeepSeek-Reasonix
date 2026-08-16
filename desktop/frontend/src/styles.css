@@ -2132,7 +2132,10 @@ a[href] {
    the terminal occupies column 2 row 3, statusbar at row 4. */
 .layout--terminal-drawer-open {
   grid-template-rows: var(--app-chrome-height) minmax(0, 1fr) var(--terminal-height, 280px) var(--statusbar-height);
-  transition: grid-template-columns 0.16s ease, min-width 0.16s ease, grid-template-rows 0.25s ease;
+  transition:
+    grid-template-columns 0.16s ease,
+    min-width 0.16s ease,
+    grid-template-rows 0.22s cubic-bezier(0.2, 0.72, 0.2, 1);
 }
 /* Disable the open/close transition during a terminal resize drag. */
 .layout--terminal-resizing.layout--terminal-drawer-open {
@@ -2207,11 +2210,17 @@ a[href] {
 }
 .layout.layout--workbench-chrome-hidden.layout--terminal-drawer-open {
   grid-template-rows: minmax(0, 1fr) var(--terminal-height, 280px) var(--statusbar-height) !important;
-  transition: grid-template-columns 0.16s ease, min-width 0.16s ease, grid-template-rows 0.25s ease !important;
+  transition:
+    grid-template-columns 0.16s ease,
+    min-width 0.16s ease,
+    grid-template-rows 0.22s cubic-bezier(0.2, 0.72, 0.2, 1) !important;
 }
 .app--creation .layout.layout--creation-chrome-hidden.layout--terminal-drawer-open {
   grid-template-rows: minmax(0, 1fr) var(--terminal-height, 280px) !important;
-  transition: grid-template-columns 0.16s ease, min-width 0.16s ease, grid-template-rows 0.25s ease !important;
+  transition:
+    grid-template-columns 0.16s ease,
+    min-width 0.16s ease,
+    grid-template-rows 0.22s cubic-bezier(0.2, 0.72, 0.2, 1) !important;
 }
 /* StatusBar shifts to row 4 when the terminal drawer adds an extra row. */
 .layout--terminal-drawer-open .statusbar {
@@ -37950,6 +37959,9 @@ body > .mermaid-diagram--fullscreen {
   --terminal-faint: var(--fg-faint);
   --terminal-cursor: var(--accent);
   --terminal-selection: color-mix(in srgb, var(--accent) 28%, transparent);
+  /* Auto mode leaves selectionForeground unset: xterm keeps the natural
+     foreground, which stays readable over the selection tint on both light
+     and dark app themes. */
 }
 :root[data-terminal-theme="dark"] {
   --terminal-bg: #111315;
@@ -37960,7 +37972,8 @@ body > .mermaid-diagram--fullscreen {
   --terminal-muted: #a7a19a;
   --terminal-faint: #70777f;
   --terminal-cursor: #e6a15c;
-  --terminal-selection: #344c68;
+  --terminal-selection: #4a6d8c;
+  --terminal-selection-fg: #ffffff;
 }
 :root[data-terminal-theme="light"] {
   --terminal-bg: #f7f8fa;
@@ -37971,7 +37984,8 @@ body > .mermaid-diagram--fullscreen {
   --terminal-muted: #5f6670;
   --terminal-faint: #8b929b;
   --terminal-cursor: #9a4f00;
-  --terminal-selection: #b9d7ff;
+  --terminal-selection: #6ea8fe;
+  --terminal-selection-fg: #0b0f14;
 }
 :root[data-terminal-theme="dark"] .terminal-panel { color-scheme: dark; }
 :root[data-terminal-theme="light"] .terminal-panel { color-scheme: light; }
