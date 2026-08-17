@@ -1,4 +1,4 @@
-import { forwardRef, memo, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type TouchEvent as ReactTouchEvent, useCallback, useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore, type WheelEvent as ReactWheelEvent } from "react";
+import { forwardRef, memo, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type TouchEvent as ReactTouchEvent, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type WheelEvent as ReactWheelEvent } from "react";
 import { Virtuoso, type Components, type ItemProps, type ListItem, type ListProps } from "react-virtuoso";
 import type { ControllerLiveStore, Item, LiveStream } from "../lib/useController";
 import type { CheckpointMeta } from "../lib/types";
@@ -305,10 +305,12 @@ export function Transcript({
     onNestedScrollIntent,
     onTouchStartIntent,
     onTouchMoveIntent,
+    onTouchEndIntent,
     onKeyScrollIntent,
     isAtBottom,
     scrollerRef,
     atBottomStateChange,
+    deliverScroll,
     scrollToBottom,
     followGrowingTail,
     beginUserResize,
@@ -384,7 +386,7 @@ export function Transcript({
   // starts at the bottom. Without this, stick.current from the previous tab
   // persists across React re-renders (Transcript is not keyed by tabId) and
   // disables auto-scroll when the user had scrolled up in the old tab (#4584).
-  useEffect(() => {
+  useLayoutEffect(() => {
     resetScroll();
     virtuosoReadyRef.current = false;
   }, [resetScroll, revealSignal, tabId]);
@@ -559,30 +561,34 @@ export function Transcript({
   // any in-flight recovery restore on its own intent events (#8657/#8688
   // follow-up).
   const onWheelIntentWithRecovery = useCallback((event: ReactWheelEvent<HTMLElement>) => {
-    noteUserScrollIntent();
-    return onWheelIntent(event);
+    const accepted = onWheelIntent(event);
+    if (accepted) noteUserScrollIntent();
+    return accepted;
   }, [noteUserScrollIntent, onWheelIntent]);
   const onTouchStartIntentWithRecovery = useCallback((event: ReactTouchEvent<HTMLElement>) => {
-    noteUserScrollIntent();
     onTouchStartIntent(event);
-  }, [noteUserScrollIntent, onTouchStartIntent]);
+  }, [onTouchStartIntent]);
   const onTouchMoveIntentWithRecovery = useCallback((event: ReactTouchEvent<HTMLElement>) => {
-    noteUserScrollIntent();
-    return onTouchMoveIntent(event);
+    const accepted = onTouchMoveIntent(event);
+    if (accepted) noteUserScrollIntent();
+    return accepted;
   }, [noteUserScrollIntent, onTouchMoveIntent]);
   const onKeyScrollIntentWithRecovery = useCallback((event: ReactKeyboardEvent<HTMLElement>) => {
-    noteUserScrollIntent();
-    return onKeyScrollIntent(event);
+    const accepted = onKeyScrollIntent(event);
+    if (accepted) noteUserScrollIntent();
+    return accepted;
   }, [noteUserScrollIntent, onKeyScrollIntent]);
   const onPointerDownIntentWithRecovery = useCallback((event: ReactPointerEvent<HTMLElement>) => {
-    noteUserScrollIntent();
-    return onPointerDownIntent(event);
+    const accepted = onPointerDownIntent(event);
+    if (accepted) noteUserScrollIntent();
+    return accepted;
   }, [noteUserScrollIntent, onPointerDownIntent]);
   const scrollInteractions = useTranscriptScrollInteractions({
-    scrollRef,
+    scrollElement,
     cancelStreamingScroll: cancelStreamingAutoScroll,
     onWheelIntent: onWheelIntentWithRecovery,
     onTouchMoveIntent: onTouchMoveIntentWithRecovery,
+    onTouchEndIntent,
     onKeyScrollIntent: onKeyScrollIntentWithRecovery,
     onPointerDownIntent: onPointerDownIntentWithRecovery,
     onNestedScrollIntent,
@@ -602,10 +608,11 @@ export function Transcript({
     entranceRef.current = node instanceof HTMLElement ? node as HTMLDivElement : null;
   }, [entranceRef, scrollerRef]);
   const handleTranscriptScroll = useCallback(() => {
+    deliverScroll();
     noteScrollActivity();
     if (creationMode) handleCreationScroll();
     scheduleBlankViewportCheck();
-  }, [creationMode, handleCreationScroll, noteScrollActivity, scheduleBlankViewportCheck]);
+  }, [creationMode, deliverScroll, handleCreationScroll, noteScrollActivity, scheduleBlankViewportCheck]);
   // ── JumpBar integration ───────────────────────────────────────────────────
   const handleJumpToQuestion = useCallback((question: QuestionAnchor) => {
     const index = rowIndexByKey.get(String(userRowKey(question.id)));
@@ -960,6 +967,8 @@ export function Transcript({
             onWheelCapture={scrollInteractions.onWheelCapture}
             onTouchStartCapture={onTouchStartIntentWithRecovery}
             onTouchMoveCapture={scrollInteractions.onTouchMoveCapture}
+            onTouchEndCapture={scrollInteractions.onTouchEndCapture}
+            onTouchCancelCapture={scrollInteractions.onTouchEndCapture}
             onKeyDownCapture={scrollInteractions.onKeyDownCapture}
             onPointerDownCapture={scrollInteractions.onPointerDownCapture}
           />

@@ -1834,7 +1834,8 @@ function makeMockApp(): AppBindings {
         { key: "topic_bench_tools", kind: "topic", label: "● bench:tools-38t", root: "~/projects/reasonix", topicId: "topic_bench_tools", projectColor: "blue", turns: 38, lastActivityAt: mockNow - 120_000, open: true },
         { key: "topic_bench_small", kind: "topic", label: "bench:small-6t", root: "~/projects/reasonix", topicId: "topic_bench_small", projectColor: "green", turns: 6, lastActivityAt: mockNow - 180_000 },
         { key: "topic_bench_giant_turn", kind: "topic", label: "bench:giant-turn", root: "~/projects/reasonix", topicId: "topic_bench_giant_turn", projectColor: "amber", turns: 1, lastActivityAt: mockNow - 240_000 },
-        { key: "topic_bench_storm", kind: "topic", label: "bench:storm-40t", root: "~/projects/reasonix", topicId: "topic_bench_storm", projectColor: "red", turns: 40, lastActivityAt: mockNow - 300_000 },
+        { key: "topic_bench_reported_long_turn", kind: "topic", label: "bench:reported-long-turn", root: "~/projects/reasonix", topicId: "topic_bench_reported_long_turn", projectColor: "amber", turns: 1, lastActivityAt: mockNow - 300_000 },
+        { key: "topic_bench_storm", kind: "topic", label: "bench:storm-40t", root: "~/projects/reasonix", topicId: "topic_bench_storm", projectColor: "red", turns: 40, lastActivityAt: mockNow - 360_000 },
       ],
     },
   ] : [

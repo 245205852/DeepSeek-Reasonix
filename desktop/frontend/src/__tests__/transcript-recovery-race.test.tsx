@@ -107,7 +107,12 @@ const rowElement = scrollElement.querySelector<HTMLElement>(".transcript__row")!
 scrollElement.getBoundingClientRect = () => rectAt(0);
 rowElement.getBoundingClientRect = () => rectAt(200);
 Object.defineProperty(scrollElement, "clientHeight", { configurable: true, value: 100 });
-Object.defineProperty(scrollElement, "scrollHeight", { configurable: true, value: 500 });
+let scrollExtent = 500;
+Object.defineProperty(scrollElement, "scrollHeight", { configurable: true, get: () => scrollExtent });
+Object.defineProperty(scrollElement, "scrollTop", { configurable: true, writable: true, value: 0 });
+Object.defineProperty(scrollElement, "offsetWidth", { configurable: true, value: 800 });
+Object.defineProperty(scrollElement, "clientWidth", { configurable: true, value: 780 });
+Object.defineProperty(scrollElement, "clientLeft", { configurable: true, value: 0 });
 
 const item: Item = { kind: "assistant", id: "a", text: "answer", reasoning: "", streaming: false };
 const baseRows: TranscriptRow[] = [{ kind: "answer", key: "row-a", item }];
@@ -116,12 +121,18 @@ let scrollByCalls = 0;
 let scrollToIndexCalls = 0;
 let scrollToCalls = 0;
 let scrollToBottomCalls = 0;
+let tailWriteStep = 0;
+let snapTailOnWrite = false;
 // Null disables snapshot capture; the snapshot sections opt in explicitly so
 // the pre-snapshot scenarios keep their first-mount scrollToBottom behavior.
 let stubSnapshot: StateSnapshot | null = null;
 const virtuosoHandle = {
   scrollBy: () => { scrollByCalls += 1; },
-  scrollToIndex: () => { scrollToIndexCalls += 1; },
+  scrollToIndex: () => {
+    scrollToIndexCalls += 1;
+    if (snapTailOnWrite) scrollElement.scrollTop = scrollExtent - scrollElement.clientHeight;
+    else if (tailWriteStep > 0) scrollElement.scrollTop = Math.min(scrollExtent - scrollElement.clientHeight, scrollElement.scrollTop + tailWriteStep);
+  },
   scrollTo: () => { scrollToCalls += 1; },
   getState: (callback: (state: StateSnapshot) => void) => {
     if (stubSnapshot) callback(stubSnapshot);
@@ -179,6 +190,96 @@ await act(async () => {
   (arbiter!.virtuosoRef as { current: VirtuosoHandle | null }).current = virtuosoHandle;
   arbiter!.scrollerRef(scrollElement);
 });
+
+// The native extent is authoritative even when Virtuoso reports a stale
+// logical atBottom value after delayed row measurement.
+scrollElement.scrollTop = 400;
+await act(async () => arbiter?.atBottomStateChange(false));
+check(arbiter?.isAtBottom === true, "physical bottom overrides a stale Virtuoso atBottom=false report");
+
+// A thumb gesture that reaches the frozen native bottom must claim the tail
+// before release resumes real row measurements and changes the extent.
+scrollElement.scrollTop = 0;
+await act(async () => arbiter?.onPointerDownIntent({
+  button: 0,
+  nativeEvent: { button: 0, clientX: 795 },
+} as React.PointerEvent<HTMLElement>));
+scrollElement.scrollTop = 400;
+await act(async () => window.dispatchEvent(new dom.window.Event("pointerup")));
+check(arbiter?.modeRef.current === "tail-follow", "native thumb release at the physical bottom resumes tail-follow");
+scrollExtent = 900;
+snapTailOnWrite = true;
+await act(async () => arbiter?.deliverScroll());
+await flushFrames();
+check(scrollElement.scrollTop === 800, "post-release remeasurement reconverges the claimed native bottom");
+snapTailOnWrite = false;
+scrollExtent = 500;
+
+// A nested code/tool scrollport owns the wheel until it reaches its edge.
+// Capturing the event on Transcript must not release tail-follow early.
+const nestedScroller = dom.window.document.createElement("div");
+nestedScroller.style.overflowY = "auto";
+Object.defineProperty(nestedScroller, "clientHeight", { configurable: true, value: 100 });
+Object.defineProperty(nestedScroller, "scrollHeight", { configurable: true, value: 300 });
+Object.defineProperty(nestedScroller, "scrollTop", { configurable: true, writable: true, value: 50 });
+rowElement.appendChild(nestedScroller);
+await act(async () => arbiter?.reset());
+let nestedWheelAccepted = true;
+await act(async () => {
+  nestedWheelAccepted = arbiter?.onWheelIntent({
+    ctrlKey: false,
+    deltaX: 0,
+    deltaY: -40,
+    target: nestedScroller,
+  } as React.WheelEvent<HTMLElement>) ?? true;
+});
+check(!nestedWheelAccepted && arbiter?.modeRef.current === "tail-follow", "a scrollable nested surface keeps wheel ownership");
+nestedScroller.scrollTop = 0;
+await act(async () => {
+  nestedWheelAccepted = arbiter?.onWheelIntent({
+    ctrlKey: false,
+    deltaX: 0,
+    deltaY: -40,
+    target: nestedScroller,
+  } as React.WheelEvent<HTMLElement>) ?? false;
+});
+check(nestedWheelAccepted && arbiter?.modeRef.current === "manual", "a nested edge hands wheel ownership to the transcript");
+nestedScroller.remove();
+
+// If measurement/clamping reaches the physical bottom between scroll events,
+// a fresh downward gesture must still claim tail-follow even though the
+// browser has no remaining pixels to deliver.
+scrollElement.scrollTop = 400;
+let bottomWheelAccepted = false;
+await act(async () => {
+  bottomWheelAccepted = arbiter?.onWheelIntent({
+    ctrlKey: false,
+    deltaX: 0,
+    deltaY: 40,
+    target: scrollElement,
+  } as React.WheelEvent<HTMLElement>) ?? false;
+});
+check(bottomWheelAccepted && arbiter?.modeRef.current === "tail-follow", "a downward gesture claims an already-clamped physical bottom");
+
+// A queued confirmation belongs to the surface that requested it. Resetting
+// before its frame runs must prevent the old request from writing the new one.
+scrollToIndexCalls = 0;
+scrollElement.scrollTop = 0;
+await act(async () => arbiter?.scrollToBottom());
+check(scrollToIndexCalls === 1, "bottom request performs its immediate LAST write");
+await act(async () => arbiter?.reset());
+await flushFrames();
+check(scrollToIndexCalls === 1, "a reset invalidates the previous surface's queued tail confirmation");
+
+// Tail-follow is a persistent mode, not a six-frame retry window. Each
+// delivered non-bottom position must request another coalesced convergence.
+scrollToIndexCalls = 0;
+tailWriteStep = 20;
+await act(async () => arbiter?.scrollToBottom());
+for (let i = 0; i < 10; i += 1) await flushFrames();
+check(scrollToIndexCalls > 8, "tail convergence remains live beyond the former six-frame budget");
+tailWriteStep = 0;
+
 await act(async () => integrity?.scheduleBlankViewportCheck());
 await switchSurface("surface-b");
 check(integrity?.resetKey === "surface-b:0", "surface switch cancels the previous blank-viewport watchdog");

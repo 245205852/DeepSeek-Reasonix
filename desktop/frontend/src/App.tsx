@@ -197,7 +197,7 @@ import { ThemeBackground } from "./components/ThemeBackground";
 import { applyTextSize, DEFAULT_TEXT_SIZE, getTextSize, nextTextSize } from "./lib/textSize";
 import { useViewportHeightVar, useWindowStatePersistence } from "./lib/windowState";
 import { resolveLiveWorkspacePanelWidth, resolveWorkspacePanelPlacement, workspacePanelAriaMinWidth } from "./lib/workspaceLayout";
-import { createRafResizeUpdater } from "./lib/resizeDrag";
+import { createPointerResizeLifecycle, createRafResizeUpdater } from "./lib/resizeDrag";
 import { useGlobalShortcut } from "./lib/keyboardShortcuts";
 import { useWarmTerminalPanel } from "./lib/useWarmTerminalPanel";
 import { topicShortcutIndexFromEvent, useTopicShortcuts, type TopicShortcutEntry } from "./lib/topicShortcuts";
@@ -1297,12 +1297,14 @@ export default function App() {
   const topicRenameCommitHandledRef = useRef(false);
   const appRef = useRef<HTMLDivElement>(null);
   const layoutRef = useRef<HTMLDivElement>(null);
+  const workspacePanelResizeFinishRef = useRef<(() => void) | null>(null);
   const sidebarTogglePressTimerRef = useRef<number | null>(null);
   const workspaceTogglePressTimerRef = useRef<number | null>(null);
 
   // Persist window geometry across launches.
   useWindowStatePersistence();
   useViewportHeightVar();
+  useEffect(() => () => workspacePanelResizeFinishRef.current?.(), []);
   useEffect(() => {
     document.documentElement.setAttribute("data-platform", desktopPlatform);
   }, [desktopPlatform]);
@@ -2722,18 +2724,21 @@ export default function App() {
 
   const startWorkspacePanelResize = useCallback(
     (event: ReactPointerEvent<HTMLButtonElement>) => {
-      if (!workspacePanelOpen) return;
+      if (event.button !== 0 || !workspacePanelOpen) return;
       const layout = layoutRef.current;
       if (!layout) return;
       event.preventDefault();
+      workspacePanelResizeFinishRef.current?.();
       closeTransientOverlays();
       setWorkspacePanelResizing(true);
+      const separator = event.currentTarget;
+      const pointerId = event.pointerId;
       const startX = event.clientX;
       const startDockWidth = workspacePanelRenderWidth;
       let nextDockWidth = startDockWidth;
       const liveResize = createRafResizeUpdater({
         target: layout,
-        separator: event.currentTarget,
+        separator,
         cssVar: "--workspace-width",
         onApply: setLiveWorkspacePanelRenderWidth,
       });
@@ -2747,22 +2752,23 @@ export default function App() {
         }
         liveResize.schedule(resolveLiveWorkspacePanelRenderWidth(nextDockWidth));
       };
-      const onDone = () => {
-        liveResize.flush();
-        setSavedWorkspacePanelWidth(nextDockWidth);
-        setLiveWorkspacePanelRenderWidth(null);
-        setWorkspacePanelResizing(false);
-        window.removeEventListener("pointermove", onMove);
-        window.removeEventListener("pointerup", onDone);
-        window.removeEventListener("pointercancel", onDone);
-        document.body.style.cursor = "";
-        document.body.style.userSelect = "";
-      };
+      const lifecycle = createPointerResizeLifecycle({
+        separator,
+        pointerId,
+        onMove,
+        onFinish: () => {
+          liveResize.flush();
+          setSavedWorkspacePanelWidth(nextDockWidth);
+          setLiveWorkspacePanelRenderWidth(null);
+          setWorkspacePanelResizing(false);
+          workspacePanelResizeFinishRef.current = null;
+          document.body.style.cursor = "";
+          document.body.style.userSelect = "";
+        },
+      });
+      workspacePanelResizeFinishRef.current = lifecycle.finish;
       document.body.style.cursor = "col-resize";
       document.body.style.userSelect = "none";
-      window.addEventListener("pointermove", onMove);
-      window.addEventListener("pointerup", onDone);
-      window.addEventListener("pointercancel", onDone);
     },
     [closeTransientOverlays, resolveLiveWorkspacePanelRenderWidth, rightDockDetailActive, rightDockTreeWidthClamp, setSavedWorkspacePanelWidth, workspacePanelOpen, workspacePanelRenderWidth],
   );

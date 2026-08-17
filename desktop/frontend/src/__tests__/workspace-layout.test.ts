@@ -165,6 +165,18 @@ eq(
   "closing the dock clears the transient render width, hides the panel, and persists the collapsed preference",
 );
 eq(
+  /\.workspace-panel-resizer \{[\s\S]*?grid-column: 3;[\s\S]*?justify-self: start;[\s\S]*?width: 1px;/.test(stylesSource)
+    && /\.workspace-panel-resizer::before \{[\s\S]*?left: 0;[\s\S]*?right: -7px;/.test(stylesSource),
+  true,
+  "workspace resize hit area starts at the dock boundary and never overlaps the chat scrollbar gutter",
+);
+eq(
+  /createPointerResizeLifecycle\(\{[\s\S]*?separator,[\s\S]*?pointerId,[\s\S]*?onMove,[\s\S]*?onFinish: \(\) => \{[\s\S]*?liveResize\.flush\(\);/.test(appSource)
+    && /workspacePanelResizeFinishRef\.current = lifecycle\.finish/.test(appSource),
+  true,
+  "workspace resize has one guarded finish path for capture loss, blur, cancellation, and unmount",
+);
+eq(
   /setWorkspacePanelOpen\(true\);[\s\S]*?saveWorkspacePanelOpen\(true\);/.test(appSource),
   true,
   "opening the dock persists the expanded preference for the next launch",
