@@ -105,7 +105,9 @@ export function QuestionJumpBar({ questions, onJump }: { questions: QuestionAnch
         setShowPreview(false);
       }}
     >
-      <div className="jump-scroll" onMouseDown={onRailMouseDown} onClick={onRailMouseDown}>
+      {/* Pointer activation is owned by mousedown. Handling the following click
+          as well can issue a second jump after the active marker has moved. */}
+      <div className="jump-scroll" onMouseDown={onRailMouseDown}>
         {questions.map((question, index) => (
           <button
             className="jump-item"

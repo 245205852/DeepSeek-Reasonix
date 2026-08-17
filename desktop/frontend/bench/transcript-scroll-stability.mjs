@@ -176,6 +176,34 @@ try {
   assert(box != null, "bench exposes the Virtuoso transcript viewport");
   assert(await page.locator('[data-virtuoso-scroller="true"]').count() === 1, "Transcript is backed by React Virtuoso");
 
+  await page.evaluate(() => {
+    window.__reasonixQuestionJumpWrites = [];
+    window.__REASONIX_TRANSCRIPT_SCROLL_WRITE__ = (write) => {
+      if (write.owner === "jump") window.__reasonixQuestionJumpWrites.push(write);
+    };
+  });
+  const questionRail = page.locator(".jump-scroll");
+  const questionRailBox = await questionRail.boundingBox();
+  assert(questionRailBox != null, "long transcript exposes the question navigator rail");
+  await page.mouse.click(
+    questionRailBox.x + questionRailBox.width / 2,
+    questionRailBox.y + questionRailBox.height / 2,
+  );
+  const questionJumpWrites = await page.evaluate(() => {
+    const writes = window.__reasonixQuestionJumpWrites ?? [];
+    window.__REASONIX_TRANSCRIPT_SCROLL_WRITE__ = undefined;
+    window.__reasonixQuestionJumpWrites = undefined;
+    return writes;
+  });
+  assert(questionJumpWrites.length === 1, `one question-rail click emits one indexed jump (${questionJumpWrites.length})`);
+  await page.locator(".transcript__jump-bottom").click();
+  await page.waitForFunction(() => {
+    const element = document.querySelector(".transcript");
+    return element instanceof HTMLElement
+      && element.dataset.scrollMode === "tail-follow"
+      && element.scrollHeight - element.scrollTop - element.clientHeight <= 1;
+  });
+
   // Stay on the tail. Opening the workspace dock must not crop right-aligned
   // user bubbles — that is a width/padding bug, not the scroll-up overlap.
   const measureDockCrop = () => page.evaluate(() => {
