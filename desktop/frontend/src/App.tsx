@@ -4327,7 +4327,7 @@ export default function App() {
             sidebarCollapsed={sidebarCollapsed}
             sidebarToggleTitle={sidebarToggleTitle}
             workspacePanelMaximized={workspacePanelMaximized}
-            effectiveWorkspacePanelRenderable={effectiveWorkspacePanelRenderable}
+            workspacePanelRenderable={effectiveWorkspacePanelRenderable}
             workspaceTogglePressed={workspaceTogglePressed}
             workspacePanelLabel={effectiveWorkspacePanelRenderable ? t("rightDock.collapse") : t("rightDock.expand")}
             onToggleSidebar={toggleSidebar}
