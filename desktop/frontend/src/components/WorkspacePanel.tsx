@@ -39,6 +39,12 @@ import { closeWorkspacePreviewTab } from "../lib/workspacePreviewTabs";
 import { useWorkspaceRefresh } from "../lib/workspaceRefreshStore";
 import { useWorkspaceRefreshInvalidation, workspaceRefreshFallbackSequence } from "../lib/workspaceRefreshInvalidation";
 import { createWorkspaceRefreshScheduler } from "../lib/workspaceRefreshScheduler";
+import {
+  beginKeyedResourceRequest,
+  emptyKeyedResource,
+  rejectKeyedResourceRequest,
+  resolveKeyedResourceRequest,
+} from "../lib/keyedResource";
 import { shouldScrollWorkspaceTreeSelection } from "../lib/workspaceTreeReveal";
 import { mergeWorkspaceSearchResults } from "../lib/workspaceTreeSearch";
 import {
@@ -1603,6 +1609,7 @@ export function WorkspacePanel({
     selectedFilePath &&
       !changedMode &&
       !isMarkdown &&
+      !previewErr &&
       !preview?.err &&
       !preview?.kind &&
       !preview?.binary,
