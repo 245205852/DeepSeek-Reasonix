@@ -647,8 +647,8 @@ func (a *Agent) handleToolRound(ctx context.Context, state *turnRuntime, step in
 			ToolCallID: call.ID,
 			Name:       call.Name,
 		}
-		// Content is the old-reader-safe bounded form. Full originals ride on
-		// RawContent and are promoted only on the new provider request copy.
+		// Content is the stable bounded provider form. Full originals remain in
+		// local RawContent and enter model context only through explicit paging.
 		if i < len(batch.outcomes) && batch.outcomes[i].rawOutput != "" && batch.outcomes[i].rawOutput != results[i] {
 			msg.RawContent = batch.outcomes[i].rawOutput
 		}

@@ -257,9 +257,9 @@ when the sole automatic threshold is crossed.
   `agent.compact_ratio` (default **0.80**; presets 0.70 / 0.80 / 0.85; range
   0.65–0.85).
   `triggerTokens = floor(context_window × compact_ratio)`.
-- **Below the trigger** the model receives complete tool `RawContent` from a
-  temporary request projection; no sidecar is written. Durable `Content` remains
-  bounded for older Reasonix readers.
+- **Below the trigger** ordinary requests remain append-only and no sidecar is
+  written. Every provider request uses the durable, bounded tool `Content`;
+  local `RawContent` is never promoted into sampling, retry, summary, or replay.
 - **At the trigger** one singleflight maintenance transaction first persistently
   prunes every tool result over 8192 Unicode code points to `4096 head +
   "[... tool result middle pruned ...]" + 1024 tail`. If this clears pressure,
@@ -296,10 +296,12 @@ when the sole automatic threshold is crossed.
     the physical remainder. A negative value force-omits optional wire limits;
     if the known auto budget no longer fits, Reasonix compacts instead of
     overriding that choice.
-- Canonical tool storage remains backward compatible: `Content` is a stable
-  ≤32KB form and `RawContent` holds the full original. New request projections
-  promote tool `RawContent` below pressure; prune projections never rewrite either
-  canonical field. Older supported readers therefore remain bounded.
+- Canonical tool storage remains backward compatible: `Content` is the stable
+  provider-visible ≤32KB form and `RawContent` holds the full local original.
+  Full results are returned to the model only after an explicit paged
+  `use_capability` call to `session:tool_result`; sampling, stream retry, summary,
+  and projection replay all use the same bounded `Content`. Prune projections
+  never rewrite either canonical field. Older supported readers remain bounded.
 - Automatic maintenance is planned once in `ContextManager.Prepare` from the
   current projection plus the append-only canonical tail. The canonical
   transcript is never rewritten. Subsequent thresholds merge

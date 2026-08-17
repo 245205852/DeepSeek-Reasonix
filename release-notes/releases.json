@@ -64,6 +64,17 @@
       ],
       "highlights": [
         {
+          "kind": "fixed",
+          "title": {
+            "en": "Bounded tool results preserve prompt-cache prefixes",
+            "zh": "有界工具结果保持提示词缓存前缀"
+          },
+          "body": {
+            "en": "Large tool results now keep a stable provider-visible 32KB representation while retaining the complete local result for explicit paged recovery. This fixes avoidable context growth and prefix churn; provider-side cache hit rates still depend on model and cache state.",
+            "zh": "大工具结果现在使用稳定的 provider 可见 32KB 表示，同时在本地保留完整结果供显式分页恢复。该修复避免不必要的上下文增长和前缀变化；供应商侧缓存命中率仍取决于模型与缓存状态。"
+          }
+        },
+        {
           "kind": "new",
           "title": {
             "en": "DeepSeek V4 peak and off-peak pricing",
@@ -190,7 +201,18 @@
             ]
           }
         ],
-        "fixed": []
+        "fixed": [
+          {
+            "title": {
+              "en": "Stable large tool-result projection",
+              "zh": "稳定的大工具结果投影"
+            },
+            "body": {
+              "en": "Stops full local RawContent from being automatically promoted into sampling, retries, summaries, and projection replay. Complete text remains losslessly available through the session-scoped paged capability.",
+              "zh": "不再将本地完整 RawContent 自动提升到采样、重试、摘要和投影回放中；完整原文仍可通过会话隔离的分页能力无损读取。"
+            }
+          }
+        ]
       },
       "upgrade": [],
       "risks": [],

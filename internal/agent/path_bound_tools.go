@@ -29,6 +29,12 @@ type pathBoundCapabilityProxy struct {
 	resolver tool.CallResolver
 }
 
+func (p pathBoundCapabilityProxy) bindToolResultSession(session func() *Session) {
+	if binder, ok := p.inner.(toolResultSessionBinder); ok {
+		binder.bindToolResultSession(session)
+	}
+}
+
 func (p pathBoundCapabilityProxy) Name() string            { return p.inner.Name() }
 func (p pathBoundCapabilityProxy) Description() string     { return p.inner.Description() }
 func (p pathBoundCapabilityProxy) Schema() json.RawMessage { return p.inner.Schema() }
