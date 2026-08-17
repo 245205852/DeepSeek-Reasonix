@@ -2,6 +2,299 @@
   "schemaVersion": 1,
   "releases": [
     {
+      "version": "1.27.0",
+      "date": "2026-08-17",
+      "channel": "stable",
+      "title": {
+        "en": "Reasonix Desktop 1.27.0",
+        "zh": "Reasonix 桌面版 1.27.0"
+      },
+      "summary": {
+        "en": "This release improves transcript navigation reliability, adds ordered batch sign-offs with anchor safety, and hardens desktop window lifecycle recovery.",
+        "zh": "此版本提高了会话导航的可靠性，新增按序批量签收与锚点安全门禁，并加固了桌面窗口生命周期恢复。"
+      },
+      "surfaces": [
+        "desktop"
+      ],
+      "guides": [
+        {
+          "title": {
+            "en": "User Guide",
+            "zh": "用户指南"
+          },
+          "body": {
+            "en": "Learn about ordered batch sign-offs and other features.",
+            "zh": "了解按序批量签收及其他功能。"
+          },
+          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/5d88688607d257022a8d92b3906b76f2f5a24341/docs/GUIDE.md"
+        },
+        {
+          "title": {
+            "en": "User Guide (Chinese)",
+            "zh": "用户指南（中文）"
+          },
+          "body": {
+            "en": "Chinese version of the user guide.",
+            "zh": "用户指南的中文版本。"
+          },
+          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/5d88688607d257022a8d92b3906b76f2f5a24341/docs/GUIDE.zh-CN.md"
+        }
+      ],
+      "highlights": [
+        {
+          "kind": "new",
+          "title": {
+            "en": "Ordered batch sign-offs with anchor safety",
+            "zh": "按序批量签收与锚点安全门禁"
+          },
+          "body": {
+            "en": "Multiple evidence-backed complete_step calls can now be made in one provider tool-call round while preserving canonical Todo ordering, sequential host advancement, rejection semantics, and idempotency. Host-only model-visible text observations and closed-interval SHA-256 fingerprints for delete_range are added, with safe handling of same-batch reads, partial windows, changed targets, and invalid anchors.",
+            "zh": "现在可以在一个提供方工具调用回合中进行多个有证据支持的 complete_step 调用，同时保持规范的 Todo 顺序、顺序主机推进、拒绝语义和幂等性。为 delete_range 添加了仅主机可见的模型文本观察和闭区间 SHA-256 指纹，并安全处理同批次读取、部分窗口、更改目标和无效锚点。"
+          },
+          "refs": [
+            9046
+          ]
+        },
+        {
+          "kind": "improved",
+          "title": {
+            "en": "Reliable transcript navigation and scroll ownership",
+            "zh": "可靠的会话导航与滚动所有权"
+          },
+          "body": {
+            "en": "Fixed stale transcript navigation, preserved upward reader intent, converged transcript tail on native geometry, and fixed question navigation clicks. Cross-session navigation now hides source content synchronously and shows a localized loading surface.",
+            "zh": "修复了过期的会话导航，保留了向上阅读意图，使会话尾部收敛于原生几何，并修复了问题导航点击。跨会话导航现在同步隐藏源内容并显示本地化的加载界面。"
+          },
+          "refs": [
+            9054,
+            9053,
+            9044,
+            9013,
+            9024
+          ]
+        },
+        {
+          "kind": "fixed",
+          "title": {
+            "en": "Desktop window lifecycle recovery hardened",
+            "zh": "桌面窗口生命周期恢复加固"
+          },
+          "body": {
+            "en": "Coordinated main-window presentation through one App-owned lifecycle path, gated Linux close-to-background on live StatusNotifier registration, and treated Wayland activation as compositor acknowledgement.",
+            "zh": "通过一个 App 拥有的生命周期路径协调主窗口呈现，在实时 StatusNotifier 注册上限制 Linux 关闭到后台，并将 Wayland 激活视为合成器确认。"
+          },
+          "refs": [
+            9021
+          ]
+        },
+        {
+          "kind": "fixed",
+          "title": {
+            "en": "Provider Responses tool turns without reasoning recovered",
+            "zh": "修复 Responses 缺少推理的工具回合"
+          },
+          "body": {
+            "en": "Recovered DeepSeek and MiMo Responses tool turns when the provider omits an optional reasoning item, with effort-aware replay requirements.",
+            "zh": "当提供方省略可选推理项时，恢复了 DeepSeek 和 MiMo Responses 工具回合，并具有努力感知的重放要求。"
+          },
+          "refs": [
+            9052
+          ]
+        },
+        {
+          "kind": "fixed",
+          "title": {
+            "en": "Tool-result cache prefix stability",
+            "zh": "工具结果缓存前缀稳定性"
+          },
+          "body": {
+            "en": "Kept each provider-visible tool result on the stable persisted Content representation, bounded to 32 KiB, while retaining the complete local value in RawContent.",
+            "zh": "将每个提供方可见的工具结果保持在稳定的持久化 Content 表示上，限制为 32 KiB，同时在 RawContent 中保留完整的本地值。"
+          },
+          "refs": [
+            9033
+          ]
+        },
+        {
+          "kind": "fixed",
+          "title": {
+            "en": "macOS workspace watching uses FSEvents",
+            "zh": "macOS 工作区监听使用 FSEvents"
+          },
+          "body": {
+            "en": "Replaced the macOS fsnotify/kqueue workspace backend with Apple FSEvents, using one native stream per workspace watch root instead of descriptors that grow with the directory tree.",
+            "zh": "用 Apple FSEvents 替换了 macOS 的 fsnotify/kqueue 工作区后端，每个工作区监视根使用一个原生流，而不是随目录树增长的描述符。"
+          },
+          "refs": [
+            9017
+          ]
+        },
+        {
+          "kind": "fixed",
+          "title": {
+            "en": "Project tree reorder during topic switches fixed",
+            "zh": "修复切换会话时项目树临时乱序"
+          },
+          "body": {
+            "en": "Kept single-surface topic switching on the runtime projection path and indexed committed transcript/sidecar changes by exact session path.",
+            "zh": "在运行时投影路径上保持单表面主题切换，并按精确会话路径索引已提交的转录/边车更改。"
+          },
+          "refs": [
+            9016
+          ]
+        },
+        {
+          "kind": "fixed",
+          "title": {
+            "en": "Unfinished todo readiness scoped to closed loops",
+            "zh": "未完成 todo 只在闭环回合阻塞"
+          },
+          "body": {
+            "en": "Ordinary open turns now finish normally when a partially completed todo list is cross-turn work state, while preserving enforcement for Goal, approved Plan, and strict-obligation turns.",
+            "zh": "当部分完成的 todo 列表是跨回合工作状态时，普通开放回合现在正常结束，同时保留对 Goal、已批准 Plan 和严格义务回合的执行。"
+          },
+          "refs": [
+            9026
+          ]
+        }
+      ],
+      "changes": {
+        "new": [
+          {
+            "title": {
+              "en": "Ordered batch sign-offs with anchor safety",
+              "zh": "按序批量签收与锚点安全门禁"
+            },
+            "body": {
+              "en": "Multiple evidence-backed complete_step calls in one provider tool-call round with canonical Todo ordering, sequential host advancement, rejection semantics, and idempotency. Host-only model-visible text observations and closed-interval SHA-256 fingerprints for delete_range.",
+              "zh": "在一个提供方工具调用回合中进行多个有证据支持的 complete_step 调用，具有规范的 Todo 顺序、顺序主机推进、拒绝语义和幂等性。为 delete_range 添加仅主机可见的模型文本观察和闭区间 SHA-256 指纹。"
+            },
+            "refs": [
+              9046
+            ]
+          }
+        ],
+        "improved": [
+          {
+            "title": {
+              "en": "Transcript navigation and scroll ownership",
+              "zh": "会话导航与滚动所有权"
+            },
+            "body": {
+              "en": "Fixed stale transcript navigation, preserved upward reader intent, converged transcript tail on native geometry, and fixed question navigation clicks. Cross-session navigation hides source content synchronously.",
+              "zh": "修复了过期的会话导航，保留了向上阅读意图，使会话尾部收敛于原生几何，并修复了问题导航点击。跨会话导航同步隐藏源内容。"
+            },
+            "refs": [
+              9054,
+              9053,
+              9044,
+              9013,
+              9024
+            ]
+          },
+          {
+            "title": {
+              "en": "Desktop window lifecycle recovery",
+              "zh": "桌面窗口生命周期恢复"
+            },
+            "body": {
+              "en": "Coordinated main-window presentation through one App-owned lifecycle path, gated Linux close-to-background on live StatusNotifier registration, and treated Wayland activation as compositor acknowledgement.",
+              "zh": "通过一个 App 拥有的生命周期路径协调主窗口呈现，在实时 StatusNotifier 注册上限制 Linux 关闭到后台，并将 Wayland 激活视为合成器确认。"
+            },
+            "refs": [
+              9021
+            ]
+          },
+          {
+            "title": {
+              "en": "Provider Responses tool turns without reasoning",
+              "zh": "Responses 缺少推理的工具回合"
+            },
+            "body": {
+              "en": "Recovered DeepSeek and MiMo Responses tool turns when the provider omits an optional reasoning item, with effort-aware replay requirements.",
+              "zh": "当提供方省略可选推理项时，恢复了 DeepSeek 和 MiMo Responses 工具回合，并具有努力感知的重放要求。"
+            },
+            "refs": [
+              9052
+            ]
+          },
+          {
+            "title": {
+              "en": "Tool-result cache prefix stability",
+              "zh": "工具结果缓存前缀稳定性"
+            },
+            "body": {
+              "en": "Kept each provider-visible tool result on the stable persisted Content representation, bounded to 32 KiB, while retaining the complete local value in RawContent.",
+              "zh": "将每个提供方可见的工具结果保持在稳定的持久化 Content 表示上，限制为 32 KiB，同时在 RawContent 中保留完整的本地值。"
+            },
+            "refs": [
+              9033
+            ]
+          },
+          {
+            "title": {
+              "en": "macOS workspace watching uses FSEvents",
+              "zh": "macOS 工作区监听使用 FSEvents"
+            },
+            "body": {
+              "en": "Replaced the macOS fsnotify/kqueue workspace backend with Apple FSEvents, using one native stream per workspace watch root instead of descriptors that grow with the directory tree.",
+              "zh": "用 Apple FSEvents 替换了 macOS 的 fsnotify/kqueue 工作区后端，每个工作区监视根使用一个原生流，而不是随目录树增长的描述符。"
+            },
+            "refs": [
+              9017
+            ]
+          },
+          {
+            "title": {
+              "en": "Project tree reorder during topic switches",
+              "zh": "切换会话时项目树临时乱序"
+            },
+            "body": {
+              "en": "Kept single-surface topic switching on the runtime projection path and indexed committed transcript/sidecar changes by exact session path.",
+              "zh": "在运行时投影路径上保持单表面主题切换，并按精确会话路径索引已提交的转录/边车更改。"
+            },
+            "refs": [
+              9016
+            ]
+          },
+          {
+            "title": {
+              "en": "Unfinished todo readiness scoped to closed loops",
+              "zh": "未完成 todo 只在闭环回合阻塞"
+            },
+            "body": {
+              "en": "Ordinary open turns now finish normally when a partially completed todo list is cross-turn work state, while preserving enforcement for Goal, approved Plan, and strict-obligation turns.",
+              "zh": "当部分完成的 todo 列表是跨回合工作状态时，普通开放回合现在正常结束，同时保留对 Goal、已批准 Plan 和严格义务回合的执行。"
+            },
+            "refs": [
+              9026
+            ]
+          }
+        ],
+        "fixed": []
+      },
+      "upgrade": [],
+      "risks": [],
+      "contributors": [
+        "SivanCola",
+        "esengine"
+      ],
+      "links": {
+        "github": "https://github.com/esengine/DeepSeek-Reasonix/releases/tag/desktop-v1.27.0",
+        "compare": "https://github.com/esengine/DeepSeek-Reasonix/compare/desktop-v1.26.0...desktop-v1.27.0",
+        "download": "https://reasonix.io/?download=desktop&channel=stable#start"
+      },
+      "releaseId": "1.27.0",
+      "baseVersion": "1.27.0",
+      "status": "reviewed",
+      "previousRelease": "1.26.0",
+      "builds": {
+        "cli": "v1.27.0",
+        "desktop": "v1.27.0",
+        "npm": "1.27.0"
+      }
+    },
+    {
       "version": "1.26.0",
       "date": "2026-08-17",
       "channel": "stable",
