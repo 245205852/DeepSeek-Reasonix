@@ -155,6 +155,13 @@ func (c *coalescer) RecordReadinessAudit(a evidence.ReadinessAudit) {
 	RecordReadinessAudit(c.inner, a)
 }
 
+func (c *coalescer) RecordAnchorSafetyAudit(a AnchorSafetyAudit) {
+	c.mu.Lock()
+	c.enqueueFlushLocked()
+	c.drainAndUnlock()
+	RecordAnchorSafetyAudit(c.inner, a)
+}
+
 func (c *coalescer) RecordTurnCompletion() {
 	c.mu.Lock()
 	c.enqueueFlushLocked()

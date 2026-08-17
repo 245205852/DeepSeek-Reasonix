@@ -48,6 +48,12 @@ func (s *syncSink) RecordReadinessAudit(a evidence.ReadinessAudit) {
 	}
 }
 
+func (s *syncSink) RecordAnchorSafetyAudit(a AnchorSafetyAudit) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	RecordAnchorSafetyAudit(s.inner, a)
+}
+
 func (s *syncSink) RecordTurnCompletion() {
 	s.mu.Lock()
 	defer s.mu.Unlock()

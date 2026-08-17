@@ -23,6 +23,9 @@ func (c *capabilityRecorder) RecordTurnCompletion() { c.mark("turn_completion") 
 func (c *capabilityRecorder) RecordReadinessAudit(evidence.ReadinessAudit) {
 	c.mark("readiness_audit")
 }
+func (c *capabilityRecorder) RecordAnchorSafetyAudit(AnchorSafetyAudit) {
+	c.mark("anchor_safety_audit")
+}
 func (c *capabilityRecorder) RecordContractShadow(ContractShadowAudit) { c.mark("contract_shadow") }
 func (c *capabilityRecorder) RecordCompletionReport(CompletionReportAudit) {
 	c.mark("completion_report")
@@ -60,6 +63,7 @@ func TestCostQuoteSinkPreservesEveryAuditCapability(t *testing.T) {
 	s.Emit(Event{Kind: Notice})
 	RecordTurnCompletion(s)
 	RecordReadinessAudit(s, evidence.ReadinessAudit{})
+	RecordAnchorSafetyAudit(s, AnchorSafetyAudit{Mode: "shadow"})
 	RecordContractShadow(s, ContractShadowAudit{})
 	RecordCompletionReport(s, CompletionReportAudit{})
 	RecordMemoryRecall(s, MemoryRecallAudit{})
@@ -71,7 +75,7 @@ func TestCostQuoteSinkPreservesEveryAuditCapability(t *testing.T) {
 	RecordRunBudget(s, RunBudgetSample{})
 
 	for _, want := range []string{
-		"emit", "turn_completion", "readiness_audit", "contract_shadow",
+		"emit", "turn_completion", "readiness_audit", "anchor_safety_audit", "contract_shadow",
 		"completion_report", "memory_recall", "delegation_admission",
 		"outcome_progress", "protocol_recovery", "delegation_audit",
 		"workspace_mutation", "run_budget",

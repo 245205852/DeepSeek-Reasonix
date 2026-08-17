@@ -91,6 +91,14 @@ func (w pathBoundWriter) DeclareWriteAccess(args json.RawMessage) (tool.WriteAcc
 	return tool.WriteAccessDeclaration{}, nil
 }
 
+func (w pathBoundWriter) ResolveAnchoredTextTarget(ctx context.Context, args json.RawMessage) (tool.AnchoredTextTargetInfo, error) {
+	resolver, ok := w.inner.(tool.AnchoredTextTarget)
+	if !ok {
+		return tool.AnchoredTextTargetInfo{}, fmt.Errorf("tool %q does not expose an anchored target", w.inner.Name())
+	}
+	return resolver.ResolveAnchoredTextTarget(ctx, args)
+}
+
 func (w pathBoundWriter) Execute(ctx context.Context, args json.RawMessage) (string, error) {
 	paths, err := extractWritePathsFromArgs(w.inner.Name(), w.workDir, args)
 	if err != nil {

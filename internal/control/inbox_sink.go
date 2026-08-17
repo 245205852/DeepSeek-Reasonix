@@ -63,6 +63,13 @@ func (s *inboxEventSink) RecordReadinessAudit(a evidence.ReadinessAudit) {
 	event.RecordReadinessAudit(s.inner, a)
 }
 
+func (s *inboxEventSink) RecordAnchorSafetyAudit(a event.AnchorSafetyAudit) {
+	if s == nil {
+		return
+	}
+	event.RecordAnchorSafetyAudit(s.inner, a)
+}
+
 func (s *inboxEventSink) RecordContractShadow(a event.ContractShadowAudit) {
 	if s == nil {
 		return

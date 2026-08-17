@@ -98,7 +98,7 @@ func (a *Agent) parseToolCall(ctx context.Context, plan *toolCallPlan) (toolOutc
 			errMsg:  loopGuardBlockErrMsg,
 		}, true
 	}
-	if out, blocked := a.staleAnchorEditBlock(plan.call); blocked {
+	if out, blocked := a.staleAnchorEditBlock(ctx, plan.call); blocked {
 		return toolOutcome{
 			output:  out,
 			blocked: true,
@@ -746,6 +746,9 @@ func (a *Agent) finishToolExecution(ctx context.Context, plan *toolCallPlan) too
 	// change the previewed path even when the concrete tool returned an error.
 	a.finalizeObservedToolReceipts(plan, result, execution, err)
 	result = a.withRecoveryObservation(ctx, evidenceName, evidenceArgs, readOnly, mutates, result, err, recoveryGen)
+	if err == nil && readOnly {
+		a.recordModelTextObservation(plan, result)
+	}
 	if err != nil {
 		detail := result
 		// Malformed-args failures are a transient model JSON glitch (e.g. options

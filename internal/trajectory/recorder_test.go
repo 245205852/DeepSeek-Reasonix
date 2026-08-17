@@ -13,19 +13,23 @@ import (
 )
 
 type capabilitySink struct {
-	events     []event.Event
-	readiness  []evidence.ReadinessAudit
-	recoveries []event.ProtocolRecoveryAudit
-	outcomes   []evidence.OutcomeSample
-	reports    []event.CompletionReportAudit
-	workspace  []event.WorkspaceMutation
-	runBudgets []event.RunBudgetSample
-	turns      int
+	events       []event.Event
+	readiness    []evidence.ReadinessAudit
+	anchorSafety []event.AnchorSafetyAudit
+	recoveries   []event.ProtocolRecoveryAudit
+	outcomes     []evidence.OutcomeSample
+	reports      []event.CompletionReportAudit
+	workspace    []event.WorkspaceMutation
+	runBudgets   []event.RunBudgetSample
+	turns        int
 }
 
 func (s *capabilitySink) Emit(e event.Event) { s.events = append(s.events, e) }
 func (s *capabilitySink) RecordReadinessAudit(a evidence.ReadinessAudit) {
 	s.readiness = append(s.readiness, a)
+}
+func (s *capabilitySink) RecordAnchorSafetyAudit(a event.AnchorSafetyAudit) {
+	s.anchorSafety = append(s.anchorSafety, a)
 }
 func (s *capabilitySink) RecordProtocolRecovery(a event.ProtocolRecoveryAudit) {
 	s.recoveries = append(s.recoveries, a)

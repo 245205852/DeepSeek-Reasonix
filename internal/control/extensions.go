@@ -213,6 +213,10 @@ func (s *frontendEventSink) RecordReadinessAudit(a evidence.ReadinessAudit) {
 	event.RecordReadinessAudit(s.inner, a)
 }
 
+func (s *frontendEventSink) RecordAnchorSafetyAudit(a event.AnchorSafetyAudit) {
+	event.RecordAnchorSafetyAudit(s.inner, a)
+}
+
 func (s *frontendEventSink) RecordContractShadow(a event.ContractShadowAudit) {
 	event.RecordContractShadow(s.inner, a)
 }

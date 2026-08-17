@@ -1075,7 +1075,7 @@ func TestEvidenceFlowRecoversTodoCompletionAfterFailedCompleteStepWithProgress(t
 	}
 }
 
-func TestEvidenceFlowRecoversAfterBatchTodoCompletionRejection(t *testing.T) {
+func TestEvidenceFlowAllowsBatchCompleteStepSignoffs(t *testing.T) {
 	todoWrite, ok := tool.LookupBuiltin("todo_write")
 	if !ok {
 		t.Fatal("todo_write builtin not registered")
@@ -1113,14 +1113,6 @@ func TestEvidenceFlowRecoversAfterBatchTodoCompletionRejection(t *testing.T) {
 			}`),
 			{Type: provider.ChunkDone},
 		},
-		{
-			toolCallChunk("c5", "complete_step", `{
-				"step":"Run build and tests",
-				"result":"build and tests ran",
-				"evidence":[{"kind":"manual","summary":"checked manually"}]
-			}`),
-			{Type: provider.ChunkDone},
-		},
 		{{Type: provider.ChunkText, Text: "done"}, {Type: provider.ChunkDone}},
 	}}
 
@@ -1130,14 +1122,16 @@ func TestEvidenceFlowRecoversAfterBatchTodoCompletionRejection(t *testing.T) {
 	}
 
 	stepResults := toolResults(a.sess.conversation, "complete_step")
-	if len(stepResults) < 3 {
-		t.Fatalf("complete_step results = %v, want blocked batch sign-off and a retry", stepResults)
+	if len(stepResults) != 2 {
+		t.Fatalf("complete_step results = %v, want both sign-offs in one batch", stepResults)
 	}
-	if got := stepResults[1]; !strings.Contains(got, "only one successful complete_step") {
-		t.Fatalf("second batched complete_step result = %q, want serial-signoff block", got)
+	for i, got := range stepResults {
+		if !strings.Contains(got, "signed off") {
+			t.Fatalf("batched complete_step result %d = %q, want successful sign-off", i+1, got)
+		}
 	}
-	if got := stepResults[2]; !strings.Contains(got, "signed off") {
-		t.Fatalf("next-round complete_step result = %q, want successful sign-off", got)
+	if got := prov.call; got != 3 {
+		t.Fatalf("provider calls = %d, want todo setup, one sign-off batch, and final answer", got)
 	}
 	for i, todo := range a.CanonicalTodoState() {
 		if todo.Status != "completed" {

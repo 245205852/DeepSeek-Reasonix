@@ -27,6 +27,7 @@ type Record struct {
 	TS                  int64                `json:"ts"`
 	Event               *eventwire.Event     `json:"event,omitempty"`
 	ReadinessAudit      *ReadinessAudit      `json:"readiness_audit,omitempty"`
+	AnchorSafetyAudit   *AnchorSafetyAudit   `json:"anchor_safety_audit,omitempty"`
 	ProtocolRecovery    string               `json:"protocol_recovery,omitempty"`
 	TurnCompletion      bool                 `json:"turn_completion,omitempty"`
 	ContractShadow      *ContractShadowAudit `json:"contract_shadow,omitempty"`
@@ -43,6 +44,17 @@ type MemoryRecall struct {
 	Omitted    int               `json:"omitted,omitempty"`
 	Suppressed string            `json:"suppressed,omitempty"`
 	ShadowHits []MemoryRecallHit `json:"shadow_hits,omitempty"`
+}
+
+type AnchorSafetyAudit struct {
+	Mode                  string `json:"mode"`
+	TaskMode              string `json:"task_mode"`
+	RangeLines            int    `json:"range_lines"`
+	ObservationAge        int    `json:"observation_age"`
+	LegacyAllowed         bool   `json:"legacy_allowed"`
+	ShadowAllowed         bool   `json:"shadow_allowed"`
+	Reason                string `json:"reason"`
+	SameBatchReadRejected bool   `json:"same_batch_read_rejected,omitempty"`
 }
 
 // MemoryRecallHit is one recalled fact's content-free fingerprint.
@@ -215,6 +227,16 @@ func (r *Recorder) RecordReadinessAudit(a evidence.ReadinessAudit) {
 		MissingCapabilities:       a.MissingCapabilities,
 	}})
 	event.RecordReadinessAudit(r.inner, a)
+}
+
+func (r *Recorder) RecordAnchorSafetyAudit(a event.AnchorSafetyAudit) {
+	r.append(Record{AnchorSafetyAudit: &AnchorSafetyAudit{
+		Mode: a.Mode, TaskMode: a.TaskMode, RangeLines: a.RangeLines,
+		ObservationAge: a.ObservationAge, LegacyAllowed: a.LegacyAllowed,
+		ShadowAllowed: a.ShadowAllowed, Reason: a.Reason,
+		SameBatchReadRejected: a.SameBatchReadRejected,
+	}})
+	event.RecordAnchorSafetyAudit(r.inner, a)
 }
 
 func (r *Recorder) RecordContractShadow(a event.ContractShadowAudit) {

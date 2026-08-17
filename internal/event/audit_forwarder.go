@@ -18,6 +18,7 @@ type AuditForwarder struct{ Inner Sink }
 type OptionalSinkCapabilities interface {
 	DelegationAuditSink
 	ReadinessAuditSink
+	AnchorSafetyAuditSink
 	ContractShadowAuditSink
 	CompletionReportAuditSink
 	MemoryRecallSink
@@ -33,6 +34,10 @@ var _ OptionalSinkCapabilities = AuditForwarder{}
 
 func (f AuditForwarder) RecordReadinessAudit(a evidence.ReadinessAudit) {
 	RecordReadinessAudit(f.Inner, a)
+}
+
+func (f AuditForwarder) RecordAnchorSafetyAudit(a AnchorSafetyAudit) {
+	RecordAnchorSafetyAudit(f.Inner, a)
 }
 
 func (f AuditForwarder) RecordTurnCompletion() { RecordTurnCompletion(f.Inner) }

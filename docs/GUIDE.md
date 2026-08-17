@@ -1198,6 +1198,14 @@ read-only: an explicit old path can be recovered as an ordinary Goal, but new
 runs never create or update those directories. Deprecated budget flags are
 accepted for compatibility but are hidden from help and completion.
 
+### Ordered batch sign-offs
+
+The host may process multiple `complete_step` calls from one provider tool-call
+round. They must follow the canonical Todo order, and each step's work and
+evidence must already exist before its sign-off call. The host advances the
+Todo state after each successful call; skipped, pending, or out-of-order steps
+remain rejected. This does not change the provider-visible tool schema.
+
 ## @ references
 
 Embed `@` references in a message and Reasonix resolves them before sending, as

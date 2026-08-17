@@ -929,6 +929,13 @@ Output format、Constraints 和 Pause policy。Goal 模式会把这些部分当�
 evaluator 判定。Light/Balanced 会接受 `update_goal` 里诚实申报的 `unverified` 检查缺口；同一检查缺口连续两次 `complete` 会结束 Goal，而不是继续验证循环。旧 `.reasonix/autoresearch/<task-id>/` 目录保持只读：显式引用旧路径时可恢复为
 普通 Goal，但新版本不会创建或改写这些目录。旧预算 flags 仅为兼容继续接受，不再出现在帮助和补全中。
 
+### 按顺序批量签收步骤
+
+宿主可以在同一个 provider 工具调用轮次中处理多个 `complete_step`。这些调用必须严格遵循
+canonical Todo 顺序，并且每一步的工作和证据都必须在对应签收之前已经产生。每次成功签收后，
+宿主立即推进 Todo 状态；跳过、仍为 pending 或乱序的步骤仍会被拒绝。这不会改变 provider-visible
+工具 Schema。
+
 ## @ 引用
 
 在消息里写 `@` 引用，Reasonix 会在发送前解析成带标签的上下文块：`@path/to/file`（或

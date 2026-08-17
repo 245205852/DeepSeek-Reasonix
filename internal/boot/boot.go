@@ -1653,6 +1653,7 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 		KeepPolicy:                   keepPolicy,
 		ReasoningLanguage:            cfg.ReasoningLanguage(),
 		PlanModeReadOnlyCommands:     cfg.Agent.PlanModeReadOnlyCommands,
+		LegacyAnchorSafetyGate:       cfg.Agent.LegacyAnchorSafetyGate,
 		SubagentDepth:                0,
 		MaxSubagentDepth:             maxSubagentDepth,
 		MissingReasoningWarnStateDir: config.MissingReasoningWarnStateDir(),

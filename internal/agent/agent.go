@@ -1035,6 +1035,10 @@ type Options struct {
 	// (or cloned for) sub-agents. nil disables v2 capture. Does not affect
 	// provider-visible tool schemas or prompts.
 	MutationObserver *checkpoint.MutationObserver
+	// LegacyAnchorSafetyGate is an internal kill switch for reverting
+	// delete_range to the pre-fingerprint full-file fresh-read requirement.
+	// It never enters provider-visible prompts or tool schemas.
+	LegacyAnchorSafetyGate bool
 }
 
 // New constructs an Agent. MaxSteps <= 0 means no cap — the run loop continues
@@ -1091,22 +1095,23 @@ func New(prov provider.Provider, tools *tool.Registry, session *Session, opts Op
 		svc: newAgentServices(prov, tools, sink, gate, planModeReadOnlyTrust,
 			sandboxEscapeApprover, configWriteApprover, hooks, opts),
 		agentConfig: agentConfig{
-			maxSteps:           opts.MaxSteps,
-			maxStepsKey:        maxStepsKey,
-			reasoningByteLimit: reasoningByteLimit,
-			maxOutputTokens:    opts.MaxOutputTokens,
-			temperature:        opts.Temperature,
-			usageSource:        usageSourceOrDefault(opts.UsageSource, event.UsageSourceExecutor),
-			modelRef:           strings.TrimSpace(opts.ModelRef),
-			workspaceID:        strings.TrimSpace(opts.WorkspaceID),
-			classifierTaskText: opts.ClassifierTaskText,
-			writeWorkspaceRoot: strings.TrimSpace(opts.WriteWorkspaceRoot),
-			subagentDepth:      subagentDepth,
-			maxSubagentDepth:   maxSubagentDepth,
-			contextWindow:      opts.ContextWindow,
-			compactRatio:       opts.CompactRatio,
-			recentKeep:         opts.RecentKeep,
-			archiveDir:         opts.ArchiveDir,
+			maxSteps:               opts.MaxSteps,
+			maxStepsKey:            maxStepsKey,
+			reasoningByteLimit:     reasoningByteLimit,
+			maxOutputTokens:        opts.MaxOutputTokens,
+			temperature:            opts.Temperature,
+			usageSource:            usageSourceOrDefault(opts.UsageSource, event.UsageSourceExecutor),
+			modelRef:               strings.TrimSpace(opts.ModelRef),
+			workspaceID:            strings.TrimSpace(opts.WorkspaceID),
+			classifierTaskText:     opts.ClassifierTaskText,
+			writeWorkspaceRoot:     strings.TrimSpace(opts.WriteWorkspaceRoot),
+			subagentDepth:          subagentDepth,
+			maxSubagentDepth:       maxSubagentDepth,
+			contextWindow:          opts.ContextWindow,
+			compactRatio:           opts.CompactRatio,
+			recentKeep:             opts.RecentKeep,
+			archiveDir:             opts.ArchiveDir,
+			legacyAnchorSafetyGate: opts.LegacyAnchorSafetyGate,
 		},
 		sess: sessionRuntime{
 			conversation: session,
@@ -2511,37 +2516,6 @@ func (a *Agent) repeatedSuccessBlock(call provider.ToolCall, t tool.Tool) (strin
 	return fmt.Sprintf(
 		"blocked: [loop guard] %q has already succeeded %d times with the same write-like arguments in this user turn. Re-running it is unlikely to help and may burn tokens or repeat file writes. Change approach: use edit_file or multi_edit for file changes, verify with a read/test command, or explain the blocker in your final answer.",
 		call.Name, count), true
-}
-
-func (a *Agent) staleAnchorEditBlock(call provider.ToolCall) (string, bool) {
-	if a.task.ledger == nil || !anchorBasedEditTool(call.Name) {
-		return "", false
-	}
-	rec := evidence.ReceiptFromToolCall(call.Name, json.RawMessage(call.Arguments), true, false)
-	if len(rec.Paths) == 0 {
-		return "", false
-	}
-	writeIndex, ok := a.task.ledger.LatestSuccessfulWriteIndex(rec.Paths)
-	if !ok || a.task.ledger.HasSuccessfulAnchorRefreshReadAfter(rec.Paths, writeIndex) {
-		return "", false
-	}
-	return fmt.Sprintf(
-		"blocked: [fresh read required] %q targets %s, which was already modified earlier this turn. Re-read the current file with read_file without offset/limit before another range deletion, or use multi_edit with exact replacements when possible. This prevents stale start/end anchors from selecting an unintended destructive span.",
-		call.Name, strings.Join(rec.Paths, ", ")), true
-}
-
-func anchorBasedEditTool(name string) bool {
-	switch name {
-	// edit_file synchronously reads the current file, requires a unique exact
-	// or narrowly fuzzy match, and returns the actual applied diff. Let it try
-	// optimistically; a stale old_string fails without writing and tells the
-	// model to re-read. delete_range remains guarded because two independently
-	// resolved anchors can otherwise select an unintended destructive span.
-	case "delete_range":
-		return true
-	default:
-		return false
-	}
 }
 
 func (a *Agent) recordRepeatSuccess(call provider.ToolCall, t tool.Tool) {

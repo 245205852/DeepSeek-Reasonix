@@ -196,6 +196,10 @@ func (r *Recorder) RecordReadinessAudit(a evidence.ReadinessAudit) {
 	event.RecordReadinessAudit(r.inner, a)
 }
 
+func (r *Recorder) RecordAnchorSafetyAudit(a event.AnchorSafetyAudit) {
+	event.RecordAnchorSafetyAudit(r.inner, a)
+}
+
 // RecordProtocolRecovery preserves the wrapped sink's audit capability.
 func (r *Recorder) RecordProtocolRecovery(a event.ProtocolRecoveryAudit) {
 	event.RecordProtocolRecovery(r.inner, a)

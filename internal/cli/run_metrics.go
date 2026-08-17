@@ -483,6 +483,13 @@ func (s *metricsSink) RecordReadinessAudit(a evidence.ReadinessAudit) {
 	event.RecordReadinessAudit(s.inner, a)
 }
 
+func (s *metricsSink) RecordAnchorSafetyAudit(a event.AnchorSafetyAudit) {
+	if s == nil {
+		return
+	}
+	event.RecordAnchorSafetyAudit(s.inner, a)
+}
+
 func (s *metricsSink) RecordProtocolRecovery(a event.ProtocolRecoveryAudit) {
 	s.mu.Lock()
 	switch a.Kind {

@@ -608,6 +608,33 @@ type ReadinessAuditSink interface {
 	RecordReadinessAudit(evidence.ReadinessAudit)
 }
 
+// AnchorSafetyAudit is a content-free shadow decision for an anchor-based
+// writer. It contains only bounded enums/counts; paths, anchors, source text,
+// and digests never leave the host-side observation ledger.
+type AnchorSafetyAudit struct {
+	Mode                  string
+	TaskMode              string
+	RangeLines            int
+	ObservationAge        int
+	LegacyAllowed         bool
+	ShadowAllowed         bool
+	Reason                string
+	SameBatchReadRejected bool
+}
+
+type AnchorSafetyAuditSink interface {
+	RecordAnchorSafetyAudit(AnchorSafetyAudit)
+}
+
+func RecordAnchorSafetyAudit(s Sink, a AnchorSafetyAudit) {
+	if nilutil.IsNil(s) {
+		return
+	}
+	if as, ok := s.(AnchorSafetyAuditSink); ok {
+		as.RecordAnchorSafetyAudit(a)
+	}
+}
+
 // TurnCompletionSink is an optional sink capability for synchronous controller
 // entry points that do not publish a TurnDone UI event. It keeps accounting
 // independent from frontend event lifecycles without synthesizing an event that
