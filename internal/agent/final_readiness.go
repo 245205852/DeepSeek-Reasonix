@@ -167,7 +167,9 @@ func (a *Agent) finalReadinessCheckFor() finalReadinessCheck {
 	if mutation, ok := a.task.ledger.LatestSuccessfulMutationIndex(); ok {
 		writer, hasWriter = mutation, true
 	}
-	if hasWriter && hasTodos && len(incomplete) > 0 {
+	// Incomplete todos contradict closed-loop delivery only. In open turns they
+	// are cross-turn work plans and must not trigger the recovery ceremony.
+	if a.closedLoopActive() && hasWriter && hasTodos && len(incomplete) > 0 {
 		out.applies = true
 		out.continuationHighConfidence = true
 		out.incompleteTodos = len(incomplete)
@@ -201,7 +203,7 @@ func (a *Agent) finalReadinessCheckFor() finalReadinessCheck {
 		stop = a.turn.engine.BeforeStop(runtimepolicy.StopContext{
 			GoalActive:     a.turn.deliveryScopeActive,
 			ApprovedPlan:   a.planContractSnapshot() != nil,
-			IncompleteTodo: hasTodos && len(incomplete) > 0,
+			IncompleteTodo: a.closedLoopActive() && hasTodos && len(incomplete) > 0,
 			Opts: taskcontract.StopOptions{
 				LoopGuard:        a.loopGuardAllowsFinal(),
 				EnvUnavailable:   a.turn.constraints.ForbidTests,

@@ -662,7 +662,7 @@ func TestFinalReadinessStopsAfterFirstBlock(t *testing.T) {
 	}}
 	a := New(prov, reg, NewSession(""), Options{}, event.Discard)
 
-	err := a.Run(withNoClosedLoop(context.Background()), "edit with todo and never sign off")
+	err := a.Run(withClosedLoopContext(context.Background()), "edit with todo and never sign off")
 	if err == nil {
 		t.Fatal("expected the first readiness block to stop the run")
 	}
@@ -852,7 +852,7 @@ func TestFinalReadinessAuditRecordsTerminalError(t *testing.T) {
 	sink := &readinessAuditSink{}
 	a := New(prov, reg, NewSession(""), Options{}, sink)
 
-	err := a.Run(withNoClosedLoop(context.Background()), "edit with todo and never sign off")
+	err := a.Run(withClosedLoopContext(context.Background()), "edit with todo and never sign off")
 	if err == nil {
 		t.Fatal("expected the first readiness block to stop the run")
 	}

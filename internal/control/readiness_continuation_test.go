@@ -9,6 +9,7 @@ import (
 
 	"reasonix/internal/agent"
 	"reasonix/internal/event"
+	"reasonix/internal/evidence"
 	"reasonix/internal/i18n"
 	"reasonix/internal/instruction"
 	"reasonix/internal/provider"
@@ -89,7 +90,7 @@ func TestOrdinaryTurnAutomaticallyFinishesKnownChecks(t *testing.T) {
 }
 
 func TestReadinessContinuationPromptStaysHiddenFromUserHistory(t *testing.T) {
-	prompt := readinessContinuationPrompt(nil, "run the missing verification")
+	prompt := readinessContinuationPrompt(nil, []string{"verification"}, "run the missing verification")
 	if !IsSyntheticUserMessage(prompt) {
 		t.Fatalf("readiness continuation was treated as user-authored text: %q", prompt)
 	}
@@ -97,6 +98,19 @@ func TestReadinessContinuationPromptStaysHiddenFromUserHistory(t *testing.T) {
 		if !strings.Contains(prompt, forbidden) {
 			t.Fatalf("readiness continuation prompt = %q, want safety clause %q", prompt, forbidden)
 		}
+	}
+}
+
+func TestReadinessContinuationPromptIncludesOnlyReportedTodoGaps(t *testing.T) {
+	todos := []evidence.TodoItem{{Content: "future task", Status: "pending"}}
+	verification := readinessContinuationPrompt(todos, []string{"verification"}, "run verification")
+	if strings.Contains(verification, "future task") || strings.Contains(verification, "tasks are still incomplete") {
+		t.Fatalf("verification-only continuation leaked ordinary cross-turn todos: %q", verification)
+	}
+
+	todoGap := readinessContinuationPrompt(todos, []string{"todo"}, "finish the delivery plan")
+	if !strings.Contains(todoGap, "future task") || !strings.Contains(todoGap, "tasks are still incomplete") {
+		t.Fatalf("todo readiness gap omitted its incomplete task context: %q", todoGap)
 	}
 }
 

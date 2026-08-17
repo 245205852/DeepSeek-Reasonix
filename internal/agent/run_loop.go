@@ -549,9 +549,9 @@ func (a *Agent) handleFinalResponse(ctx context.Context, state *turnRuntime, tex
 	if readiness.reason != "" {
 		// The host owns the concrete missing requirements. Return them to the
 		// controller when automatic continuation is armed (or for the existing
-		// strict/Goal path). Unarmed ordinary agents retain their Partial
-		// contract and do not unexpectedly change the direct Agent API.
-		if a.turn.automaticReadinessContinuation || a.closedLoopActive() || readiness.incompleteTodos > 0 || readiness.missingSignoff > 0 || readiness.missingActionEvidence > 0 {
+		// strict/Goal path). Unfinished todos are hard failures only in closed-loop
+		// turns; in ordinary turns they remain visible cross-turn work state.
+		if a.turn.automaticReadinessContinuation || a.closedLoopActive() || readiness.missingSignoff > 0 || readiness.missingActionEvidence > 0 {
 			event.RecordReadinessAudit(a.svc.sink, readiness.audit(evidence.ReadinessErrored, false))
 			a.pending.finalReadinessRecovery = true
 			a.persistFinalReadinessRecovery(readiness.missingIDs())
