@@ -47,6 +47,7 @@ import {
 } from "../lib/keyedResource";
 import { shouldScrollWorkspaceTreeSelection } from "../lib/workspaceTreeReveal";
 import { mergeWorkspaceSearchResults } from "../lib/workspaceTreeSearch";
+import { useWorkspaceTreeScrollPersistence } from "../lib/useWorkspaceTreeScrollPersistence";
 import {
   readWorkspaceTreeMemory,
   rememberWorkspaceTreeOpenDirs,
@@ -2264,6 +2265,7 @@ export function WorkspacePanel({
         <div
           className="workspace-tree"
           ref={treeRef}
+          onScroll={onWorkspaceTreeScroll}
           onContextMenu={openTreeBlankMenu}
           onScroll={onWorkspaceTreeScroll}
           style={{
