@@ -1481,6 +1481,18 @@ export function WorkspacePanel({
       !preview.binary &&
       !isMarkdown,
   );
+  // The preview body must keep its flex-column layout while a code file is
+  // loading. Switching it to the padded block layout mid-load and back again
+  // makes WebKit leave stale gaps between rows once the viewer mounts.
+  const codePreviewLayoutActive = Boolean(
+    selectedPath &&
+      !changedMode &&
+      !isMarkdown &&
+      !previewErr &&
+      !preview?.err &&
+      !preview?.kind &&
+      !preview?.binary,
+  );
   const openCodeSearch = () => {
     if (!codePreviewActive || !selectedPath) return;
     setCodeSearchRequestPath(selectedPath);
@@ -1642,7 +1654,7 @@ export function WorkspacePanel({
         </div>
 
         <div
-          className={`workspace-preview__body${codePreviewActive ? " workspace-preview__body--code" : ""}`}
+          className={`workspace-preview__body${codePreviewLayoutActive ? " workspace-preview__body--code" : ""}`}
           ref={previewBodyRef}
           onContextMenu={openSelectionMenu}
           onMouseUp={showSelectionToolbar}
