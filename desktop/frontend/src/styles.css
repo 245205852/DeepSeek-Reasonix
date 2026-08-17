@@ -3572,6 +3572,22 @@ a[href] {
   margin-block: auto;
   margin-inline: 0;
 }
+.transcript__loading {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin: auto;
+  color: var(--fg-muted);
+  font-size: 13px;
+}
+.transcript__loading-icon {
+  width: 16px;
+  height: 16px;
+  animation: navigation-surface-spin 0.8s linear infinite;
+}
+@keyframes navigation-surface-spin {
+  to { transform: rotate(360deg); }
+}
 .warm-collapse {
   display: block;
   width: 100%;

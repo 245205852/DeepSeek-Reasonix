@@ -1,4 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from "react";
+import { flushSync } from "react-dom";
 import { ShellExpandProvider, useShellExpand } from "./lib/shellExpand";
 import {
   Activity,
@@ -178,6 +179,7 @@ import { hydrateDisplayMode } from "./lib/displayMode";
 import { DEFAULT_STATUS_BAR_ITEMS, normalizeStatusBarItems, type StatusBarItemId } from "./lib/statusBarItems";
 import { paletteSessionDisplayTitle, paletteSessionHint, paletteSessionKeywords, sessionActivityTime } from "./lib/session";
 import { enqueueNavigationRequest, type PendingNavigationRequest } from "./lib/openTopicCoalescing";
+import { guardBackendNavigationResult, settleNavigationSurfaceIntent } from "./lib/navigationSurfaceTransition";
 import {
   applyTheme,
   clearLegacyThemePreference,
@@ -1102,6 +1104,7 @@ export default function App() {
     activateTopic,
     noteNavigationIntent,
     isNavigationIntentCurrent,
+    reassertVisibleTabAfterStaleNavigation,
     syncActiveTab,
     ensureBlankTab,
     ensureBlankSurface,
@@ -1113,6 +1116,13 @@ export default function App() {
   const userPlanModeByTabRef = useRef<UserPlanModeIntents>({});
   const [tabMetas, setTabMetas] = useState<TabMeta[]>([]);
   const [tabOrderIds, setTabOrderIds] = useState<string[]>([]);
+  const [navigationSurfaceIntent, setNavigationSurfaceIntent] = useState<number | null>(null);
+  const beginNavigationSurface = useCallback((intent: number) => {
+    flushSync(() => setNavigationSurfaceIntent(intent));
+  }, []);
+  const settleNavigationSurface = useCallback((intent: number) => {
+    setNavigationSurfaceIntent((current) => settleNavigationSurfaceIntent(current, intent));
+  }, []);
   const [tabRevealSignal, setTabRevealSignal] = useState(0);
   const [transcriptRevealSignal, setTranscriptRevealSignal] = useState(0);
   const startupSplashVisible = useOverlayStore((s) => s.startupSplashVisible);
@@ -1698,7 +1708,7 @@ export default function App() {
   const goal = composerProfile.goal;
   const collaborationMode = displayedComposerProfileCollaborationMode(composerProfile);
   const toolApprovalMode = composerProfile.toolApprovalMode;
-  const runtimeTransitioning = false;
+  const runtimeTransitioning = navigationSurfaceIntent !== null;
   const controllerReady =
     state.meta?.ready === true &&
     (!state.meta.runtime || state.meta.runtime.phase === "ready") &&
@@ -1718,6 +1728,8 @@ export default function App() {
     if (clearContextPending) return "clear_context";
     return null;
   }, [clearContextPending, pendingClose, state.approval, state.ask, state.extensionForm, workspaceConflict]);
+  const visibleDecisionSurface = runtimeTransitioning ? null : decisionSurface;
+  const composerSurfaceHidden = runtimeTransitioning || Boolean(decisionSurface);
   decisionSurfaceRef.current = decisionSurface;
   useEffect(() => {
     // Close composer menus/popovers when a decision takes over the footer.
@@ -3111,32 +3123,52 @@ export default function App() {
       // can wait behind an older tab switch. That immediately invalidates any
       // in-flight blank/topic completion from a previous user intent.
       const navigationIntentSeq = noteNavigationIntent();
+      beginNavigationSurface(navigationIntentSeq);
       return enqueueNavigationRequest(
         { seqRef: tabSwitchSeqRef, runningRef: tabSwitchRunningRef, pendingRef: tabSwitchPendingRef },
         { tabId, optimisticTab, navigationIntentSeq },
         async (request) => {
-          if (!isNavigationIntentCurrent(request.navigationIntentSeq)) return;
-          await switchTab(request.tabId, request.optimisticTab, request.navigationIntentSeq);
-          if (!isNavigationIntentCurrent(request.navigationIntentSeq)) return;
-          await refreshTabMetas(
-            () => isNavigationIntentCurrent(request.navigationIntentSeq),
-            { afterMutation: true },
-          );
+          try {
+            if (!isNavigationIntentCurrent(request.navigationIntentSeq)) return;
+            await switchTab(request.tabId, request.optimisticTab, request.navigationIntentSeq);
+            if (!isNavigationIntentCurrent(request.navigationIntentSeq)) return;
+            await refreshTabMetas(
+              () => isNavigationIntentCurrent(request.navigationIntentSeq),
+              { afterMutation: true },
+            );
+          } finally {
+            settleNavigationSurface(request.navigationIntentSeq);
+          }
         },
       );
     },
-    [isNavigationIntentCurrent, noteNavigationIntent, refreshTabMetas, switchTab],
+    [beginNavigationSurface, isNavigationIntentCurrent, noteNavigationIntent, refreshTabMetas, settleNavigationSurface, switchTab],
   );
 
   const revealBackgroundRuntime = useCallback(async (tabId: string): Promise<void> => {
+    const navigationIntentSeq = noteNavigationIntent();
+    beginNavigationSurface(navigationIntentSeq);
     try {
       const meta = await app.RevealBackgroundRuntime(tabId);
-      await switchTab(meta.id, meta);
-      await refreshTabMetas(undefined, { afterMutation: true });
+      if (!await guardBackendNavigationResult({
+        intent: navigationIntentSeq,
+        targetTabId: meta.id,
+        kind: "tab.reveal-background",
+        isIntentCurrent: isNavigationIntentCurrent,
+        reassert: reassertVisibleTabAfterStaleNavigation,
+      })) return;
+      await switchTab(meta.id, meta, navigationIntentSeq);
+      if (!isNavigationIntentCurrent(navigationIntentSeq)) return;
+      await refreshTabMetas(
+        () => isNavigationIntentCurrent(navigationIntentSeq),
+        { afterMutation: true },
+      );
     } catch (err) {
-      showToast(err instanceof Error ? err.message : String(err), "error");
+      if (isNavigationIntentCurrent(navigationIntentSeq)) showToast(err instanceof Error ? err.message : String(err), "error");
+    } finally {
+      settleNavigationSurface(navigationIntentSeq);
     }
-  }, [refreshTabMetas, showToast, switchTab]);
+  }, [beginNavigationSurface, isNavigationIntentCurrent, noteNavigationIntent, reassertVisibleTabAfterStaleNavigation, refreshTabMetas, settleNavigationSurface, showToast, switchTab]);
 
   const handleTabChange = useCallback((id: string) => {
     closeTransientOverlays();
@@ -3203,28 +3235,47 @@ export default function App() {
 
   const revealWorkspaceWriter = useCallback(async () => {
     if (!activeTabId) return;
+    const navigationIntentSeq = noteNavigationIntent();
+    beginNavigationSurface(navigationIntentSeq);
     try {
       const meta = await app.RevealWorkspaceWriterForTab(activeTabId);
+      if (!await guardBackendNavigationResult({
+        intent: navigationIntentSeq,
+        targetTabId: meta.id,
+        kind: "tab.reveal-workspace-writer",
+        isIntentCurrent: isNavigationIntentCurrent,
+        reassert: reassertVisibleTabAfterStaleNavigation,
+      })) return;
       setWorkspaceConflict(null);
-      await switchTab(meta.id, meta);
-      await refreshTabMetas(undefined, { afterMutation: true });
+      await switchTab(meta.id, meta, navigationIntentSeq);
+      if (!isNavigationIntentCurrent(navigationIntentSeq)) return;
+      await refreshTabMetas(
+        () => isNavigationIntentCurrent(navigationIntentSeq),
+        { afterMutation: true },
+      );
     } catch (err) {
-      showToast(err instanceof Error ? err.message : String(err), "error");
+      if (isNavigationIntentCurrent(navigationIntentSeq)) showToast(err instanceof Error ? err.message : String(err), "error");
+    } finally {
+      settleNavigationSurface(navigationIntentSeq);
     }
-  }, [activeTabId, refreshTabMetas, showToast, switchTab]);
+  }, [activeTabId, beginNavigationSurface, isNavigationIntentCurrent, noteNavigationIntent, reassertVisibleTabAfterStaleNavigation, refreshTabMetas, settleNavigationSurface, showToast, switchTab]);
 
   const continueInDeliveryWorktree = useCallback(async () => {
     const root = state.meta?.workspaceRoot || state.meta?.workspacePath || state.meta?.cwd;
     if (!root) return;
     cancel();
     setWorkspaceConflict(null);
+    const navigationIntentSeq = noteNavigationIntent();
+    beginNavigationSurface(navigationIntentSeq);
     try {
-      await createIsolatedWorktree(root);
+      await createIsolatedWorktree(root, navigationIntentSeq);
       await refreshTabMetas(undefined, { afterMutation: true });
     } catch (err) {
-      showToast(err instanceof Error ? err.message : String(err), "error");
+      if (isNavigationIntentCurrent(navigationIntentSeq)) showToast(err instanceof Error ? err.message : String(err), "error");
+    } finally {
+      settleNavigationSurface(navigationIntentSeq);
     }
-  }, [cancel, createIsolatedWorktree, refreshTabMetas, showToast, state.meta?.cwd, state.meta?.workspacePath, state.meta?.workspaceRoot]);
+  }, [beginNavigationSurface, cancel, createIsolatedWorktree, isNavigationIntentCurrent, noteNavigationIntent, refreshTabMetas, settleNavigationSurface, showToast, state.meta?.cwd, state.meta?.workspacePath, state.meta?.workspaceRoot]);
 
   const handleTabsClose = useCallback(async (ids: string[], nextActiveTabId?: string) => {
     closeTransientOverlays();
@@ -3319,6 +3370,7 @@ export default function App() {
   // (desktopLayoutStyle is available here; sidebarCreation is declared later.)
   const creationEmptyHero =
     desktopLayoutStyle === "creation" &&
+    !runtimeTransitioning &&
     !sidebarImDetailConnection &&
     !sessionHasContent &&
     !transcriptHydrating &&
@@ -3695,12 +3747,19 @@ export default function App() {
   }, [activateTopic, createIsolatedWorktree, ensureBlankSurface, ensureBlankTab, isNavigationIntentCurrent, openChannelSession, openGlobalTab, openProjectTab, openTopicSession, refreshHistoryView, resumeSession, seedActiveTabMeta, showToast, singleSurfaceLayout, t]);
 
   const enqueueNavigationWithIntent = useCallback((input: DesktopNavigationIntent, navigationIntentSeq: number): Promise<void> => {
+    beginNavigationSurface(navigationIntentSeq);
     return enqueueNavigationRequest(
       { seqRef: navigationSeqRef, runningRef: navigationRunningRef, pendingRef: navigationPendingRef },
       { ...input, navigationIntentSeq } as DesktopNavigationInput,
-      runNavigationRequest,
+      async (request) => {
+        try {
+          await runNavigationRequest(request);
+        } finally {
+          settleNavigationSurface(request.navigationIntentSeq);
+        }
+      },
     );
-  }, [runNavigationRequest]);
+  }, [beginNavigationSurface, runNavigationRequest, settleNavigationSurface]);
 
   const enqueueNavigation = useCallback((input: DesktopNavigationIntent): Promise<void> => {
     // Invalidate any in-flight activation's stale apply at ENQUEUE time. The
@@ -3753,19 +3812,29 @@ export default function App() {
     // switches tabs while the task/session lookup is pending, its completion is
     // stale and must not enqueue a newer navigation request.
     const navigationIntentSeq = noteNavigationIntent();
-    const session = await resolveTaskMonitorSession({
-      tabID,
-      taskID,
-      intentSeq: navigationIntentSeq,
-      isIntentCurrent: isNavigationIntentCurrent,
-      openTaskSessionForTab: (sourceTabID, sourceTaskID) => app.OpenTaskSessionForTab(sourceTabID, sourceTaskID),
-      listSessionsForTab: async (sourceTabID) => asArray(await app.ListSessionsForTab(sourceTabID)),
-      sessionIDFromPath: taskSessionIDFromPath,
-    });
-    if (!session) return false;
+    beginNavigationSurface(navigationIntentSeq);
+    let session: SessionMeta | null;
+    try {
+      session = await resolveTaskMonitorSession({
+        tabID,
+        taskID,
+        intentSeq: navigationIntentSeq,
+        isIntentCurrent: isNavigationIntentCurrent,
+        openTaskSessionForTab: (sourceTabID, sourceTaskID) => app.OpenTaskSessionForTab(sourceTabID, sourceTaskID),
+        listSessionsForTab: async (sourceTabID) => asArray(await app.ListSessionsForTab(sourceTabID)),
+        sessionIDFromPath: taskSessionIDFromPath,
+      });
+    } catch (error) {
+      settleNavigationSurface(navigationIntentSeq);
+      throw error;
+    }
+    if (!session) {
+      settleNavigationSurface(navigationIntentSeq);
+      return false;
+    }
     await enqueueNavigationWithIntent({ kind: "resume-session", session }, navigationIntentSeq);
     return isNavigationIntentCurrent(navigationIntentSeq);
-  }, [enqueueNavigationWithIntent, isNavigationIntentCurrent, noteNavigationIntent, singleSurfaceLayout, state.running, t]);
+  }, [beginNavigationSurface, enqueueNavigationWithIntent, isNavigationIntentCurrent, noteNavigationIntent, settleNavigationSurface, singleSurfaceLayout, state.running, t]);
 
   // Command palette: ⌘K / Ctrl+K opens a fuzzy navigator over commands and
   // recent sessions. Sessions are snapshotted on open so the list is stable
@@ -4025,13 +4094,25 @@ export default function App() {
   // Workspace: open the folder chooser and switch projects. The hook resets the
   // transcript and refreshes meta on a pick. A cancel is a no-op.
   const switchFolder = useCallback(async (path?: string) => {
-    const picked = path === undefined ? await pickWorkspace() : await switchWorkspace(path);
-    if (picked) {
-      setProjectRevision((value) => value + 1);
-      await refreshTabMetas(undefined, { afterMutation: true });
+    const navigationIntentSeq = noteNavigationIntent();
+    beginNavigationSurface(navigationIntentSeq);
+    try {
+      const picked = path === undefined
+        ? await pickWorkspace(navigationIntentSeq)
+        : await switchWorkspace(path, navigationIntentSeq);
+      if (!isNavigationIntentCurrent(navigationIntentSeq)) return picked;
+      if (picked) {
+        setProjectRevision((value) => value + 1);
+        await refreshTabMetas(
+          () => isNavigationIntentCurrent(navigationIntentSeq),
+          { afterMutation: true },
+        );
+      }
+      return picked;
+    } finally {
+      settleNavigationSurface(navigationIntentSeq);
     }
-    return picked;
-  }, [pickWorkspace, switchWorkspace, refreshTabMetas]);
+  }, [beginNavigationSurface, isNavigationIntentCurrent, noteNavigationIntent, pickWorkspace, refreshTabMetas, settleNavigationSurface, switchWorkspace]);
 
   const refreshProjectsAndTabs = useCallback(async () => {
     setProjectRevision((value) => value + 1);
@@ -4727,7 +4808,7 @@ export default function App() {
           />
 
           <main className="main">
-            {sidebarImDetailConnection ? (
+            {sidebarImDetailConnection && !runtimeTransitioning ? (
               <SidebarImConnectionDetail
                 connection={sidebarImDetailConnection}
                 onClose={() => setSidebarImDetailConnectionId("")}
@@ -4740,8 +4821,8 @@ export default function App() {
             ) : (
               <>
                 <Transcript
-                  items={displayItems}
-                  live={state.live}
+                  items={runtimeTransitioning ? [] : displayItems}
+                  live={runtimeTransitioning ? undefined : state.live}
                   liveStore={liveStore}
                   tabId={activeTabId}
                   footerHeight={footerHeight}
@@ -4757,24 +4838,24 @@ export default function App() {
                   turnStartAt={state.turnStartAt}
                   welcomeVariant={sidebarCreation ? "creation" : "default"}
                   creationMode={sidebarCreation}
-                  actionHoverMenus={sidebarCreation && !hydratePlaceholderActive}
+                  actionHoverMenus={sidebarCreation && !hydratePlaceholderActive && !runtimeTransitioning}
                   rewindSignal={rewindSignal}
                   revealSignal={transcriptRevealSignal}
-                  hydrating={transcriptHydrating}
-                  hasOlderHistory={state.historyHasOlder && !rewindState}
+                  hydrating={runtimeTransitioning || transcriptHydrating}
+                  hasOlderHistory={!runtimeTransitioning && state.historyHasOlder && !rewindState}
                   olderHistoryCount={state.historyStartTurn}
                   loadingOlderHistory={state.historyOlderLoading}
                   onLoadOlderHistory={() => activeTabId && loadOlderHistory(activeTabId)}
                   invocationMetadata={activeTabId ? invocationMetadataByTab[activeTabId] : undefined}
                 />
-                {state.hydrateError ? <div className="history-load-error" role="alert"><span>{state.hydrateError}</span><button type="button" className="btn btn--small" onClick={() => void retrySessionHistory(activeTabId)}>{t("common.retry")}</button></div> : null}
+                {!runtimeTransitioning && state.hydrateError ? <div className="history-load-error" role="alert"><span>{state.hydrateError}</span><button type="button" className="btn btn--small" onClick={() => void retrySessionHistory(activeTabId)}>{t("common.retry")}</button></div> : null}
               </>
             )}
           </main>
 
           {!sidebarImDetailConnection && (
-          <footer className={["footer", terminalPanelOpen && !sidebarCreation ? "footer--compact" : "", decisionSurface ? "footer--decision" : ""].filter(Boolean).join(" ")} ref={footerRef}>
-            {showTodos && (
+          <footer className={["footer", terminalPanelOpen && !sidebarCreation ? "footer--compact" : "", visibleDecisionSurface ? "footer--decision" : ""].filter(Boolean).join(" ")} ref={footerRef}>
+            {!runtimeTransitioning && showTodos && (
               <TodoPanel
                 key={scopedTodoBatch}
                 stateKey={scopedTodoBatch}
@@ -4782,7 +4863,7 @@ export default function App() {
                 onDismiss={dismissTodos}
               />
             )}
-            {rewindState && (
+            {!runtimeTransitioning && rewindState && (
               <Suspense fallback={null}><UndoRewindBanner
                 meta={{
                   turns: rewindState.turnDiff,
@@ -4809,7 +4890,7 @@ export default function App() {
                 }}
               /></Suspense>
             )}
-            {decisionSurface === "tool_approval" || decisionSurface === "plan_approval"
+            {visibleDecisionSurface === "tool_approval" || visibleDecisionSurface === "plan_approval"
               ? state.approval && (
               <ApprovalModal
                 key={`${activeTabId ?? ""}:${state.approval.id}`}
@@ -4853,7 +4934,7 @@ export default function App() {
                 toolApprovalMode={toolApprovalMode}
               />
               )
-            : decisionSurface === "ask"
+            : visibleDecisionSurface === "ask"
               ? state.ask && (
               <AskCard
                 key={`${activeTabId ?? ""}:${state.ask.id}`}
@@ -4865,7 +4946,7 @@ export default function App() {
                 }}
               />
               )
-            : decisionSurface === "extension_form"
+            : visibleDecisionSurface === "extension_form"
               ? state.extensionForm && (
               <ExtensionFormDialog
                 key={`${activeTabId ?? ""}:${state.extensionForm.pluginId}:${state.extensionForm.surfaceId}`}
@@ -4875,7 +4956,7 @@ export default function App() {
                 onCancel={() => void cancelExtensionForm()}
               />
               )
-            : decisionSurface === "workspace_conflict" && workspaceConflict ? (
+            : visibleDecisionSurface === "workspace_conflict" && workspaceConflict ? (
               <RuntimeDecisionCard
                 id="workspace-conflict"
                 title={t("runtime.workspaceConflictTitle")}
@@ -4904,7 +4985,7 @@ export default function App() {
                 }}
               />
             )
-            : decisionSurface === "close_active" && pendingClose ? (
+            : visibleDecisionSurface === "close_active" && pendingClose ? (
               <RuntimeDecisionCard
                 id="close-active"
                 title={t("runtime.closeTitle")}
@@ -4928,7 +5009,7 @@ export default function App() {
                 }}
               />
             )
-            : decisionSurface === "clear_context" ? (
+            : visibleDecisionSurface === "clear_context" ? (
               <ClearContextCard
                 onCancel={cancelClearContext}
                 onConfirm={() => {
@@ -4941,12 +5022,12 @@ export default function App() {
             <div
               className={[
                 "composer-decision-host",
-                decisionSurface ? "composer-decision-host--hidden" : "",
+                composerSurfaceHidden ? "composer-decision-host--hidden" : "",
                 creationEmptyHero ? "composer-decision-host--creation-hero" : "",
               ].filter(Boolean).join(" ")}
-              hidden={Boolean(decisionSurface) || undefined}
-              inert={decisionSurface ? true : undefined}
-              aria-hidden={decisionSurface ? true : undefined}
+              hidden={composerSurfaceHidden || undefined}
+              inert={composerSurfaceHidden ? true : undefined}
+              aria-hidden={composerSurfaceHidden ? true : undefined}
             >
             {creationEmptyHero && (
               <h2 className="welcome-creation__headline">{t("welcome.creation.title")}</h2>

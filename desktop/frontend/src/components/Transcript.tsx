@@ -7,7 +7,7 @@ import { useT } from "../lib/i18n";
 import { AssistantMessage, InvocationMetadataContext, TurnActions, UserMessage } from "./Message";
 import { ToolCard } from "./ToolCard";
 import { ExtensionCard } from "./ExtensionCard";
-import { ArrowDown } from "lucide-react";
+import { ArrowDown, Loader2 } from "lucide-react";
 import { Welcome } from "./Welcome";
 import { ReadOnlyBatch } from "./ReadOnlyBatch";
 import { ToolGroup } from "./ToolGroup";
@@ -917,8 +917,14 @@ export function Transcript({
         <div
           className={`transcript transcript--empty${creationMode ? " transcript--creation-scrollbar" : ""}`}
           ref={(node) => handleScrollerRef(node)}
+          aria-busy={hydrating || undefined}
         >
-          {!hydrating && <Welcome onPrompt={onPrompt} variant={welcomeVariant} />}
+          {hydrating ? (
+            <div className="transcript__loading" role="status" aria-live="polite">
+              <Loader2 className="transcript__loading-icon" aria-hidden="true" />
+              <span>{t("common.loading")}</span>
+            </div>
+          ) : <Welcome onPrompt={onPrompt} variant={welcomeVariant} />}
         </div>
       ) : (
         <LiveStreamContext.Provider value={live}>
