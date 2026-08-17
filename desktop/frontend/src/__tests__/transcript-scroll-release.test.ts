@@ -144,6 +144,15 @@ const restore = run([
 check(restore.state.mode === "manual", "question/rewind navigation settles in manual mode");
 check(restore.commands.join(",") === "SCROLL_TO_INDEX", "navigation emits one indexed Virtuoso command");
 
+const selectionThenQuestionJump = run([
+  { type: "SCROLL_DELIVERED", atBottom: true, scrollable: true },
+  { type: "SELECTION_BEGIN" },
+  { type: "SELECTION_END" },
+  { type: "JUMP_TO_INDEX", index: 7 },
+]);
+check(selectionThenQuestionJump.state.mode === "restoring", "question navigation takes ownership after clearing a stale selection gesture");
+check(selectionThenQuestionJump.commands.join(",") === "SCROLL_TO_INDEX", "selection cleanup is followed by exactly one indexed jump");
+
 const shrink = run([
   { type: "SCROLL_DELIVERED", atBottom: true, scrollable: true },
   { type: "CONTENT_SHRANK" },

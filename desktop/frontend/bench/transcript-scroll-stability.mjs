@@ -236,9 +236,39 @@ try {
   const questionRail = page.locator(".jump-scroll");
   const questionRailBox = await questionRail.boundingBox();
   assert(questionRailBox != null, "long transcript exposes the question navigator rail");
+  const questionTargetPoint = await page.evaluate(() => {
+    const rail = document.querySelector(".jump-scroll");
+    if (!(rail instanceof HTMLElement)) return null;
+    const railRect = rail.getBoundingClientRect();
+    const marker = [...rail.querySelectorAll(".jump-item")].find((item) => {
+      const rect = item.getBoundingClientRect();
+      const middle = rect.top + rect.height / 2;
+      return middle >= railRect.top && middle <= railRect.bottom;
+    });
+    if (!(marker instanceof HTMLElement)) return null;
+    const rect = marker.getBoundingClientRect();
+    return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+  });
+  assert(questionTargetPoint != null, "question navigator exposes an earlier visible marker");
+  const staleSelectionMode = await page.evaluate(() => {
+    const target = document.querySelector("[data-transcript-selectable]");
+    const transcript = document.querySelector(".transcript");
+    if (!(target instanceof HTMLElement) || !(transcript instanceof HTMLElement)) return "missing";
+    const rect = target.getBoundingClientRect();
+    target.dispatchEvent(new PointerEvent("pointerdown", {
+      bubbles: true,
+      cancelable: true,
+      button: 0,
+      pointerId: 9013,
+      clientX: rect.left + 4,
+      clientY: rect.top + 4,
+    }));
+    return transcript.dataset.scrollMode;
+  });
+  assert(staleSelectionMode === "selection", "lost WebView2 pointerup leaves selection owning transcript scroll");
   await page.mouse.click(
-    questionRailBox.x + questionRailBox.width / 2,
-    questionRailBox.y + questionRailBox.height / 2,
+    questionTargetPoint.x,
+    questionTargetPoint.y,
   );
   const questionJumpWrites = await page.evaluate(() => {
     const writes = window.__reasonixQuestionJumpWrites ?? [];
@@ -246,8 +276,12 @@ try {
     window.__reasonixQuestionJumpWrites = undefined;
     return writes;
   });
-  assert(questionJumpWrites.length === 1, `one question-rail click emits one indexed jump (${questionJumpWrites.length})`);
-  await page.locator(".transcript__jump-bottom").click();
+  assert(questionJumpWrites.length === 1, `question navigation clears stale selection and emits one indexed jump (${questionJumpWrites.length})`);
+  await page.locator(".transcript__jump-bottom").waitFor({ state: "visible" });
+  // The question jump itself is smooth, so Playwright's actionability check
+  // can see the bottom button moving while the viewport settles. A DOM click
+  // still exercises the same React handler without waiting on button geometry.
+  await page.locator(".transcript__jump-bottom").evaluate((button) => button.click());
   await page.waitForFunction(() => {
     const element = document.querySelector(".transcript");
     return element instanceof HTMLElement

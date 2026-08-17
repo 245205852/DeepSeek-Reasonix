@@ -584,6 +584,10 @@ check(
 let otherWriteOk = true;
 await act(async () => { otherWriteOk = arbiter?.writeOffset("jump", 5) ?? true; });
 check(!otherWriteOk, "non-selection writes stay rejected in selection mode");
+scrollToIndexCalls = 0;
+await act(async () => arbiter?.setMode("manual", "question-navigation"));
+await act(async () => arbiter?.scrollToDataIndex(1_000, 5));
+check(scrollToIndexCalls === 1, "question navigation emits one indexed jump after its explicit selection cleanup");
 
 // ── T6: a snapshot captured before the keyed remount restores when the row
 // keys still match, and is discarded when they do not.

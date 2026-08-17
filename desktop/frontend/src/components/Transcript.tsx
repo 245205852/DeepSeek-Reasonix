@@ -556,6 +556,7 @@ export function Transcript({
     writeOffset,
     cancelStreamingScroll: cancelStreamingAndFollow,
   });
+  const clearTranscriptSelection = selectionRetention.clear;
   // User scroll intent is reported to the layout-integrity hook (idle gating
   // for the blank watchdog) and to the scroll arbiter itself, which preempts
   // any in-flight recovery restore on its own intent events (#8657/#8688
@@ -617,9 +618,14 @@ export function Transcript({
   const handleJumpToQuestion = useCallback((question: QuestionAnchor) => {
     const index = rowIndexByKey.get(String(userRowKey(question.id)));
     if (index == null) return;
+    // WebView2 can lose the pointerup that ends a transcript text-selection
+    // gesture. An explicit navigator click owns the next viewport position,
+    // so clear that stale selection before asking the scroll arbiter to jump.
+    document.getSelection()?.removeAllRanges();
+    clearTranscriptSelection("question-navigation");
     invalidateAnchors();
     scrollToDataIndex(firstItemIndex, index, "smooth");
-  }, [firstItemIndex, invalidateAnchors, rowIndexByKey, scrollToDataIndex]);
+  }, [clearTranscriptSelection, firstItemIndex, invalidateAnchors, rowIndexByKey, scrollToDataIndex]);
 
   // The jump-bottom click is explicit user intent: it outranks any in-flight
   // recovery anchor restore and ends a stale selection gesture whose
