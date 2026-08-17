@@ -85,8 +85,9 @@ for (const path of localeChunks) {
   // write-access approval card adds four scoped actions and a home-risk
   // warning (~0.15 KiB gzip, +0.27% over the old 54.75 gate). Context
   // compaction settings add 40 bytes gzip of policy guidance to simplified
-  // Chinese; retain that copy with the smallest 0.1 KiB ratchet increment.
-  const budget = name.startsWith("zh-TW-") ? 55.8 * 1024 : 55.1 * 1024;
+  // Chinese, while scheduled billing adds compact rate-band labels/tooltips.
+  // Retain both with the smallest 0.1 KiB ratchet increment per locale.
+  const budget = name.startsWith("zh-TW-") ? 55.9 * 1024 : 55.2 * 1024;
   assertBudget(`${name} gzip`, gzipBytes(path), budget);
 }
 

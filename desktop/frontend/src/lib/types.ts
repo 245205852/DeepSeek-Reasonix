@@ -167,6 +167,8 @@ export interface CostQuote {
   usageSource?: string;
   pricingFingerprint?: string;
   rateDate?: string;
+  rateBand?: "peak" | "off_peak" | "mixed" | string;
+  ratedAt?: string;
   incompleteReason?: string;
   legacyEstimate?: boolean;
   catalogSource?: string;

@@ -878,9 +878,12 @@ type Options struct {
 	MaxOutputTokens int
 	Temperature     float64
 	// TaskBudget bounds a task's spend; zero uses DefaultTaskBudget.
-	TaskBudget  TaskBudget
-	Pricing     *provider.Pricing // optional, for per-turn cost display
-	UsageSource string            // optional billable usage source; default executor
+	TaskBudget TaskBudget
+	Pricing    *provider.Pricing // optional, for per-turn cost display
+	// QuoteContext is shared with the host CostQuote sink so budget accounting
+	// and emitted usage consume the exact same occurrence-time quote.
+	QuoteContext *event.QuoteContext
+	UsageSource  string // optional billable usage source; default executor
 	// ModelRef names the canonical "provider/model" ref backing this agent's
 	// provider instance. It is attached to emitted Usage events so downstream
 	// usage accounting can attribute tokens to the exact model.

@@ -614,7 +614,7 @@ command = "legacy-bin"
 	if err != nil {
 		t.Fatalf("read migrated user config: %v", err)
 	}
-	for _, want := range []string{`config_version = 6`, `[desktop]`, `name    = "legacy-cli"`} {
+	for _, want := range []string{`config_version = 7`, `[desktop]`, `name    = "legacy-cli"`} {
 		if !strings.Contains(string(body), want) {
 			t.Fatalf("migrated config missing %q:\n%s", want, body)
 		}
@@ -641,7 +641,7 @@ func TestRunAppliesUserConfigUpgradesOnStartup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read upgraded user config: %v", err)
 	}
-	if !strings.Contains(string(body), "config_version = 6") {
+	if !strings.Contains(string(body), "config_version = 7") {
 		t.Fatalf("CLI startup should apply user config upgrades:\n%s", body)
 	}
 }
@@ -2062,7 +2062,7 @@ func TestWithBuiltinFamiliesForLanguageUsesDeepSeekPricing(t *testing.T) {
 	if flash == nil {
 		t.Fatal("deepseek-flash provider missing")
 	}
-	if flash.Price == nil || flash.Price.Output != 0.28 || flash.Price.Currency != "$" {
+	if flash.Price == nil || flash.Price.Output != 1.32 || flash.Price.Currency != "$" {
 		t.Fatalf("flash price = %+v, want frozen USD official table", flash.Price)
 	}
 }

@@ -5009,6 +5009,7 @@ export default function App() {
               heroMode={creationEmptyHero}
               context={state.context}
               turnCost={state.turnCost}
+              turnRateBand={state.turnRateBand}
               currency={state.sessionCurrency}
               cacheHitTokens={state.usage?.cacheHitTokens}
               cacheMissTokens={state.usage?.cacheMissTokens}
@@ -5110,6 +5111,7 @@ export default function App() {
                     sessionTurns={sessionTurns}
                     turnTokens={state.turnTotalTokens}
                     turnCost={state.turnCost}
+                    turnRateBand={state.turnRateBand}
                     balance={state.balance}
                     sessionGen={state.sessionGen}
                     refreshKey={dockRefreshKey + state.contextPanelSeq}
@@ -5212,6 +5214,7 @@ export default function App() {
             lastTurnOutputEstimated={state.lastTurnOutputEstimated}
             lastRequestTps={state.lastRequestTps}
             turnCost={state.turnCost}
+            turnRateBand={state.turnRateBand}
             cost={state.sessionCost}
             currency={state.sessionCurrency}
             modelLabel={state.meta?.label}

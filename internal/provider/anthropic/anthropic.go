@@ -197,27 +197,12 @@ func (c *client) deepSeekThinkingEnabled() bool {
 	return c != nil && c.deepseek && c.thinking != "disabled" && c.effort != "disabled"
 }
 
-// deepSeekAnthropicUsesProEffortMapping mirrors DeepSeek's model routing for the
-// Anthropic endpoint. Opus aliases route to V4 Pro; Sonnet/Haiku aliases and
-// unsupported model names route to V4 Flash.
-func deepSeekAnthropicUsesProEffortMapping(model string) bool {
-	model = strings.ToLower(strings.TrimSpace(model))
-	return model == "deepseek-v4-pro" || strings.HasPrefix(model, "claude-opus")
-}
-
 func normalizeDeepSeekAnthropicEffort(model, effort string) string {
+	_ = model
 	switch effort {
 	case "low":
-		if deepSeekAnthropicUsesProEffortMapping(model) {
-			return "high"
-		}
 		return "low"
-	case "medium":
-		return "high"
-	case "xhigh":
-		if deepSeekAnthropicUsesProEffortMapping(model) {
-			return "max"
-		}
+	case "medium", "xhigh":
 		return "high"
 	case "high", "max":
 		return effort

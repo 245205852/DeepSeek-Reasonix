@@ -156,7 +156,7 @@ func TestRuntimeWalletHintDoesNotPersistTelemetry(t *testing.T) {
 	tab.recordUsage(event.Event{
 		ModelRef: "deepseek/deepseek-v4-flash",
 		Usage:    &provider.Usage{PromptTokens: 1_000_000, TotalTokens: 1_000_000},
-		Pricing:  &provider.Pricing{CacheHit: 0.0028, Input: 0.14, Output: 0.28, Currency: "USD"},
+		Pricing:  &provider.Pricing{CacheHit: 0.014, Input: 0.44, Output: 1.32, Currency: "USD"},
 	})
 	persisted := tab.telemetrySnapshot().Usage
 	if persisted.SessionCurrency != "USD" || persisted.SessionCost <= 0 {

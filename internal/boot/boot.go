@@ -268,6 +268,13 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 			}
 			return entry.ProviderBillingMode()
 		},
+		PricingContextForModel: func(modelRef string) billing.PricingContext {
+			entry, ok := cfg.ResolveModel(modelRef)
+			if !ok {
+				return billing.PricingContext{}
+			}
+			return entry.PricingContextForModel(entry.Model)
+		},
 	}
 	// Innermost: frontend sink (CLI metrics/ACP/Desktop bridge live here).
 	quoted := opts.Sink
@@ -1057,6 +1064,7 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 		return agent.NewTaskToolWithOptions(agent.TaskToolOptions{
 			Provider:            execProv,
 			Pricing:             entry.Price,
+			QuoteContext:        quoteCtx,
 			ParentRegistry:      reg,
 			MaxSteps:            maxSteps,
 			ContextWindow:       entry.ContextWindow,
@@ -1188,7 +1196,7 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 	// read_only_task, so they cannot write, install, mutate memory, resume/fork
 	// transcripts, or delegate further.
 	//
-	subagentSkillOptions := newSubagentSkillOptionsFactory(cfg.Agent, headlessGate, keepPolicy, maxSubagentDepth, opts.Ablation, workspaceLease, writeRootSet)
+	subagentSkillOptions := newSubagentSkillOptionsFactory(cfg.Agent, quoteCtx, headlessGate, keepPolicy, maxSubagentDepth, opts.Ablation, workspaceLease, writeRootSet)
 	readOnlySkillRunner := func(sctx context.Context, sk skill.Skill, task string, runOpts skill.SubagentRunOptions) (string, error) {
 		if strings.TrimSpace(runOpts.ContinueFrom) != "" || strings.TrimSpace(runOpts.ForkFrom) != "" {
 			return "", fmt.Errorf("read_only_skill does not support continue_from/fork_from")
@@ -1612,15 +1620,16 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 
 	execSess := newObservedSession(sysPrompt)
 	executor := agent.New(execProv, reg, execSess, agent.Options{
-		MaxSteps:    maxSteps,
-		MaxStepsKey: opts.MaxStepsKey,
-		Temperature: cfg.Agent.Temperature,
-		TaskBudget:  taskBudgetFromConfig(cfg),
-		Pricing:     entry.Price,
-		ModelRef:    modelRef,
-		Gate:        headlessGate,
-		Hooks:       hookRunner,
-		Jobs:        jm,
+		MaxSteps:     maxSteps,
+		MaxStepsKey:  opts.MaxStepsKey,
+		Temperature:  cfg.Agent.Temperature,
+		TaskBudget:   taskBudgetFromConfig(cfg),
+		Pricing:      entry.Price,
+		QuoteContext: quoteCtx,
+		ModelRef:     modelRef,
+		Gate:         headlessGate,
+		Hooks:        hookRunner,
+		Jobs:         jm,
 		// Parent write reservation at the executor entry covers all writers
 		// (including late Economy/MCP adds) without wrapping tool schemas.
 		WriteScheduler:               subagentScheduler,
@@ -1690,6 +1699,7 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 				MaxSteps:                     0,
 				Gate:                         headlessGate,
 				ModelRef:                     modelRefFromEntry(pe),
+				QuoteContext:                 quoteCtx,
 				ContextWindow:                pe.ContextWindow,
 				SoftCompactRatio:             cfg.Agent.SoftCompactRatio,
 				ToolResultSnipRatio:          cfg.Agent.ToolResultSnipRatio,
@@ -1897,11 +1907,11 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 		effortRef := strings.TrimSpace(cfg.Agent.SubagentEfforts["capability-router"])
 		if p, price, _, err := resolveSubagentProvider(modelRef, effortRef); err == nil && p != nil {
 			usageModelRef, _ := subagentIdentity(modelRef, effortRef)
-			router = &capability.SemanticRouter{Provider: p, Sink: sink, Model: usageModelRef, Pricing: price, Audit: capAudit}
+			router = &capability.SemanticRouter{Provider: p, Sink: sink, Model: usageModelRef, Pricing: price, QuoteContext: quoteCtx, Audit: capAudit}
 		}
 	}
 	if router == nil {
-		router = &capability.SemanticRouter{Provider: execProv, Sink: sink, Model: modelRef, Pricing: entry.Price, Audit: capAudit}
+		router = &capability.SemanticRouter{Provider: execProv, Sink: sink, Model: modelRef, Pricing: entry.Price, QuoteContext: quoteCtx, Audit: capAudit}
 	}
 	ctrl.WireCapabilityRouting(cfg.Plugins, capSpecs, router, capAudit)
 	ctrl.SetCapabilityProxyRouting(true)

@@ -590,6 +590,7 @@ export function Composer({
   heroMode = false,
   context,
   turnCost,
+  turnRateBand,
   currency,
   cacheHitTokens,
   cacheMissTokens,
@@ -684,6 +685,7 @@ export function Composer({
   heroMode?: boolean;
   context?: ContextInfo;
   turnCost?: number;
+  turnRateBand?: string;
   currency?: string;
   cacheHitTokens?: number;
   cacheMissTokens?: number;
@@ -4686,6 +4688,7 @@ export function Composer({
                   context={context}
                   tabId={tabId}
                   turnCost={turnCost}
+                  turnRateBand={turnRateBand}
                   currency={currency}
                   cacheHitTokens={cacheHitTokens}
                   cacheMissTokens={cacheMissTokens}

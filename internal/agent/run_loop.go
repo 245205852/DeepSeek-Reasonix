@@ -278,8 +278,8 @@ func (a *Agent) runToolLoop(ctx context.Context, state *turnRuntime) error {
 		partialCalls, err := streamed.partialCalls, streamed.err
 		cacheDiagnostics := CompareShape(prevPrefixShape, prefixShape, usage, contentReasons)
 		if err != nil {
-			a.emitTurnUsage(usage, &cacheDiagnostics)
-			a.observeRunBudget(state, usage)
+			quote := a.emitTurnUsage(usage, &cacheDiagnostics)
+			a.observeRunBudget(state, usage, quote)
 			if msg, ok := finishReasonMessage(usage); ok {
 				a.svc.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: msg})
 			}
@@ -291,8 +291,8 @@ func (a *Agent) runToolLoop(ctx context.Context, state *turnRuntime) error {
 		}
 		a.sess.lastPrefixShape = prefixShape
 		a.sess.haveLastPrefixShape = true
-		a.emitTurnUsage(usage, &cacheDiagnostics)
-		a.observeRunBudget(state, usage)
+		quote := a.emitTurnUsage(usage, &cacheDiagnostics)
+		a.observeRunBudget(state, usage, quote)
 		if msg, ok := finishReasonMessage(usage); ok {
 			a.svc.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: msg})
 		}
