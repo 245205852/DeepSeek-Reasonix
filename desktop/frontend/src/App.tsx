@@ -194,7 +194,6 @@ import { availableWorkspacePanelWidth, resolveLiveWorkspacePanelWidth, resolveWo
 import { createPointerResizeLifecycle, createRafResizeUpdater } from "./lib/resizeDrag";
 import { formatShortcutCombo, resolvedShortcutCombo, useGlobalShortcut } from "./lib/keyboardShortcuts";
 import { useWarmTerminalPanel } from "./lib/useWarmTerminalPanel";
-import { useMountTransition } from "./lib/useMountTransition";
 import { topicShortcutIndexFromEvent, useTopicShortcuts, type TopicShortcutEntry } from "./lib/topicShortcuts";
 import { composerDraftKeyForTab } from "./lib/composerDraftKey";
 import { continueDelivery } from "./lib/deliveryContinue";
@@ -4684,6 +4683,7 @@ export default function App() {
                   exportSession={(format) => void exportSession(format)}
                   openChangedDock={() => openRightDockMode("changed")}
                   toggleTerminal={toggleTerminalPanel}
+                  prefetchTerminal={prefetchTerminalPanel}
                   openSessionSummary={() => setTasksOpen((open) => open ? false : "session")}
                   tasksOpen={Boolean(tasksOpen)}
                 />
