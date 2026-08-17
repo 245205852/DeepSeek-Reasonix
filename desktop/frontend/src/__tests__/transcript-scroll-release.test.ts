@@ -48,7 +48,7 @@ check(
 
 const manual = run([
   { type: "SCROLL_DELIVERED", atBottom: true, scrollable: true },
-  { type: "USER_SCROLL_INTENT" },
+  { type: "USER_SCROLL_INTENT", canClaimTail: false },
   { type: "SCROLL_DELIVERED", atBottom: false, scrollable: true },
   { type: "TAIL_CONTENT_CHANGED" },
   { type: "VIEWPORT_RESIZED" },
@@ -56,9 +56,19 @@ const manual = run([
 check(manual.state.mode === "manual", "explicit user intent releases tail-follow");
 check(manual.commands.length === 0, "manual reading never receives tail commands");
 
+const upwardIntentAtBottomRace = run([
+  { type: "SCROLL_DELIVERED", atBottom: true, scrollable: true },
+  { type: "USER_SCROLL_INTENT", canClaimTail: false },
+  // A scroll delivery queued before the trusted wheel's native default action
+  // must not reclaim the tail from an upward reader gesture.
+  { type: "SCROLL_DELIVERED", atBottom: true, scrollable: true },
+  { type: "SCROLL_DELIVERED", atBottom: false, scrollable: true },
+]);
+check(upwardIntentAtBottomRace.state.mode === "manual", "upward reader intent survives a stale at-bottom delivery");
+
 const returned = run([
   { type: "SCROLL_DELIVERED", atBottom: true, scrollable: true },
-  { type: "USER_SCROLL_INTENT" },
+  { type: "USER_SCROLL_INTENT", canClaimTail: true },
   { type: "SCROLL_DELIVERED", atBottom: false, scrollable: true },
   { type: "SCROLL_DELIVERED", atBottom: true, scrollable: true },
 ]);
@@ -66,7 +76,7 @@ check(returned.state.mode === "tail-follow", "reaching the real bottom re-engage
 
 const browserClamp = run([
   { type: "SCROLL_DELIVERED", atBottom: true, scrollable: true },
-  { type: "USER_SCROLL_INTENT" },
+  { type: "USER_SCROLL_INTENT", canClaimTail: true },
   { type: "SCROLL_DELIVERED", atBottom: false, scrollable: true },
   { type: "READER_INTENT_ENDED" },
   { type: "CONTENT_SHRANK" },
@@ -76,7 +86,7 @@ check(browserClamp.state.mode === "manual", "a browser clamp without fresh reade
 
 const manualResize = run([
   { type: "SCROLL_DELIVERED", atBottom: true, scrollable: true },
-  { type: "USER_SCROLL_INTENT" },
+  { type: "USER_SCROLL_INTENT", canClaimTail: false },
   { type: "SCROLL_DELIVERED", atBottom: false, scrollable: true },
   { type: "READER_INTENT_ENDED" },
   { type: "USER_RESIZE_BEGIN" },
@@ -88,7 +98,7 @@ check(manualResize.commands.length === 0, "manual reading receives no tail write
 
 const shortTranscript = run([
   { type: "SCROLL_DELIVERED", atBottom: true, scrollable: false },
-  { type: "USER_SCROLL_INTENT" },
+  { type: "USER_SCROLL_INTENT", canClaimTail: false },
 ]);
 check(shortTranscript.state.mode === "tail-follow", "non-overflow transcript always stays tail-follow");
 
@@ -113,7 +123,7 @@ check(selection.commands.join(",") === "SCROLL_TO_OFFSET", "selection owns only 
 
 const jump = run([
   { type: "SCROLL_DELIVERED", atBottom: true, scrollable: true },
-  { type: "USER_SCROLL_INTENT" },
+  { type: "USER_SCROLL_INTENT", canClaimTail: false },
   { type: "SCROLL_DELIVERED", atBottom: false, scrollable: true },
   { type: "JUMP_TO_BOTTOM", behavior: "smooth" },
 ]);

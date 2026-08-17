@@ -466,7 +466,7 @@ export function useTranscriptScrollArbiter({
     if (!nativeScrollbarDragRef.current) return;
     const element = scrollRef.current;
     if (element) {
-      dispatch({ type: "USER_SCROLL_INTENT" });
+      dispatch({ type: "USER_SCROLL_INTENT", canClaimTail: true });
       deliverScroll(element);
       delete element.dataset.nativeScrollbarDrag;
     }
@@ -534,7 +534,7 @@ export function useTranscriptScrollArbiter({
     if (element && !stateRef.current.scrollable && hasTranscriptScrollableRange(element)) {
       deliverScroll(element);
     }
-    dispatch({ type: "USER_SCROLL_INTENT" });
+    dispatch({ type: "USER_SCROLL_INTENT", canClaimTail: claimPhysicalBottom });
     if (
       claimPhysicalBottom
       && element

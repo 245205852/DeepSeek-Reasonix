@@ -22,6 +22,34 @@ function assert(condition, message) {
   process.stdout.write(`  PASS  ${message}\n`);
 }
 
+async function moveToOuterReaderGutter(page, transcript) {
+  const deadline = Date.now() + 5_000;
+  let point = null;
+  while (!point && Date.now() < deadline) {
+    point = await transcript.evaluate((element) => {
+      const rect = element.getBoundingClientRect();
+      const rows = [...element.querySelectorAll(".transcript__row")];
+      for (const row of rows) {
+        const rowRect = row.getBoundingClientRect();
+        const visibleTop = Math.max(rect.top, rowRect.top);
+        const visibleBottom = Math.min(rect.bottom, rowRect.bottom);
+        if (visibleBottom - visibleTop < 2) continue;
+        const y = visibleTop + (visibleBottom - visibleTop) / 2;
+        // Rows reserve 32px of inline padding outside every tool/code child.
+        // Prefer the left edge because the question navigator can cover the
+        // right edge, and require hit-testing to resolve to the row itself.
+        for (const x of [rowRect.left + 16, rowRect.right - 16]) {
+          if (document.elementFromPoint(x, y) === row) return { x, y };
+        }
+      }
+      return null;
+    });
+    if (!point) await page.waitForTimeout(16);
+  }
+  assert(point != null, "outer reader wheel target resolves to visible row padding");
+  await page.mouse.move(point.x, point.y);
+}
+
 async function waitForServer() {
   const deadline = Date.now() + 30_000;
   while (Date.now() < deadline) {
@@ -518,10 +546,15 @@ try {
   // autoscroll API and remain at the physical bottom without Reasonix scrollTop
   // correction loops.
   const jumpBottom = page.locator(".transcript__jump-bottom");
-  // Target the reserved transcript gutter so expanded nested tool/code
-  // scrollers cannot correctly retain this outer-reader intent.
-  await page.mouse.move(box.x + box.width - 6, box.y + box.height / 2);
+  // Re-measure and target the reserved row gutter inside the scrollport. The
+  // native scrollbar gutter itself is browser-owned and can swallow this wheel
+  // immediately after a thumb release.
+  await moveToOuterReaderGutter(page, transcript);
   await page.mouse.wheel(0, -800);
+  // Playwright resolves mouse.wheel before Chromium finishes the trusted
+  // event's native default scroll. Let that input settle before sampling the
+  // arbiter state or issuing another protocol command.
+  await page.waitForTimeout(100);
   await page.waitForFunction(() => document.querySelector(".transcript")?.dataset.scrollMode === "manual");
   await jumpBottom.waitFor({ state: "visible" });
   await jumpBottom.click();
@@ -566,8 +599,9 @@ try {
     element.scrollTop = Math.max(0, Math.floor((element.scrollHeight - element.clientHeight) / 2));
     element.dispatchEvent(new Event("scroll"));
   });
-  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await moveToOuterReaderGutter(page, transcript);
   await page.mouse.wheel(0, -240);
+  await page.waitForTimeout(100);
   await page.waitForFunction(() => document.querySelector(".transcript")?.dataset.scrollMode === "manual", undefined, { timeout: 5_000 });
   await transcript.evaluate(() => {
     window.__reachBottomProbe = { writes: [], snaps: [], remounts: 0, done: false };
@@ -677,10 +711,11 @@ try {
     element.scrollTop = Math.max(0, Math.floor((element.scrollHeight - element.clientHeight) / 2));
     element.dispatchEvent(new Event("scroll"));
   });
-  // Use the reserved right transcript gutter, not a nested tool/code
-  // scrollport, so this wheel explicitly transfers outer reader ownership.
-  await page.mouse.move(stormBox.x + stormBox.width - 6, stormBox.y + stormBox.height / 2);
+  // Use reserved row padding, not a nested tool/code scroller or the
+  // browser-owned native scrollbar gutter, for explicit reader ownership.
+  await moveToOuterReaderGutter(page, stormTranscript);
   await page.mouse.wheel(0, -240);
+  await page.waitForTimeout(100);
   await page.waitForFunction(() => document.querySelector(".transcript")?.dataset.scrollMode === "manual", undefined, { timeout: 5_000 });
   await stormTranscript.evaluate(() => {
     window.__stormProbe = { writes: [], snaps: [], remounts: 0, done: false };

@@ -25,6 +25,7 @@ export type TranscriptScrollState = {
   atBottom: boolean;
   scrollable: boolean;
   readerIntent: boolean;
+  readerIntentCanClaimTail: boolean;
   settleMode: "tail-follow" | "manual";
   /** Id of the in-flight recovery request; at most one at a time. */
   recoveryId: number | null;
@@ -32,7 +33,7 @@ export type TranscriptScrollState = {
 
 export type TranscriptScrollEvent =
   | { type: "RESET" }
-  | { type: "USER_SCROLL_INTENT" }
+  | { type: "USER_SCROLL_INTENT"; canClaimTail: boolean }
   | { type: "MANUAL_READING" }
   | { type: "READER_INTENT_ENDED" }
   | { type: "SCROLL_DELIVERED"; atBottom: boolean; scrollable: boolean }
@@ -69,6 +70,7 @@ export const INITIAL_TRANSCRIPT_SCROLL_STATE: TranscriptScrollState = {
   atBottom: true,
   scrollable: false,
   readerIntent: false,
+  readerIntentCanClaimTail: false,
   settleMode: "tail-follow",
   recoveryId: null,
 };
@@ -115,21 +117,22 @@ export function reduceTranscriptScroll(
       return preempt(INITIAL_TRANSCRIPT_SCROLL_STATE, [], "surface-switch");
     case "USER_SCROLL_INTENT":
       if (!state.scrollable) {
-        return preempt({ ...state, mode: "tail-follow", atBottom: true, readerIntent: false, settleMode: "tail-follow" });
+        return preempt({ ...state, mode: "tail-follow", atBottom: true, readerIntent: false, readerIntentCanClaimTail: false, settleMode: "tail-follow" });
       }
-      return preempt({ ...state, mode: "manual", readerIntent: true, settleMode: "manual" });
+      return preempt({ ...state, mode: "manual", readerIntent: true, readerIntentCanClaimTail: event.canClaimTail, settleMode: "manual" });
     case "MANUAL_READING":
-      return preempt({ ...state, mode: "manual", readerIntent: false, settleMode: "manual" });
+      return preempt({ ...state, mode: "manual", readerIntent: false, readerIntentCanClaimTail: false, settleMode: "manual" });
     case "READER_INTENT_ENDED":
-      return transition(state.readerIntent ? { ...state, readerIntent: false } : state);
+      return transition(state.readerIntent ? { ...state, readerIntent: false, readerIntentCanClaimTail: false } : state);
     case "SCROLL_DELIVERED": {
       if (!event.scrollable) {
-        return transition({ ...state, mode: "tail-follow", atBottom: true, scrollable: false, readerIntent: false, settleMode: "tail-follow" });
+        return transition({ ...state, mode: "tail-follow", atBottom: true, scrollable: false, readerIntent: false, readerIntentCanClaimTail: false, settleMode: "tail-follow" });
       }
       const next = { ...state, atBottom: event.atBottom, scrollable: true };
       if (
         event.atBottom
         && state.readerIntent
+        && state.readerIntentCanClaimTail
         && state.mode !== "selection"
         && state.mode !== "user-resize"
         && state.mode !== "restoring"
@@ -158,6 +161,7 @@ export function reduceTranscriptScroll(
         ...state,
         mode: "user-resize",
         readerIntent: false,
+        readerIntentCanClaimTail: false,
         settleMode: state.mode === "tail-follow" ? "tail-follow" : "manual",
       });
     case "USER_RESIZE_END":
@@ -166,30 +170,30 @@ export function reduceTranscriptScroll(
         state.mode === "user-resize" && state.settleMode === "tail-follow" ? [{ type: "AUTOSCROLL_TO_BOTTOM" }] : [],
       );
     case "SELECTION_BEGIN":
-      return preempt({ ...state, mode: "selection", readerIntent: false, settleMode: "manual" });
+      return preempt({ ...state, mode: "selection", readerIntent: false, readerIntentCanClaimTail: false, settleMode: "manual" });
     case "SELECTION_END":
       return transition(state.mode === "selection" ? { ...state, mode: "manual", settleMode: "manual" } : state);
     case "PROGRAMMATIC_BEGIN":
-      return preempt({ ...state, mode: "restoring", readerIntent: false, settleMode: event.settleMode ?? "manual" });
+      return preempt({ ...state, mode: "restoring", readerIntent: false, readerIntentCanClaimTail: false, settleMode: event.settleMode ?? "manual" });
     case "PROGRAMMATIC_END":
       return transition(state.mode === "restoring" ? { ...state, mode: state.settleMode } : state);
     case "JUMP_TO_BOTTOM":
       return preempt(
-        { ...state, mode: "tail-follow", atBottom: true, readerIntent: false, settleMode: "tail-follow" },
+        { ...state, mode: "tail-follow", atBottom: true, readerIntent: false, readerIntentCanClaimTail: false, settleMode: "tail-follow" },
         [{ type: "SCROLL_TO_LAST", behavior: event.behavior === "smooth" ? "smooth" : "auto" }],
       );
     case "JUMP_TO_INDEX":
       return preempt(
-        { ...state, mode: "restoring", atBottom: false, readerIntent: false, settleMode: "manual" },
+        { ...state, mode: "restoring", atBottom: false, readerIntent: false, readerIntentCanClaimTail: false, settleMode: "manual" },
         [{ type: "SCROLL_TO_INDEX", index: event.index, behavior: event.behavior ?? "auto" }],
       );
     case "SCROLL_TO_OFFSET":
       return preempt(
         event.owner === "selection-edge-scroll"
-          ? { ...state, mode: "selection", readerIntent: false, settleMode: "manual" }
+          ? { ...state, mode: "selection", readerIntent: false, readerIntentCanClaimTail: false, settleMode: "manual" }
           : event.owner === "jump-bottom"
-            ? { ...state, mode: "tail-follow", atBottom: true, readerIntent: false, settleMode: "tail-follow" }
-            : { ...state, mode: "restoring", atBottom: false, readerIntent: false, settleMode: "manual" },
+            ? { ...state, mode: "tail-follow", atBottom: true, readerIntent: false, readerIntentCanClaimTail: false, settleMode: "tail-follow" }
+            : { ...state, mode: "restoring", atBottom: false, readerIntent: false, readerIntentCanClaimTail: false, settleMode: "manual" },
         [{ type: "SCROLL_TO_OFFSET", owner: event.owner, top: event.top, behavior: event.behavior ?? "auto" }],
       );
     case "RECOVERY_BEGIN":
@@ -197,11 +201,11 @@ export function reduceTranscriptScroll(
       // through the same explicit cancel transition a takeover would use.
       if (state.recoveryId !== null && state.recoveryId !== event.id) {
         return transition(
-          { ...state, mode: "restoring", readerIntent: false, settleMode: event.settleMode ?? "manual", recoveryId: event.id },
+          { ...state, mode: "restoring", readerIntent: false, readerIntentCanClaimTail: false, settleMode: event.settleMode ?? "manual", recoveryId: event.id },
           [{ type: "CANCEL_RECOVERY", id: state.recoveryId, reason: "superseded" }],
         );
       }
-      return transition({ ...state, mode: "restoring", readerIntent: false, settleMode: event.settleMode ?? "manual", recoveryId: event.id });
+      return transition({ ...state, mode: "restoring", readerIntent: false, readerIntentCanClaimTail: false, settleMode: event.settleMode ?? "manual", recoveryId: event.id });
     case "RECOVERY_END":
       if (state.recoveryId !== event.id) return transition(state);
       return transition({
