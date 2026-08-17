@@ -297,6 +297,7 @@ type App struct {
 	desktopLocale       atomic.Int32
 	trayReady           bool
 	tray                *desktopTray
+	desktopShell        desktopShellRuntimeState
 	hangWatchdogMu      sync.Mutex
 	hangWatchdogCancel  context.CancelFunc
 
@@ -375,10 +376,17 @@ type App struct {
 	// never a rewritten or later same-version retry.
 	healthyUpdateCreatedAt     string
 	healthyUpdateTransactionID string
-	// startupReady records that the window reached domReady so LKG config
-	// snapshots and update health are only committed after a real UI boot.
+	// startupReady records that React rendered and the Wails bridge heartbeat
+	// succeeded. DOM navigation alone is not application health.
 	startupReady     atomic.Bool
 	webView2Recovery *webView2RecoveryCoordinator
+}
+
+type desktopShellRuntimeState struct {
+	coordinator   *desktopShellCoordinator
+	linuxRecovery *linuxWebKitRecoveryCoordinator
+	trayState     string
+	trayReason    string
 }
 
 type skillRootsCache struct {
@@ -415,7 +423,10 @@ func NewApp() *App {
 		remoteWindows:        newRemoteWindowRegistry(),
 		remoteWindowOwnerID:  newRemoteWindowOwnerID(),
 	}
+	a.desktopShell.trayState = "probing"
 	a.webView2Recovery = newWebView2RecoveryCoordinator(a)
+	a.desktopShell.linuxRecovery = newLinuxWebKitRecoveryCoordinator(a)
+	a.desktopShell.coordinator = newDesktopShellCoordinator(a)
 	a.workspaceHub = newWorkspaceChangeHub(a)
 	a.terminals = newTerminalManager(a)
 	a.botBridge = a.newBotBridge()
@@ -447,6 +458,7 @@ func (a *App) startup(ctx context.Context) {
 	initializeLifecycleDiagnostics(a)
 	a.startWindowsWebView2StartupFallback(ctx)
 	a.webView2Recovery.startGuidance(ctx)
+	a.desktopShell.coordinator.start(ctx)
 	a.lifecycle.tracker.markAsync("ready")
 	if a.remoteWindowTicket != "" {
 		// Remote web window child: no local tabs, tray, heartbeat, providers,
@@ -456,7 +468,6 @@ func (a *App) startup(ctx context.Context) {
 		return
 	}
 	installSystemQuitHook()
-	a.startTray()
 	a.enableDeferredRebuildRetry()
 	a.startHistoryIndexMigration()
 	a.goSafe("repairDesktopIconIntegration", func() {
@@ -515,6 +526,11 @@ func (a *App) beforeClose(ctx context.Context) bool {
 		a.backgroundMaximised.Store(a.lastKnownMaximised())
 		a.saveWindowStateSync()
 		a.snapshotAllTabs()
+		if a.desktopShell.coordinator != nil {
+			return a.desktopShell.coordinator.hideToBackground(ctx, func() bool {
+				return backgroundCloseUsesApplicationHide(goruntime.GOOS) || a.isTrayReady()
+			})
+		}
 		hideForBackground(ctx)
 		return true
 	}
@@ -624,20 +640,6 @@ func hideForBackground(ctx context.Context) {
 		return
 	}
 	runtime.WindowHide(ctx)
-}
-
-func showFromBackground(ctx context.Context, wasMaximised bool) {
-	if backgroundCloseUsesApplicationHide(goruntime.GOOS) {
-		runtime.Show(ctx)
-	}
-	plan := backgroundRestorePlanFor(goruntime.GOOS, wasMaximised)
-	if plan.maximiseBeforeShow {
-		runtime.WindowMaximise(ctx)
-	}
-	runtime.WindowShow(ctx)
-	if plan.unminimiseAfterShow {
-		runtime.WindowUnminimise(ctx)
-	}
 }
 
 func backgroundCloseUsesApplicationHide(goos string) bool {
@@ -858,9 +860,8 @@ func (a *App) shutdown(context.Context) {
 }
 
 // domReady is called (via OnDomReady) after the webview finishes loading its DOM
-// but before the window is shown (StartHidden). It restores the saved window
-// position and size, then calls WindowShow so the user never sees the default
-// size/position flash.
+// but before the StartHidden window is presented. It restores saved geometry,
+// then delegates presentation to the platform-aware shell coordinator.
 func (a *App) domReady(_ context.Context) {
 	// JSC has installed its lazy signal handlers by this point. Restore the
 	// SA_ONSTACK flags required by Go; this is a no-op outside Linux.
@@ -870,7 +871,9 @@ func (a *App) domReady(_ context.Context) {
 		a.domReadyRemoteWindow()
 		return
 	}
-	a.webView2Recovery.reportReady()
+	if a.desktopShell.coordinator != nil {
+		a.desktopShell.coordinator.markDOMReady()
+	}
 
 	state, ok := loadWindowState()
 	if ok {
@@ -900,10 +903,19 @@ func (a *App) domReady(_ context.Context) {
 	}
 
 	if ok && state.Maximised {
-		runtime.WindowMaximise(a.ctx)
+		if goruntime.GOOS == "windows" {
+			// Preserve the established Windows maximise -> show ordering through
+			// the unified presentation plan without appending SW_RESTORE.
+			a.backgroundMaximised.Store(true)
+		} else {
+			runtime.WindowMaximise(a.ctx)
+		}
 	}
 
-	runtime.WindowShow(a.ctx)
+	a.showMainWindowFrom("startup_dom_ready")
+}
+
+func (a *App) completeFrontendStartup() {
 	a.markDesktopHealthy()
 	ctx := a.ctx
 	a.goSafe("recordHealthyConfig", func() {
@@ -932,10 +944,25 @@ func (a *App) domReady(_ context.Context) {
 // native navigation completed; this bound call additionally proves that React
 // and the Wails bridge are responsive after a renderer reload.
 func (a *App) ReportDesktopWebViewReady() {
-	if a == nil || a.webView2Recovery == nil {
+	if a == nil || a.shuttingDown.Load() || a.forceQuit.Load() {
 		return
 	}
-	a.webView2Recovery.reportReady()
+	if a.webView2Recovery != nil {
+		a.webView2Recovery.reportReady()
+	}
+	a.reportLinuxWebKitFrontendReady()
+	if a.desktopShell.coordinator != nil {
+		first, healthy := a.desktopShell.coordinator.markFrontendHeartbeat(time.Now())
+		if first {
+			a.goSafe("startDesktopTrayAfterFrontendReady", func() { a.startTray() })
+		}
+		if healthy {
+			if a.desktopShell.linuxRecovery != nil {
+				a.desktopShell.linuxRecovery.frontendHealthy()
+			}
+			a.completeFrontendStartup()
+		}
+	}
 }
 
 func (a *App) commitPendingUpdateHealth() error {

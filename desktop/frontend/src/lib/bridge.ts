@@ -129,6 +129,12 @@ import type {
   WorkspaceView,
   SessionClearResult,
 } from "./types";
+
+export interface DesktopShellStatusView {
+  trayState: "probing" | "ready" | "unavailable";
+  backgroundCloseAvailable: boolean;
+  reason?: string;
+}
 import type { MarkdownImageView } from "./markdownImage";
 const GLOBAL_PROJECT_ORDER_KEY = "__global__";
 
@@ -555,6 +561,7 @@ export interface AppBindings extends SessionCatalogBindings, ProjectTreeOrganiza
   GetDesktopZoomFactor(): Promise<number>;
   RestartApplication(): Promise<void>;
   ReportDesktopWebViewReady(): Promise<void>;
+  GetDesktopShellStatus(): Promise<DesktopShellStatusView>;
   SetDesktopCheckUpdates(enabled: boolean): Promise<void>;
   SetDesktopUpdateChannel(channel: string): Promise<void>;
   SetDesktopTelemetry(enabled: boolean): Promise<void>;
@@ -4846,6 +4853,9 @@ function makeMockApp(): AppBindings {
         },
         async ReportDesktopWebViewReady() {
           // no-op in mock
+        },
+        async GetDesktopShellStatus() {
+          return { trayState: "ready", backgroundCloseAvailable: true } as DesktopShellStatusView;
         },
         async SetDesktopCheckUpdates(enabled: boolean) {
           settings.checkUpdates = enabled;

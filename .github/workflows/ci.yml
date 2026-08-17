@@ -375,7 +375,7 @@ jobs:
       - name: Install Linux build deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y gcc libgtk-3-dev libwebkit2gtk-4.0-dev xvfb
+          sudo apt-get install -y dbus-daemon gcc libgtk-3-dev libwebkit2gtk-4.0-dev xvfb
 
       - name: Build frontend
         run: |
@@ -443,7 +443,7 @@ jobs:
       - name: Install WebKitGTK 4.1 build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y gcc libgtk-3-dev libwebkit2gtk-4.1-dev xvfb
+          sudo apt-get install -y dbus-daemon gcc libgtk-3-dev libwebkit2gtk-4.1-dev xvfb
 
       - name: Build and test WebKitGTK 4.1 observer
         run: go test -tags webkit2_41 ./...

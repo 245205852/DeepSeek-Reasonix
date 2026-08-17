@@ -1701,6 +1701,7 @@ export const en = {
   "settings.shortcutsEnterOnly": "{action} only supports Enter with optional modifier keys.",
   "settings.closeBehavior": "When closing window",
   "settings.closeBehaviorHint": "Choose whether Reasonix keeps running after its main window closes.",
+  "settings.closeBehaviorUnavailable": "The system tray is unavailable; closing this time will quit Reasonix.",
   "settings.closeBehavior.background": "Keep running",
   "settings.closeBehavior.quit": "Quit Reasonix",
   "settings.desktopLayoutStyle": "Desktop style",

@@ -1339,6 +1339,7 @@ export const zhTW: Record<DictKey, string> = {
   "settings.shortcutsEnterOnly": "{action} 僅支援 Enter 與可選修飾鍵的組合。",
   "settings.closeBehavior": "關閉視窗時",
   "settings.closeBehaviorHint": "選擇關閉主視窗後 Reasonix 是否繼續執行。",
+  "settings.closeBehaviorUnavailable": "系統匣目前不可用，本次關閉將退出 Reasonix。",
   "settings.closeBehavior.background": "保持背景執行",
   "settings.closeBehavior.quit": "退出 Reasonix",
   "settings.desktopLayoutStyle": "桌面風格",

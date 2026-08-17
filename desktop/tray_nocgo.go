@@ -17,6 +17,10 @@ func newDesktopTray() *desktopTray { return &desktopTray{ready: make(chan struct
 func (t *desktopTray) markReady() { t.readyOnce.Do(func() { close(t.ready) }) }
 
 func (a *App) startTray() bool {
+	if a == nil || a.shuttingDown.Load() || a.forceQuit.Load() {
+		return false
+	}
+	a.setTrayHealth(nil, "unavailable", "native_tray_unavailable")
 	return false
 }
 

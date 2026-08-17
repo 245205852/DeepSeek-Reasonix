@@ -1703,6 +1703,7 @@ export const zh: Record<DictKey, string> = {
   "settings.shortcutsEnterOnly": "{action} 仅支持 Enter 与可选修饰键的组合。",
   "settings.closeBehavior": "关闭窗口时",
   "settings.closeBehaviorHint": "选择关闭主窗口后 Reasonix 是否继续运行。",
+  "settings.closeBehaviorUnavailable": "系统托盘当前不可用，本次关闭将退出 Reasonix。",
   "settings.closeBehavior.background": "保持后台运行",
   "settings.closeBehavior.quit": "退出 Reasonix",
   "settings.desktopLayoutStyle": "桌面风格",
