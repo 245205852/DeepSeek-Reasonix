@@ -1058,6 +1058,10 @@ func TestIsCronExprFieldBounds(t *testing.T) {
 		"0 0 32 * *",   // dom 32
 		"0 0 1 13 *",   // month 13
 		"0 0 * 0-13 *", // month range with 0
+		"*/0 * * * *",  // zero step never fires (minute % 0)
+		"0 0 5-1 * *",  // descending range never matches
+		"0 60 * * *",   // hour 60
+		"0 0 1 * 8",    // dow 8 out of range
 	}
 	for _, expr := range rejected {
 		if isCronExpr(expr) {
@@ -1069,10 +1073,96 @@ func TestIsCronExprFieldBounds(t *testing.T) {
 		"0 9 1 1 0-7", // dow range 0-7 valid
 		"*/15 * * * *",
 		"0 9 1-31 * *",
+		"5-10/2 * * * *", // stepping range
 	}
 	for _, expr := range accepted {
 		if !isCronExpr(expr) {
 			t.Fatalf("isCronExpr(%q) should be true", expr)
 		}
+	}
+}
+
+// TestHeartbeatConfigForwardProtectionOnRead: 读侧也要拒绝更高 schema 的配置——
+// 不能加载并按旧逻辑执行（调度/权限语义可能已变化）。此前只在写入侧拒绝。
+func TestHeartbeatConfigForwardProtectionOnRead(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	engine := &HeartbeatEngine{}
+	future := `{"schemaVersion":99,"tasks":[{"id":"f","title":"future","interval":"1h","enabled":false}]}`
+	if err := os.MkdirAll(filepath.Dir(engine.configPath()), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(engine.configPath(), []byte(future), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := engine.readConfigSnapshot(); err == nil {
+		t.Fatal("readConfigSnapshot should reject a future schemaVersion")
+	}
+	if tasks := engine.loadTasks(); tasks != nil {
+		t.Fatal("loadTasks should refuse to load a future schemaVersion")
+	}
+}
+
+// TestHeartbeatRunHistorySidecarSurvivesOlderFullTableSave: runHistory 存放在
+// 主配置之外的 sidecar 文件。模拟一个不认识 runHistory 字段的旧版二进制对
+// 主配置做整表保存（直接重写 heartbeat-tasks.json，不带 runHistory），
+// 新版读取后 runHistory 必须仍然存在——旧 writer 无法触碰 sidecar。
+func TestHeartbeatRunHistorySidecarSurvivesOlderFullTableSave(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	engine := &HeartbeatEngine{}
+	// 新版引擎写入：runHistory 落 sidecar
+	if err := engine.ReplaceTasks([]HeartbeatTask{{
+		ID:         "t1",
+		Title:      "task",
+		RunHistory: []HeartbeatRun{{At: 100, TopicID: "a"}, {At: 200, TopicID: "b"}},
+	}}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	// 模拟旧版整表保存：重写主配置，任务结构体里没有 runHistory 字段
+	legacySave := `{"schemaVersion":1,"tasks":[{"id":"t1","title":"task"}]}`
+	if err := os.WriteFile(engine.configPath(), []byte(legacySave), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// 新版重新读取：sidecar 里的 runHistory 必须仍可恢复
+	reloaded := &HeartbeatEngine{}
+	snap, err := reloaded.readConfigSnapshot()
+	if err != nil {
+		t.Fatalf("read snapshot: %v", err)
+	}
+	if len(snap.cfg.Tasks) != 1 {
+		t.Fatalf("tasks len=%d, want 1", len(snap.cfg.Tasks))
+	}
+	if got := snap.cfg.Tasks[0].RunHistory; len(got) != 2 {
+		t.Fatalf("run history len=%d, want 2 (sidecar survives older full-table save): %+v", len(got), got)
+	}
+}
+
+// TestHeartbeatRunHistorySidecarTrimmedOnSave: 整表保存时不再携带 runHistory，
+// 主配置保持干净，sidecar 单独承载；再次保存后 sidecar 仍完整。
+func TestHeartbeatRunHistorySidecarTrimmedOnSave(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	engine := &HeartbeatEngine{}
+	if err := engine.ReplaceTasks([]HeartbeatTask{{
+		ID:         "t1",
+		Title:      "task",
+		RunHistory: []HeartbeatRun{{At: 100, TopicID: "a"}},
+	}}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	data, err := os.ReadFile(engine.configPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg heartbeatConfig
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Tasks) != 1 {
+		t.Fatalf("main config tasks len=%d, want 1", len(cfg.Tasks))
+	}
+	if cfg.Tasks[0].RunHistory != nil {
+		t.Fatal("main config must not carry runHistory (lives in sidecar)")
+	}
+	if runs, _ := os.ReadFile(engine.runHistoryPath()); len(runs) == 0 {
+		t.Fatal("runHistory sidecar file must exist after save")
 	}
 }

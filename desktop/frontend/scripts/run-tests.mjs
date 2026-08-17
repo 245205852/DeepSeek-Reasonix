@@ -8,7 +8,8 @@
 import { spawnSync } from "node:child_process";
 import { readdirSync } from "node:fs";
 import { createRequire } from "node:module";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 
 // Resolve the local tsx entry directly so the runner works both under pnpm
 // scripts and when invoked as plain `node scripts/run-tests.mjs`.
@@ -81,7 +82,9 @@ for (const name of suites) {
   // suites assert English UI strings.
   const env = { ...process.env, LANG: "en_US.UTF-8", LC_ALL: "en_US.UTF-8" };
   const extraArgs = CSS_STUB_SUITES.has(name)
-    ? ["--import", join(SCRIPTS_DIR, "css-stub-register.mjs")]
+    // --import needs an absolute file URL: a bare relative path is resolved as
+    // a package specifier by Node and fails with ERR_MODULE_NOT_FOUND.
+    ? ["--import", pathToFileURL(resolve(SCRIPTS_DIR, "css-stub-register.mjs")).href]
     : [];
   const result = spawnSync(process.execPath, [tsxCli, ...extraArgs, path], { stdio: "inherit", env });
   if (result.error) console.error(`run-tests: spawn failed for ${path}: ${result.error.message}`);

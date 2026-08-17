@@ -40,16 +40,26 @@ import type { WorkspaceView } from "../../../lib/types";
 // 静态导入：Vite 保证 CSS 在模块 evaluate 前注入 DOM，避免首次访问自动化页
 // 无样式闪烁（FOUC）。node 单测通过 css-stub-register.mjs 的 loader hook 解析。
 import "./heartbeat.css";
+// 日历调度计算统一收敛在 heartbeat.schedule.ts（月末 clamp/闰日/双周锚点/
+// DST 一次实现，前后端语义镜像），面板只做 cron 分支与展示格式化。
+import { heartbeatNextRunAt as calendarHeartbeatNextRunAt, parseCalendarSchedule, nextCalendarRunImpl } from "./heartbeat.schedule";
 
 interface HeartbeatPanelProps {
   onOpenTopic?: (scope: string, workspaceRoot: string, topicId: string) => void;
 }
 
-const INTERVAL_MS: Record<"s" | "m" | "h", number> = {
-  s: 1000,
-  m: 60_000,
-  h: 3_600_000,
-};
+// mergeEngineRunState 只合并引擎拥有的运行状态字段（runHistory/topicId/lastRunAt）
+// 到当前编辑快照，保留用户在等待期间对 title/prompt/interval 等草稿字段的未保存
+// 编辑——"立即运行"完成后磁盘旧快照不得覆盖新输入。fresh 缺失的字段不覆盖
+// 草稿中已有的引擎状态（如磁盘旧版无 runHistory 时保留草稿里的执行历史）。
+export function mergeEngineRunState(prev: HeartbeatTask, fresh: HeartbeatTask): HeartbeatTask {
+  return {
+    ...prev,
+    ...(fresh.runHistory ? { runHistory: fresh.runHistory } : {}),
+    ...(fresh.topicId ? { topicId: fresh.topicId } : {}),
+    ...(fresh.lastRunAt ? { lastRunAt: fresh.lastRunAt } : {}),
+  };
+}
 
 // 圆圈内实心播放三角（停用态图标——对齐 ChatGPT 暂停态样式；strokeWidth 2.4 ≈ 15px 下 1.5px，与空圆圈 border 一致）
 function CirclePlaySolid({ size = 15 }: { size?: number }) {
@@ -69,68 +79,25 @@ function CirclePlaySolid({ size = 15 }: { size?: number }) {
   );
 }
 
-function heartbeatIntervalMs(interval?: string): number | null {  const clean = (interval || "").replace(/\|.*$/, "");
-  const m = clean.match(/^(\d+)([smh])$/);
-  if (!m) return null;
-  return parseInt(m[1], 10) * INTERVAL_MS[m[2] as "s" | "m" | "h"];
-}
-
-function heartbeatClockMinutes(value?: string): number | null {
-  const m = (value || "").match(/^(\d{2}):(\d{2})$/);
-  if (!m) return null;
-  const hour = parseInt(m[1], 10);
-  const minute = parseInt(m[2], 10);
-  if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return null;
-  return hour * 60 + minute;
-}
-
-function dateAtMinutes(base: Date, minutes: number): Date {
-  const d = new Date(base);
-  d.setHours(Math.floor(minutes / 60), minutes % 60, 0, 0);
-  return d;
-}
-
-function heartbeatWithinWindow(date: Date, start: number | null, end: number | null): boolean {
-  if (start === null && end === null) return true;
-  const minutes = date.getHours() * 60 + date.getMinutes();
-  if (start !== null && end === null) return minutes >= start;
-  if (start === null && end !== null) return minutes < end;
-  if (start === end) return true;
-  if (start! < end!) return minutes >= start! && minutes < end!;
-  return minutes >= start! || minutes < end!;
-}
-
-function nextHeartbeatWindowTime(from: Date, start: number | null, end: number | null): Date {
-  if (heartbeatWithinWindow(from, start, end)) return from;
-  if (start !== null && end === null) return dateAtMinutes(from, start);
-  if (start === null && end !== null) {
-    const next = new Date(from);
-    next.setDate(next.getDate() + 1);
-    next.setHours(0, 0, 0, 0);
-    return next;
-  }
-  const minutes = from.getHours() * 60 + from.getMinutes();
-  if (start! < end! && minutes < start!) return dateAtMinutes(from, start!);
-  if (start! > end! && minutes < start! && minutes >= end!) return dateAtMinutes(from, start!);
-  const next = dateAtMinutes(from, start!);
-  next.setDate(next.getDate() + 1);
-  return next;
-}
-
-export function heartbeatNextRunAt(task: Pick<HeartbeatTask, "interval" | "lastRunAt" | "timeWindowStart" | "timeWindowEnd">, now = Date.now()): number | null {
+// 日历调度计算（interval 窗口 / daily / weekly / biweekly / monthly / yearly /
+// 月末 clamp / 闰日 / 双周锚点 / DST）统一委托给 heartbeat.schedule.ts，面板只
+// 负责 cron 分支与展示格式化，避免两套日历逻辑漂移。
+export function heartbeatNextRunAt(task: Pick<HeartbeatTask, "interval" | "lastRunAt" | "createdAt" | "timeWindowStart" | "timeWindowEnd">, now = Date.now()): number | null {
   if (isCronExpr(task.interval || "")) {
     return nextCronRunAt(task.interval || "", now);
   }
-  if (!task.lastRunAt) return null;
-  const intervalMs = heartbeatIntervalMs(task.interval);
-  if (intervalMs === null) return null;
-  const rawNext = task.lastRunAt + intervalMs;
-  if ((task.interval || "").includes("|")) return rawNext;
-  const start = heartbeatClockMinutes(task.timeWindowStart);
-  const end = heartbeatClockMinutes(task.timeWindowEnd);
-  if (start === null && end === null) return rawNext;
-  const candidate = new Date(Math.max(rawNext, now));
-  return nextHeartbeatWindowTime(candidate, start, end).getTime();
+  return calendarHeartbeatNextRunAt(task, now);
+}
+
+// 周期任务（"24h|daily@22:00" 等）从 `from` 起的下一次触发时刻。calendar
+// schedule 的 nextCalendarRun 语义就是 "after 之后的下一次"，与后端
+// previousHeartbeatScheduleAt 对齐（月末 clamp、闰日、周一制双周锚点）。
+export function nextCycleRunAt(interval: string, from = Date.now(), createdAt?: number): number | null {
+  const schedule = parseCalendarSchedule(interval);
+  if (!schedule) return null;
+  const after = new Date(from);
+  const anchor = createdAt ? new Date(createdAt) : after;
+  return nextCalendarRunImpl(schedule, after, anchor).getTime();
 }
 
 // 列表排序：启用在前、禁用在后；同组按下次触发时间升序（越近越靠前，未运行视为立即）。
@@ -199,18 +166,26 @@ function isCronExpr(s: string): boolean {
   const fields = s.trim().split(/\s+/);
   if (fields.length !== 5) return false;
   if (!fields.every((f) => f !== "" && /^[0-9*/\-,]+$/.test(f))) return false;
-  // Reject out-of-range values (e.g. "99 * * * *") that never match.
-  // dom/month are 1-based (0 can never match getDate()/getMonth()); dow is
-  // 0-7 with 7 accepted as the Sunday alias — mirror the Go engine exactly.
+  // Reject out-of-range values (e.g. "99 * * * *"), zero/empty steps
+  // ("*/0" never fires: value % 0 is NaN), and descending ranges ("5-1"
+  // never matches). dom/month are 1-based (0 can never match getDate()/
+  // getMonth()); dow is 0-7 with 7 accepted as the Sunday alias — mirror the
+  // Go engine exactly.
   const limits = [59, 23, 31, 12, 7]; // min, hour, dom, month, dow
   const mins = [0, 0, 1, 1, 0];
   return fields.every((f, i) =>
     f.split(",").every((part) => {
-      const base = part.includes("/") ? part.slice(0, part.indexOf("/")) : part;
+      const slashIdx = part.indexOf("/");
+      const base = slashIdx >= 0 ? part.slice(0, slashIdx) : part;
+      if (slashIdx >= 0) {
+        const step = Number(part.slice(slashIdx + 1));
+        if (!Number.isInteger(step) || step < 1) return false;
+      }
       if (base === "*") return true;
       if (base.includes("-")) {
         const [lo, hi] = base.split("-").map(Number);
-        return Number.isInteger(lo) && Number.isInteger(hi) && lo >= mins[i] && hi <= limits[i];
+        return Number.isInteger(lo) && Number.isInteger(hi)
+          && lo >= mins[i] && hi <= limits[i] && lo <= hi;
       }
       const v = Number(base);
       return Number.isInteger(v) && v >= mins[i] && v <= limits[i];
@@ -298,8 +273,13 @@ export function intervalToCron(interval: string, timeWindowStart?: string, timeW
   // are OR-ed, so a biweekly rule like "1-15 * 1" becomes "1st-15th OR Monday",
   // doubling the actual frequency). Seconds cannot be expressed either (cron
   // has no seconds field). Cross-midnight windows (22:00–06:00) produce a
-  // descending range "22-6" that no matcher handles. Return null for these so
+  // descending range "22-6" that no matcher handles. Non-top-of-hour windows
+  // (09:30–17:30) would be truncated to whole hours. Return null for these so
   // callers can refuse the conversion instead of silently corrupting semantics.
+  const windowTopOfHour = !timeWindowStart && !timeWindowEnd
+    || (!timeWindowStart || timeWindowStart.endsWith(":00"))
+    && (!timeWindowEnd || timeWindowEnd.endsWith(":00"));
+  if (!windowTopOfHour) return null;
   const cycleMatch = interval.match(/^\d+[smh]\|(daily|weekly|biweekly|monthly|yearly)(?::([^@]*))?(?:@(\d{2}:\d{2}))?$/);
   if (cycleMatch) {
     const kind = cycleMatch[1];
@@ -307,24 +287,21 @@ export function intervalToCron(interval: string, timeWindowStart?: string, timeW
     const days = cycleMatch[2] || "";
     const time = cycleMatch[3] || "09:00";
     const [h, m] = time.split(":").map(Number);
-    const winOk = !timeWindowStart || !timeWindowEnd
-      || (parseInt(timeWindowStart.split(":")[0]) <= parseInt(timeWindowEnd.split(":")[0]));
-    if (!winOk) return null; // cross-midnight window: not expressible
-    const hExpr = timeWindowStart && timeWindowEnd
-      // End is exclusive: "09:00–17:00" → hour range 9-16 (17:00 excluded).
-      ? `${Math.max(0, parseInt(timeWindowStart.split(":")[0]))}-${Math.max(0, Math.min(23, parseInt(timeWindowEnd.split(":")[0]) - 1))}`
-      : h.toString();
+    // Cycle tasks schedule on their own clock (@09:00 etc); the engine ignores
+    // interval-style time windows for them (see heartbeatTaskDueAt), so any
+    // stale window must not be folded into the cron hour field — that would
+    // turn "daily@12:00" into "every hour 9-16".
     const dayMap: Record<string, number> = { mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6, sun: 0 };
     switch (kind) {
-      case "daily": return `${m} ${timeWindowStart ? hExpr : h} * * *`;
+      case "daily": return `${m} ${h} * * *`;
       case "weekly": {
         const d = days.split(",").map((x) => dayMap[x.toLowerCase()] ?? "*").join(",");
-        return `${m} ${timeWindowStart ? hExpr : h} * * ${d}`;
+        return `${m} ${h} * * ${d}`;
       }
-      case "monthly": return `${m} ${timeWindowStart ? hExpr : h} ${days || "1"} * *`;
+      case "monthly": return `${m} ${h} ${days || "1"} * *`;
       case "yearly": {
         const [mo, dy] = days.split("-");
-        return `${m} ${timeWindowStart ? hExpr : h} ${dy || "1"} ${mo || "1"} *`;
+        return `${m} ${h} ${dy || "1"} ${mo || "1"} *`;
       }
     }
   }
@@ -332,17 +309,22 @@ export function intervalToCron(interval: string, timeWindowStart?: string, timeW
   if (simple) {
     const n = parseInt(simple[1]);
     const unit = simple[2];
-    const winOk = !timeWindowStart || !timeWindowEnd
-      || (parseInt(timeWindowStart.split(":")[0]) <= parseInt(timeWindowEnd.split(":")[0]));
-    if (!winOk) return null; // cross-midnight window: not expressible
+    if (timeWindowStart && timeWindowEnd
+      && parseInt(timeWindowStart.split(":")[0]) > parseInt(timeWindowEnd.split(":")[0])) {
+      return null; // cross-midnight window: not expressible
+    }
     const hExpr = timeWindowStart && timeWindowEnd
+      // End is exclusive: "09:00–17:00" → hour range 9-16 (17:00 excluded).
       ? `${Math.max(0, parseInt(timeWindowStart.split(":")[0]))}-${Math.max(0, Math.min(23, parseInt(timeWindowEnd.split(":")[0]) - 1))}`
       : "*";
     if (unit === "m") return `*/${n} ${hExpr} * * *`;
     // 5-field cron: minute hour dom mon dow. Hourly tasks run at minute 0 of
-    // every n-th hour (`0 */n * * *`); with a time window the hour field
-    // carries the window range so runs stay inside it (`0 9-16 * * *`).
+    // every n-th hour (`0 */n * * *`). With a time window the hour field can
+    // only carry "all hours in the range" (`0 9-16 * * *`), which is lossless
+    // for 1h but would silently change 2h+ windows from "every N hours" to
+    // "every hour" — refuse those.
     if (unit === "h") {
+      if (timeWindowStart && timeWindowEnd && n > 1) return null;
       const hourField = timeWindowStart && timeWindowEnd ? hExpr : `*/${n}`;
       return `0 ${hourField} * * *`;
     }
@@ -422,76 +404,26 @@ function describeCron(expr: string, t: Translator): string {
   return `${hour.padStart(2, "0")}:${min.padStart(2, "0")}${suffix}`;
 }
 
-// nextCycleRunAt returns the next wall-clock time matching a cycle interval
-// ("24h|daily@22:00", "168h|weekly:fri@16:00", "336h|biweekly:mon@09:00",
-// "720h|monthly:15@09:00", "8760h|yearly:1-1@09:00"). Mirrors the backend's
-// previousHeartbeatScheduleAt semantics (next occurrence, not rolling offset),
-// so the displayed next run matches actual scheduling. Returns null for
-// non-cycle intervals.
-const WEEK_MS = 7 * 86400000;
-export function nextCycleRunAt(interval: string, from = Date.now(), createdAt?: number): number | null {
-  const m = interval.match(/^\d+[smh]\|(daily|weekly|biweekly|monthly|yearly)(?::([^@]*))?(?:@(\d{2}:\d{2}))?$/);
-  if (!m) return null;
-  const kind = m[1];
-  const rule = m[2] || "";
-  const at = m[3] || "09:00";
-  const [hh, mm] = at.split(":").map(Number);
-  const dayMap: Record<string, number> = { sun: 0, mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6 };
-  const base = new Date(from);
-  const atTime = (d: Date): Date => {
-    const r = new Date(d);
-    r.setHours(hh, mm, 0, 0);
-    return r;
-  };
-  // Biweekly anchor: mirror the Go engine's weekStart (Monday) parity so the
-  // displayed next run matches actual scheduling. An epoch-floor week (Thu)
-  // would disagree with the engine for tasks created on most weekdays.
-  const weekStart = (ts: number): number => {
-    const d = new Date(ts);
-    d.setDate(d.getDate() - ((d.getDay() + 6) % 7));
-    d.setHours(0, 0, 0, 0);
-    return d.getTime();
-  };
-  const anchorWeek = createdAt ? weekStart(createdAt) : weekStart(from);
-
-  // Search forward up to 400 days (covers yearly + biweekly parity windows).
-  for (let offset = 0; offset <= 400; offset++) {
-    const day = new Date(base);
-    day.setDate(day.getDate() + offset);
-    let matches = false;
-    if (kind === "daily") {
-      matches = true;
-    } else if (kind === "weekly" || kind === "biweekly") {
-      const days = rule.split(",").map((x) => dayMap[x.trim().toLowerCase()]);
-      matches = days.includes(day.getDay());
-      if (matches && kind === "biweekly") {
-        const candWeek = weekStart(day.getTime());
-        if (Math.round((candWeek - anchorWeek) / WEEK_MS) % 2 !== 0) matches = false;
-      }
-    } else if (kind === "monthly") {
-      matches = day.getDate() === (parseInt(rule, 10) || 1);
-    } else if (kind === "yearly") {
-      const [mo, dy] = rule.split("-");
-      matches = day.getMonth() + 1 === (parseInt(mo, 10) || 1) && day.getDate() === (parseInt(dy, 10) || 1);
-    }
-    if (!matches) continue;
-    const candidate = atTime(day).getTime();
-    if (candidate <= from) continue;
-    return candidate;
-  }
-  return null;
-}
+// 周期 next-run 计算统一在文件头部通过 heartbeat.schedule.ts 的
+// parseCalendarSchedule + nextCalendarRunImpl 实现（见 nextCycleRunAt），
+// 与新实现的意图一致：镜像后端 previousHeartbeatScheduleAt 语义、月末
+// clamp、周一制双周锚点。此处不再保留旧的行内实现。
 
 function taskNextRun(task: HeartbeatTask, t: Translator): string | null {
   if (!task.enabled) return null;
   const interval = task.interval || "";
   let next: number | null = null;
   // 周期任务（"24h|daily@22:00" / "168h|weekly:fri@16:00"）：按调度语义计算
-  // 下一个匹配时刻（与后端 previousHeartbeatScheduleAt 一致）——不依赖
-  // lastRunAt，也避免转 cron 引入 biweekly/窗口/秒级语义失真。
+  // 下一个匹配时刻。已运行过（有 lastRunAt）的任务基于 lastRunAt 求下一时刻
+  // （heartbeatNextRunAt → heartbeat.schedule 的 nextCalendarRun，含月末
+  // clamp/闰日/双周锚点/DST，与后端 previousHeartbeatScheduleAt 对齐）；离线
+  // 期间早该运行的任务，next 会落在过去 → 显示 dueSoon（当前应执行），而不是
+  // 跳到下一周期。从未运行的任务从创建时刻起算首次运行。
   const cycleMatch = interval.match(/^\d+[smh]\|(daily|weekly|biweekly|monthly|yearly)(?::([^@]*))?(?:@(\d{2}:\d{2}))?$/);
   if (cycleMatch) {
-    next = nextCycleRunAt(interval, Date.now(), task.createdAt);
+    next = task.lastRunAt
+      ? heartbeatNextRunAt(task)
+      : nextCycleRunAt(interval, task.createdAt || Date.now(), task.createdAt);
   } else {
     const cleaned = interval.replace(/\|.*$/, "");
     const m = cleaned.match(/^(\d+)([smh])$/);
@@ -833,10 +765,12 @@ export function HeartbeatView({ onOpenTopic }: HeartbeatPanelProps) {
         const fresh = await loadTasks();
         // 详情页正在编辑该任务时，同步最新 run 状态（runHistory/topicId/lastRunAt），
         // 否则详情页 runHistory 区域停留在触发前的旧快照，看不到新记录。
+        // 只合并引擎拥有的字段：等待期间用户对 title/prompt/schedule 的草稿
+        // 编辑不能被磁盘旧快照覆盖。
         if (fresh) {
           const updated = fresh.find((t) => t.id === id);
           if (updated) {
-            setEditing((prev) => (prev && prev.id === id ? { ...prev, ...updated } : prev));
+            setEditing((prev) => (prev && prev.id === id ? mergeEngineRunState(prev, updated) : prev));
           }
         }
       } catch {
@@ -1739,13 +1673,15 @@ function TaskEditor({
 
   // 启用/暂停切换（状态文字入口 + 右侧按钮共用）：
   // 只持久化 enabled 变更，基于最近保存基线（initialTaskRef）翻转，
-  // 不携带 draft 中尚未保存的 title/prompt/schedule 编辑。
+  // 不携带 draft 中尚未保存的 title/prompt/schedule 编辑；同时保留草稿，
+  // 等待中的用户输入不被基线快照覆盖。
   const toggleEnabled = useCallback(() => {
     const saved = initialTaskRef.current;
     const updated = { ...saved, enabled: !saved.enabled };
-    setDraft(updated);
-    initialTaskRef.current = updated;
     onSave(updated);
+    // 只同步 enabled（磁盘已持久化），title/prompt/interval 等草稿编辑保留。
+    setDraft((prev) => ({ ...prev, enabled: updated.enabled }));
+    initialTaskRef.current = { ...saved, enabled: updated.enabled };
   }, [onSave]);
 
   // Detect frequency type from interval value
