@@ -121,7 +121,10 @@ func TestRecorderRecordsAndForwardsOptionalCapabilities(t *testing.T) {
 	r.RecordReadinessAudit(evidence.ReadinessAudit{Result: evidence.ReadinessBlocked, MissingVerification: 2})
 	r.RecordProtocolRecovery(event.ProtocolRecoveryAudit{Kind: event.ProtocolRecoveryMissingReasoningDetected})
 	r.RecordTurnCompletion()
-	r.RecordOutcomeProgress(evidence.OutcomeSample{Round: 3, Exploration: 2, Objective: 1, LegacyGain: 4})
+	r.RecordOutcomeProgress(evidence.OutcomeSample{
+		Round: 3, Exploration: 2, Objective: 1, LegacyGain: 4,
+		Runway: 0, RunwayDry: 6, RunwayIdle: 6, RunwaySpent: true,
+	})
 	r.RecordDelegationAdmission(event.DelegationAdmissionAudit{Tool: "research", Verdict: "deny", Reason: "local_fix_no_external_need", Intent: "mutation"})
 	r.RecordCompletionReport(event.CompletionReportAudit{
 		Verdict: "partial", Changes: 2, ChangesUnreviewed: 1, Gaps: 1, GapKinds: []string{"unreviewed_change"},
@@ -148,6 +151,9 @@ func TestRecorderRecordsAndForwardsOptionalCapabilities(t *testing.T) {
 	if recs[3].OutcomeProgress == nil || recs[3].OutcomeProgress.Round != 3 || recs[3].OutcomeProgress.Objective != 1 || recs[3].OutcomeProgress.LegacyGain != 4 {
 		t.Errorf("outcome progress record = %+v", recs[3].OutcomeProgress)
 	}
+	if rec := recs[3].OutcomeProgress; rec.Runway == nil || *rec.Runway != 0 || rec.RunwayDry != 6 || rec.RunwayIdle != 6 || !rec.RunwaySpent {
+		t.Errorf("runway shadow record = %+v, want explicit spent balance", rec)
+	}
 	if recs[4].DelegationAdmission == nil || recs[4].DelegationAdmission.Verdict != "deny" || recs[4].DelegationAdmission.Tool != "research" {
 		t.Errorf("delegation admission record = %+v", recs[4].DelegationAdmission)
 	}
@@ -159,6 +165,37 @@ func TestRecorderRecordsAndForwardsOptionalCapabilities(t *testing.T) {
 	}
 	if len(inner.readiness) != 1 || len(inner.recoveries) != 1 || inner.turns != 1 || len(inner.outcomes) != 1 || len(inner.reports) != 1 {
 		t.Errorf("inner capabilities = %d/%d/%d/%d/%d, want 1/1/1/1/1", len(inner.readiness), len(inner.recoveries), inner.turns, len(inner.outcomes), len(inner.reports))
+	}
+}
+
+func TestOutcomeProgressRunwayIsAdditiveAndPresenceAware(t *testing.T) {
+	var old Record
+	if err := json.Unmarshal([]byte(`{"schema_version":1,"outcome_progress":{"round":1}}`), &old); err != nil {
+		t.Fatalf("decode old record: %v", err)
+	}
+	if old.OutcomeProgress == nil || old.OutcomeProgress.Runway != nil {
+		t.Fatalf("old record runway = %+v, want unobserved nil", old.OutcomeProgress)
+	}
+
+	zero := 0
+	data, err := json.Marshal(Record{
+		SchemaVersion:   SchemaVersion,
+		OutcomeProgress: &OutcomeProgress{Round: 1, Runway: &zero, RunwaySpent: true},
+	})
+	if err != nil {
+		t.Fatalf("encode new record: %v", err)
+	}
+	if !strings.Contains(string(data), `"runway":0`) {
+		t.Fatalf("zero balance was omitted: %s", data)
+	}
+	// A previous reader ignores the additive fields and keeps its known data.
+	var legacy struct {
+		OutcomeProgress *struct {
+			Round int `json:"round"`
+		} `json:"outcome_progress"`
+	}
+	if err := json.Unmarshal(data, &legacy); err != nil || legacy.OutcomeProgress == nil || legacy.OutcomeProgress.Round != 1 {
+		t.Fatalf("legacy decode = %+v, %v", legacy, err)
 	}
 }
 

@@ -159,6 +159,7 @@ type trajectoryRecord struct {
 		ClaimsUnbacked int      `json:"claims_unbacked"`
 	} `json:"completion_report"`
 	OutcomeProgress *struct {
+		Round            int  `json:"round"`
 		Exploration      int  `json:"exploration"`
 		Verification     int  `json:"verification"`
 		Objective        int  `json:"objective"`
@@ -173,6 +174,10 @@ type trajectoryRecord struct {
 		LocalExecSeen    bool `json:"local_exec_seen"`
 		GovernorEligible bool `json:"governor_eligible"`
 		GovernorEngaged  bool `json:"governor_engaged"`
+		Runway           *int `json:"runway"`
+		RunwayDry        int  `json:"runway_dry"`
+		RunwayIdle       int  `json:"runway_idle"`
+		RunwaySpent      bool `json:"runway_spent"`
 	} `json:"outcome_progress"`
 	DelegationAdmission *struct {
 		Tool    string `json:"tool"`
@@ -380,11 +385,12 @@ func (t *trajScan) record(rec trajectoryRecord) {
 	}
 	if op := rec.OutcomeProgress; op != nil {
 		t.outcomePoints = append(t.outcomePoints, outcomePoint{
-			ts: rec.TS, exploration: op.Exploration, verification: op.Verification,
+			ts: rec.TS, round: op.Round, exploration: op.Exploration, verification: op.Verification,
 			objective: op.Objective, regression: op.Regression, churn: op.Churn,
 			legacyGain: op.LegacyGain, discriminating: op.Discriminating, debtAge: op.DebtAge,
 			blindMutations: op.BlindMutations, ebmEligible: op.EBMEligible, ebmFired: op.EBMFired,
 			governorEligible: op.GovernorEligible, governorEngaged: op.GovernorEngaged,
+			runway: op.Runway, runwayDry: op.RunwayDry, runwayIdle: op.RunwayIdle, runwaySpent: op.RunwaySpent,
 		})
 	}
 	if da := rec.DelegationAdmission; da != nil {

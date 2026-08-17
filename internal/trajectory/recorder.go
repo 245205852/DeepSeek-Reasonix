@@ -80,6 +80,12 @@ type OutcomeProgress struct {
 	LocalExecSeen    bool `json:"local_exec_seen,omitempty"`
 	GovernorEligible bool `json:"governor_eligible,omitempty"`
 	GovernorEngaged  bool `json:"governor_engaged,omitempty"`
+	// Runway is a pointer so old records (nil: not observed) stay distinct from
+	// a new record whose counterfactual account genuinely reached zero.
+	Runway      *int `json:"runway,omitempty"`
+	RunwayDry   int  `json:"runway_dry,omitempty"`
+	RunwayIdle  int  `json:"runway_idle,omitempty"`
+	RunwaySpent bool `json:"runway_spent,omitempty"`
 }
 
 // ContractShadowAudit mirrors event.ContractShadowAudit with stable keys.
@@ -246,6 +252,7 @@ func (r *Recorder) RecordCompletionReport(a event.CompletionReportAudit) {
 }
 
 func (r *Recorder) RecordOutcomeProgress(sample evidence.OutcomeSample) {
+	runway := sample.Runway
 	r.append(Record{OutcomeProgress: &OutcomeProgress{
 		Round:            sample.Round,
 		Exploration:      sample.Exploration,
@@ -262,6 +269,10 @@ func (r *Recorder) RecordOutcomeProgress(sample evidence.OutcomeSample) {
 		LocalExecSeen:    sample.LocalExecSeen,
 		GovernorEligible: sample.GovernorEligible,
 		GovernorEngaged:  sample.GovernorEngaged,
+		Runway:           &runway,
+		RunwayDry:        sample.RunwayDry,
+		RunwayIdle:       sample.RunwayIdle,
+		RunwaySpent:      sample.RunwaySpent,
 	}})
 	event.RecordOutcomeProgress(r.inner, sample)
 }
