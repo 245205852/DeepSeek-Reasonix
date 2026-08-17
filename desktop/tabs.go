@@ -3266,7 +3266,9 @@ func (a *App) closeTabRuntime(tabID string, allowDetach bool) error {
 		closeSink.clearContext() // stop further emissions (nil ctx -> Emit becomes no-op)
 	}
 	if discardTransientBlank {
-		discardTransientBlankSessionArtifacts(discardPath)
+		if discardTransientBlankSessionArtifacts(discardPath) {
+			a.removeSessionCatalogPath(discardPath, "transient_blank_discarded")
+		}
 	}
 	return nil
 }
@@ -3358,7 +3360,10 @@ func (a *App) keepOnlyVisibleTab(tabID string) (TabMeta, error) {
 	if err != nil {
 		return TabMeta{}, err
 	}
-	a.emitProjectTreeRuntimeChangedWithCatalogRefresh()
+	// Visibility and detached/open ownership are runtime state. Snapshot saves
+	// above already enqueue exact-path catalog updates; a topic switch must not
+	// rescan every session directory and expose partial catalog generations.
+	a.emitProjectTreeRuntimeChangedWithLegacy()
 	return enrichTabMeta(meta), nil
 }
 
@@ -3407,7 +3412,9 @@ func (a *App) removeVisibleTabRuntimeAdmissionHeld(tab *WorkspaceTab) {
 	a.markTabRemoved(tab)
 	a.closeTabRuntimeAdmissionHeld(tab)
 	if discardTransientBlank {
-		discardTransientBlankSessionArtifacts(discardPath)
+		if discardTransientBlankSessionArtifacts(discardPath) {
+			a.removeSessionCatalogPath(discardPath, "transient_blank_discarded")
+		}
 	}
 }
 
@@ -3435,15 +3442,6 @@ func (a *App) transientBlankSessionArtifactPath(tab *WorkspaceTab) (string, bool
 		return "", false
 	}
 	return path, true
-}
-
-func discardTransientBlankSessionArtifacts(path string) {
-	if strings.TrimSpace(path) == "" {
-		return
-	}
-	if err := removeDesktopSessionArtifacts(path); err != nil {
-		slog.Warn("desktop: discard transient blank session artifacts failed", "path", path, "err", err)
-	}
 }
 
 func (a *App) markTabRemoved(tab *WorkspaceTab) {
@@ -6981,6 +6979,9 @@ func (a *App) emitProjectTreeChanged() {
 }
 
 func (a *App) requestProjectTreeCatalogRefresh() {
+	if a.projectTreeCatalogRefreshHook != nil {
+		a.projectTreeCatalogRefreshHook()
+	}
 	a.requestSessionCatalogMetadataSync()
 	for _, target := range a.sessionCatalogTargets() {
 		a.requestSessionCatalogReconcile(target.Path)
@@ -7861,7 +7862,7 @@ func (a *App) saveTabSessionMetaForCurrentSession(tab *WorkspaceTab) error {
 	if !ok {
 		return nil
 	}
-	return saveTabSessionMetaSnapshot(snap)
+	return a.saveTabSessionMetaSnapshotAndIndex(snap)
 }
 
 func (a *App) tabSessionMetaSnapshotForCurrentSession(tab *WorkspaceTab) (tabSessionMetaSnapshot, bool) {

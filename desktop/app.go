@@ -143,8 +143,11 @@ type App struct {
 	catalogReconcileMu   sync.Mutex
 	catalogReconcileJobs map[string]*desktopCatalogReconcileJob
 	// Test-only deterministic boundary, set before concurrent requests.
-	catalogReconcileHook     func(sessioncatalog.DirectoryTarget)
-	catalogReconcileDoneHook func(sessioncatalog.DirectoryTarget)
+	catalogReconcileHook func(sessioncatalog.DirectoryTarget)
+	// projectTreeCatalogRefreshHook is test-only: it proves runtime-only
+	// navigation never falls back to the broad catalog refresh path.
+	projectTreeCatalogRefreshHook func()
+	catalogReconcileDoneHook      func(sessioncatalog.DirectoryTarget)
 	// catalogRegisteredProjectRoots bounds activation-triggered discovery to
 	// once per project per process. Failed pre-catalog attempts are removed so
 	// a later activation retries after the asynchronous catalog opens.

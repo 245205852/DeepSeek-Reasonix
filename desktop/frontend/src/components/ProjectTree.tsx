@@ -10,7 +10,7 @@ import { asArray } from "../lib/array";
 import { useToast } from "../lib/toast";
 import { app } from "../lib/bridge";
 import { onProjectTreeChangedV2 } from "../lib/sessionCatalogBridge";
-import { isRuntimeSessionNode, isTopicNode, loadWorkbenchOrganizeMode, loadWorkbenchSortMode, mergeProjectTopicPage, projectTreeDedupedExactTime, projectTreeEventAffectsFolder, projectTreeFolderDisclosure, projectTreeReadActivityKey, projectTreeRevisionIsFresh, projectTreeShellChildren, projectTreeShellSignature, projectTreeShouldApplyShellSnapshot, projectTreeShouldRenderTopicActions, projectTreeShouldSuppressOpenForRename, projectTreeTopicArchiveBlocked, projectTreeTopicHasUnreadActivity, projectTreeTopicHoverCardModel, projectTreeTopicMenuOffersPin, projectTreeTopicMetaLine, projectTreeTopicOpenRequest, projectTreeTopicPageIsFresh, projectTreeWithoutTopic, topicActivityAt, topicActivityDateLabel, topicActivityLabel, topicIsActive, topicStatus, topicStatusLabel, topicUnknownTimeLabel, WORKBENCH_ORGANIZE_KEY, WORKBENCH_SORT_KEY, type ProjectTreePendingTopicOpen, type ProjectTreeReadActivity, type ProjectTreeTopicHoverCard, type ProjectTreeVariant, type WorkbenchOrganizeMode, type WorkbenchSortMode } from "../lib/projectTreeTopic";
+import { isRuntimeSessionNode, isTopicNode, loadWorkbenchOrganizeMode, loadWorkbenchSortMode, mergeIncompleteProjectTopicPage, mergeProjectTopicPage, projectTreeDedupedExactTime, projectTreeEventAffectsFolder, projectTreeFolderDisclosure, projectTreeReadActivityKey, projectTreeRevisionIsFresh, projectTreeShellChildren, projectTreeShellSignature, projectTreeShouldApplyShellSnapshot, projectTreeShouldRenderTopicActions, projectTreeShouldSuppressOpenForRename, projectTreeTopicArchiveBlocked, projectTreeTopicHasUnreadActivity, projectTreeTopicHoverCardModel, projectTreeTopicMenuOffersPin, projectTreeTopicMetaLine, projectTreeTopicOpenRequest, projectTreeTopicPageIsFresh, projectTreeTopicPageSignature, projectTreeWithoutTopic, topicActivityAt, topicActivityDateLabel, topicActivityLabel, topicIsActive, topicStatus, topicStatusLabel, topicUnknownTimeLabel, WORKBENCH_ORGANIZE_KEY, WORKBENCH_SORT_KEY, type ProjectTreePendingTopicOpen, type ProjectTreeReadActivity, type ProjectTreeTopicHoverCard, type ProjectTreeVariant, type WorkbenchOrganizeMode, type WorkbenchSortMode } from "../lib/projectTreeTopic";
 export * from "../lib/projectTreeTopic";
 import type { ProjectNode, SessionCatalogStatus } from "../lib/types";
 import { topicActivityTime } from "../lib/session";
@@ -192,7 +192,11 @@ function sortWorkbenchChildren(children: ProjectNode[], sortMode: WorkbenchSortM
     if (Boolean(a.pinned) !== Boolean(b.pinned)) return a.pinned ? -1 : 1;
     const manualOrder = manualTopicOrder(a, b);
     if (manualOrder !== 0) return manualOrder;
-    return topicSortValue(b, sortMode) - topicSortValue(a, sortMode);
+    const activityOrder = topicSortValue(b, sortMode) - topicSortValue(a, sortMode);
+    if (activityOrder !== 0) return activityOrder;
+    const aKey = a.topicId || a.key;
+    const bKey = b.topicId || b.key;
+    return aKey < bKey ? -1 : aKey > bKey ? 1 : 0;
   });
 }
 
@@ -354,6 +358,7 @@ export function ProjectTree({
   const latestRevisionRef = useRef(0);
   const [organizationRevision, setOrganizationRevision] = useState(0);
   const topicRevisionRef = useRef<Record<string, number>>({});
+  const topicCompletePageRef = useRef<Record<string, { signature: string; revision: number }>>({});
   const [catalogStatus, setCatalogStatus] = useState<SessionCatalogStatus>({
     state: "opening", revision: 0, indexed: 0, total: 0, repairPending: 0,
   });
@@ -461,6 +466,8 @@ export function ProjectTree({
     const cursor = append ? pageState?.nextCursor ?? "" : "";
     if (append && !cursor) return;
     const sortMode = creationTopics ? "updated" : workbenchSortModeRef.current;
+    const limit = timeFilter === "10" ? 10 : timeFilter === "20" ? 20 : 50;
+    const requestSignature = projectTreeTopicPageSignature(query, timeFilter, sortMode, limit);
     // Last-query-wins: stale completions cannot overwrite a newer first page.
     const seq = (topicLoadSeqRef.current[key] ?? 0) + 1;
     topicLoadSeqRef.current[key] = seq;
@@ -470,7 +477,7 @@ export function ProjectTree({
         scope: project.kind === "global_folder" ? "global" : "project",
         workspaceRoot: project.kind === "global_folder" ? "" : project.root ?? "",
         cursor,
-        limit: timeFilter === "10" ? 10 : timeFilter === "20" ? 20 : 50,
+        limit,
         query: query.trim(),
         timeFilter: timeFilter === "10" || timeFilter === "20" || timeFilter === "all" ? "" : timeFilter,
         sortMode,
@@ -482,11 +489,21 @@ export function ProjectTree({
       }
       topicRevisionRef.current[key] = Math.max(topicRevisionRef.current[key] ?? 0, page.revision);
       const items = projectTreeWithoutTopics(asArray(page.items), currentArchiveTombstones());
+      const completeBaseline = topicCompletePageRef.current[key];
+      const preserveCompletePage = page.complete === false && completeBaseline?.signature === requestSignature;
+      if (page.complete !== false) {
+        topicCompletePageRef.current[key] = { signature: requestSignature, revision: page.revision };
+      }
       setTree((current) => applyRuntimeProjection(current.map((node) => {
         if (node.key !== key) return node;
-        return { ...node, children: mergeProjectTopicPage(asArray(node.children), items, append) };
+        const children = preserveCompletePage
+          ? mergeIncompleteProjectTopicPage(asArray(node.children), items)
+          : mergeProjectTopicPage(asArray(node.children), items, append);
+        return children === node.children ? node : { ...node, children };
       })));
-      updateTopicPageState(key, { nextCursor: page.nextCursor, loading: false });
+      updateTopicPageState(key, preserveCompletePage
+        ? { ...topicPageStateRef.current[key], loading: false }
+        : { nextCursor: page.nextCursor, loading: false });
     } catch {
       if (topicLoadSeqRef.current[key] !== seq) return;
       updateTopicPageState(key, { ...topicPageStateRef.current[key], loading: false });
