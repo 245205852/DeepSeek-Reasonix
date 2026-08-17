@@ -310,9 +310,11 @@ func (m *chatTUI) clearSubmittedPastes() {
 	m.pendingPastes = nil
 }
 
+var readClipboardImage = control.SaveClipboardImage
+
 func pasteClipboardImage() tea.Cmd {
 	return func() tea.Msg {
-		path, err := control.SaveClipboardImage()
+		path, err := readClipboardImage()
 		return clipboardImageMsg{path: path, err: err}
 	}
 }
@@ -350,6 +352,7 @@ func (m *chatTUI) beginClipboardImagePaste() tea.Cmd {
 		return nil
 	}
 	m.clipboardImagePending = true
+	m.clipboardImagePasteSeq = m.pasteSeq
 	return pasteClipboardImage()
 }
 

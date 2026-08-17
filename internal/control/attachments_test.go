@@ -2,7 +2,9 @@ package control
 
 import (
 	"encoding/base64"
+	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -248,4 +250,33 @@ func mustBase64(t *testing.T, s string) []byte {
 		t.Fatal(err)
 	}
 	return raw
+}
+
+// A clipboard tool that runs and returns nothing means the clipboard holds no
+// image, which callers distinguish from a machine with no clipboard tool at all.
+func TestSaveLinuxClipboardImageSeparatesEmptyClipboardFromMissingTools(t *testing.T) {
+	t.Chdir(t.TempDir())
+
+	previous := lookClipboardTool
+	t.Cleanup(func() { lookClipboardTool = previous })
+
+	lookClipboardTool = func(string) (string, error) { return "", exec.ErrNotFound }
+	_, err := saveLinuxClipboardImage()
+	if err == nil || errors.Is(err, ErrNoClipboardImage) {
+		t.Fatalf("missing tools reported as an empty clipboard: %v", err)
+	}
+	if !strings.Contains(err.Error(), "needs wl-paste") {
+		t.Fatalf("missing tools lost their actionable message: %v", err)
+	}
+
+	// An installed tool that yields no image bytes, which is the shape of a
+	// text-only clipboard. The resolved path does not exist, so the probe comes
+	// back empty on every platform the suite runs on.
+	toolDir := t.TempDir()
+	lookClipboardTool = func(name string) (string, error) {
+		return filepath.Join(toolDir, name), nil
+	}
+	if _, err := saveLinuxClipboardImage(); !errors.Is(err, ErrNoClipboardImage) {
+		t.Fatalf("text-only clipboard reported as a broken setup: %v", err)
+	}
 }

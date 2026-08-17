@@ -23,6 +23,17 @@ const maxImageAttachmentBytes = 10 * 1024 * 1024
 const maxFileAttachmentBytes = 25 * 1024 * 1024
 const maxAttachmentCreateAttempts = 1000
 
+// ErrNoClipboardImage reports that the clipboard was read successfully but holds
+// no image. It is distinct from a missing clipboard tool: callers offering an
+// image-first paste shortcut use it to fall back to text instead of surfacing a
+// failure the user cannot act on.
+var ErrNoClipboardImage = errors.New("clipboard does not contain an image")
+
+// lookClipboardTool resolves a clipboard helper on PATH. It is a variable so
+// tests can drive the tool-present and tool-missing branches without depending
+// on what the host has installed.
+var lookClipboardTool = exec.LookPath
+
 var attachmentPathSeq atomic.Uint64
 var attachmentNow = time.Now
 var safeAttachmentExt = regexp.MustCompile(`^\.[a-z0-9]{1,12}$`)
@@ -266,15 +277,26 @@ $img.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png)
 
 func saveLinuxClipboardImage() (string, error) {
 	// Wayland (wl-paste) then X11 (xclip); both write image bytes to stdout.
+	tooled := false
 	for _, c := range [][]string{
 		{"wl-paste", "--type", "image/png", "--no-newline"},
 		{"xclip", "-selection", "clipboard", "-t", "image/png", "-o"},
 	} {
-		cmd := proc.Command(c[0], c[1:]...)
+		path, err := lookClipboardTool(c[0])
+		if err != nil {
+			continue
+		}
+		tooled = true
+		cmd := proc.Command(path, c[1:]...)
 		cmd.Env = secrets.ProcessEnv()
 		if out, err := cmd.Output(); err == nil && len(out) > 0 {
 			return SaveImageBytes("", out)
 		}
+	}
+	// A tool that ran and produced nothing means the clipboard holds no image,
+	// which is an ordinary outcome for a text paste rather than a broken setup.
+	if tooled {
+		return "", ErrNoClipboardImage
 	}
 	return "", fmt.Errorf("clipboard image paste needs wl-paste (Wayland) or xclip (X11)")
 }
@@ -425,7 +447,7 @@ func saveDarwinClipboardImage() (string, error) {
 			return rel, nil
 		}
 	}
-	return "", fmt.Errorf("clipboard does not contain a supported image")
+	return "", ErrNoClipboardImage
 }
 
 func saveDarwinClipboardClass(class string) (string, error) {

@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -4419,5 +4420,98 @@ func TestMessageEventReplacesStreamedAnswer(t *testing.T) {
 	}
 	if !strings.Contains(joined, "answer") {
 		t.Fatalf("committed transcript lost the answer text:\n%s", joined)
+	}
+}
+
+func stubEmptyImageClipboard(t *testing.T, text string) {
+	t.Helper()
+	prevImage := readClipboardImage
+	prevText := readNativeClipboardText
+	t.Cleanup(func() {
+		readClipboardImage = prevImage
+		readNativeClipboardText = prevText
+	})
+	readClipboardImage = func() (string, error) { return "", control.ErrNoClipboardImage }
+	readNativeClipboardText = func() (string, error) { return text, nil }
+}
+
+func TestCtrlVPastesTextWhenClipboardHasNoImage(t *testing.T) {
+	setLocalClipboardSession(t)
+	if !imagePasteShortcut("ctrl+v", runtime.GOOS) {
+		t.Skip("ctrl+v is not the image paste shortcut on this platform")
+	}
+	stubEmptyImageClipboard(t, "https://example.com/x")
+
+	m := newComposerMouseTestTUI(t, 60, 16)
+	m.input.SetValue("before ")
+
+	next, cmd := m.Update(tea.KeyPressMsg{Code: 'v', Mod: tea.ModCtrl})
+	m = next.(chatTUI)
+	if cmd == nil {
+		t.Fatal("ctrl+v produced no clipboard command")
+	}
+	next, cmd = m.Update(cmd())
+	m = next.(chatTUI)
+
+	if got := strings.Join(m.transcript, "\n"); strings.Contains(got, "wl-paste") {
+		t.Fatalf("empty image clipboard surfaced a tooling notice:\n%s", got)
+	}
+	result := clipboardTextPasteResultFromCmd(t, cmd)
+	next, _ = m.Update(result)
+	m = next.(chatTUI)
+
+	if got, want := m.input.Value(), "before https://example.com/x"; got != want {
+		t.Fatalf("ctrl+v text fallback produced %q, want %q", got, want)
+	}
+}
+
+func TestCtrlVDoesNotPasteTwiceWhenTerminalAlreadyPasted(t *testing.T) {
+	setLocalClipboardSession(t)
+	if !imagePasteShortcut("ctrl+v", runtime.GOOS) {
+		t.Skip("ctrl+v is not the image paste shortcut on this platform")
+	}
+	stubEmptyImageClipboard(t, "term text")
+
+	m := newComposerMouseTestTUI(t, 60, 16)
+	m.input.SetValue("before ")
+
+	next, cmd := m.Update(tea.KeyPressMsg{Code: 'v', Mod: tea.ModCtrl})
+	m = next.(chatTUI)
+	if cmd == nil {
+		t.Fatal("ctrl+v produced no clipboard command")
+	}
+	// The terminal owns the paste and delivers it while the probe is in flight.
+	next, _ = m.Update(tea.PasteMsg{Content: "term text"})
+	m = next.(chatTUI)
+	if got, want := m.input.Value(), "before term text"; got != want {
+		t.Fatalf("bracketed paste produced %q, want %q", got, want)
+	}
+
+	next, cmd = m.Update(cmd())
+	m = next.(chatTUI)
+	if cmd != nil {
+		t.Fatal("fallback ran even though the terminal already pasted")
+	}
+	if got, want := m.input.Value(), "before term text"; got != want {
+		t.Fatalf("text was pasted twice: %q, want %q", got, want)
+	}
+}
+
+func TestClipboardImagePasteKeepsNoticeForRealFailures(t *testing.T) {
+	setLocalClipboardSession(t)
+	m := newComposerMouseTestTUI(t, 60, 16)
+	m.input.SetValue("before ")
+
+	next, cmd := m.Update(clipboardImageMsg{err: errors.New("clipboard image paste needs wl-paste (Wayland) or xclip (X11)")})
+	m = next.(chatTUI)
+
+	if cmd != nil {
+		t.Fatal("a real clipboard failure must not trigger a text paste")
+	}
+	if got := strings.Join(m.transcript, "\n"); !strings.Contains(got, "wl-paste") {
+		t.Fatalf("a real clipboard failure lost its notice:\n%s", got)
+	}
+	if got := m.input.Value(); got != "before " {
+		t.Fatalf("a real clipboard failure changed the composer: %q", got)
 	}
 }

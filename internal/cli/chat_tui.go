@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -277,6 +278,12 @@ type chatTUI struct {
 	// is being decoded and prevents repeated Ctrl+V presses from attaching the
 	// same image multiple times before the first read completes.
 	clipboardImagePending bool
+
+	// pasteSeq counts bracketed pastes delivered by the terminal.
+	// clipboardImagePasteSeq snapshots it when an image probe starts, so a
+	// terminal that pastes text itself is never pasted into twice.
+	pasteSeq               int
+	clipboardImagePasteSeq int
 
 	// The user bubble is echoed to scrollback immediately on Enter (bubbleStartIdx
 	// marks where in the transcript it landed). It stays "un-sendable" until the
@@ -1255,6 +1262,7 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, finalize(m, cmds)
 
 	case tea.PasteMsg:
+		m.pasteSeq++
 		m.followComposerCursor()
 		pasteBefore := m.input.Value()
 		if m.state != tuiRunning && m.attachPastedImages(msg.Content) {
@@ -2040,6 +2048,18 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case clipboardImageMsg:
 		m.clipboardImagePending = false
 		if msg.err != nil {
+			// An empty image clipboard is the normal case for a text paste on
+			// terminals that hand Ctrl+V to the application instead of pasting
+			// themselves. Fall through to text rather than blocking the paste.
+			if errors.Is(msg.err, control.ErrNoClipboardImage) {
+				// Skip the fallback when the terminal already delivered a
+				// bracketed paste for this key press; it owns the paste and
+				// pasting again would duplicate the text.
+				if m.pasteSeq == m.clipboardImagePasteSeq {
+					cmds = append(cmds, pasteClipboardText())
+				}
+				break
+			}
 			m.notice(fmt.Sprintf(i18n.M.ClipboardImagePasteFailedFmt, msg.err))
 			break
 		}
