@@ -30319,13 +30319,12 @@ body > .mermaid-diagram--fullscreen {
   align-items: center;
   gap: 6px;
   width: 100%;
-  padding: 3px 6px;
+  padding: 5px 6px;
   border-radius: 6px;
   color: var(--color-text-muted, inherit);
-  font-size: 11px;
+  font-size: var(--text-md);
   font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0;
   cursor: pointer;
   background: transparent;
   border: 1px dashed transparent;
