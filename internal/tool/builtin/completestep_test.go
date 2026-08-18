@@ -167,6 +167,24 @@ func TestCompleteStepRejectsUnverifiedHostEvidence(t *testing.T) {
 	}
 }
 
+func TestCompleteStepVerificationWithoutCommandSuggestsOtherKinds(t *testing.T) {
+	ctx := evidence.WithLedger(context.Background(), evidence.NewLedger())
+	_, err := completeStep{}.Execute(ctx, json.RawMessage(`{
+		"step":"Remove debug files",
+		"result":"debug files removed from git",
+		"evidence":[{"kind":"verification","summary":"git commit abc123 updated .gitignore"}]
+	}`))
+	if err == nil {
+		t.Fatal("verification evidence without a command should be rejected")
+	}
+	got := err.Error()
+	for _, want := range []string{"verification command is required", `"files"`, `"diff"`, `"manual"`} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("error %q missing %q", got, want)
+		}
+	}
+}
+
 func TestCompleteStepAllowsManualAsUnverified(t *testing.T) {
 	ctx := evidence.WithLedger(context.Background(), evidence.NewLedger())
 	out, err := completeStep{}.Execute(ctx, json.RawMessage(`{
