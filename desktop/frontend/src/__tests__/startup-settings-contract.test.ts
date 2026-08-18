@@ -117,6 +117,26 @@ ok(
   "provider preset localization is present in every supported locale",
 );
 ok(
+  [enLocaleSource, zhLocaleSource, zhTWLocaleSource].every((source) =>
+    source.includes('"settings.addProvider.preset.stepfunLabel"') &&
+    source.includes('"settings.addProvider.preset.stepfunAnthropicLabel"') &&
+    source.includes('"settings.addProvider.preset.stepfunResponsesLabel"') &&
+    source.includes('"settings.addProvider.preset.stepfunResponsesDesc"'),
+  ),
+  "every StepFun preset localizes its display name and description",
+);
+ok(
+  enLocaleSource.includes('"settings.addProvider.preset.stepfunLabel": "StepFun"') &&
+    zhLocaleSource.includes('"settings.addProvider.preset.stepfunLabel": "阶跃星辰"') &&
+    zhTWLocaleSource.includes('"settings.addProvider.preset.stepfunLabel": "階躍星辰"'),
+  "StepFun preset uses the official English and Chinese brand names",
+);
+ok(
+  /case "stepfun-responses":\s*return t\("settings\.addProvider\.preset\.stepfunResponsesDesc"\)/.test(settingsSource) &&
+    /case "stepfun-responses":\s*return t\("settings\.addProvider\.preset\.stepfunResponsesLabel"\)/.test(settingsSource),
+  "StepFun Responses preset localizes through the settings panel",
+);
+ok(
   enLocaleSource.includes('"settings.addProvider.preset.tokenRhythmLabel": "Token Rhythm"') &&
     zhLocaleSource.includes('"settings.addProvider.preset.tokenRhythmLabel": "基元律动"') &&
     zhTWLocaleSource.includes('"settings.addProvider.preset.tokenRhythmLabel": "基元律动"'),

@@ -86,8 +86,9 @@ for (const path of localeChunks) {
   // warning (~0.15 KiB gzip, +0.27% over the old 54.75 gate). Context
   // compaction settings add 40 bytes gzip of policy guidance to simplified
   // Chinese, while scheduled billing adds compact rate-band labels/tooltips.
-  // Retain both with the smallest 0.1 KiB ratchet increment per locale.
-  const budget = name.startsWith("zh-TW-") ? 55.9 * 1024 : 55.2 * 1024;
+  // The three StepFun presets add localized names/descriptions (~0.1 KiB
+  // gzip). Retain all with the smallest 0.1 KiB ratchet increments.
+  const budget = name.startsWith("zh-TW-") ? 56.0 * 1024 : 55.3 * 1024;
   assertBudget(`${name} gzip`, gzipBytes(path), budget);
 }
 

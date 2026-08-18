@@ -64,6 +64,7 @@ func TestCuratedProviderPresetsCoverRequestedProviders(t *testing.T) {
 		"qwen-coding-plan-global-anthropic",
 		"stepfun",
 		"stepfun-anthropic",
+		"stepfun-responses",
 		"novita",
 		"gmi",
 		"vercel-ai-gateway",
@@ -349,6 +350,11 @@ func TestCuratedProviderPresetsStepFunUsesOfficialBaseURLs(t *testing.T) {
 			kind:    "anthropic",
 			baseURL: "https://api.stepfun.com/step_plan",
 		},
+		{
+			id:      "stepfun-responses",
+			kind:    "responses",
+			baseURL: "https://api.stepfun.com/v1",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.id, func(t *testing.T) {
@@ -367,6 +373,23 @@ func TestCuratedProviderPresetsStepFunUsesOfficialBaseURLs(t *testing.T) {
 				t.Fatalf("preset %q base_url = %q, want %q", tt.id, entry.BaseURL, tt.baseURL)
 			}
 		})
+	}
+}
+
+// StepFun's Responses API enables only step-3.7-flash server-side and ignores
+// previous_response_id, so the preset must ship the single-model catalog and
+// the stateless mode.
+func TestCuratedProviderPresetsStepFunResponsesContract(t *testing.T) {
+	preset, ok := CuratedProviderPreset("stepfun-responses")
+	if !ok || len(preset.Entries) != 1 {
+		t.Fatal("missing stepfun-responses preset")
+	}
+	entry := preset.Entries[0]
+	if got := entry.ModelList(); len(got) != 1 || got[0] != "step-3.7-flash" {
+		t.Fatalf("stepfun-responses models = %v, want [step-3.7-flash]", got)
+	}
+	if entry.ResponsesMode != "stateless" {
+		t.Fatalf("stepfun-responses responses_mode = %q, want stateless", entry.ResponsesMode)
 	}
 }
 

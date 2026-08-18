@@ -110,6 +110,10 @@ var (
 
 	stepfunPlanModels = []string{"step-3.7-flash", "step-3.5-flash", "step-3.5-flash-2603"}
 
+	// Only step-3.7-flash is enabled server-side on the Responses API
+	// ("this model is not enabled for the Responses API" for 3.5 SKUs).
+	stepfunResponsesModels = []string{"step-3.7-flash"}
+
 	legacyOpenCodeGoModels           = []string{"glm-5.2", "glm-5.1", "kimi-k2.7-code", "kimi-k2.6", "deepseek-v4-pro", "deepseek-v4-flash", "mimo-v2.5-pro", "mimo-v2.5"}
 	opencodeGoModels                 = []string{"glm-5.2", "glm-5.1", "kimi-k3", "kimi-k2.7-code", "kimi-k2.6", "deepseek-v4-pro", "deepseek-v4-flash", "mimo-v2.5-pro", "mimo-v2.5"}
 	opencodeGoVisionModels           = []string{"kimi-k3"}
@@ -837,6 +841,23 @@ var curatedProviderPresets = []ProviderPreset{
 			Models:           stepfunPlanModels,
 			Default:          "step-3.7-flash",
 			APIKeyEnv:        "STEPFUN_API_KEY",
+			SupportedEfforts: []string{"low", "medium", "high"},
+			DefaultEffort:    "medium",
+		}},
+	},
+	{
+		ID:          "stepfun-responses",
+		Label:       "StepFun Responses API",
+		Description: "StepFun Responses API endpoint with reasoning effort and tool calls (step-3.7-flash).",
+		KeyEnv:      "STEPFUN_API_KEY",
+		Entries: []ProviderEntry{{
+			Name:             "stepfun-responses",
+			Kind:             "responses",
+			BaseURL:          "https://api.stepfun.com/v1",
+			Models:           stepfunResponsesModels,
+			Default:          "step-3.7-flash",
+			APIKeyEnv:        "STEPFUN_API_KEY",
+			ResponsesMode:    "stateless",
 			SupportedEfforts: []string{"low", "medium", "high"},
 			DefaultEffort:    "medium",
 		}},

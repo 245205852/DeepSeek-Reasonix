@@ -5089,6 +5089,8 @@ function providerPresetDescription(preset: ProviderPresetView, t: ReturnType<typ
       return t("settings.addProvider.preset.stepfunDesc");
     case "stepfun-anthropic":
       return t("settings.addProvider.preset.stepfunAnthropicDesc");
+    case "stepfun-responses":
+      return t("settings.addProvider.preset.stepfunResponsesDesc");
     case "novita":
       return t("settings.addProvider.preset.novitaDesc");
     case "gmi":
@@ -5118,6 +5120,12 @@ function providerPresetLabel(preset: ProviderPresetView, t: ReturnType<typeof us
       return t("settings.addProvider.preset.deepseekResponsesLabel");
     case "token-rhythm":
       return t("settings.addProvider.preset.tokenRhythmLabel");
+    case "stepfun":
+      return t("settings.addProvider.preset.stepfunLabel");
+    case "stepfun-anthropic":
+      return t("settings.addProvider.preset.stepfunAnthropicLabel");
+    case "stepfun-responses":
+      return t("settings.addProvider.preset.stepfunResponsesLabel");
     default:
       return preset.label;
   }
