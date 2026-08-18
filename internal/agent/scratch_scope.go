@@ -31,8 +31,4 @@ func (a *Agent) stampReceiptDeliveryScope(rec *evidence.Receipt) {
 		rec.DeliveryScope = evidence.WriteScopeScratch
 		return
 	}
-	if strings.EqualFold(strings.TrimSpace(rec.ToolName), "bash") &&
-		evidence.BashScratchDeliveryScope(rec.Command, a.writeWorkspaceRoot, roots) {
-		rec.DeliveryScope = evidence.WriteScopeScratch
-	}
 }

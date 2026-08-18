@@ -42,15 +42,80 @@ func ClassifyWriteScope(path, workspaceRoot string, scratchRoots []string) Write
 	if !filepath.IsAbs(path) && strings.TrimSpace(workspaceRoot) == "" {
 		return WriteScopeWorkspace
 	}
-	for _, root := range scratchRootList(scratchRoots) {
+	roots := scratchRootList(scratchRoots)
+	for _, root := range roots {
 		if pathInside(root, abs) {
-			return WriteScopeScratch
+			return resolvedScratchScope(abs, workspaceRoot, roots)
 		}
 	}
 	if filepath.IsAbs(abs) {
 		return WriteScopeOutside
 	}
 	return WriteScopeWorkspace
+}
+
+// IsDeliveryMutation keeps every successful persistent mutation except writes
+// proven to be scratch-only. Outside approved roots remain delivery work: they
+// are durable user-visible changes even though they are not project files.
+func IsDeliveryMutation(r Receipt, workspaceRoot string, scratchRoots []string) bool {
+	if !r.Success || !(r.Mutation || r.Write) || r.DeliveryScope == WriteScopeScratch {
+		return false
+	}
+	if len(r.Paths) == 0 {
+		return true
+	}
+	for _, path := range r.Paths {
+		if ClassifyWriteScope(path, workspaceRoot, scratchRoots) != WriteScopeScratch {
+			return true
+		}
+	}
+	return false
+}
+
+// resolvedScratchScope prevents a lexical temp path from hiding a symlink
+// back into the workspace (or another persistent location). Scratch roots are
+// resolved too, so the normal /tmp -> /private/tmp alias on macOS stays scratch.
+func resolvedScratchScope(path, workspaceRoot string, scratchRoots []string) WriteScope {
+	resolved, err := resolveScopePath(path)
+	if err != nil {
+		return WriteScopeOutside
+	}
+	if workspaceRoot != "" {
+		if root, rootErr := resolveScopePath(workspaceRoot); rootErr == nil && pathInside(root, resolved) {
+			return WriteScopeWorkspace
+		}
+	}
+	for _, root := range scratchRoots {
+		resolvedRoot, rootErr := resolveScopePath(root)
+		if rootErr == nil && pathInside(resolvedRoot, resolved) {
+			return WriteScopeScratch
+		}
+	}
+	return WriteScopeOutside
+}
+
+// resolveScopePath resolves the deepest existing ancestor and appends the
+// missing tail. Writers commonly create new scratch files, so EvalSymlinks on
+// the complete path alone is insufficient.
+func resolveScopePath(path string) (string, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	abs = filepath.Clean(abs)
+	tail := ""
+	cur := abs
+	for {
+		if real, evalErr := filepath.EvalSymlinks(cur); evalErr == nil {
+			return filepath.Join(real, tail), nil
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			return abs, nil
+		}
+		tail = filepath.Join(filepath.Base(cur), tail)
+		cur = parent
+	}
 }
 
 // DefaultScratchRoots includes the OS temp directory and Unix public aliases.

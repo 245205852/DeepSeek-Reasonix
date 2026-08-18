@@ -1,6 +1,8 @@
 package completion
 
 import (
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -217,6 +219,19 @@ func TestBuildIgnoresScratchWrites(t *testing.T) {
 	}
 	if len(rep.Gaps) != 0 || rep.Verdict != VerdictUnknown {
 		t.Fatalf("scratch-only turn = verdict %v gaps %+v, want unknown and none", rep.Verdict, rep.Gaps)
+	}
+}
+
+func TestBuildKeepsOutsideWrites(t *testing.T) {
+	volumeRoot := filepath.VolumeName(os.TempDir()) + string(filepath.Separator)
+	workspace := filepath.Join(volumeRoot, "reasonix-project")
+	outside := filepath.Join(volumeRoot, "reasonix-external", "config.json")
+	rep := BuildAt(nil, ledgerOf(wrote(outside)), workspace, nil)
+	if rep.Mutations != 1 || len(rep.Changes) != 1 || rep.Changes[0].Path != outside {
+		t.Fatalf("outside write report = %+v, want one delivery mutation and named change", rep)
+	}
+	if got := gapKinds(rep); !slices.Equal(got, []string{"unverified_change", "unreviewed_change"}) {
+		t.Fatalf("gap kinds = %v, want outside write proof gaps", got)
 	}
 }
 

@@ -41,7 +41,7 @@ func TestScratchScriptExecutionKeepsCheckpointCoverageFailClosed(t *testing.T) {
 	}
 }
 
-func TestRecordToolReceiptsStampsScratchDeliveryScope(t *testing.T) {
+func TestRecordToolReceiptsKeepsScratchScriptExecutionFailClosed(t *testing.T) {
 	workspace := t.TempDir()
 	manager := sessiontemp.NewWithRoot(t.TempDir())
 	manager.Retain()
@@ -57,37 +57,26 @@ func TestRecordToolReceiptsStampsScratchDeliveryScope(t *testing.T) {
 		WriteWorkspaceRoot: workspace,
 		SessionTemp:        manager,
 	}, event.Discard)
-	args, err := json.Marshal(map[string]string{"command": "python " + script})
-	if err != nil {
-		t.Fatal(err)
-	}
-	plan := &toolCallPlan{
-		call:         provider.ToolCall{Name: "bash", Arguments: string(args)},
-		tool:         fakeTool{name: "bash", readOnly: false},
-		evidenceName: "bash",
-		evidenceArgs: args,
-		effects:      evidence.ClassifyToolCall("bash", args, false),
-	}
-	a.recordToolReceipts(plan, "ok", nil, nil)
-	receipts := a.task.ledger.Receipts()
-	if len(receipts) != 1 || receipts[0].DeliveryScope != evidence.WriteScopeScratch {
-		t.Fatalf("receipts = %+v, want scratch delivery scope", receipts)
-	}
-
-	redirectArgs, err := json.Marshal(map[string]string{"command": "python " + script + " > result.txt"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	redirectPlan := &toolCallPlan{
-		call:         provider.ToolCall{Name: "bash", Arguments: string(redirectArgs)},
-		tool:         fakeTool{name: "bash", readOnly: false},
-		evidenceName: "bash",
-		evidenceArgs: redirectArgs,
-		effects:      evidence.ClassifyToolCall("bash", redirectArgs, false),
-	}
-	a.recordToolReceipts(redirectPlan, "ok", nil, nil)
-	receipts = a.task.ledger.Receipts()
-	if receipts[len(receipts)-1].DeliveryScope == evidence.WriteScopeScratch {
-		t.Fatalf("redirect receipt = %+v, must remain a workspace mutation", receipts[len(receipts)-1])
+	for _, background := range []bool{false, true} {
+		args, err := json.Marshal(map[string]any{
+			"command":           "python " + script,
+			"run_in_background": background,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		plan := &toolCallPlan{
+			call:         provider.ToolCall{Name: "bash", Arguments: string(args)},
+			tool:         fakeTool{name: "bash", readOnly: false},
+			evidenceName: "bash",
+			evidenceArgs: args,
+			effects:      evidence.ClassifyToolCall("bash", args, false),
+		}
+		a.recordToolReceipts(plan, "ok", nil, nil)
+		receipts := a.task.ledger.Receipts()
+		got := receipts[len(receipts)-1]
+		if got.DeliveryScope == evidence.WriteScopeScratch {
+			t.Fatalf("background=%v receipt = %+v, script location cannot prove its side effects", background, got)
+		}
 	}
 }

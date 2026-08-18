@@ -28,7 +28,7 @@ func (a *Agent) emitCompletionSummary(c *taskcontract.Contract, report completio
 	mutations := 0
 	if a.task.ledger != nil {
 		for _, r := range a.task.ledger.Receipts() {
-			if workspaceMutationReceipt(r, a.writeWorkspaceRoot) {
+			if evidence.IsDeliveryMutation(r, a.writeWorkspaceRoot, nil) {
 				mutations++
 			}
 		}
@@ -123,22 +123,4 @@ func completionGapKinds(gaps []string, report completion.Report) []string {
 		}
 	}
 	return gaps
-}
-
-func workspaceMutationReceipt(r evidence.Receipt, workspaceRoot string) bool {
-	if !r.Success || !(r.Mutation || r.Write) {
-		return false
-	}
-	if r.DeliveryScope == evidence.WriteScopeScratch {
-		return false
-	}
-	if len(r.Paths) == 0 {
-		return true
-	}
-	for _, p := range r.Paths {
-		if evidence.ClassifyWriteScope(p, workspaceRoot, nil) == evidence.WriteScopeWorkspace {
-			return true
-		}
-	}
-	return false
 }

@@ -60,3 +60,16 @@ func TestClassifyWriteScopeKeepsLexicalWorkspaceSymlinksInWorkspace(t *testing.T
 		t.Fatalf("workspace symlink path = %s, want workspace for the safety layer", got)
 	}
 }
+
+func TestClassifyWriteScopeScratchSymlinkIntoWorkspaceIsWorkspace(t *testing.T) {
+	workspace := t.TempDir()
+	scratch := t.TempDir()
+	link := filepath.Join(scratch, "workspace-link")
+	if err := os.Symlink(workspace, link); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	path := filepath.Join(link, "probe.py")
+	if got := ClassifyWriteScope(path, workspace, []string{scratch}); got != WriteScopeWorkspace {
+		t.Fatalf("scratch alias into workspace = %s, want workspace", got)
+	}
+}

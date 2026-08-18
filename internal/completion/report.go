@@ -177,11 +177,11 @@ func changesOf(ledger *evidence.Ledger, receipts []evidence.Receipt, workspaceRo
 	at := map[string]int{}
 	lastWrite := map[string]int{}
 	for i, r := range receipts {
-		if !workspaceWriteReceipt(r, workspaceRoot, scratchRoots) {
+		if !evidence.IsDeliveryMutation(r, workspaceRoot, scratchRoots) {
 			continue
 		}
 		for _, p := range r.Paths {
-			if p == "" || evidence.ClassifyWriteScope(p, workspaceRoot, scratchRoots) != evidence.WriteScopeWorkspace {
+			if p == "" || evidence.ClassifyWriteScope(p, workspaceRoot, scratchRoots) == evidence.WriteScopeScratch {
 				continue
 			}
 			if _, seen := at[p]; !seen {
@@ -203,29 +203,11 @@ func changesOf(ledger *evidence.Ledger, receipts []evidence.Receipt, workspaceRo
 func mutationsOf(receipts []evidence.Receipt, workspaceRoot string, scratchRoots []string) int {
 	count := 0
 	for _, r := range receipts {
-		if workspaceWriteReceipt(r, workspaceRoot, scratchRoots) {
+		if evidence.IsDeliveryMutation(r, workspaceRoot, scratchRoots) {
 			count++
 		}
 	}
 	return count
-}
-
-func workspaceWriteReceipt(r evidence.Receipt, workspaceRoot string, scratchRoots []string) bool {
-	if !r.Success || !(r.Mutation || r.Write) {
-		return false
-	}
-	if r.DeliveryScope == evidence.WriteScopeScratch {
-		return false
-	}
-	if len(r.Paths) == 0 {
-		return true
-	}
-	for _, p := range r.Paths {
-		if evidence.ClassifyWriteScope(p, workspaceRoot, scratchRoots) == evidence.WriteScopeWorkspace {
-			return true
-		}
-	}
-	return false
 }
 
 // verificationsOf keeps each delivery-verification command's latest run, in
@@ -233,7 +215,7 @@ func workspaceWriteReceipt(r evidence.Receipt, workspaceRoot string, scratchRoot
 func verificationsOf(receipts []evidence.Receipt, workspaceRoot string, scratchRoots []string) []Verification {
 	lastMutation := -1
 	for i, r := range receipts {
-		if workspaceWriteReceipt(r, workspaceRoot, scratchRoots) {
+		if evidence.IsDeliveryMutation(r, workspaceRoot, scratchRoots) {
 			lastMutation = i
 		}
 	}
