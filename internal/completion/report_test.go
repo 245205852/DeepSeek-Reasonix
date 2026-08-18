@@ -199,6 +199,16 @@ func TestBuildRewritingAPathAfterReviewReopensIt(t *testing.T) {
 	}
 }
 
+func TestBuildIgnoresScratchWrites(t *testing.T) {
+	rep := Build(nil, ledgerOf(wrote("/tmp/btc_klines.py"), read("/tmp/btc_klines.py")))
+	if rep.Mutations != 0 || len(rep.Changes) != 0 {
+		t.Fatalf("scratch write counted as a project mutation: mutations=%d changes=%+v", rep.Mutations, rep.Changes)
+	}
+	if len(rep.Gaps) != 0 || rep.Verdict != VerdictUnknown {
+		t.Fatalf("scratch-only turn = verdict %v gaps %+v, want unknown and none", rep.Verdict, rep.Gaps)
+	}
+}
+
 func TestBuildCountsAPathlessMutation(t *testing.T) {
 	shell := evidence.Receipt{ToolName: "bash", Success: true, Command: "sed -i '' s/a/b/ parser.go", Mutation: true, OutputBytes: 8}
 	rep := Build(nil, ledgerOf(shell))

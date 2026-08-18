@@ -6,6 +6,7 @@ import (
 	"reasonix/internal/agentpreset"
 	"reasonix/internal/completion"
 	"reasonix/internal/event"
+	"reasonix/internal/evidence"
 	"reasonix/internal/taskcontract"
 )
 
@@ -27,17 +28,21 @@ func (a *Agent) emitCompletionSummary(c *taskcontract.Contract, report completio
 	mutations := 0
 	if a.task.ledger != nil {
 		for _, r := range a.task.ledger.Receipts() {
-			if r.Success && (r.Mutation || r.Write) {
+			if workspaceMutationReceipt(r, a.writeWorkspaceRoot) {
 				mutations++
 			}
 		}
 	}
 	verdict := c.GoalVerdict()
-	// Skip noise: no mutations and ordinary complete/continue conversation.
-	if mutations == 0 && (verdict == taskcontract.VerdictComplete || verdict == taskcontract.VerdictContinue || verdict == taskcontract.VerdictUncertain) {
-		if !c.HasSuppressed() {
-			return
-		}
+	floor := a.turn.constraints.PolicyFloor.String()
+	attention := completion.NeedsAttention(completion.AttentionInput{
+		Verdict:            verdict.String(),
+		GapKinds:           report.GapKinds(),
+		Floor:              floor,
+		RequiredSuppressed: c.HasSuppressed(),
+	})
+	if mutations == 0 && !attention {
+		return
 	}
 	passed, failed, suppressed := 0, 0, 0
 	for _, check := range c.Checks {
@@ -116,4 +121,19 @@ func completionGapKinds(gaps []string, report completion.Report) []string {
 		}
 	}
 	return gaps
+}
+
+func workspaceMutationReceipt(r evidence.Receipt, workspaceRoot string) bool {
+	if !r.Success || !(r.Mutation || r.Write) {
+		return false
+	}
+	if len(r.Paths) == 0 {
+		return true
+	}
+	for _, p := range r.Paths {
+		if evidence.ClassifyWriteScope(p, workspaceRoot, nil) == evidence.WriteScopeWorkspace {
+			return true
+		}
+	}
+	return false
 }
