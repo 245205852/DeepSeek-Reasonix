@@ -1,0 +1,48 @@
+package evidence
+
+import (
+	"path/filepath"
+	"runtime"
+	"testing"
+)
+
+func TestClassifyWriteScopeTempIsScratch(t *testing.T) {
+	cases := []string{"/tmp/btc_klines.py"}
+	if runtime.GOOS == "darwin" {
+		cases = append(cases, "/private/tmp/btc_klines.py")
+	}
+	for _, path := range cases {
+		if got := ClassifyWriteScope(path, "/home/dev/project", nil); got != WriteScopeScratch {
+			t.Fatalf("ClassifyWriteScope(%q) = %s, want scratch", path, got)
+		}
+	}
+}
+
+func TestClassifyWriteScopeWorkspaceAndOutside(t *testing.T) {
+	root := t.TempDir()
+	inside := filepath.Join(root, "internal", "agent", "agent.go")
+	if got := ClassifyWriteScope(inside, root, nil); got != WriteScopeWorkspace {
+		t.Fatalf("abs workspace path = %s, want workspace", got)
+	}
+	if got := ClassifyWriteScope("internal/agent/agent.go", root, nil); got != WriteScopeWorkspace {
+		t.Fatalf("rel workspace path = %s, want workspace", got)
+	}
+	if got := ClassifyWriteScope("parser.go", "", nil); got != WriteScopeWorkspace {
+		t.Fatalf("relative without root = %s, want workspace", got)
+	}
+	if got := ClassifyWriteScope("/home/dev/Notes/idea.md", root, nil); got != WriteScopeOutside {
+		t.Fatalf("home file = %s, want outside", got)
+	}
+}
+
+func TestClassifyWriteScopeSessionTempRoot(t *testing.T) {
+	scratch := t.TempDir()
+	path := filepath.Join(scratch, "probe.py")
+	if got := ClassifyWriteScope(path, t.TempDir(), []string{scratch}); got != WriteScopeScratch {
+		t.Fatalf("session temp = %s, want scratch", got)
+	}
+	named := filepath.Join(t.TempDir(), "reasonix-session-tmp-abc", "probe.py")
+	if got := ClassifyWriteScope(named, "/home/dev/project", nil); got != WriteScopeScratch {
+		t.Fatalf("named session temp = %s, want scratch", got)
+	}
+}

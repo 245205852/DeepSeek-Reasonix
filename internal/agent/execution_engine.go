@@ -84,6 +84,7 @@ func (a *Agent) pipelineDecision(plan *toolCallPlan) runtimepolicy.GuardDecision
 		StaticReadOnly: plan.readOnly,
 		Hint:           effectHintOf(plan.execTool, plan.execArgs),
 		ActualPaths:    evidence.ToolCallPaths(plan.evidenceArgs),
+		WorkspaceRoot:  a.writeWorkspaceRoot,
 	})
 	plan.profile = profile
 	plan.effects = profile.ToolEffects()
@@ -107,7 +108,7 @@ func (a *Agent) commitToolReceipt(rec evidence.Receipt) {
 	}
 	a.turn.engine.CommitReceipt(runtimepolicy.ResultContext{
 		Receipt:        rec,
-		Profile:        evidence.ClassifyEffect(evidence.EffectInput{ToolName: rec.ToolName, Args: rec.Args, ActualPaths: rec.Paths, StaticReadOnly: rec.Read && !rec.Write}),
+		Profile:        evidence.ClassifyEffect(evidence.EffectInput{ToolName: rec.ToolName, Args: rec.Args, ActualPaths: rec.Paths, StaticReadOnly: rec.Read && !rec.Write, WorkspaceRoot: a.writeWorkspaceRoot}),
 		WorkspaceRoot:  a.writeWorkspaceRoot,
 		TestsForbidden: a.turn.constraints.ForbidTests,
 	})

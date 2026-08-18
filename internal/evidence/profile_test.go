@@ -62,6 +62,15 @@ func TestClassifyEffectFileAndMCP(t *testing.T) {
 	}
 }
 
+func TestClassifyWriteScopeScratchWriteFile(t *testing.T) {
+	if got := ClassifyWriteScope("/tmp/btc_klines.py", "/home/dev/project", nil); got != WriteScopeScratch {
+		t.Fatalf("write_file /tmp = %s, want scratch", got)
+	}
+	if got := ClassifyWriteScope("internal/agent/agent.go", "/home/dev/project", nil); got != WriteScopeWorkspace {
+		t.Fatalf("workspace edit = %s, want workspace", got)
+	}
+}
+
 func TestClassifyEffectPrefersReceiptPaths(t *testing.T) {
 	got := ClassifyEffect(EffectInput{
 		ToolName:    "edit_file",

@@ -76,21 +76,21 @@ func (c *Contract) AbsorbReceipt(seq int, rec evidence.Receipt, workspaceRoot st
 	if !rec.Success {
 		return
 	}
-	profile := profileFromReceipt(rec)
+	profile := profileFromReceipt(rec, workspaceRoot)
 	if profile.MutatesState() {
 		c.invalidateAfterWrite(seq, profile.TargetKeys())
 		mapping := MapWriter(profile, seq, workspaceRoot, testsForbidden)
 		for _, o := range mapping.PostSuccess {
 			c.addObligation(o)
 		}
-		if requireFullVerification && (profile.WorkspaceWrite || profile.RepoMetadata) {
+		if requireFullVerification && workspaceProofTarget(profile, workspaceRoot) {
 			enforcement := EnforcementStrict
 			if testsForbidden {
 				enforcement = EnforcementAdvisory
 			}
 			c.addObligation(newObligation(ObligationFullVerify, enforcement, ReasonUserConstraint, seq, profile.TargetKeys()))
 		}
-		if ReceiptPolicyFloor(rec) == PolicyFloorDelivery && (profile.WorkspaceWrite || profile.RepoMetadata) {
+		if ReceiptPolicyFloor(rec) == PolicyFloorDelivery && workspaceProofTarget(profile, workspaceRoot) {
 			enforcement := EnforcementStrict
 			if testsForbidden {
 				enforcement = EnforcementAdvisory
@@ -103,7 +103,7 @@ func (c *Contract) AbsorbReceipt(seq int, rec evidence.Receipt, workspaceRoot st
 	c.satisfyFromReceipt(seq, rec, profile)
 }
 
-func profileFromReceipt(rec evidence.Receipt) evidence.EffectProfile {
+func profileFromReceipt(rec evidence.Receipt, workspaceRoot string) evidence.EffectProfile {
 	args := rec.Args
 	if rec.Command != "" && (len(args) == 0 || string(args) == "null") {
 		if raw, err := json.Marshal(map[string]string{"command": rec.Command}); err == nil {
@@ -115,6 +115,7 @@ func profileFromReceipt(rec evidence.Receipt) evidence.EffectProfile {
 		Args:           args,
 		ActualPaths:    rec.Paths,
 		StaticReadOnly: rec.Read && !rec.Write && !rec.Mutation,
+		WorkspaceRoot:  workspaceRoot,
 	})
 	if len(rec.Paths) > 0 || rec.Command != "" {
 		return profile
