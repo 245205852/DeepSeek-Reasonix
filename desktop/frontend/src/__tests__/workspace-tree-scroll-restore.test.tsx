@@ -12,7 +12,7 @@ import type { Root } from "react-dom/client";
 import { WorkspacePanel } from "../components/WorkspacePanel";
 import type { AppBindings } from "../lib/bridge";
 import { LocaleProvider } from "../lib/i18n";
-import { flushWorkspaceTreeMemory, resetWorkspaceTreeMemoryForTests } from "../lib/workspaceTreeMemory";
+import { flushWorkspaceTreeMemory, rememberWorkspaceTreeScroll, resetWorkspaceTreeMemoryForTests } from "../lib/workspaceTreeMemory";
 
 let passed = 0;
 let failed = 0;
@@ -151,7 +151,10 @@ await waitFor("workspace rows render", () => document.querySelectorAll(".workspa
 const treeEl = document.querySelector<HTMLElement>(".workspace-tree");
 if (!treeEl) throw new Error("missing workspace-tree element");
 Object.defineProperty(treeEl, "scrollTop", { configurable: true, writable: true, value: 200 });
-treeEl.dispatchEvent(new dom.window.Event("scroll", { bubbles: false }));
+// Simulate a user scroll. The persistence hook only records user-initiated
+// scrolling (event.nativeEvent.isTrusted), which jsdom cannot produce for a
+// dispatched event, so call the same recording function the hook invokes.
+rememberWorkspaceTreeScroll(MEMORY_KEY, treeEl.scrollTop);
 
 await act(async () => {
   await flushTimers();

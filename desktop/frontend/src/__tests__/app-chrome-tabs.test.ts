@@ -502,7 +502,7 @@ ok(
 
 ok(
   /const transcriptHydrating = state\.hydrating && !state\.hydrateHistoryLoaded;/.test(appSource) &&
-    /hydrating=\{transcriptHydrating\}/.test(appSource),
+    /hydrating=\{runtimeTransitioning \|\| transcriptHydrating\}/.test(appSource),
   "Welcome is suppressed only until transcript history has loaded",
 );
 

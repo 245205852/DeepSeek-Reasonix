@@ -182,9 +182,6 @@ eq(
   true,
   "opening the dock persists the expanded preference for the next launch",
 );
-  true,
-  "opening the dock persists the expanded preference for the next launch",
-);
 eq(
   /terminalPanelOpen[\s\S]*?terminal-drawer/.test(appSource),
   true,

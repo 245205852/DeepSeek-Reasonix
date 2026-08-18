@@ -55,7 +55,6 @@ import {
   touchWorkspaceTreeVisit,
   workspaceTreeVisitId,
 } from "../lib/workspaceTreeMemory";
-import { useWorkspaceTreeScrollPersistence } from "../lib/useWorkspaceTreeScrollPersistence";
 import { loadLayoutSize, loadOptionalLayoutSize } from "../lib/layoutPreferences";
 import {
   RIGHT_DOCK_PREVIEW_DEFAULT_WIDTH,
@@ -94,12 +93,6 @@ import {
   workspaceParentDirs as parentDirs, workspaceParentPath as parentPath,
   workspaceShortCwd as shortCwd, workspaceTopLevelDirPath as topLevelDirPath,
 } from "../lib/workspacePanelFormat";
-import {
-  beginKeyedResourceRequest,
-  emptyKeyedResource,
-  rejectKeyedResourceRequest,
-  resolveKeyedResourceRequest,
-} from "../lib/keyedResource";
 
 const WORKSPACE_TREE_MIN_WIDTH = 140;
 const WORKSPACE_TREE_DEFAULT_WIDTH = 300;
@@ -2267,7 +2260,6 @@ export function WorkspacePanel({
           ref={treeRef}
           onScroll={onWorkspaceTreeScroll}
           onContextMenu={openTreeBlankMenu}
-          onScroll={onWorkspaceTreeScroll}
           style={{
             height: "100%",
             overflow: "auto",
