@@ -805,6 +805,11 @@ func (a *Agent) observeBeforeMutation(ctx context.Context, plan *toolCallPlan) {
 	if obs != nil {
 		if pv, ok := plan.execTool.(tool.Previewer); ok {
 			if change, perr := pv.Preview(ctx, plan.execArgs); perr == nil && change.Path != "" {
+				if evidence.ClassifyWriteScope(change.Path, a.writeWorkspaceRoot, nil) == evidence.WriteScopeScratch {
+					obs.RecordGap(checkpoint.CoverageGap{Reason: checkpoint.GapScratch, Tool: toolName, Path: change.Path, Detail: "scratch path is not a project file"})
+					plan.mutationPath = change.Path
+					return
+				}
 				obs.BeforeMutationFromChange(change, toolName)
 				plan.mutationPath = change.Path
 				return
@@ -813,6 +818,10 @@ func (a *Agent) observeBeforeMutation(ctx context.Context, plan *toolCallPlan) {
 		// Non-previewable writers: record a coverage gap (do not guess paths).
 		switch toolName {
 		case "bash":
+			if bashCommandIsScratchOnly(bashCommandFromArgs(plan.evidenceArgs), a.writeWorkspaceRoot) {
+				obs.RecordGap(checkpoint.CoverageGap{Reason: checkpoint.GapScratch, Tool: toolName, Detail: "scratch path is not a project file"})
+				return
+			}
 			obs.RecordGap(checkpoint.CoverageGap{Reason: checkpoint.GapBashSideEffect, Tool: toolName, Detail: "bash side effects are not path-tracked"})
 		default:
 			// MCP or other writers without Previewer.
@@ -850,4 +859,20 @@ func (a *Agent) observeAfterMutation(plan *toolCallPlan) bool {
 		plan.effects.ContentMutation = true
 	}
 	return changed
+}
+
+func bashCommandIsScratchOnly(command, workspaceRoot string) bool {
+	sawScratch := false
+	for field := range strings.FieldsSeq(command) {
+		if !strings.ContainsAny(field, `/\`) {
+			continue
+		}
+		switch evidence.ClassifyWriteScope(field, workspaceRoot, nil) {
+		case evidence.WriteScopeWorkspace, evidence.WriteScopeOutside:
+			return false
+		case evidence.WriteScopeScratch:
+			sawScratch = true
+		}
+	}
+	return sawScratch
 }
