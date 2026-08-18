@@ -109,6 +109,7 @@ const WORKSPACE_CONTEXT_MENU_SELECTION_HEIGHT = 48;
 const WORKSPACE_MAX_PREVIEW_TABS = 5;
 
 type WorkspaceRevealRequest = { id: number; path: string };
+export const WORKSPACE_TURN_VERIFICATION_ID = "workspace-turn-verification";
 type WorkspaceFileListRequest = { id: number; paths: string[] };
 type WorkspaceChangeListEntry = { key: string; path: string; meta: string; time: string; detail: string };
 type WorkspaceChangeListRequest = { id: number; changes: WorkspaceChangeListEntry[] };
@@ -153,6 +154,7 @@ export function WorkspacePanel({
   initialViewMode = "files",
   revealPathRequest,
   changeRevealRequest,
+  verificationRevealRequest,
   fileListRequest,
   changeListRequest,
   showViewTabs = true,
@@ -182,6 +184,7 @@ export function WorkspacePanel({
   initialViewMode?: "files" | "changed";
   revealPathRequest?: WorkspaceRevealRequest | null;
   changeRevealRequest?: WorkspaceRevealRequest | null;
+  verificationRevealRequest?: { id: number } | null;
   fileListRequest?: WorkspaceFileListRequest | null;
   changeListRequest?: WorkspaceChangeListRequest | null;
   showViewTabs?: boolean;
@@ -258,6 +261,8 @@ export function WorkspacePanel({
   const lastRevealRequestIdRef = useRef<number | null>(null);
   const dismissedRevealRequestIdRef = useRef<number | null>(null);
   const lastChangeRevealRequestIdRef = useRef<number | null>(null);
+  const lastVerificationRevealRequestIdRef = useRef<number | null>(null);
+  const verificationSummaryRef = useRef<HTMLElement | null>(null);
   const dismissedChangeRevealRequestIdRef = useRef<number | null>(null);
   const lastFileListRequestIdRef = useRef<number | null>(null);
   const dismissedFileListRequestIdRef = useRef<number | null>(null);
@@ -720,6 +725,27 @@ export function WorkspacePanel({
     setSelectionMenu(null);
     setTreeMenu(null);
   }, [changeRevealRequest, open, selectedPath, viewMode]);
+
+  useEffect(() => {
+    if (!open || !verificationRevealRequest) return;
+    if (lastVerificationRevealRequestIdRef.current !== verificationRevealRequest.id) {
+      lastVerificationRevealRequestIdRef.current = verificationRevealRequest.id;
+      setViewMode("changed");
+      setSelectedChangePath(null);
+      setOpenTabs([]);
+      setPreviewResource(emptyKeyedResource());
+      setFilter("");
+      setExpandedCommit(null);
+      setCommitDetail(null);
+      setSelectionMenu(null);
+      setTreeMenu(null);
+      setScopedChangeRows(null);
+      return;
+    }
+    if (viewMode !== "changed" || selectedChangePath) return;
+    const node = verificationSummaryRef.current ?? document.getElementById(WORKSPACE_TURN_VERIFICATION_ID);
+    node?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, [completionSummary, open, selectedChangePath, verificationRevealRequest, viewMode]);
 
   useEffect(() => {
     if (!open) return;
@@ -1701,11 +1727,13 @@ export function WorkspacePanel({
             <div className="workspace-git-history">
               {completionSummary && (
                 <section
+                  ref={verificationSummaryRef}
+                  id={WORKSPACE_TURN_VERIFICATION_ID}
                   className={`workspace-note workspace-completion-summary${completionSummaryNeedsAttention(completionSummary) ? " workspace-completion-summary--attention" : ""}`}
-                  aria-label={t("completion.panelTitle")}
+                  aria-labelledby={`${WORKSPACE_TURN_VERIFICATION_ID}-title`}
                 >
                   <div className="workspace-completion-summary__head">
-                    <strong>{t("completion.panelTitle")}</strong>
+                    <h3 id={`${WORKSPACE_TURN_VERIFICATION_ID}-title`} className="workspace-completion-summary__title">{t("completion.panelTitle")}</h3>
                     <span>{completionVerdictLabel(completionSummary.verdict, t)}</span>
                   </div>
                   <div className="workspace-completion-summary__metrics">

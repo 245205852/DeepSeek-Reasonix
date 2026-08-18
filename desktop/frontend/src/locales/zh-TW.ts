@@ -2045,6 +2045,7 @@ export const zhTW: Record<DictKey, string> = {
   "notice.completionAttentionTitle": "本輪仍需處理",
   "notice.completionGapsBody": "部分驗證未完成或受限，請查看變更詳情。",
   "notice.completionViewChanges": "查看變更",
+  "notice.completionViewVerification": "本輪驗證",
   "completion.panelTitle": "本輪驗證",
   "completion.verdictPartial": "部分完成",
   "completion.verdictBlocked": "受阻",

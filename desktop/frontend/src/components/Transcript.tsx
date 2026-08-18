@@ -235,6 +235,7 @@ export function Transcript({
   onDeliveryContinue,
   onAcceptDelivery,
   onOpenChanges,
+  onOpenVerification,
   onEditPrompt,
   onRewind,
   checkpoints = EMPTY_CHECKPOINTS,
@@ -264,6 +265,7 @@ export function Transcript({
   onDeliveryContinue?: () => void;
   onAcceptDelivery?: () => void;
   onOpenChanges?: () => void;
+  onOpenVerification?: () => void;
   onEditPrompt?: (turn: number, displayText: string, submitText?: string) => boolean | void | Promise<boolean | void>;
   onRewind?: (turn: number, scope: string) => void;
   checkpoints?: CheckpointMeta[];
@@ -759,6 +761,7 @@ export function Transcript({
               : row.item.action === "open_changes"
                 ? onOpenChanges
                 : undefined}
+            onOpenVerification={row.item.variant === "completion" ? onOpenVerification : undefined}
             onAccept={row.item.action === "continue_delivery" ? onAcceptDelivery : undefined}
           />
         );
@@ -800,6 +803,7 @@ export function Transcript({
     onEditPrompt,
     onLoadOlderHistory,
     onOpenChanges,
+    onOpenVerification,
     onPrompt,
     onRewind,
     openAction,

@@ -2933,6 +2933,7 @@ export const en = {
   "notice.completionAttentionTitle": "This turn still needs attention",
   "notice.completionGapsBody": "Some verification is incomplete or limited. Review the changes for details.",
   "notice.completionViewChanges": "View changes",
+  "notice.completionViewVerification": "Turn verification",
   "completion.panelTitle": "Turn verification",
   "completion.verdictPartial": "Partially complete",
   "completion.verdictBlocked": "Blocked",

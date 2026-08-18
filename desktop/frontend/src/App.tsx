@@ -2933,6 +2933,12 @@ export default function App() {
     [openWorkspacePanel],
   );
 
+  const [verificationRevealRequest, setVerificationRevealRequest] = useState<{ id: number } | null>(null);
+  const openTurnVerification = useCallback(() => {
+    openRightDockMode("changed");
+    setVerificationRevealRequest((prev) => ({ id: (prev?.id ?? 0) + 1 }));
+  }, [openRightDockMode]);
+
   const toggleTerminalPanel = useCallback(() => {
     setTerminalPanelOpen((prev) => {
       const next = !prev;
@@ -4853,6 +4859,7 @@ export default function App() {
                   onDeliveryContinue={() => void handleDeliveryContinue()}
                   onAcceptDelivery={() => void app.AcceptDeliveryToTab(activeTabIdRef.current ?? "")}
                   onOpenChanges={() => openRightDockMode("changed")}
+                  onOpenVerification={openTurnVerification}
                   onEditPrompt={handleEditPrompt}
                   onRewind={handleMessageAction}
                   checkpoints={state.checkpoints}
@@ -5253,6 +5260,7 @@ export default function App() {
                     onOpenInTerminal={openTerminalForPath}
                     initialViewMode={rightDockMode === "changed" ? "changed" : "files"}
                     completionSummary={state.completionSummary}
+                    verificationRevealRequest={verificationRevealRequest}
                     showViewTabs={false}
                     creationMode={sidebarCreation}
                   />

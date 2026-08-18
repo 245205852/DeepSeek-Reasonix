@@ -35,7 +35,12 @@ const items: Item[] = [
 ];
 
 try {
-  await harness.render(items, { running: false, onOpenChanges: () => { opens += 1; } });
+  let verificationOpens = 0;
+  await harness.render(items, {
+    running: false,
+    onOpenChanges: () => { opens += 1; },
+    onOpenVerification: () => { verificationOpens += 1; },
+  });
   ok(harness.container.textContent?.includes("This turn still needs attention"), "actionable summary stays visible outside the process fold");
   ok(!harness.container.textContent?.includes("balanced"), "compact notice exposes no internal enum values");
   const button = Array.from(harness.container.querySelectorAll("button")).find((node) => node.textContent?.includes("View changes"));
@@ -43,6 +48,11 @@ try {
   button?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
   await harness.flush();
   ok(opens === 1, "View changes delegates to the workspace panel action");
+  const verifyButton = Array.from(harness.container.querySelectorAll("button")).find((node) => node.textContent?.includes("Turn verification"));
+  ok(verifyButton, "completion notice offers a Turn verification action");
+  verifyButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  await harness.flush();
+  ok(verificationOpens === 1, "Turn verification opens the change-panel summary without rerunning checks");
 } finally {
   await harness.unmount();
   await harness.close();

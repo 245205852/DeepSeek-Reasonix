@@ -6,7 +6,7 @@ import React from "react";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { workspaceFileIcon } from "../components/WorkspaceFileIcon";
-import { WorkspacePanel } from "../components/WorkspacePanel";
+import { WORKSPACE_TURN_VERIFICATION_ID, WorkspacePanel } from "../components/WorkspacePanel";
 import { LocaleProvider } from "../lib/i18n";
 import { resetWorkspaceTreeMemoryForTests } from "../lib/workspaceTreeMemory";
 import type { AppBindings } from "../lib/bridge";
@@ -254,6 +254,43 @@ console.log("\nworkspace changes git errors");
   ok(text.includes("stale checks") && text.includes("Other"), "change panel uses safe labels for known and unknown gaps");
   ok(text.includes("Turn verification limited"), "change panel explains constrained verification without exposing an internal flag");
   ok(!text.includes("balanced") && !text.includes("partial") && !text.includes("stale_check") && !text.includes("future_internal_value"), "change panel exposes no raw enum values");
+  const title = document.getElementById(`${WORKSPACE_TURN_VERIFICATION_ID}-title`);
+  ok(title?.tagName === "H3", "turn verification title is a heading, not a button");
+  ok(document.querySelector(`#${WORKSPACE_TURN_VERIFICATION_ID} button`) === null, "turn verification summary does not expose a clickable control");
+  await act(async () => {
+    root.unmount();
+  });
+  dom.window.close();
+}
+
+{
+  const summary = {
+    preset: "balanced",
+    verdict: "partial",
+    mutations: 1,
+    checks_passed: 0,
+    checks_failed: 0,
+    checks_suppressed: 0,
+    review: "none",
+    gap_kinds: ["unverified_change"],
+    constraint_degraded: false,
+  } satisfies WireCompletionSummary;
+  const { dom, root, rerender } = await renderFilesWorkspace({}, {
+    initialViewMode: "files",
+    completionSummary: summary,
+  });
+  let scrolled = 0;
+  Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+    configurable: true,
+    value() {
+      scrolled += 1;
+    },
+  });
+  await rerender({ initialViewMode: "changed", verificationRevealRequest: { id: 1 }, completionSummary: summary });
+  await waitFor("revealed turn verification", () => document.getElementById(WORKSPACE_TURN_VERIFICATION_ID) !== null);
+  await waitFor("scrolled to turn verification", () => scrolled >= 1);
+  ok(document.getElementById(WORKSPACE_TURN_VERIFICATION_ID) !== null, "verification action switches to the change overview summary");
+  ok(scrolled >= 1, "verification action scrolls the turn-verification summary into view");
   await act(async () => {
     root.unmount();
   });
