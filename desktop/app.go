@@ -1969,10 +1969,12 @@ func (a *App) NewSessionForTab(tabID string) error {
 	if ctrl == nil {
 		return a.workspaceNotReadyErr(tab)
 	}
-	// Tab is already blank — just persist and skip the new-session dance.
+	// Tab is already blank — skip rotation, but still apply the configured
+	// default. A reused empty tab otherwise keeps the previous session's
+	// provider after a default-model change (#9080).
 	if !controllerHasActiveRuntimeWork(ctrl) && !messagesHaveConversationContent(ctrl.History()) {
 		a.persistTabSessionPath(tab, ctrl.SessionPath())
-		return nil
+		return a.applyNewSessionDefaultModel(tab)
 	}
 
 	if err := ctrl.NewSession(); err != nil {
@@ -1990,7 +1992,26 @@ func (a *App) NewSessionForTab(tabID string) error {
 	a.persistTabSessionPath(tab, ctrl.SessionPath())
 	a.invalidatePromptHistoryCache()
 	a.emitProjectTreeChangedForSessionDirs(ctrl.SessionDir())
-	return nil
+	return a.applyNewSessionDefaultModel(tab)
+}
+
+// applyNewSessionDefaultModel makes a freshly rotated or reused blank session
+// obey the same default as EnsureBlankTab. Existing conversations keep their
+// saved model until the user starts a new one.
+func (a *App) applyNewSessionDefaultModel(tab *WorkspaceTab) error {
+	if tab == nil {
+		return nil
+	}
+	a.mu.RLock()
+	scope := tab.Scope
+	root := tab.WorkspaceRoot
+	a.mu.RUnlock()
+	if strings.TrimSpace(scope) != "project" {
+		scope = "global"
+		root = ""
+	}
+	defaultModel, _ := desktopNewSessionDefaults(scope, root)
+	return a.alignReusableBlankTabModel(tab, defaultModel)
 }
 
 func (a *App) assignFreshSessionTopic(tab *WorkspaceTab) {

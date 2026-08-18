@@ -2095,7 +2095,7 @@ func (a *App) SetDefaultModel(ref string) error {
 		a.mu.Unlock()
 		return err
 	}
-	return nil
+	return a.persistTabModelIfCurrent(tab, tab.model)
 }
 
 // SetPlannerModel sets (or, with "", clears) the two-model planner.
