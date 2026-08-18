@@ -2,6 +2,268 @@
   "schemaVersion": 1,
   "releases": [
     {
+      "version": "1.28.0",
+      "date": "2026-08-18",
+      "channel": "stable",
+      "title": {
+        "en": "Reasonix 1.28.0",
+        "zh": "Reasonix 1.28.0"
+      },
+      "summary": {
+        "en": "This release restores delivery-grade session quality floors, bounds background job lease retention, pins official DeepSeek-V4-Pro to the DSH persona, completes StepFun provider presets, and fixes several desktop transcript navigation issues.",
+        "zh": "此版本恢复了交付级会话质量底线，限制了后台任务租约保留时间，为官方 DeepSeek-V4-Pro 固定 DSH 人设，补全了阶跃星辰提供商预设，并修复了多个桌面端会话记录导航问题。"
+      },
+      "surfaces": [
+        "desktop"
+      ],
+      "guides": [
+        {
+          "title": {
+            "en": "Reasoning Language Documentation",
+            "zh": "推理语言文档"
+          },
+          "body": {
+            "en": "Updated to document the official DeepSeek-V4-Pro auto reasoning language and first-line persona.",
+            "zh": "更新以记录官方 DeepSeek-V4-Pro 的自动推理语言和首行人设。"
+          },
+          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/ac17fe3429a5084c9dec8d3420ed8e584a69c9df/docs/REASONING_LANGUAGE.md"
+        },
+        {
+          "title": {
+            "en": "推理语言文档（中文）",
+            "zh": "推理语言文档（中文）"
+          },
+          "body": {
+            "en": "Updated to document the official DeepSeek-V4-Pro auto reasoning language and first-line persona.",
+            "zh": "更新以记录官方 DeepSeek-V4-Pro 的自动推理语言和首行人设。"
+          },
+          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/ac17fe3429a5084c9dec8d3420ed8e584a69c9df/docs/REASONING_LANGUAGE.zh-CN.md"
+        }
+      ],
+      "highlights": [
+        {
+          "kind": "new",
+          "title": {
+            "en": "Session quality floor restored",
+            "zh": "恢复会话质量底线"
+          },
+          "body": {
+            "en": "The standard and delivery roles return as session quality floors. Delivery sessions now enforce sticky completion gates: strict full verification after writes, plus final readiness checks.",
+            "zh": "标准和交付角色作为会话质量底线回归。交付会话现在强制执行粘性完成门槛：写入后进行严格完整验证，以及最终就绪检查。"
+          },
+          "refs": [
+            9072
+          ]
+        },
+        {
+          "kind": "fixed",
+          "title": {
+            "en": "Background job lease retention bounded",
+            "zh": "后台任务租约保留有界"
+          },
+          "body": {
+            "en": "Resident background services no longer hold the workspace write lease indefinitely. The lease is released after a 30-second grace period following the final agent run.",
+            "zh": "常驻后台服务不再无限期持有工作区写入租约。在最终代理运行结束后的 30 秒宽限期后，租约将被释放。"
+          },
+          "refs": [
+            9078
+          ]
+        },
+        {
+          "kind": "new",
+          "title": {
+            "en": "Official DeepSeek-V4-Pro persona pinned",
+            "zh": "官方 DeepSeek-V4-Pro 人设固定"
+          },
+          "body": {
+            "en": "Official DeepSeek-V4-Pro now automatically prepends the DeepSeek Harness minimal-mode persona as the first system-prompt paragraph, with reasoning language pinned to English.",
+            "zh": "官方 DeepSeek-V4-Pro 现在自动将 DeepSeek Harness 最小模式人设作为系统提示的第一段前置，并将推理语言固定为英语。"
+          },
+          "refs": [
+            9074
+          ]
+        },
+        {
+          "kind": "fixed",
+          "title": {
+            "en": "StepFun provider URL canonicalization and preset completion",
+            "zh": "阶跃星辰提供商 URL 规范化与预设补全"
+          },
+          "body": {
+            "en": "StepFun custom OpenAI-compatible endpoints are now canonicalized to prevent 404 errors, and the preset matrix is completed for all channel and protocol combinations.",
+            "zh": "阶跃星辰自定义 OpenAI 兼容端点现已规范化以防止 404 错误，并补全了所有渠道和协议组合的预设矩阵。"
+          },
+          "refs": [
+            9075
+          ]
+        },
+        {
+          "kind": "fixed",
+          "title": {
+            "en": "Desktop transcript navigation fixes",
+            "zh": "桌面端会话记录导航修复"
+          },
+          "body": {
+            "en": "Question navigation and rewind now land on the selected question instead of jumping to the transcript tail. Repeated tail writes during scroll delivery are also prevented.",
+            "zh": "问题导航和回退现在会落在所选问题上，而不是跳到会话记录末尾。同时防止了滚动交付期间重复的尾部写入。"
+          },
+          "refs": [
+            9065,
+            9062,
+            9054,
+            9013,
+            9027
+          ]
+        }
+      ],
+      "changes": {
+        "new": [
+          {
+            "title": {
+              "en": "Session quality floor",
+              "zh": "会话质量底线"
+            },
+            "body": {
+              "en": "Restores standard and delivery roles as session quality floors, with delivery enforcing sticky completion gates.",
+              "zh": "恢复标准和交付角色作为会话质量底线，交付角色强制执行粘性完成门槛。"
+            },
+            "refs": [
+              9072
+            ]
+          },
+          {
+            "title": {
+              "en": "Official DeepSeek-V4-Pro persona",
+              "zh": "官方 DeepSeek-V4-Pro 人设"
+            },
+            "body": {
+              "en": "Automatically prepends the DSH minimal-mode persona and pins reasoning language to English for official DeepSeek-V4-Pro.",
+              "zh": "为官方 DeepSeek-V4-Pro 自动前置 DSH 最小模式人设，并将推理语言固定为英语。"
+            },
+            "refs": [
+              9074
+            ]
+          },
+          {
+            "title": {
+              "en": "StepFun preset matrix completion",
+              "zh": "阶跃星辰预设矩阵补全"
+            },
+            "body": {
+              "en": "Adds missing StepFun presets for all channel and protocol combinations.",
+              "zh": "为所有渠道和协议组合添加缺失的阶跃星辰预设。"
+            },
+            "refs": [
+              9075
+            ]
+          }
+        ],
+        "improved": [
+          {
+            "title": {
+              "en": "StepFun URL canonicalization",
+              "zh": "阶跃星辰 URL 规范化"
+            },
+            "body": {
+              "en": "Canonicalizes known official StepFun step_plan URLs to prevent chat/probe endpoint mismatch.",
+              "zh": "规范化已知的官方阶跃星辰 step_plan URL，防止聊天/探测端点不匹配。"
+            },
+            "refs": [
+              9075
+            ]
+          }
+        ],
+        "fixed": [
+          {
+            "title": {
+              "en": "Background job lease retention bounded",
+              "zh": "后台任务租约保留有界"
+            },
+            "body": {
+              "en": "Releases workspace write lease after a 30-second grace period following the final agent run, even if background jobs continue.",
+              "zh": "在最终代理运行结束后的 30 秒宽限期后释放工作区写入租约，即使后台任务仍在继续。"
+            },
+            "refs": [
+              9078
+            ]
+          },
+          {
+            "title": {
+              "en": "Question navigation landing",
+              "zh": "问题导航落点"
+            },
+            "body": {
+              "en": "Fixes question navigator and rewind jumping to transcript tail instead of selected question.",
+              "zh": "修复问题导航器和回退跳到会话记录末尾而不是所选问题的问题。"
+            },
+            "refs": [
+              9065,
+              9027
+            ]
+          },
+          {
+            "title": {
+              "en": "Repeated tail writes during scroll delivery",
+              "zh": "滚动交付期间重复尾部写入"
+            },
+            "body": {
+              "en": "Prevents repeated tail-follow writes when multiple non-bottom deliveries occur for one physical displacement.",
+              "zh": "防止在一次物理位移产生多个非底部交付时重复进行尾部跟随写入。"
+            },
+            "refs": [
+              9062
+            ]
+          },
+          {
+            "title": {
+              "en": "Stale transcript navigation",
+              "zh": "过期的会话记录导航"
+            },
+            "body": {
+              "en": "Clears stale native and retained transcript selection before question navigation requests its indexed jump.",
+              "zh": "在问题导航请求其索引跳转之前，清除过期的原生和保留的会话记录选择。"
+            },
+            "refs": [
+              9054
+            ]
+          },
+          {
+            "title": {
+              "en": "Question navigation single activation",
+              "zh": "问题导航单次激活"
+            },
+            "body": {
+              "en": "Handles each physical mouse activation exactly once instead of issuing jumps from both mousedown and click.",
+              "zh": "每次物理鼠标激活仅处理一次，而不是从 mousedown 和 click 都发出跳转。"
+            },
+            "refs": [
+              9013
+            ]
+          }
+        ]
+      },
+      "upgrade": [],
+      "risks": [],
+      "contributors": [
+        "SivanCola",
+        "wuhanwoaini521"
+      ],
+      "links": {
+        "github": "https://github.com/esengine/DeepSeek-Reasonix/releases/tag/desktop-v1.28.0",
+        "compare": "https://github.com/esengine/DeepSeek-Reasonix/compare/desktop-v1.27.0...desktop-v1.28.0",
+        "download": "https://reasonix.io/?download=desktop&channel=stable#start"
+      },
+      "releaseId": "1.28.0",
+      "baseVersion": "1.28.0",
+      "status": "reviewed",
+      "previousRelease": "1.27.0",
+      "builds": {
+        "cli": "v1.28.0",
+        "desktop": "v1.28.0",
+        "npm": "1.28.0"
+      }
+    },
+    {
       "version": "1.27.0",
       "date": "2026-08-17",
       "channel": "stable",
