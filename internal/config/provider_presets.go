@@ -114,6 +114,12 @@ var (
 	// ("this model is not enabled for the Responses API" for 3.5 SKUs).
 	stepfunResponsesModels = []string{"step-3.7-flash"}
 
+	// The pay-as-you-go channel serves the same reasoning SKUs; 3.7-flash
+	// additionally accepts image input there (verified live), while the
+	// step_plan channel rejects images outright.
+	stepfunAPIModels       = []string{"step-3.7-flash", "step-3.5-flash", "step-3.5-flash-2603"}
+	stepfunAPIVisionModels = []string{"step-3.7-flash"}
+
 	legacyOpenCodeGoModels           = []string{"glm-5.2", "glm-5.1", "kimi-k2.7-code", "kimi-k2.6", "deepseek-v4-pro", "deepseek-v4-flash", "mimo-v2.5-pro", "mimo-v2.5"}
 	opencodeGoModels                 = []string{"glm-5.2", "glm-5.1", "kimi-k3", "kimi-k2.7-code", "kimi-k2.6", "deepseek-v4-pro", "deepseek-v4-flash", "mimo-v2.5-pro", "mimo-v2.5"}
 	opencodeGoVisionModels           = []string{"kimi-k3"}
@@ -872,6 +878,40 @@ var curatedProviderPresets = []ProviderPreset{
 			Kind:             "anthropic",
 			BaseURL:          "https://api.stepfun.com/step_plan",
 			Models:           stepfunPlanModels,
+			Default:          "step-3.7-flash",
+			APIKeyEnv:        "STEPFUN_API_KEY",
+			Thinking:         "adaptive",
+			SupportedEfforts: []string{"low", "medium", "high"},
+			DefaultEffort:    "medium",
+		}},
+	},
+	{
+		ID:          "stepfun-api",
+		Label:       "StepFun API Pay-as-you-go",
+		Description: "StepFun pay-as-you-go OpenAI-compatible API with vision on step-3.7-flash.",
+		KeyEnv:      "STEPFUN_API_KEY",
+		Entries: []ProviderEntry{{
+			Name:             "stepfun-api",
+			Kind:             "openai",
+			BaseURL:          "https://api.stepfun.com/v1",
+			Models:           stepfunAPIModels,
+			VisionModels:     stepfunAPIVisionModels,
+			Default:          "step-3.7-flash",
+			APIKeyEnv:        "STEPFUN_API_KEY",
+			SupportedEfforts: []string{"low", "medium", "high"},
+			DefaultEffort:    "medium",
+		}},
+	},
+	{
+		ID:          "stepfun-api-anthropic",
+		Label:       "StepFun API Anthropic Pay-as-you-go",
+		Description: "StepFun pay-as-you-go Anthropic-compatible Messages API with automatic prefix caching.",
+		KeyEnv:      "STEPFUN_API_KEY",
+		Entries: []ProviderEntry{{
+			Name:             "stepfun-api-anthropic",
+			Kind:             "anthropic",
+			BaseURL:          "https://api.stepfun.com",
+			Models:           stepfunAPIModels,
 			Default:          "step-3.7-flash",
 			APIKeyEnv:        "STEPFUN_API_KEY",
 			Thinking:         "adaptive",

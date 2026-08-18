@@ -121,7 +121,9 @@ ok(
     source.includes('"settings.addProvider.preset.stepfunLabel"') &&
     source.includes('"settings.addProvider.preset.stepfunAnthropicLabel"') &&
     source.includes('"settings.addProvider.preset.stepfunResponsesLabel"') &&
-    source.includes('"settings.addProvider.preset.stepfunResponsesDesc"'),
+    source.includes('"settings.addProvider.preset.stepfunResponsesDesc"') &&
+    source.includes('"settings.addProvider.preset.stepfunApiLabel"') &&
+    source.includes('"settings.addProvider.preset.stepfunApiAnthropicLabel"'),
   ),
   "every StepFun preset localizes its display name and description",
 );

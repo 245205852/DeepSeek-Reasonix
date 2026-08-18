@@ -878,7 +878,7 @@
       "essay": 7
     },
     "internal/config/provider_presets.go": {
-      "file-size": 282
+      "file-size": 604
     },
     "internal/config/render.go": {
       "complexity": 252,
@@ -1530,7 +1530,7 @@
       "file-size": 76
     },
     "internal/config/provider_presets_test.go": {
-      "test-file-size": 32
+      "test-file-size": 80
     }
   }
 }
