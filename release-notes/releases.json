@@ -6,18 +6,32 @@
       "date": "2026-08-18",
       "channel": "stable",
       "title": {
-        "en": "Reasonix v1.29.0 — Desktop stability and workflow fixes",
-        "zh": "Reasonix v1.29.0 — 桌面端稳定性与工作流修复"
+        "en": "Desktop reliability and workflow fixes",
+        "zh": "桌面端可靠性与工作流修复"
       },
       "summary": {
-        "en": "This release fixes several desktop issues: todo progress updates no longer stall, Windows image preview hides window controls, reduced-motion transcript flicker is resolved, and pinned conversations no longer duplicate in the project tree.",
-        "zh": "此版本修复了多个桌面端问题：待办进度更新不再卡住，Windows 图片预览隐藏窗口控制按钮，减少动态效果时对话区闪烁问题已解决，置顶对话不再在项目树中重复显示。"
+        "en": "This release makes the configured default model apply after restart and to new sessions, unblocks todo progress updates, and fixes Windows image preview controls, reduced-motion transcript flicker, and duplicate pinned conversations.",
+        "zh": "此版本让设置的默认模型在重启后和新会话中正确生效，解除待办进度更新阻塞，并修复 Windows 图片预览窗口按钮、减少动态效果时的对话区闪烁以及置顶对话重复显示问题。"
       },
       "surfaces": [
         "desktop"
       ],
       "guides": [],
       "highlights": [
+        {
+          "kind": "fixed",
+          "title": {
+            "en": "Default model now applies after restart and to new sessions",
+            "zh": "默认模型在重启和新会话中正确生效"
+          },
+          "body": {
+            "en": "Changing the default model in Settings now persists across restart and applies when starting or reusing a blank session, while existing conversations keep their saved model.",
+            "zh": "在设置中更改默认模型后，重启应用以及新建或复用空白会话都会使用该模型，已有会话仍保留各自保存的模型。"
+          },
+          "refs": [
+            9101
+          ]
+        },
         {
           "kind": "fixed",
           "title": {
@@ -81,6 +95,19 @@
         "fixed": [
           {
             "title": {
+              "en": "Default model persists and seeds new sessions",
+              "zh": "默认模型持久化并应用到新会话"
+            },
+            "body": {
+              "en": "The desktop persists the selected default to the current session sidecar and applies it after New Session rotation or when reusing a blank tab.",
+              "zh": "桌面端会把所选默认模型持久化到当前会话 sidecar，并在新会话轮换或复用空白标签页时应用该模型。"
+            },
+            "refs": [
+              9101
+            ]
+          },
+          {
+            "title": {
               "en": "Todo progress updates no longer stall",
               "zh": "待办进度更新不再卡住"
             },
@@ -136,8 +163,7 @@
       "upgrade": [],
       "risks": [],
       "contributors": [
-        "SivanCola",
-        "github-actions[bot]"
+        "SivanCola"
       ],
       "links": {
         "github": "https://github.com/esengine/DeepSeek-Reasonix/releases/tag/desktop-v1.29.0",
