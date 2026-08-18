@@ -128,10 +128,10 @@ ok(
   "every StepFun preset localizes its display name and description",
 );
 ok(
-  enLocaleSource.includes('"settings.addProvider.preset.stepfunLabel": "StepFun"') &&
-    zhLocaleSource.includes('"settings.addProvider.preset.stepfunLabel": "阶跃星辰"') &&
-    zhTWLocaleSource.includes('"settings.addProvider.preset.stepfunLabel": "階躍星辰"'),
-  "StepFun preset uses the official English and Chinese brand names",
+  enLocaleSource.includes('"settings.addProvider.preset.stepfunLabel": "StepFun Coding Plan"') &&
+    zhLocaleSource.includes('"settings.addProvider.preset.stepfunLabel": "阶跃星辰 Coding Plan"') &&
+    zhTWLocaleSource.includes('"settings.addProvider.preset.stepfunLabel": "階躍星辰 Coding Plan"'),
+  "StepFun preset names the subscription channel in every locale",
 );
 ok(
   /case "stepfun-responses":\s*return t\("settings\.addProvider\.preset\.stepfunResponsesDesc"\)/.test(settingsSource) &&
