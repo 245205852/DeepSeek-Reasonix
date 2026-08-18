@@ -11835,8 +11835,7 @@ body > .mermaid-diagram--fullscreen {
   outline: none;
   box-shadow: 0 0 0 2px var(--accent-soft);
 }
-.mem-select:disabled,
-.mem-input:disabled {
+.provider-name-input:disabled {
   opacity: 0.6;
   cursor: not-allowed;
 }

@@ -6596,7 +6596,7 @@ export function ProviderEditor({
   return (
     <div className={`provider-editor${isNewCustomProvider ? " provider-editor--wizard" : ""}`}>
       <label className="set-label">{t("settings.customProviderName")}</label>
-      <input className="mem-input" placeholder={t("settings.customProviderNamePlaceholder")} value={name} onChange={(e) => setName(e.target.value)} disabled={!!initial} />
+      <input className="mem-input provider-name-input" placeholder={t("settings.customProviderNamePlaceholder")} value={name} onChange={(e) => setName(e.target.value)} disabled={!!initial} />
       {initial && <div className="mem-hint">{t("settings.customProviderNameReadonlyHint")}</div>}
       <label className="set-label">{t("settings.providerProtocol")}</label>
       <select className="mem-select" value={kind} onChange={(e) => setKind(e.target.value)}>
