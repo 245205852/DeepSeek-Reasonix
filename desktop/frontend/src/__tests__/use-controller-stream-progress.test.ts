@@ -52,6 +52,8 @@ function ev(s: typeof initialState, e: WireEvent) {
       review: "passed",
       gap_kinds: [],
       constraint_degraded: false,
+      floor: "standard",
+      attention: false,
     },
   });
   eq(complete.items.length, before.items.length + 1, "workspace mutations add a neutral change notice");
@@ -71,6 +73,8 @@ function ev(s: typeof initialState, e: WireEvent) {
       review: "passed",
       gap_kinds: ["stale_check"],
       constraint_degraded: true,
+      floor: "delivery",
+      attention: true,
     },
   });
   eq(after.items.length, complete.items.length + 1, "actionable completion summary adds one compact transcript notice");
@@ -79,6 +83,33 @@ function ev(s: typeof initialState, e: WireEvent) {
   eq(notice?.kind === "notice" ? notice.action : "", "open_changes", "quality gap links to the change panel");
   eq(notice?.kind === "notice" ? notice.text.includes("balanced") : true, false, "compact notice does not expose internal preset values");
   eq(after.completionSummary?.checks_failed, 1, "actionable completion summary is retained for details");
+
+  const switchedFloor = ev({ ...complete, meta: { ...complete.meta, qualityFloor: "delivery" } }, {
+    kind: "completion_summary",
+    completion: {
+      ...complete.completionSummary!,
+      verdict: "partial",
+      gap_kinds: ["unverified_change"],
+      floor: "standard",
+      attention: false,
+    },
+  });
+  const switchedNotice = switchedFloor.items[switchedFloor.items.length - 1];
+  eq(switchedNotice?.kind === "notice" ? switchedNotice.level : "", "info", "turn-time standard summary stays neutral after switching to delivery");
+
+  const suppressed = ev(complete, {
+    kind: "completion_summary",
+    completion: {
+      ...complete.completionSummary!,
+      mutations: 0,
+      checks_suppressed: 1,
+      gap_kinds: ["suppressed_requirement"],
+      floor: "delivery",
+      attention: true,
+    },
+  });
+  const suppressedNotice = suppressed.items[suppressed.items.length - 1];
+  eq(suppressedNotice?.kind === "notice" ? suppressedNotice.title : "", "This turn still needs attention", "required suppression uses a generic attention notice");
 
   const restarted = ev(after, { kind: "turn_started" });
   eq(restarted.completionSummary, undefined, "a new turn clears the previous turn's quality details");

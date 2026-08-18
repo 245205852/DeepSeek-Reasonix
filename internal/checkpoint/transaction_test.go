@@ -257,7 +257,8 @@ func TestBackgroundWriterStartingAfterPreviewBlocksCommit(t *testing.T) {
 
 func TestCaptureScratchPathIsNotOutsideWorkspace(t *testing.T) {
 	root := t.TempDir()
-	_, gap, err := CapturePath("/tmp/btc_klines.py", CaptureOptions{WorkspaceRoot: root, ReadContent: true})
+	scratchPath := filepath.Join(os.TempDir(), "reasonix-capture-probe.py")
+	_, gap, err := CapturePath(scratchPath, CaptureOptions{WorkspaceRoot: root, ReadContent: true})
 	if err != nil || gap == nil || gap.Reason != GapScratch {
 		t.Fatalf("scratch capture: gap=%+v err=%v", gap, err)
 	}

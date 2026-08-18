@@ -214,6 +214,9 @@ func workspaceWriteReceipt(r evidence.Receipt, workspaceRoot string, scratchRoot
 	if !r.Success || !(r.Mutation || r.Write) {
 		return false
 	}
+	if r.DeliveryScope == evidence.WriteScopeScratch {
+		return false
+	}
 	if len(r.Paths) == 0 {
 		return true
 	}

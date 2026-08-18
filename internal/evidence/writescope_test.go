@@ -1,6 +1,7 @@
 package evidence
 
 import (
+	"os"
 	"path/filepath"
 	"runtime"
 	"testing"
@@ -41,8 +42,21 @@ func TestClassifyWriteScopeSessionTempRoot(t *testing.T) {
 	if got := ClassifyWriteScope(path, t.TempDir(), []string{scratch}); got != WriteScopeScratch {
 		t.Fatalf("session temp = %s, want scratch", got)
 	}
-	named := filepath.Join(t.TempDir(), "reasonix-session-tmp-abc", "probe.py")
-	if got := ClassifyWriteScope(named, "/home/dev/project", nil); got != WriteScopeScratch {
-		t.Fatalf("named session temp = %s, want scratch", got)
+	volumeRoot := filepath.VolumeName(os.TempDir()) + string(filepath.Separator)
+	named := filepath.Join(volumeRoot, "reasonix-unowned-scope", "reasonix-session-tmp-abc", "probe.py")
+	if got := ClassifyWriteScope(named, t.TempDir(), nil); got != WriteScopeOutside {
+		t.Fatalf("unowned named temp = %s, want outside", got)
+	}
+}
+
+func TestClassifyWriteScopeKeepsLexicalWorkspaceSymlinksInWorkspace(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(root, "link")); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	path := filepath.Join(root, "link", "probe.py")
+	if got := ClassifyWriteScope(path, root, nil); got != WriteScopeWorkspace {
+		t.Fatalf("workspace symlink path = %s, want workspace for the safety layer", got)
 	}
 }

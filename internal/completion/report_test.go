@@ -93,6 +93,17 @@ func TestBuildReportsMutationWithNoVerificationAtAll(t *testing.T) {
 	}
 }
 
+func TestBuildIgnoresScratchScopedOpaqueExecution(t *testing.T) {
+	receipt := evidence.Receipt{
+		ToolName: "bash", Success: true, Mutation: true,
+		Command: "python /tmp/probe.py", DeliveryScope: evidence.WriteScopeScratch,
+	}
+	rep := Build(nil, ledgerOf(receipt))
+	if rep.Mutations != 0 || len(rep.Gaps) != 0 {
+		t.Fatalf("scratch execution report = %+v, want no delivery mutation", rep)
+	}
+}
+
 func TestBuildKeepsFailedVerificationVisible(t *testing.T) {
 	ledger := ledgerOf(wrote("parser.go"), read("parser.go"), ran("go test ./...", false))
 

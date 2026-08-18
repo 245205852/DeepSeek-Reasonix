@@ -49,6 +49,7 @@ func (a *Agent) recordToolReceipts(plan *toolCallPlan, result string, execution 
 	switch {
 	case call.Name == "complete_step":
 		rec := evidence.ReceiptFromToolCall(call.Name, args, err == nil, plan.readOnly)
+		a.stampReceiptDeliveryScope(&rec)
 		rec.PolicyFloor = floorStamp
 		a.task.ledger.Record(rec)
 		a.commitToolReceipt(rec)
@@ -60,6 +61,7 @@ func (a *Agent) recordToolReceipts(plan *toolCallPlan, result string, execution 
 		a.task.ledger.Record(proxy)
 		rec := evidence.ReceiptFromToolCall(plan.evidenceName, plan.evidenceArgs, err == nil, plan.readOnly)
 		rec.Mutation = plan.effects.ContentMutation
+		a.stampReceiptDeliveryScope(&rec)
 		rec.PolicyFloor = floorStamp
 		decorateExecutionReceipt(&rec, result, execution)
 		a.task.ledger.Record(rec)
@@ -67,6 +69,7 @@ func (a *Agent) recordToolReceipts(plan *toolCallPlan, result string, execution 
 	default:
 		rec := evidence.ReceiptFromToolCall(call.Name, args, err == nil, plan.tool.ReadOnly())
 		rec.Mutation = plan.effects.ContentMutation
+		a.stampReceiptDeliveryScope(&rec)
 		rec.PolicyFloor = floorStamp
 		decorateExecutionReceipt(&rec, result, execution)
 		a.task.ledger.Record(rec)

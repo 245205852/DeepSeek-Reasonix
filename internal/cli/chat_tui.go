@@ -3731,11 +3731,15 @@ func completionSummaryNeedsAttention(c *event.CompletionSummaryInfo, floor strin
 	if c == nil {
 		return false
 	}
+	if strings.TrimSpace(c.Floor) != "" {
+		return c.Attention
+	}
 	return turncomp.NeedsAttention(turncomp.AttentionInput{
-		Verdict:      c.Verdict,
-		ChecksFailed: c.ChecksFailed,
-		GapKinds:     c.GapKinds,
-		Floor:        floor,
+		Verdict:            c.Verdict,
+		ChecksFailed:       c.ChecksFailed,
+		GapKinds:           c.GapKinds,
+		Floor:              floor,
+		RequiredSuppressed: c.ChecksSuppressed > 0,
 	})
 }
 

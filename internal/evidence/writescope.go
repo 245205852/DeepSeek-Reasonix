@@ -36,17 +36,14 @@ func ClassifyWriteScope(path, workspaceRoot string, scratchRoots []string) Write
 		return WriteScopeWorkspace
 	}
 	abs := scopeAbs(path, workspaceRoot)
-	if workspaceRoot != "" && lexicallyInside(workspaceRoot, abs) {
+	if workspaceRoot != "" && pathInside(workspaceRoot, abs) {
 		return WriteScopeWorkspace
-	}
-	if isSessionTempPath(abs) {
-		return WriteScopeScratch
 	}
 	if !filepath.IsAbs(path) && strings.TrimSpace(workspaceRoot) == "" {
 		return WriteScopeWorkspace
 	}
 	for _, root := range scratchRootList(scratchRoots) {
-		if lexicallyInside(root, abs) {
+		if pathInside(root, abs) {
 			return WriteScopeScratch
 		}
 	}
@@ -56,29 +53,18 @@ func ClassifyWriteScope(path, workspaceRoot string, scratchRoots []string) Write
 	return WriteScopeWorkspace
 }
 
-// DefaultScratchRoots is the OS temporary directory plus the usual Unix
-// aliases. Session-private dirs should be passed in explicitly when known.
+// DefaultScratchRoots includes the OS temp directory and Unix public aliases.
+// A supplied workspace root always wins for checkouts located under temp.
 func DefaultScratchRoots() []string {
-	// Only the public temp aliases. Do not add os.TempDir() when it is a
-	// per-user harness like macOS /var/folders: tests and checkouts live there
-	// and must stay classifiable as workspace/outside until a workspace root
-	// is supplied.
-	roots := []string{"/tmp", "/private/tmp"}
-	if tmp := os.TempDir(); tmp != "" {
-		switch filepath.Clean(tmp) {
-		case "/tmp", "/private/tmp", `C:\Windows\Temp`, `C:\Temp`:
-			roots = append(roots, tmp)
-		}
+	roots := []string{os.TempDir()}
+	if filepath.Separator == '/' {
+		roots = append(roots, "/tmp", "/private/tmp")
 	}
 	return uniqueCleanRoots(roots)
 }
 
 func scratchRootList(extra []string) []string {
 	return uniqueCleanRoots(append(DefaultScratchRoots(), extra...))
-}
-
-func isSessionTempPath(path string) bool {
-	return strings.Contains(filepath.ToSlash(path), "/reasonix-session-tmp-")
 }
 
 func uniqueCleanRoots(roots []string) []string {
@@ -90,9 +76,6 @@ func uniqueCleanRoots(roots []string) []string {
 			continue
 		}
 		cleaned := filepath.Clean(root)
-		if resolved, err := filepath.EvalSymlinks(cleaned); err == nil && resolved != "" {
-			cleaned = resolved
-		}
 		key := strings.ToLower(cleaned)
 		if seen[key] {
 			continue
@@ -113,21 +96,13 @@ func scopeAbs(path, workspaceRoot string) string {
 	return filepath.Clean(filepath.Join(workspaceRoot, path))
 }
 
-func lexicallyInside(root, target string) bool {
+func pathInside(root, target string) bool {
 	root = filepath.Clean(strings.TrimSpace(root))
 	target = filepath.Clean(strings.TrimSpace(target))
 	if root == "" || target == "" {
 		return false
 	}
-	if resolved, err := filepath.EvalSymlinks(root); err == nil && resolved != "" {
-		root = resolved
-	}
-	if resolved, err := filepath.EvalSymlinks(target); err == nil && resolved != "" {
-		target = resolved
-	} else {
-		target = evalExistingPrefix(target)
-	}
-	if filepath.VolumeName(root) != filepath.VolumeName(target) {
+	if !strings.EqualFold(filepath.VolumeName(root), filepath.VolumeName(target)) {
 		return false
 	}
 	rel, err := filepath.Rel(root, target)
@@ -135,23 +110,4 @@ func lexicallyInside(root, target string) bool {
 		return false
 	}
 	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
-}
-
-func evalExistingPrefix(path string) string {
-	cur := filepath.Clean(path)
-	tail := ""
-	for {
-		if resolved, err := filepath.EvalSymlinks(cur); err == nil && resolved != "" {
-			if tail == "" {
-				return resolved
-			}
-			return filepath.Join(resolved, tail)
-		}
-		dir := filepath.Dir(cur)
-		if dir == cur {
-			return filepath.Clean(path)
-		}
-		tail = filepath.Join(filepath.Base(cur), tail)
-		cur = dir
-	}
 }

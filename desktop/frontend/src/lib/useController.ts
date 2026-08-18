@@ -11,7 +11,7 @@ import { mergeRateBand, type AggregatedRateBand } from "./costRateBand";
 import { requestInboxCancel, type CancelOutcome } from "./inboxCancel";
 import { formatContextMaintenanceNotice, isNewMaintenanceOperation, rememberMaintenanceOperation } from "./contextMaintenanceTypes";
 import { formatGuardianAssessmentNotice } from "./guardianEvents";
-import { completionSummaryChangeNotice, completionSummaryNeedsAttention, completionSummaryNotice, normalizeCompletionSummary, sessionQualityFloor } from "./completionSummary";
+import { completionSummaryPresentation, normalizeCompletionSummary, sessionQualityFloor } from "./completionSummary";
 import { invalidateSharedQuery } from "./queryCoalesce";
 import { replayPendingPromptsForActiveTab } from "./promptReplay";
 import { createRafBatch } from "./rafBatch";
@@ -1447,42 +1447,15 @@ function applyEvent(s: State, e: WireEvent): State {
     case "completion_summary": {
       if (!e.completion) return s;
       const completionSummary = normalizeCompletionSummary(e.completion);
-      const floor = sessionQualityFloor(s.meta);
-      if (completionSummaryNeedsAttention(completionSummary, floor)) {
-        const notice = completionSummaryNotice(completionSummary, t);
-        return {
-          ...s,
-          completionSummary,
-          seq: s.seq + 1,
-          items: [...s.items, {
-            kind: "notice",
-            id: `q${s.seq}`,
-            level: "warn",
-            variant: "completion",
-            title: notice.title,
-            text: notice.body,
-            action: "open_changes",
-          }],
-        };
-      }
-      if (completionSummary.mutations > 0) {
-        const notice = completionSummaryChangeNotice(completionSummary, t);
-        return {
-          ...s,
-          completionSummary,
-          seq: s.seq + 1,
-          items: [...s.items, {
-            kind: "notice",
-            id: `q${s.seq}`,
-            level: "info",
-            variant: "completion",
-            title: notice.title,
-            text: notice.body,
-            action: "open_changes",
-          }],
-        };
-      }
-      return { ...s, completionSummary };
+      const presentation = completionSummaryPresentation(completionSummary, sessionQualityFloor(s.meta), t);
+      if (!presentation) return { ...s, completionSummary };
+      return {
+        ...s, completionSummary, seq: s.seq + 1,
+        items: [...s.items, {
+          kind: "notice", id: `q${s.seq}`, level: presentation.level, variant: "completion",
+          title: presentation.title, text: presentation.body, action: "open_changes",
+        }],
+      };
     }
     case "text":
     case "reasoning": {

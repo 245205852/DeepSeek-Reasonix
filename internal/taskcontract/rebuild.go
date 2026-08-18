@@ -104,6 +104,9 @@ func (c *Contract) AbsorbReceipt(seq int, rec evidence.Receipt, workspaceRoot st
 }
 
 func profileFromReceipt(rec evidence.Receipt, workspaceRoot string) evidence.EffectProfile {
+	if rec.DeliveryScope == evidence.WriteScopeScratch {
+		return evidence.EffectProfile{Known: true, ReadOnly: true, Reason: evidence.ReasonScratch}
+	}
 	args := rec.Args
 	if rec.Command != "" && (len(args) == 0 || string(args) == "null") {
 		if raw, err := json.Marshal(map[string]string{"command": rec.Command}); err == nil {

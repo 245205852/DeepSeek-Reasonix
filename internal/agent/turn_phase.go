@@ -109,6 +109,8 @@ func (a *Agent) emitCompletionSummary(c *taskcontract.Contract, report completio
 			Review:             review,
 			GapKinds:           gaps,
 			ConstraintDegraded: constraintDegraded,
+			Floor:              floor,
+			Attention:          attention,
 		},
 	})
 }
@@ -125,6 +127,9 @@ func completionGapKinds(gaps []string, report completion.Report) []string {
 
 func workspaceMutationReceipt(r evidence.Receipt, workspaceRoot string) bool {
 	if !r.Success || !(r.Mutation || r.Write) {
+		return false
+	}
+	if r.DeliveryScope == evidence.WriteScopeScratch {
 		return false
 	}
 	if len(r.Paths) == 0 {
