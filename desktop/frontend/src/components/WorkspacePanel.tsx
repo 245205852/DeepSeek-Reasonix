@@ -65,12 +65,6 @@ import type {
   WireCompletionSummary,
 } from "../lib/types";
 import { workspaceGitStatusLabel } from "../lib/workspaceChanges";
-import {
-  completionGapLabel,
-  completionReviewLabel,
-  completionVerdictLabel,
-} from "../lib/completionSummaryDisplay";
-import { completionSummaryNeedsAttention } from "../lib/completionSummary";
 import { formatWorkspaceReference, WORKSPACE_REF_DRAG_TYPE } from "../lib/workspaceDrag";
 import { formatSelectionReference, languageFor } from "../lib/selectedTextContext";
 import { cleanGitDiff } from "../lib/diff";
@@ -85,6 +79,7 @@ import { MarkdownImageTabContext } from "./MarkdownImageContext";
 import { WorkspaceFileIcon } from "./WorkspaceFileIcon";
 import { WorkspaceMediaPreview } from "./WorkspaceMediaPreview";
 import { WorkspaceTreeMenu } from "./WorkspaceTreeMenu";
+import { WORKSPACE_TURN_VERIFICATION_ID, WorkspaceTurnVerification } from "./WorkspaceTurnVerification";
 import { useWorkspaceChangesResource } from "../lib/useWorkspaceChangesResource";
 import {
   workspaceBasename as basename, workspaceEntryPath as entryPath,
@@ -109,7 +104,8 @@ const WORKSPACE_CONTEXT_MENU_SELECTION_HEIGHT = 48;
 const WORKSPACE_MAX_PREVIEW_TABS = 5;
 
 type WorkspaceRevealRequest = { id: number; path: string };
-export const WORKSPACE_TURN_VERIFICATION_ID = "workspace-turn-verification";
+export { WORKSPACE_TURN_VERIFICATION_ID } from "./WorkspaceTurnVerification";
+export type WorkspaceVerificationRevealRequest = { id: number; summary: WireCompletionSummary; tabId: string; turnStartAt: number; currentSummary?: WireCompletionSummary };
 type WorkspaceFileListRequest = { id: number; paths: string[] };
 type WorkspaceChangeListEntry = { key: string; path: string; meta: string; time: string; detail: string };
 type WorkspaceChangeListRequest = { id: number; changes: WorkspaceChangeListEntry[] };
@@ -166,6 +162,7 @@ export function WorkspacePanel({
   onRestoreDockWidths,
   creationMode = false,
   completionSummary,
+  turnStartAt = 0,
 }: {
   open: boolean;
   tabId?: string;
@@ -184,7 +181,7 @@ export function WorkspacePanel({
   initialViewMode?: "files" | "changed";
   revealPathRequest?: WorkspaceRevealRequest | null;
   changeRevealRequest?: WorkspaceRevealRequest | null;
-  verificationRevealRequest?: { id: number } | null;
+  verificationRevealRequest?: WorkspaceVerificationRevealRequest | null;
   fileListRequest?: WorkspaceFileListRequest | null;
   changeListRequest?: WorkspaceChangeListRequest | null;
   showViewTabs?: boolean;
@@ -196,9 +193,16 @@ export function WorkspacePanel({
   onRestoreDockWidths?: (treeWidth: number, previewWidth: number) => void;
   creationMode?: boolean;
   completionSummary?: WireCompletionSummary;
+  turnStartAt?: number;
 }) {
   const t = useT();
   const workspaceTabId = tabId ?? "";
+  const activeVerificationRevealRequest = verificationRevealRequest?.tabId === workspaceTabId
+    && verificationRevealRequest.turnStartAt === turnStartAt
+    && verificationRevealRequest.currentSummary === completionSummary
+    ? verificationRevealRequest
+    : null;
+  const visibleCompletionSummary = activeVerificationRevealRequest?.summary ?? completionSummary;
   const workspaceScopeKey = workspaceScopeKeyProp ?? `${workspaceTabId}\u0000${cwd ?? ""}`;
   const workspaceMemoryKey = workspaceMemoryKeyProp ?? workspaceScopeKey;
   const workspaceMemoryVisitId = workspaceMemoryVisitIdProp ?? workspaceTreeVisitId(workspaceMemoryKey);
@@ -727,9 +731,9 @@ export function WorkspacePanel({
   }, [changeRevealRequest, open, selectedPath, viewMode]);
 
   useEffect(() => {
-    if (!open || !verificationRevealRequest) return;
-    if (lastVerificationRevealRequestIdRef.current !== verificationRevealRequest.id) {
-      lastVerificationRevealRequestIdRef.current = verificationRevealRequest.id;
+    if (!open || !activeVerificationRevealRequest) return;
+    if (lastVerificationRevealRequestIdRef.current !== activeVerificationRevealRequest.id) {
+      lastVerificationRevealRequestIdRef.current = activeVerificationRevealRequest.id;
       setViewMode("changed");
       setSelectedChangePath(null);
       setOpenTabs([]);
@@ -740,12 +744,12 @@ export function WorkspacePanel({
       setSelectionMenu(null);
       setTreeMenu(null);
       setScopedChangeRows(null);
-      return;
+      if (viewMode !== "changed" || selectedChangePath) return;
     }
     if (viewMode !== "changed" || selectedChangePath) return;
     const node = verificationSummaryRef.current ?? document.getElementById(WORKSPACE_TURN_VERIFICATION_ID);
     node?.scrollIntoView({ block: "nearest", inline: "nearest" });
-  }, [completionSummary, open, selectedChangePath, verificationRevealRequest, viewMode]);
+  }, [activeVerificationRevealRequest, open, selectedChangePath, viewMode]);
 
   useEffect(() => {
     if (!open) return;
@@ -1725,36 +1729,7 @@ export function WorkspacePanel({
             </div>
           ) : viewMode === "changed" && !selectedPath ? (
             <div className="workspace-git-history">
-              {completionSummary && (
-                <section
-                  ref={verificationSummaryRef}
-                  id={WORKSPACE_TURN_VERIFICATION_ID}
-                  className={`workspace-note workspace-completion-summary${completionSummaryNeedsAttention(completionSummary) ? " workspace-completion-summary--attention" : ""}`}
-                  aria-labelledby={`${WORKSPACE_TURN_VERIFICATION_ID}-title`}
-                >
-                  <div className="workspace-completion-summary__head">
-                    <h3 id={`${WORKSPACE_TURN_VERIFICATION_ID}-title`} className="workspace-completion-summary__title">{t("completion.panelTitle")}</h3>
-                    <span>{completionVerdictLabel(completionSummary.verdict, t)}</span>
-                  </div>
-                  <div className="workspace-completion-summary__metrics">
-                    <span>{t("completion.mutations", { count: completionSummary.mutations })}</span>
-                    <span>{t("completion.checksPassed", { count: completionSummary.checks_passed })}</span>
-                    <span className={completionSummary.checks_failed > 0 ? "workspace-completion-summary__metric--attention" : undefined}>
-                      {t("completion.checksFailed", { count: completionSummary.checks_failed })}
-                    </span>
-                    <span className={completionSummary.checks_suppressed > 0 ? "workspace-completion-summary__metric--attention" : undefined}>
-                      {t("completion.checksSkipped", { count: completionSummary.checks_suppressed })}
-                    </span>
-                  </div>
-                  <div className="workspace-completion-summary__details">
-                    <span>{t("completion.review", { status: completionReviewLabel(completionSummary.review, t) })}</span>
-                    {(completionSummary.gap_kinds?.length ?? 0) > 0 && (
-                      <span>{t("completion.gaps", { gaps: completionSummary.gap_kinds!.map((gap) => completionGapLabel(gap, t)).join(t("notice.deliveryRequirementSeparator")) })}</span>
-                    )}
-                    {completionSummary.constraint_degraded && <span>{t("completion.constraintsLimited")}</span>}
-                  </div>
-                </section>
-              )}
+              {visibleCompletionSummary && <WorkspaceTurnVerification ref={verificationSummaryRef} summary={visibleCompletionSummary} />}
               {workspaceGitWarning && (
                 <div className="workspace-note workspace-note--warning" role="status">
                   {workspaceGitWarning}

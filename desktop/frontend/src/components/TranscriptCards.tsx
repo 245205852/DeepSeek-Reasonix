@@ -5,6 +5,7 @@ import { useState } from "react";
 import { CheckCheck, ChevronRight, CirclePlay, ClipboardCheck, FileSearch, Info, TriangleAlert } from "lucide-react";
 import { useT } from "../lib/i18n";
 import type { CompactionItem, NoticeItem } from "../lib/transcriptRows";
+import type { WireCompletionSummary } from "../lib/types";
 import { STEER_NOTICE_PREFIX } from "../lib/useController";
 import { ProcessCompactIcon, ProcessPhaseIcon } from "./ProcessCard";
 import { useTranscriptUserResizeIntent } from "./TranscriptLayoutIntentContext";
@@ -64,11 +65,11 @@ function DecisionReceiptLine({ receipt }: { receipt: NonNullable<NoticeItem["dec
   );
 }
 
-export function NoticeCard({ item, onAction, onAccept, onOpenVerification, actionDisabled = false }: { item: NoticeItem; onAction?: () => void; onAccept?: () => void; onOpenVerification?: () => void; actionDisabled?: boolean }) {
+export function NoticeCard({ item, onAction, onAccept, onOpenVerification, actionDisabled = false }: { item: NoticeItem; onAction?: () => void; onAccept?: () => void; onOpenVerification?: (summary: WireCompletionSummary) => void; actionDisabled?: boolean }) {
   const t = useT();
   const StatusIcon = item.level === "warn" ? TriangleAlert : Info;
   const ActionIcon = item.action === "open_changes" ? FileSearch : CirclePlay;
-  const showVerification = item.variant === "completion" && Boolean(onOpenVerification);
+  const showVerification = item.variant === "completion" && Boolean(item.completionSummary && onOpenVerification);
   const showActions = Boolean((item.action && onAction) || onAccept || showVerification);
   return (
     <div className={`notice-line notice-line--${item.level}${item.variant ? ` notice-line--${item.variant}` : ""}`} data-entrance={item.id}>
@@ -91,7 +92,7 @@ export function NoticeCard({ item, onAction, onAccept, onOpenVerification, actio
               </button>
             ) : null}
             {showVerification ? (
-              <button className="btn btn--small" type="button" onClick={onOpenVerification}>
+              <button className="btn btn--small" type="button" onClick={() => item.completionSummary && onOpenVerification?.(item.completionSummary)}>
                 <ClipboardCheck size={13} aria-hidden="true" />
                 <span>{t("notice.completionViewVerification")}</span>
               </button>

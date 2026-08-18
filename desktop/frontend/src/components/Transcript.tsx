@@ -1,7 +1,7 @@
 import { forwardRef, memo, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type TouchEvent as ReactTouchEvent, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type WheelEvent as ReactWheelEvent } from "react";
 import { Virtuoso, type Components, type ItemProps, type ListItem, type ListProps } from "react-virtuoso";
 import type { ControllerLiveStore, Item, LiveStream } from "../lib/useController";
-import type { CheckpointMeta } from "../lib/types";
+import type { CheckpointMeta, WireCompletionSummary } from "../lib/types";
 import type { InvocationMetadataMap } from "../lib/invocationDisplay";
 import { useT } from "../lib/i18n";
 import { AssistantMessage, InvocationMetadataContext, TurnActions, UserMessage } from "./Message";
@@ -265,7 +265,7 @@ export function Transcript({
   onDeliveryContinue?: () => void;
   onAcceptDelivery?: () => void;
   onOpenChanges?: () => void;
-  onOpenVerification?: () => void;
+  onOpenVerification?: (summary: WireCompletionSummary) => void;
   onEditPrompt?: (turn: number, displayText: string, submitText?: string) => boolean | void | Promise<boolean | void>;
   onRewind?: (turn: number, scope: string) => void;
   checkpoints?: CheckpointMeta[];

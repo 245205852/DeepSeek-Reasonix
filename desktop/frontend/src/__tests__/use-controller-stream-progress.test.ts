@@ -75,6 +75,7 @@ function ev(s: typeof initialState, e: WireEvent) {
   const notice = after.items[after.items.length - 1];
   eq(notice?.kind === "notice" ? notice.variant : "", "completion", "quality gap uses the completion notice variant");
   eq(notice?.kind === "notice" ? notice.action : "", "open_changes", "quality gap links to the change panel");
+  eq(notice?.kind === "notice" ? notice.completionSummary : undefined, after.completionSummary, "completion notice retains its own normalized summary");
   eq(notice?.kind === "notice" ? notice.text.includes("balanced") : true, false, "compact notice does not expose internal preset values");
   eq(after.completionSummary?.checks_failed, 1, "actionable completion summary is retained for details");
 
