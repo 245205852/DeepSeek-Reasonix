@@ -79,6 +79,10 @@ try {
     ...(process.env.PLAYWRIGHT_EXECUTABLE_PATH ? { executablePath: process.env.PLAYWRIGHT_EXECUTABLE_PATH } : {}),
   });
   const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+  // Both 1.27.0 field reports keep completed working steps expanded. Apply the
+  // preference before the app mounts so every long-session, native-thumb, and
+  // measurement-churn assertion exercises the larger virtual row model.
+  await page.addInitScript(() => localStorage.setItem("reasonix-process-fold", "expanded"));
   await page.goto(url, { waitUntil: "domcontentloaded" });
   await page.waitForFunction(() => !document.querySelector(".startup-splash"), undefined, { timeout: 30_000 });
   await page.click('.project-tree__topic-main:has-text("bench:small-6t")');
@@ -574,6 +578,41 @@ try {
         && element.scrollHeight - element.scrollTop - element.clientHeight <= 1;
     });
     assert(true, "native thumb release keeps the remeasured transcript at the physical bottom");
+    const idleTail = await transcript.evaluate((element) => new Promise((resolve) => {
+      const writes = [];
+      const tops = [];
+      let geometryStable = false;
+      const stableWrites = [];
+      let lastGeometry = null;
+      window.__REASONIX_TRANSCRIPT_SCROLL_WRITE__ = (write) => {
+        writes.push(write);
+        if (geometryStable) stableWrites.push(write);
+      };
+      let frames = 0;
+      const sample = () => {
+        tops.push(element.scrollTop);
+        // Virtuoso can still be committing the +900px tail remeasure when the
+        // window opens; a write against changing geometry is legitimate
+        // convergence. Only writes after the geometry itself stops moving are
+        // the oscillation this gate exists to catch.
+        const geometry = `${element.scrollHeight}@${element.clientHeight}`;
+        if (lastGeometry === null) lastGeometry = geometry;
+        else if (geometry === lastGeometry && frames >= 10) geometryStable = true;
+        else lastGeometry = geometry;
+        frames += 1;
+        if (frames < 30) {
+          requestAnimationFrame(sample);
+          return;
+        }
+        window.__REASONIX_TRANSCRIPT_SCROLL_WRITE__ = undefined;
+        resolve({ writes, stableWrites, tops, geometryStable });
+      };
+      requestAnimationFrame(sample);
+    }));
+    const idleTailRange = Math.max(...idleTail.tops) - Math.min(...idleTail.tops);
+    assert(idleTail.geometryStable, "an idle expanded tail reaches stable geometry within the window");
+    assert(idleTail.stableWrites.length === 0, `a stable idle tail emits no corrective scroll writes (${idleTail.stableWrites.length} of ${idleTail.writes.length}) ${JSON.stringify(idleTail.stableWrites)}`);
+    assert(idleTailRange <= 1, `an idle expanded tail keeps stable native geometry (${idleTailRange}px)`);
   }
 
   // Explicit bottom owns the tail. Subsequent async growth must use Virtuoso's
