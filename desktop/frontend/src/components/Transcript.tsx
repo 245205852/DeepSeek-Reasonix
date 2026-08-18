@@ -294,7 +294,6 @@ export function Transcript({
     [liveProp, liveStore, tabId],
   );
   const live = useSyncExternalStore(subscribeLive, getLiveSnapshot, getLiveSnapshot);
-  const liveTailActiveRef = useRef(false);
   const {
     virtuosoRef,
     scrollRef,
@@ -326,7 +325,7 @@ export function Transcript({
     retryRecoveryRequest,
     lastGoodAnchorRef,
     captureStateSnapshot,
-  } = useTranscriptScrollArbiter({ liveTailActiveRef, onRecoveryTerminal: noteTranscriptRecoveryTerminal });
+  } = useTranscriptScrollArbiter({ onRecoveryTerminal: noteTranscriptRecoveryTerminal });
   const virtuosoReadyRef = useRef(false);
   const layoutSurfaceKey = `${tabId ?? ""}:${revealSignal}`;
 
@@ -866,7 +865,6 @@ export function Transcript({
   }, [holdingLiveRegion]);
   const heldLiveRows = heldSurfaceRef.current === layoutSurfaceKey ? heldLiveRowsRef.current : NO_HELD_ROWS;
   const showLiveRegion = liveSplit.liveActive || (holdingLiveRegion && heldLiveRows.length > 0);
-  liveTailActiveRef.current = showLiveRegion;
 
   const handleItemsRendered = useCallback((rendered: ListItem<TranscriptRow>[]) => {
     noteTranscriptRowCounts(rendered.length, virtualRows.length);
