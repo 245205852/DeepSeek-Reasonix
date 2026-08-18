@@ -103,7 +103,7 @@ func TestTodoWriteAcceptsInitialCompletedWithoutBaseline(t *testing.T) {
 	}
 }
 
-func TestTodoWriteAllowsDroppingCurrentTodo(t *testing.T) {
+func TestTodoWriteRejectsDroppingCurrentTodoWithoutReplacementAuth(t *testing.T) {
 	ledger := evidence.NewLedger()
 	ledger.Record(evidence.Receipt{
 		ToolName: "todo_write",
@@ -119,9 +119,18 @@ func TestTodoWriteAllowsDroppingCurrentTodo(t *testing.T) {
 		`{"todos":[]}`,
 		`{"todos":[{"content":"Write code","status":"in_progress"}]}`,
 	} {
-		if _, err := (todoWrite{}).Execute(ctx, json.RawMessage(args)); err != nil {
-			t.Fatalf("dropping current todo with %s should be accepted: %v", args, err)
+		_, err := (todoWrite{}).Execute(ctx, json.RawMessage(args))
+		if err == nil || !strings.Contains(err.Error(), "cannot be") {
+			t.Fatalf("dropping current todo with %s should require replacement approval: %v", args, err)
 		}
+	}
+
+	authorized := tool.WithPlanReplacementAuthorization(ctx)
+	if _, err := (todoWrite{}).Execute(authorized, json.RawMessage(`{"todos":[{"content":"Write code","status":"in_progress"}]}`)); err != nil {
+		t.Fatalf("approved replacement of the current todo should succeed: %v", err)
+	}
+	if _, err := (todoWrite{}).Execute(authorized, json.RawMessage(`{"todos":[]}`)); err != nil {
+		t.Fatalf("approved clearing of an incomplete list should succeed: %v", err)
 	}
 }
 
@@ -168,8 +177,8 @@ func TestTodoWriteDoesNotTreatNumericContentAsStepIndex(t *testing.T) {
 		{"content":"Replacement","status":"in_progress"}
 	]}`)
 
-	if _, err := (todoWrite{}).Execute(ctx, args); err != nil {
-		t.Fatalf("replacing a numeric-titled current item should be accepted: %v", err)
+	if _, err := (todoWrite{}).Execute(ctx, args); err == nil || !strings.Contains(err.Error(), "cannot be removed or replaced") {
+		t.Fatalf("numeric todo content should be matched by identity, got %v", err)
 	}
 
 	completeNumeric := json.RawMessage(`{"todos":[
@@ -424,7 +433,7 @@ func TestTodoWriteRejectsOrphanSubStep(t *testing.T) {
 	}
 }
 
-func TestTodoWriteAllowsReplacingActiveSubStep(t *testing.T) {
+func TestTodoWriteRejectsReplacingActiveSubStepWithoutReplacementAuth(t *testing.T) {
 	ledger := evidence.NewLedger()
 	ledger.Record(evidence.Receipt{
 		ToolName: "todo_write",
@@ -436,11 +445,15 @@ func TestTodoWriteAllowsReplacingActiveSubStep(t *testing.T) {
 		},
 	})
 	ctx := evidence.WithLedger(context.Background(), ledger)
-
-	if _, err := (todoWrite{}).Execute(ctx, json.RawMessage(`{"todos":[
+	args := json.RawMessage(`{"todos":[
 		{"content":"Port the parser","status":"pending"},
-		{"content":"rewrite everything","status":"in_progress","level":1}]}`)); err != nil {
-		t.Fatalf("replacing the active sub-step should be accepted: %v", err)
+		{"content":"rewrite everything","status":"in_progress","level":1}]}`)
+
+	if _, err := (todoWrite{}).Execute(ctx, args); err == nil || !strings.Contains(err.Error(), "cannot be removed or replaced") {
+		t.Fatalf("replacing the active sub-step should require replacement approval: %v", err)
+	}
+	if _, err := (todoWrite{}).Execute(tool.WithPlanReplacementAuthorization(ctx), args); err != nil {
+		t.Fatalf("approved replacement of the active sub-step should succeed: %v", err)
 	}
 }
 
@@ -514,8 +527,8 @@ func TestTodoWriteUpdatesProgressWhilePlanModeIsActive(t *testing.T) {
 	]}`)); err != nil {
 		t.Fatalf("plan mode should still accept todo progress: %v", err)
 	}
-	if _, err := (todoWrite{}).Execute(ctx, json.RawMessage(`{"todos":[]}`)); err != nil {
-		t.Fatalf("plan mode should still accept an empty todo list: %v", err)
+	if _, err := (todoWrite{}).Execute(ctx, json.RawMessage(`{"todos":[]}`)); err == nil || !strings.Contains(err.Error(), "cannot be cleared") {
+		t.Fatalf("plan mode should still require approval to clear the list: %v", err)
 	}
 }
 

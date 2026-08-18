@@ -95,6 +95,9 @@ func (todoWrite) Execute(ctx context.Context, args json.RawMessage) (string, err
 		return "", err
 	}
 	if !tool.HasPlanReplacementAuthorization(ctx) {
+		if err := verifyTodoCurrentContinuity(ctx, p.Todos); err != nil {
+			return "", err
+		}
 		if err := verifyStepIDsPreserved(ctx, p.Todos); err != nil {
 			return "", err
 		}
@@ -145,6 +148,30 @@ func verifyStepIDsPreserved(ctx context.Context, todos []todoItem) error {
 			continue
 		}
 		return fmt.Errorf("todo %d %q dropped its step_id %q; re-send it with step_id %q so its completion stays attached across retitles and reordering", match.Index, match.Content, todo.StepID, todo.StepID)
+	}
+	return nil
+}
+
+func verifyTodoCurrentContinuity(ctx context.Context, todos []todoItem) error {
+	previous := todoBaseline(ctx)
+	if len(previous) == 0 {
+		return nil
+	}
+	next := toEvidenceTodos(todos)
+	if len(next) == 0 {
+		return fmt.Errorf("current todo cannot be cleared while the plan is active; get host approval to replace the plan")
+	}
+	for i, todo := range previous {
+		if strings.TrimSpace(todo.Status) != "in_progress" {
+			continue
+		}
+		match, found := evidence.MatchTodoIdentity(todo, next)
+		if !found {
+			return fmt.Errorf("current todo %d %q cannot be removed or replaced while it is in_progress; mark it completed or get host approval to replace the plan", i+1, todo.Content)
+		}
+		if match.Status == "pending" || match.Status == "" {
+			return fmt.Errorf("current todo %d %q cannot move back to pending; keep it in_progress, mark it completed, or get host approval to replace the plan", i+1, todo.Content)
+		}
 	}
 	return nil
 }
