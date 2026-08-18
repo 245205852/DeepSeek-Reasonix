@@ -2937,7 +2937,7 @@ export const en = {
   "notice.completionDeliveryTitle": "Delivery gap",
   "notice.completionDeliveryBody": "Workspace files changed without a matching verification.",
   "notice.completionChangesTitle": "Changes this turn",
-  "notice.completionChangesBody": "{count} files",
+  "notice.completionChangesBody": "{count} changes",
   "notice.completionViewChanges": "View changes",
   "completion.panelTitle": "Turn verification",
   "completion.verdictPartial": "Partially complete",

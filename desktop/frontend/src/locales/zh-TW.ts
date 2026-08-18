@@ -2049,7 +2049,7 @@ export const zhTW: Record<DictKey, string> = {
   "notice.completionDeliveryTitle": "交付缺口",
   "notice.completionDeliveryBody": "改了工作區檔案，之後沒有對應驗證。",
   "notice.completionChangesTitle": "本輪改動",
-  "notice.completionChangesBody": "{count} 個檔案",
+  "notice.completionChangesBody": "{count} 項變更",
   "notice.completionViewChanges": "查看變更",
   "completion.panelTitle": "本輪驗證",
   "completion.verdictPartial": "部分完成",

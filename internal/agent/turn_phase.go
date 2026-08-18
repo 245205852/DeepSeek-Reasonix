@@ -33,17 +33,6 @@ func (a *Agent) emitCompletionSummary(c *taskcontract.Contract, report completio
 			}
 		}
 	}
-	verdict := c.GoalVerdict()
-	floor := a.turn.constraints.PolicyFloor.String()
-	attention := completion.NeedsAttention(completion.AttentionInput{
-		Verdict:            verdict.String(),
-		GapKinds:           report.GapKinds(),
-		Floor:              floor,
-		RequiredSuppressed: c.HasSuppressed(),
-	})
-	if mutations == 0 && !attention {
-		return
-	}
 	passed, failed, suppressed := 0, 0, 0
 	for _, check := range c.Checks {
 		switch check.Status {
@@ -54,6 +43,18 @@ func (a *Agent) emitCompletionSummary(c *taskcontract.Contract, report completio
 		case taskcontract.Suppressed:
 			suppressed++
 		}
+	}
+	verdict := c.GoalVerdict()
+	floor := a.turn.constraints.PolicyFloor.String()
+	attention := completion.NeedsAttention(completion.AttentionInput{
+		Verdict:            verdict.String(),
+		ChecksFailed:       failed,
+		GapKinds:           report.GapKinds(),
+		Floor:              floor,
+		RequiredSuppressed: c.HasSuppressed(),
+	})
+	if mutations == 0 && !attention {
+		return
 	}
 	review := "none"
 	if a.task.ledger != nil {
