@@ -104,7 +104,7 @@ func TestAuthorizedRecoveryPlanTransitionCanReplaceCurrentTodo(t *testing.T) {
 	}
 }
 
-func TestPlanTransitionNeedsDedicatedReplacementAuthorization(t *testing.T) {
+func TestPlanTransitionCanReplaceCurrentTodoWithoutDedicatedAuthorization(t *testing.T) {
 	reg := tool.NewRegistry()
 	reg.Add(mustBuiltinTool(t, "todo_write"))
 	gate := &recordingRecoveryGate{decision: RecoveryDecision{Allow: true}}
@@ -116,8 +116,12 @@ func TestPlanTransitionNeedsDedicatedReplacementAuthorization(t *testing.T) {
 		Name:      "todo_write",
 		Arguments: `{"todos":[{"content":"Replace parser architecture","status":"in_progress"}]}`,
 	})
-	if out.errMsg == "" || !strings.Contains(out.output, "cannot be removed or replaced") {
-		t.Fatalf("plain allow unexpectedly replaced current todo: %+v", out)
+	if out.errMsg != "" {
+		t.Fatalf("replacing the current todo should not need dedicated authorization: %+v", out)
+	}
+	got := a.CanonicalTodoState()
+	if len(got) != 1 || got[0].Content != "Replace parser architecture" {
+		t.Fatalf("canonical todo state = %+v, want the replaced current item", got)
 	}
 }
 
