@@ -1178,6 +1178,9 @@ func (a *Agent) closedLoopActive() bool {
 	if a.planContractSnapshot() != nil {
 		return true
 	}
+	if a.turn.constraints.PolicyFloor == taskcontract.PolicyFloorDelivery {
+		return true
+	}
 	if a.turn.engine == nil {
 		return false
 	}

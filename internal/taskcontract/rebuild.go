@@ -90,6 +90,13 @@ func (c *Contract) AbsorbReceipt(seq int, rec evidence.Receipt, workspaceRoot st
 			}
 			c.addObligation(newObligation(ObligationFullVerify, enforcement, ReasonUserConstraint, seq, profile.TargetKeys()))
 		}
+		if ReceiptPolicyFloor(rec) == PolicyFloorDelivery && (profile.WorkspaceWrite || profile.RepoMetadata) {
+			enforcement := EnforcementStrict
+			if testsForbidden {
+				enforcement = EnforcementAdvisory
+			}
+			c.addObligation(newObligation(ObligationFullVerify, enforcement, ReasonPolicyFloor, seq, profile.TargetKeys()))
+		}
 		c.satisfyKindAfter(ObligationActionReceipt, seq, rec)
 		return
 	}

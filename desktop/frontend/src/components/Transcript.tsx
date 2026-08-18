@@ -233,6 +233,7 @@ export function Transcript({
   footerHeight = 0,
   onPrompt,
   onDeliveryContinue,
+  onAcceptDelivery,
   onOpenChanges,
   onEditPrompt,
   onRewind,
@@ -261,6 +262,7 @@ export function Transcript({
   footerHeight?: number;
   onPrompt: (text: string) => void;
   onDeliveryContinue?: () => void;
+  onAcceptDelivery?: () => void;
   onOpenChanges?: () => void;
   onEditPrompt?: (turn: number, displayText: string, submitText?: string) => boolean | void | Promise<boolean | void>;
   onRewind?: (turn: number, scope: string) => void;
@@ -758,6 +760,7 @@ export function Transcript({
               : row.item.action === "open_changes"
                 ? onOpenChanges
                 : undefined}
+            onAccept={row.item.action === "continue_delivery" ? onAcceptDelivery : undefined}
           />
         );
       case "extension":
@@ -794,6 +797,7 @@ export function Transcript({
     loadingOlderHistory,
     olderHistoryCount,
     onDeliveryContinue,
+    onAcceptDelivery,
     onEditPrompt,
     onLoadOlderHistory,
     onOpenChanges,

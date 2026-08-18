@@ -2,7 +2,7 @@
 // decision receipts, and compaction cards.
 
 import { useState } from "react";
-import { ChevronRight, CirclePlay, FileSearch, Info, TriangleAlert } from "lucide-react";
+import { CheckCheck, ChevronRight, CirclePlay, FileSearch, Info, TriangleAlert } from "lucide-react";
 import { useT } from "../lib/i18n";
 import type { CompactionItem, NoticeItem } from "../lib/transcriptRows";
 import { STEER_NOTICE_PREFIX } from "../lib/useController";
@@ -64,7 +64,7 @@ function DecisionReceiptLine({ receipt }: { receipt: NonNullable<NoticeItem["dec
   );
 }
 
-export function NoticeCard({ item, onAction, actionDisabled = false }: { item: NoticeItem; onAction?: () => void; actionDisabled?: boolean }) {
+export function NoticeCard({ item, onAction, onAccept, actionDisabled = false }: { item: NoticeItem; onAction?: () => void; onAccept?: () => void; actionDisabled?: boolean }) {
   const t = useT();
   const StatusIcon = item.level === "warn" ? TriangleAlert : Info;
   const ActionIcon = item.action === "open_changes" ? FileSearch : CirclePlay;
@@ -86,6 +86,12 @@ export function NoticeCard({ item, onAction, actionDisabled = false }: { item: N
               <ActionIcon size={13} aria-hidden="true" />
               <span>{item.action === "open_changes" ? t("notice.completionViewChanges") : t("notice.deliveryIncompleteContinue")}</span>
             </button>
+            {onAccept ? (
+              <button className="btn btn--small" type="button" onClick={onAccept}>
+                <CheckCheck size={13} aria-hidden="true" />
+                <span>{t("notice.deliveryIncompleteAccept")}</span>
+              </button>
+            ) : null}
           </div>
         ) : null}
         {item.detail ? (

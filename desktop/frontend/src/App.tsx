@@ -106,6 +106,7 @@ import {
   type RemoteHostView,
   type SessionMeta,
   type SettingsView,
+  type QualityFloor,
   type TabMeta,
   type ToolApprovalMode,
   type WorkspaceConflictView,
@@ -267,7 +268,14 @@ function NoticePreviewPanel() {
       <div style={{ maxWidth: 920, margin: "0 auto" }}>
         {noticePreviewItems().map((item) => {
           if (item.kind !== "notice") return null;
-          return <NoticeCard key={item.id} item={item} onAction={item.action ? () => undefined : undefined} />;
+          return (
+            <NoticeCard
+              key={item.id}
+              item={item}
+              onAction={item.action ? () => undefined : undefined}
+              onAccept={item.action === "continue_delivery" ? () => undefined : undefined}
+            />
+          );
         })}
       </div>
     </div>
@@ -1067,6 +1075,7 @@ export default function App() {
     drainExtensionNotifications,
     setCollaborationMode: setControllerCollaborationMode,
     setToolApprovalMode: setControllerToolApprovalMode,
+    setQualityFloor: setControllerQualityFloor,
     setComposerProfileForTab: setControllerComposerProfileForTab,
     setGoalForTab: setControllerGoalForTab,
     resumeGoalForTab: resumeControllerGoalForTab,
@@ -1915,6 +1924,14 @@ export default function App() {
       void setControllerToolApprovalMode(m);
     },
     [activeTabId, patchActiveComposerProfile, setControllerToolApprovalMode, toolApprovalMode],
+  );
+  const applyQualityFloor = useCallback(
+    (floor: QualityFloor) => {
+      if (!activeTabId) return;
+      patchActiveComposerProfile({ qualityFloor: floor }, ["qualityFloor"]);
+      void setControllerQualityFloor(floor);
+    },
+    [activeTabId, patchActiveComposerProfile, setControllerQualityFloor],
   );
   const toggleYoloApprovalMode = useCallback(() => {
     if (!activeTabId) return;
@@ -4834,6 +4851,7 @@ export default function App() {
                   footerHeight={footerHeight}
                   onPrompt={handleTranscriptPrompt}
                   onDeliveryContinue={() => void handleDeliveryContinue()}
+                  onAcceptDelivery={() => void app.AcceptDeliveryToTab(activeTabIdRef.current ?? "")}
                   onOpenChanges={() => openRightDockMode("changed")}
                   onEditPrompt={handleEditPrompt}
                   onRewind={handleMessageAction}
@@ -5042,6 +5060,9 @@ export default function App() {
               running={state.running || rewindCommitting}
               collaborationMode={collaborationMode}
               toolApprovalMode={toolApprovalMode}
+              qualityFloor={composerProfile.qualityFloor}
+              floorInferred={(activeTab?.floorInferred ?? false) && !composerProfile.pending.qualityFloor}
+              onSetQualityFloor={applyQualityFloor}
               turnPhase={state.turnPhase}
               goal={goal}
               goalStatus={state.meta?.goalStatus}

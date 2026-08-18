@@ -95,7 +95,7 @@ func (a *Agent) emitCompletionSummary(c *taskcontract.Contract, report completio
 			// Preset is a deprecated wire-compat field: it is pinned to the
 			// historical default so one-version-old clients keep parsing. New
 			// surfaces read the verdict/check/review/gap fields instead.
-			Preset:             string(agentpreset.Balanced),
+			Preset:             string(agentpreset.Standard),
 			Verdict:            summaryVerdict,
 			Mutations:          mutations,
 			ChecksPassed:       passed,
