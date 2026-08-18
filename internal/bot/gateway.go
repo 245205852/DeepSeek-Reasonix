@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -2309,7 +2310,11 @@ func (gw *BotGateway) getOrCreateSession(ctx context.Context, key string, msg In
 				return nil
 			}
 		} else if loaded, err := agent.LoadSession(profile.sessionPath); err != nil {
-			if !degrade("load failed", err) {
+			if os.IsNotExist(err) && profile.sessionPathOptional {
+				// First message on a deterministic chat→file path: pin the new
+				// conversation there instead of orphaning a timestamp file.
+				ctrl.SetSessionPath(profile.sessionPath)
+			} else if !degrade("load failed", err) {
 				ctrl.Close()
 				leases.Release()
 				if os.IsNotExist(err) {
@@ -2390,6 +2395,15 @@ func (gw *BotGateway) sessionProfileForMessage(msg InboundMessage) sessionRuntim
 	if sessionPath == "" {
 		if mapped := gw.sessionMappingPathForMessage(msg); mapped != "" {
 			sessionPath = mapped
+			sessionPathOptional = true
+		}
+	}
+	// No explicit binding: pin a deterministic per-chat file so the chat reuses
+	// one conversation across restarts (dsh-dingtalk-channel's `ding-<chatId>`
+	// analogue). Optional, mirroring mapping degrade semantics.
+	if sessionPath == "" {
+		if stable := BotSessionPathForChat(botSessionDir(workspaceRoot), msg.Session()); stable != "" {
+			sessionPath = stable
 			sessionPathOptional = true
 		}
 	}
@@ -2523,6 +2537,18 @@ func botSessionDir(workspaceRoot string) string {
 		return dir
 	}
 	return config.SessionDir()
+}
+
+// BotSessionPathForChat derives the deterministic per-chat session file for a
+// message with no persisted mapping or /attach binding. Reusing BuildSessionKey
+// (already a stable chat-identity hash) makes the same chat hit one file across
+// restarts — the chat-side analogue of dsh-dingtalk-channel's `ding-<chatId>`
+// scheme. Empty when the message has no stable chat identity.
+func BotSessionPathForChat(sessionDir string, src SessionSource) string {
+	if strings.TrimSpace(sessionDir) == "" || strings.TrimSpace(src.ChatID) == "" {
+		return ""
+	}
+	return filepath.Join(sessionDir, "bot-"+BuildSessionKey(src)+".jsonl")
 }
 
 func (gw *BotGateway) rememberSessionReady(msg InboundMessage, ctrl botController) {

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"reasonix/internal/agent"
+	"reasonix/internal/config"
 	"reasonix/internal/control"
 	"reasonix/internal/event"
 	"reasonix/internal/provider"
@@ -2465,13 +2466,17 @@ func TestSessionProfileConsumesPersistedMapping(t *testing.T) {
 		t.Fatal("mapping-derived path must be optional (degradable), not an attach-style hard binding")
 	}
 
-	// A missing target quietly degrades to normal creation.
+	// A missing target falls back to the deterministic per-chat path instead of
+	// a fresh timestamp session, keeping the chat on one stable file.
 	if err := os.Remove(mapped); err != nil {
 		t.Fatal(err)
 	}
 	profile = gw.sessionProfileForMessage(msg)
-	if profile.sessionPath != "" {
-		t.Fatalf("missing mapped file should resolve to empty path, got %q", profile.sessionPath)
+	if profile.sessionPath == "" {
+		t.Fatal("missing mapped file should fall back to a stable chat path, got empty")
+	}
+	if !profile.sessionPathOptional {
+		t.Fatal("stable fallback must stay optional (degradable)")
 	}
 
 	// An /attach override outranks the mapping.
@@ -2479,6 +2484,72 @@ func TestSessionProfileConsumesPersistedMapping(t *testing.T) {
 	profile = gw.sessionProfileForMessage(msg)
 	if profile.sessionPathOptional {
 		t.Fatal("attach override must stay a hard binding")
+	}
+}
+
+// Without any persisted mapping or /attach binding, the session profile must
+// resolve to a deterministic per-chat file so the same chat reuses one
+// conversation across restarts instead of spawning a fresh timestamp session
+// per message (the chat-side analogue of dsh-dingtalk-channel's `ding-<chatId>`).
+func TestSessionProfileFallsBackToStableChatPath(t *testing.T) {
+	dir := t.TempDir()
+	gw := &BotGateway{
+		cfg: GatewayConfig{
+			WorkspaceRoot: dir,
+			Channels:      map[Platform]ChannelConfig{},
+			ConnectionChannels: map[string]ChannelConfig{
+				"conn-1": {WorkspaceRoot: dir},
+			},
+		},
+		logger:           slog.New(slog.NewTextHandler(io.Discard, nil)),
+		sessionOverrides: map[string]sessionRuntimeOverride{},
+	}
+	dm := InboundMessage{Platform: PlatformFeishu, ConnectionID: "conn-1", ChatID: "oc_abc", ChatType: ChatDM}
+	dmProfile := gw.sessionProfileForMessage(dm)
+	if dmProfile.sessionPath == "" {
+		t.Fatal("DM without a mapping must resolve to a stable session path")
+	}
+	if !dmProfile.sessionPathOptional {
+		t.Fatal("stable fallback path must be optional (degradable), like a mapping")
+	}
+	// Same chat, repeated messages: identical path.
+	if again := gw.sessionProfileForMessage(dm); canonicalBotPath(again.sessionPath) != canonicalBotPath(dmProfile.sessionPath) {
+		t.Fatalf("same DM chat must map to one stable file: first=%q second=%q", dmProfile.sessionPath, again.sessionPath)
+	}
+	// Different chat: different file.
+	other := InboundMessage{Platform: PlatformFeishu, ConnectionID: "conn-1", ChatID: "oc_xyz", ChatType: ChatDM}
+	otherProfile := gw.sessionProfileForMessage(other)
+	if canonicalBotPath(otherProfile.sessionPath) == canonicalBotPath(dmProfile.sessionPath) {
+		t.Fatalf("different chats must map to different files, both=%q", otherProfile.sessionPath)
+	}
+	// Group chat scopes per sender, mirroring BuildSessionKey.
+	groupA := InboundMessage{Platform: PlatformFeishu, ConnectionID: "conn-1", ChatID: "oc_grp", ChatType: ChatGroup, UserID: "ou_a"}
+	groupB := InboundMessage{Platform: PlatformFeishu, ConnectionID: "conn-1", ChatID: "oc_grp", ChatType: ChatGroup, UserID: "ou_b"}
+	pa := gw.sessionProfileForMessage(groupA)
+	pb := gw.sessionProfileForMessage(groupB)
+	if pa.sessionPath == "" || pb.sessionPath == "" {
+		t.Fatal("group messages must resolve to stable session paths")
+	}
+	if canonicalBotPath(pa.sessionPath) == canonicalBotPath(pb.sessionPath) {
+		t.Fatalf("different group senders must map to different files, both=%q", pa.sessionPath)
+	}
+	if again := gw.sessionProfileForMessage(groupA); canonicalBotPath(again.sessionPath) != canonicalBotPath(pa.sessionPath) {
+		t.Fatalf("same group sender must map to one stable file: first=%q second=%q", pa.sessionPath, again.sessionPath)
+	}
+	// The stable path must live under the resolved session dir and carry a
+	// readable, bot-scoped name.
+	projectDir := config.ProjectSessionDir(dir)
+	if projectDir == "" {
+		t.Fatal("ProjectSessionDir must resolve for the test workspace root")
+	}
+	if !strings.HasPrefix(filepath.Base(dmProfile.sessionPath), "bot-") {
+		t.Fatalf("stable path name should be bot-scoped, got %q", filepath.Base(dmProfile.sessionPath))
+	}
+	if !strings.HasSuffix(dmProfile.sessionPath, ".jsonl") {
+		t.Fatalf("stable path must end in .jsonl, got %q", dmProfile.sessionPath)
+	}
+	if !strings.HasPrefix(dmProfile.sessionPath, projectDir+string(filepath.Separator)) {
+		t.Fatalf("stable path must live under the resolved session dir, got %q (want prefix %q)", dmProfile.sessionPath, projectDir)
 	}
 }
 
