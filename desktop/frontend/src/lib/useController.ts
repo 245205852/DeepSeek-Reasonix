@@ -11,7 +11,7 @@ import { mergeRateBand, type AggregatedRateBand } from "./costRateBand";
 import { requestInboxCancel, type CancelOutcome } from "./inboxCancel";
 import { formatContextMaintenanceNotice, isNewMaintenanceOperation, rememberMaintenanceOperation } from "./contextMaintenanceTypes";
 import { formatGuardianAssessmentNotice } from "./guardianEvents";
-import { completionSummaryNeedsAttention, completionSummaryNotice, normalizeCompletionSummary } from "./completionSummary";
+import { completionSummaryChangeNotice, completionSummaryNeedsAttention, completionSummaryNotice, normalizeCompletionSummary, sessionQualityFloor } from "./completionSummary";
 import { invalidateSharedQuery } from "./queryCoalesce";
 import { replayPendingPromptsForActiveTab } from "./promptReplay";
 import { createRafBatch } from "./rafBatch";
@@ -588,6 +588,9 @@ export function metaFromTab(tab: TabMeta, existing?: Meta): Meta {
     collaborationMode: tab.collaborationMode ?? existing?.collaborationMode ?? "normal",
     toolApprovalMode,
     tokenMode: tab.tokenMode ?? existing?.tokenMode ?? "full",
+    agentPreset: tab.agentPreset ?? existing?.agentPreset,
+    qualityFloor: tab.qualityFloor ?? existing?.qualityFloor,
+    floorInferred: tab.floorInferred ?? existing?.floorInferred,
     goal: tab.goal ?? existing?.goal,
     goalStatus: tab.goalStatus ?? existing?.goalStatus,
     canonicalTodos: existing?.canonicalTodos, dismissedTodoBatches: (tab.sessionPath !== undefined ? tab.sessionPath : existing?.sessionPath) === existing?.sessionPath ? existing?.dismissedTodoBatches : undefined,
@@ -628,6 +631,9 @@ export function sameMeta(a?: Meta, b?: Meta): boolean {
     a.toolApprovalMode === b.toolApprovalMode &&
 
     a.tokenMode === b.tokenMode &&
+    a.agentPreset === b.agentPreset &&
+    a.qualityFloor === b.qualityFloor &&
+    a.floorInferred === b.floorInferred &&
     a.goal === b.goal &&
     a.goalStatus === b.goalStatus &&
     sameTodoList(a.canonicalTodos, b.canonicalTodos) && sameStringList(a.dismissedTodoBatches, b.dismissedTodoBatches)
@@ -1441,24 +1447,42 @@ function applyEvent(s: State, e: WireEvent): State {
     case "completion_summary": {
       if (!e.completion) return s;
       const completionSummary = normalizeCompletionSummary(e.completion);
-      if (!completionSummaryNeedsAttention(completionSummary)) {
-        return { ...s, completionSummary };
+      const floor = sessionQualityFloor(s.meta);
+      if (completionSummaryNeedsAttention(completionSummary, floor)) {
+        const notice = completionSummaryNotice(completionSummary, t);
+        return {
+          ...s,
+          completionSummary,
+          seq: s.seq + 1,
+          items: [...s.items, {
+            kind: "notice",
+            id: `q${s.seq}`,
+            level: "warn",
+            variant: "completion",
+            title: notice.title,
+            text: notice.body,
+            action: "open_changes",
+          }],
+        };
       }
-      const notice = completionSummaryNotice(completionSummary, t);
-      return {
-        ...s,
-        completionSummary,
-        seq: s.seq + 1,
-        items: [...s.items, {
-          kind: "notice",
-          id: `q${s.seq}`,
-          level: "warn",
-          variant: "completion",
-          title: notice.title,
-          text: notice.body,
-          action: "open_changes",
-        }],
-      };
+      if (completionSummary.mutations > 0) {
+        const notice = completionSummaryChangeNotice(completionSummary, t);
+        return {
+          ...s,
+          completionSummary,
+          seq: s.seq + 1,
+          items: [...s.items, {
+            kind: "notice",
+            id: `q${s.seq}`,
+            level: "info",
+            variant: "completion",
+            title: notice.title,
+            text: notice.body,
+            action: "open_changes",
+          }],
+        };
+      }
+      return { ...s, completionSummary };
     }
     case "text":
     case "reasoning": {

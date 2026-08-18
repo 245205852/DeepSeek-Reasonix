@@ -54,7 +54,9 @@ function ev(s: typeof initialState, e: WireEvent) {
       constraint_degraded: false,
     },
   });
-  eq(complete.items, before.items, "ordinary completion summary stays off the transcript");
+  eq(complete.items.length, before.items.length + 1, "workspace mutations add a neutral change notice");
+  const changeNotice = complete.items[complete.items.length - 1];
+  eq(changeNotice?.kind === "notice" ? changeNotice.level : "", "info", "workspace mutations use an info notice, not a warning");
   eq(complete.completionSummary?.preset, "balanced", "ordinary completion summary remains available to the change panel");
 
   const after = ev(complete, {
@@ -71,7 +73,7 @@ function ev(s: typeof initialState, e: WireEvent) {
       constraint_degraded: true,
     },
   });
-  eq(after.items.length, before.items.length + 1, "actionable completion summary adds one compact transcript notice");
+  eq(after.items.length, complete.items.length + 1, "actionable completion summary adds one compact transcript notice");
   const notice = after.items[after.items.length - 1];
   eq(notice?.kind === "notice" ? notice.variant : "", "completion", "quality gap uses the completion notice variant");
   eq(notice?.kind === "notice" ? notice.action : "", "open_changes", "quality gap links to the change panel");

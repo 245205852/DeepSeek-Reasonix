@@ -164,6 +164,7 @@ export function WorkspacePanel({
   onRestoreDockWidths,
   creationMode = false,
   completionSummary,
+  qualityFloor,
 }: {
   open: boolean;
   tabId?: string;
@@ -193,6 +194,7 @@ export function WorkspacePanel({
   onRestoreDockWidths?: (treeWidth: number, previewWidth: number) => void;
   creationMode?: boolean;
   completionSummary?: WireCompletionSummary;
+  qualityFloor?: "standard" | "delivery";
 }) {
   const t = useT();
   const workspaceTabId = tabId ?? "";
@@ -1701,7 +1703,7 @@ export function WorkspacePanel({
             <div className="workspace-git-history">
               {completionSummary && (
                 <section
-                  className={`workspace-note workspace-completion-summary${completionSummaryNeedsAttention(completionSummary) ? " workspace-completion-summary--attention" : ""}`}
+                  className={`workspace-note workspace-completion-summary${completionSummaryNeedsAttention(completionSummary, qualityFloor ?? "standard") ? " workspace-completion-summary--attention" : ""}`}
                   aria-label={t("completion.panelTitle")}
                 >
                   <div className="workspace-completion-summary__head">

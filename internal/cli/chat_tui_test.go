@@ -1381,6 +1381,15 @@ func TestCompletionSummaryOutputIsTiered(t *testing.T) {
 	if !strings.Contains(lines, "stale_check") || !strings.Contains(lines, "partial") || strings.Contains(lines, "balanced") {
 		t.Fatalf("verbose mode should include raw completion details without a mode label, committed=%q", lines)
 	}
+
+	unreviewed := &event.CompletionSummaryInfo{
+		Verdict: "partial", Mutations: 1, Review: "unavailable", GapKinds: []string{"unreviewed_change"},
+	}
+	m = newTestChatTUI()
+	m.ingestEvent(event.Event{Kind: event.CompletionSummary, Completion: unreviewed})
+	if len(*m.pendingCommit) != 0 {
+		t.Fatalf("standard unreviewed changes must stay silent, committed=%v", *m.pendingCommit)
+	}
 }
 
 // TestUserBubbleEchoedImmediately proves the user bubble is committed to scrollback
