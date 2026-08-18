@@ -2268,7 +2268,13 @@ func (a *Agent) recoveryPlanTransition(toolName string, args json.RawMessage) (b
 		return false, "", "", ""
 	}
 	after := evidence.ReceiptFromToolCall("todo_write", args, true, true).Todos
-	if len(after) == 0 || evidence.ValidateSerialTodos(after) != nil || !evidence.PreservesCompletedTodoPositions(before, after) {
+	if evidence.ValidateSerialTodos(after) != nil {
+		return false, "", "", ""
+	}
+	if len(after) == 0 {
+		return true, planReviewText(before), planReviewText(after), planTransitionDiff(before, after)
+	}
+	if !evidence.PreservesCompletedTodoPositions(before, after) {
 		// Let todo_write report malformed or invalid state directly; an invalid
 		// task list is not a meaningful plan proposal for the reviewer.
 		return false, "", "", ""
