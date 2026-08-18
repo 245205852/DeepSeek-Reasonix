@@ -2670,6 +2670,7 @@ export const zh: Record<DictKey, string> = {
   "settings.addProvider.confirmResetPreset": "确认重置",
   "settings.customProviderName": "自定义供应商名称",
   "settings.customProviderNamePlaceholder": "例如 my-proxy",
+  "settings.customProviderNameReadonlyHint": "暂不支持改名",
   "settings.providerNamePlaceholder": "供应商名称（如 deepseek-proxy）",
   "settings.providerProtocol": "接入协议",
   "settings.providerProtocolOpenAI": "OpenAI-compatible",
