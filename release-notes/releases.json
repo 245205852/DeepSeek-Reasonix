@@ -6,12 +6,12 @@
       "date": "2026-08-18",
       "channel": "stable",
       "title": {
-        "en": "Desktop stability and workflow fixes",
-        "zh": "桌面端稳定性与工作流修复"
+        "en": "Desktop reliability and workflow fixes",
+        "zh": "桌面端可靠性与工作流修复"
       },
       "summary": {
-        "en": "This release fixes several desktop issues: todo progress updates no longer get stuck, Windows image preview hides caption controls, reduced-motion transcript flicker is resolved, and pinned conversations no longer duplicate in the project tree.",
-        "zh": "此版本修复了多个桌面端问题：待办进度更新不再卡住，Windows 图片预览隐藏窗口控制按钮，减少动态效果时对话区闪烁问题已解决，置顶对话不再在项目树中重复显示。"
+        "en": "This release makes the configured default model apply after restart and to new sessions, unblocks todo progress updates, and fixes Windows image preview controls, reduced-motion transcript flicker, and duplicate pinned conversations.",
+        "zh": "此版本让设置的默认模型在重启后和新会话中正确生效，解除待办进度更新阻塞，并修复 Windows 图片预览窗口按钮、减少动态效果时的对话区闪烁以及置顶对话重复显示问题。"
       },
       "surfaces": [
         "desktop"
@@ -21,11 +21,25 @@
         {
           "kind": "fixed",
           "title": {
-            "en": "Todo progress updates no longer get stuck",
+            "en": "Default model now applies after restart and to new sessions",
+            "zh": "默认模型在重启和新会话中正确生效"
+          },
+          "body": {
+            "en": "Changing the default model in Settings now persists across restart and applies when starting or reusing a blank session, while existing conversations keep their saved model.",
+            "zh": "在设置中更改默认模型后，重启应用以及新建或复用空白会话都会使用该模型，已有会话仍保留各自保存的模型。"
+          },
+          "refs": [
+            9101
+          ]
+        },
+        {
+          "kind": "fixed",
+          "title": {
+            "en": "Todo progress updates no longer stall",
             "zh": "待办进度更新不再卡住"
           },
           "body": {
-            "en": "The todo panel can now update progress without requiring a prior complete_step, preventing deadlocks in plan mode and ordinary execution.",
+            "en": "The todo panel now updates progress without requiring a prior complete_step, avoiding deadlocks in plan mode and normal execution.",
             "zh": "待办面板现在无需先执行 complete_step 即可更新进度，避免在计划模式和普通执行中出现死锁。"
           },
           "refs": [
@@ -35,11 +49,11 @@
         {
           "kind": "fixed",
           "title": {
-            "en": "Windows image preview hides caption controls",
+            "en": "Windows image preview hides window controls",
             "zh": "Windows 图片预览隐藏窗口控制按钮"
           },
           "body": {
-            "en": "The image viewer now hides the custom minimize, maximize, and close controls on Windows, eliminating the duplicate close affordance.",
+            "en": "The image viewer now hides custom minimize, maximize, and close controls on Windows, eliminating duplicate close actions.",
             "zh": "图片查看器现在在 Windows 上隐藏自定义的最小化、最大化和关闭按钮，消除了重复的关闭操作。"
           },
           "refs": [
@@ -53,7 +67,7 @@
             "zh": "减少动态效果时对话区闪烁问题已解决"
           },
           "body": {
-            "en": "Fixed a scroll oscillation loop on Windows when OS animations are disabled, ensuring the transcript settles correctly and the jump-to-bottom button works reliably.",
+            "en": "Fixed the scroll oscillation loop that occurred when Windows system animations were disabled, ensuring the transcript stays stable and the jump-to-bottom button works reliably.",
             "zh": "修复了 Windows 关闭系统动画时出现的滚动振荡循环，确保对话区正确稳定，跳到底部按钮可靠工作。"
           },
           "refs": [
@@ -67,7 +81,7 @@
             "zh": "置顶对话不再在项目树中重复显示"
           },
           "body": {
-            "en": "A pinned conversation now appears only once in the sidebar, not again in its original folder.",
+            "en": "Pinned conversations now appear only once in the sidebar, without being repeated in their original folder.",
             "zh": "置顶对话现在在侧边栏中只显示一次，不会在其原始文件夹中再次出现。"
           },
           "refs": [
@@ -81,11 +95,24 @@
         "fixed": [
           {
             "title": {
-              "en": "Todo progress updates no longer get stuck",
+              "en": "Default model persists and seeds new sessions",
+              "zh": "默认模型持久化并应用到新会话"
+            },
+            "body": {
+              "en": "The desktop persists the selected default to the current session sidecar and applies it after New Session rotation or when reusing a blank tab.",
+              "zh": "桌面端会把所选默认模型持久化到当前会话 sidecar，并在新会话轮换或复用空白标签页时应用该模型。"
+            },
+            "refs": [
+              9101
+            ]
+          },
+          {
+            "title": {
+              "en": "Todo progress updates no longer stall",
               "zh": "待办进度更新不再卡住"
             },
             "body": {
-              "en": "todo_write can mark items completed in any workflow phase without a prior complete_step, fixing deadlocks in plan mode and ordinary execution.",
+              "en": "todo_write can now mark items completed in any workflow phase without a prior complete_step, fixing deadlocks in plan mode and normal execution.",
               "zh": "todo_write 现在可以在任何工作流阶段标记项目完成，无需先执行 complete_step，修复了计划模式和普通执行中的死锁。"
             },
             "refs": [
@@ -94,11 +121,11 @@
           },
           {
             "title": {
-              "en": "Windows image preview hides caption controls",
+              "en": "Windows image preview hides window controls",
               "zh": "Windows 图片预览隐藏窗口控制按钮"
             },
             "body": {
-              "en": "The image viewer hides custom caption controls on Windows, removing the duplicate close button.",
+              "en": "The image viewer hides custom window controls on Windows, removing the duplicate close button.",
               "zh": "图片查看器在 Windows 上隐藏自定义窗口控制按钮，移除了重复的关闭按钮。"
             },
             "refs": [
@@ -111,7 +138,7 @@
               "zh": "减少动态效果时对话区闪烁问题已解决"
             },
             "body": {
-              "en": "Fixed scroll oscillation on Windows when OS animations are disabled, ensuring stable transcript positioning.",
+              "en": "Fixed scroll oscillation when Windows system animations are disabled, ensuring the transcript position remains stable.",
               "zh": "修复了 Windows 关闭系统动画时的滚动振荡，确保对话区位置稳定。"
             },
             "refs": [
