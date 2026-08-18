@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"reasonix/internal/agent"
-	"reasonix/internal/boot"
 	"reasonix/internal/config"
 	"reasonix/internal/control"
 )
@@ -33,7 +32,6 @@ func TestEnsureBlankTabInheritsActiveTabLocalSettings(t *testing.T) {
 		SessionPath:      filepath.Join(workspace, "src.jsonl"), // non-empty so src isn't reused as the blank tab
 		model:            "inherit/model",
 		effort:           &effort,
-		tokenMode:        "economy",
 		mode:             "plan",
 		toolApprovalMode: control.ToolApprovalYolo,
 		disabledMCP:      map[string]ServerView{"srv-x": {}},
@@ -59,8 +57,8 @@ func TestEnsureBlankTabInheritsActiveTabLocalSettings(t *testing.T) {
 	if created.effort == nil || *created.effort != "max" {
 		t.Fatalf("effort = %v, want inherited \"max\"", created.effort)
 	}
-	if created.tokenMode != boot.TokenModeFull {
-		t.Fatalf("tokenMode = %q, want pinned default %q (must not inherit economy)", created.tokenMode, boot.TokenModeFull)
+	if created.qualityFloor != "" && created.qualityFloor != control.QualityFloorStandard {
+		t.Fatalf("qualityFloor = %q, want standard default (must not inherit economy)", created.qualityFloor)
 	}
 	if created.toolApprovalMode != control.ToolApprovalAuto {
 		t.Fatalf("toolApprovalMode = %q, want global default auto", created.toolApprovalMode)

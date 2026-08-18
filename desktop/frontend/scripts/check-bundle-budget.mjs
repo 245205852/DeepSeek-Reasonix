@@ -87,9 +87,11 @@ for (const path of localeChunks) {
   // compaction settings add 40 bytes gzip of policy guidance to simplified
   // Chinese, while scheduled billing adds compact rate-band labels/tooltips.
   // The three StepFun presets add localized names/descriptions (~0.1 KiB
-  // gzip); the two pay-as-you-go presets add the same again. Retain all
-  // with the smallest 0.1 KiB ratchet increments.
-  const budget = name.startsWith("zh-TW-") ? 56.1 * 1024 : 55.4 * 1024;
+  // gzip); the two pay-as-you-go presets add the same again. The delivery
+  // floor segmented control adds two labels plus one explanatory tooltip,
+  // measured at 23 B gzip for zh and 8 B for zh-TW. Retain all with the
+  // smallest 0.1 KiB ratchet increments.
+  const budget = name.startsWith("zh-TW-") ? 56.2 * 1024 : 55.5 * 1024;
   assertBudget(`${name} gzip`, gzipBytes(path), budget);
 }
 

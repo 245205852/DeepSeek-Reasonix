@@ -9,6 +9,7 @@ import { makeMockSessionCatalogBindings } from "./sessionCatalogBridge";
 import { makeMockHistoryCatalogBindings, type HistoryCatalogBindings } from "./historyCatalogBridge";
 import { makeMockTaskCatalogBindings, type TaskCatalogBindings } from "./taskCatalogBridge";
 import { makeMockBlankProjectBindings, type BlankProjectBindings } from "./blankProjectBridge";
+import { makeMockQualityFloorBindings, type QualityFloorBindings } from "./deliveryFloorBridge";
 import { t } from "./i18n";
 import { providerIsConfigured, providerRequiresKey, removeProviderAccessesForMock } from "./providerModels";
 import { DEFAULT_STATUS_BAR_ITEMS, normalizeStatusBarItems } from "./statusBarItems";
@@ -173,7 +174,7 @@ interface DesktopWindowState {
 
 // AppBindings is the hand-written React-to-Go contract. _CheckGeneratedBindings
 // catches generated methods missing here; update this interface and typecheck.
-export interface AppBindings extends SessionCatalogBindings, ProjectTreeOrganizationBindings, HistoryCatalogBindings, TaskCatalogBindings, BlankProjectBindings, SessionTitleBindings {
+export interface AppBindings extends SessionCatalogBindings, ProjectTreeOrganizationBindings, HistoryCatalogBindings, TaskCatalogBindings, BlankProjectBindings, QualityFloorBindings, SessionTitleBindings {
   Platform(): Promise<string>;
   MinimiseMainWindow(): Promise<void>;
   ToggleMaximiseMainWindow(): Promise<void>;
@@ -5037,6 +5038,7 @@ function makeMockApp(): AppBindings {
     async DeliveryWorktreeAvailability(workspaceRoot: string) {
       return this.IsolatedWorktreeAvailability(workspaceRoot);
     },
+    ...makeMockQualityFloorBindings(() => mockTabs, (next) => { mockTabs = next; }),
     async SetAgentPreset(_preset: string) {},
     async SetAgentPresetForTab(_tabID: string, _preset: string) {},
     async SetTokenMode(_mode: string) {},

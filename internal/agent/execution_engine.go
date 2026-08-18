@@ -27,6 +27,9 @@ func mergeInheritedConstraints(child, parent runtimepolicy.Constraints) runtimep
 	if parent.RequireFullVerification {
 		child.RequireFullVerification = true
 	}
+	if parent.PolicyFloor == taskcontract.PolicyFloorDelivery {
+		child.PolicyFloor = taskcontract.PolicyFloorDelivery
+	}
 	if len(parent.AllowedChecks) > 0 && len(child.AllowedChecks) == 0 {
 		child.AllowedChecks = append([]string(nil), parent.AllowedChecks...)
 	}

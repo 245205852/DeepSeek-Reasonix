@@ -25,6 +25,7 @@ import (
 
 	"reasonix/internal/ablation"
 	"reasonix/internal/agent"
+	"reasonix/internal/agentpreset"
 	"reasonix/internal/billing"
 	"reasonix/internal/capability"
 	"reasonix/internal/command"
@@ -133,9 +134,9 @@ type Options struct {
 	// (for example ACP session/new). They are connected eagerly for this
 	// controller but are not persisted to reasonix.toml.
 	ExtraPlugins []plugin.Spec
-	// AgentPreset and TokenMode are deprecated no-op compatibility inputs.
-	// Host obligations are fact-driven from real tool actions; these fields are
-	// accepted so old frontends keep compiling, and ignored.
+	// AgentPreset and TokenMode seed the session quality floor. Delivery (or
+	// its aliases) raises it to delivery; light and its aliases fold to
+	// standard; unknown values keep the standard default.
 	AgentPreset string
 	TokenMode   string
 	// SessionDir overrides where persisted chat transcripts are written. When
@@ -416,8 +417,8 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 		}
 	}
 	config.NormalizeLegacyMimoCustomProvidersForRefs(cfg, modelName)
-	// Execution modes are gone: opts.AgentPreset/opts.TokenMode are deprecated
-	// no-op inputs kept for one compatibility version of old frontends.
+	// opts.AgentPreset/opts.TokenMode now seed the session quality floor (see
+	// the SetQualityFloor call after control.New); light folds to standard.
 	keepPolicy := agentKeepPolicy(cfg.Agent.Keep)
 	// Entry resolution: the caller-owned broker is authoritative for every
 	// ref; the extension-merged resolver only owns plugin refs — a config ref
@@ -1881,6 +1882,11 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 		}
 	}
 	ctrl := control.New(ctrlOpts)
+	// The role inputs set the session quality floor: delivery/deliver/quality
+	// raise it, light and its aliases fold to standard, unknown stays default.
+	if p, err := agentpreset.Normalize(firstNonEmpty(opts.AgentPreset, opts.TokenMode)); err == nil && p == agentpreset.Delivery {
+		_ = ctrl.SetQualityFloor(string(p))
+	}
 	// Publish the controller to the extension UI hub's indirection: from here
 	// on, host/ui/* publishes ride ctrl.EmitExtensionEvent and blocking prompts
 	// ride ctrl.Ask, exactly as if the hub had been built after control.New.
