@@ -109,10 +109,7 @@
           },
           "refs": [
             9065,
-            9062,
-            9054,
-            9013,
-            9027
+            9062
           ]
         }
       ],
@@ -197,8 +194,7 @@
               "zh": "修复问题导航器和回退跳到会话记录末尾而不是所选问题的问题。"
             },
             "refs": [
-              9065,
-              9027
+              9065
             ]
           },
           {
@@ -213,32 +209,6 @@
             "refs": [
               9062
             ]
-          },
-          {
-            "title": {
-              "en": "Stale transcript navigation",
-              "zh": "过期的会话记录导航"
-            },
-            "body": {
-              "en": "Clears stale native and retained transcript selection before question navigation requests its indexed jump.",
-              "zh": "在问题导航请求其索引跳转之前，清除过期的原生和保留的会话记录选择。"
-            },
-            "refs": [
-              9054
-            ]
-          },
-          {
-            "title": {
-              "en": "Question navigation single activation",
-              "zh": "问题导航单次激活"
-            },
-            "body": {
-              "en": "Handles each physical mouse activation exactly once instead of issuing jumps from both mousedown and click.",
-              "zh": "每次物理鼠标激活仅处理一次，而不是从 mousedown 和 click 都发出跳转。"
-            },
-            "refs": [
-              9013
-            ]
           }
         ]
       },
@@ -246,6 +216,7 @@
       "risks": [],
       "contributors": [
         "SivanCola",
+        "Linearl",
         "wuhanwoaini521"
       ],
       "links": {
