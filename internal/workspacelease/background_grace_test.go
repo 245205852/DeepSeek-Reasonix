@@ -105,3 +105,42 @@ func TestFinishedBackgroundJobReleasesWithoutWaitingForGrace(t *testing.T) {
 	close(job)
 	waitForRelease(t, owner)
 }
+
+// The grace release must leave the owner able to reacquire, so two sessions
+// sharing a workspace alternate instead of deadlocking each other.
+func TestGraceReleaseAllowsReacquireAndAlternation(t *testing.T) {
+	root, lockDir := t.TempDir(), t.TempDir()
+	a := newOwnerWithGrace(t, root, lockDir, 20*time.Millisecond)
+	b := newOwnerWithGrace(t, root, lockDir, 20*time.Millisecond)
+
+	a.BeginRun()
+	if err := a.AcquireWrite(context.Background()); err != nil {
+		t.Fatalf("a acquire: %v", err)
+	}
+	resident := make(chan struct{})
+	defer close(resident)
+	a.RetainUntil(resident)
+	a.EndRun()
+	waitForRelease(t, a)
+
+	// b takes the workspace while a's resident job is still running.
+	b.BeginRun()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := b.AcquireWrite(ctx); err != nil {
+		t.Fatalf("b acquire after grace: %v", err)
+	}
+	b.EndRun()
+	waitForRelease(t, b)
+
+	a.BeginRun()
+	defer a.EndRun()
+	reacquire, cancelReacquire := context.WithTimeout(context.Background(), time.Second)
+	defer cancelReacquire()
+	if err := a.AcquireWrite(reacquire); err != nil {
+		t.Fatalf("a could not reacquire after releasing: %v", err)
+	}
+	if st := a.State(); !st.Acquired {
+		t.Fatalf("a state after reacquire: %+v", st)
+	}
+}
