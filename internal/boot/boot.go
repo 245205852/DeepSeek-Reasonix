@@ -669,6 +669,7 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 			sysPrompt = skill.ApplyIndex(sysPrompt, skills)
 		}
 	}
+	sysPrompt = config.ApplyOfficialDeepSeekV4ProPersona(sysPrompt, entry)
 
 	reg := tool.NewRegistry()
 	writeRoots := cfg.WriteRootsForRoot(root)
@@ -1651,7 +1652,7 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 		RecentKeep:                   cfg.Agent.RecentKeep,
 		ArchiveDir:                   config.ArchiveDir(),
 		KeepPolicy:                   keepPolicy,
-		ReasoningLanguage:            cfg.ReasoningLanguage(),
+		ReasoningLanguage:            config.ReasoningLanguageForEntry(entry, cfg.ReasoningLanguage()),
 		PlanModeReadOnlyCommands:     cfg.Agent.PlanModeReadOnlyCommands,
 		LegacyAnchorSafetyGate:       cfg.Agent.LegacyAnchorSafetyGate,
 		SubagentDepth:                0,
@@ -1710,7 +1711,7 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 				RecentKeep:                   cfg.Agent.RecentKeep,
 				ArchiveDir:                   config.ArchiveDir(),
 				KeepPolicy:                   keepPolicy,
-				ReasoningLanguage:            cfg.ReasoningLanguage(),
+				ReasoningLanguage:            config.ReasoningLanguageForEntry(pe, cfg.ReasoningLanguage()),
 				PlanModeReadOnlyCommands:     cfg.Agent.PlanModeReadOnlyCommands,
 				CapabilityLedger:             plannerLedger,
 				CapabilityAudit:              plannerAudit,
@@ -1778,7 +1779,7 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 		WorkspaceRoot:          root,
 		ExternalFolderToolRefs: readPathResolver,
 		ResponseLanguage:       cfg.ResponseLanguage(),
-		ReasoningLanguage:      cfg.ReasoningLanguage(),
+		ReasoningLanguage:      config.ReasoningLanguageForEntry(entry, cfg.ReasoningLanguage()),
 		DisableColdResumePrune: !cfg.ColdResumePruneEnabled(),
 		Shell:                  shell,
 		ApprovalTimeout:        opts.ApprovalTimeout,
