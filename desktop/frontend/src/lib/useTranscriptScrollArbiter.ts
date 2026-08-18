@@ -11,6 +11,7 @@ import { findVerticalScrollTarget } from "./nestedScrollHandoff";
 import { isNativeVerticalScrollbarPointer, measureTranscriptVirtuosoItem } from "./transcriptNativeScrollbar";
 import {
   INITIAL_TRANSCRIPT_SCROLL_STATE,
+  isSubstantialTranscriptDisplacement,
   isTranscriptContentShrink,
   isTranscriptSelectionMode,
   reduceTranscriptScroll,
@@ -193,14 +194,16 @@ export function useTranscriptScrollArbiter({
         tailSettleProgressRef.current = null;
         return;
       }
-      scrollToTail("auto");
       const element = scrollRef.current;
       if (!element) return;
       const distance = nativeTranscriptDistanceFromBottom(element);
       if (distance <= TRANSCRIPT_AT_BOTTOM_THRESHOLD_PX) {
+        // Already converged: a redundant write would still be a visible
+        // programmatic scrollTop touch for an idle tail.
         tailSettleProgressRef.current = null;
         return;
       }
+      scrollToTail("auto");
       const previous = tailSettleProgressRef.current;
       const stagnantFrames = previous && Math.abs(previous.distance - distance) <= 0.5
         ? previous.stagnantFrames + 1
@@ -317,10 +320,12 @@ export function useTranscriptScrollArbiter({
 
   const deliverScroll = useCallback((element = scrollRef.current) => {
     if (!element) return;
+    const distance = nativeTranscriptDistanceFromBottom(element);
     dispatch({
       type: "SCROLL_DELIVERED",
-      atBottom: nativeTranscriptDistanceFromBottom(element) <= TRANSCRIPT_AT_BOTTOM_THRESHOLD_PX,
+      atBottom: distance <= TRANSCRIPT_AT_BOTTOM_THRESHOLD_PX,
       scrollable: hasTranscriptScrollableRange(element),
+      substantial: isSubstantialTranscriptDisplacement(distance),
     });
     if (stateRef.current.readerIntent) armReaderIntentIdle();
   }, [armReaderIntentIdle, dispatch]);
