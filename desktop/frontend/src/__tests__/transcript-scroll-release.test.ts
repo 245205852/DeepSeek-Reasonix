@@ -129,7 +129,7 @@ const jump = run([
   { type: "JUMP_TO_BOTTOM", behavior: "smooth" },
 ]);
 check(jump.state.mode === "tail-follow", "jump-bottom explicitly owns the tail");
-check(jump.commands.join(",") === "SCROLL_TO_LAST", "jump-bottom uses Virtuoso scrollToIndex only");
+check(jump.commands.join(",") === "SCROLL_TO_LAST", "jump-bottom emits only the tail command");
 
 const repeatedJump = run([
   { type: "JUMP_TO_BOTTOM" },

@@ -28,11 +28,14 @@ import { captureTranscriptLayoutAnchor, type TranscriptLayoutAnchor } from "./tr
 const SCROLL_UP_KEYS = new Set(["ArrowUp", "PageUp", "Home"]);
 const SCROLL_DOWN_KEYS = new Set(["ArrowDown", "PageDown", "End", " ", "Spacebar"]);
 export const TRANSCRIPT_AT_BOTTOM_THRESHOLD_PX = 4;
-// LAST/end can stop just above the native extent when the scroller owns
-// vertical padding or fractional row measurements. A bounded positive offset
-// is clamped by the browser and keeps the write within Virtuoso's API.
-const TRANSCRIPT_TAIL_CLAMP_OFFSET_PX = 64;
 const TAIL_STAGNANT_FRAME_LIMIT = 2;
+// A tail displacement must survive one full frame before the writer acts.
+// Layout churn (row remeasurement, content-visibility flips, md hydration)
+// alternates off-bottom/at-bottom on consecutive frames; writing against it
+// perturbs layout again and sustains the oscillation — the reduced-motion
+// flicker of #9028/#9089. Real growth stays off-bottom and converges one
+// frame (~16ms) later, which is imperceptible.
+const TAIL_CONFIRM_OFF_BOTTOM_FRAMES = 2;
 const READER_INTENT_IDLE_MS = 180;
 // Anchor restores wait for the anchor row to actually mount. An 8-frame
 // budget (~128 ms) expired before heavy rows mounted on WebView2, stranding
@@ -118,12 +121,8 @@ type ActiveTranscriptRecovery = {
  * programmatic > recovery > tail-follow).
  */
 export function useTranscriptScrollArbiter({
-  liveTailActiveRef,
   onRecoveryTerminal,
 }: {
-  /** While the live-region footer is mounted, the true bottom sits below the
-   *  last virtual row; tail writes then aim at the DOM extent instead. */
-  liveTailActiveRef?: RefObject<boolean>;
   /** Receives the terminal state of every recovery request (done /
    *  cancelled / expired); wired into session diagnostics by the caller. */
   onRecoveryTerminal?: (terminal: TranscriptRecoveryTerminal) => void;
@@ -139,7 +138,7 @@ export function useTranscriptScrollArbiter({
   const generationRef = useRef(0);
   const followFrameRef = useRef<number | null>(null);
   const tailSettleFrameRef = useRef<number | null>(null);
-  const tailSettleProgressRef = useRef<{ distance: number; stagnantFrames: number } | null>(null);
+  const tailSettleProgressRef = useRef<{ distance: number; stagnantFrames: number; offBottomFrames: number } | null>(null);
   const resizeSettleFrameRef = useRef<number | null>(null);
   const readerIntentTimerRef = useRef<number | null>(null);
   const lastFollowExtentRef = useRef<number | null>(null);
@@ -155,24 +154,21 @@ export function useTranscriptScrollArbiter({
   const [isAtBottom, setIsAtBottom] = useState(true);
   const [scrollElement, setScrollElement] = useState<HTMLDivElement | null>(null);
 
+  // Tail writes aim at the scroller's native extent, never at Virtuoso's size
+  // tree. scrollToIndex("LAST") resolves against the estimated tree, which can
+  // already believe it is at the bottom while the DOM extent sits hundreds of
+  // pixels lower; the write then lands nowhere, the arbiter still reads a
+  // non-bottom distance, and the settle loop re-arms every frame (#9028: 340
+  // no-op tail writes in 11s with scrollTop frozen — the reduced-motion
+  // flicker loop). The browser clamps scrollTo against the real extent, so a
+  // native-extent write always converges and is idempotent at the bottom.
   const scrollToTail = useCallback((behavior: "auto" | "smooth") => {
     const element = scrollRef.current;
-    if (liveTailActiveRef?.current && element) {
-      // The live-region footer extends past the last virtual row. Virtuoso's
-      // scrollTo clamps against the scroller's real DOM scrollHeight, footer
-      // included, so this lands on the true bottom.
-      noteTranscriptScrollWrite({ owner: "tail-follow", kind: "scrollTo", top: element.scrollHeight });
-      virtuosoRef.current?.scrollTo({ top: element.scrollHeight, behavior });
-      return;
-    }
-    noteTranscriptScrollWrite({ owner: "tail-follow", kind: "scrollToIndex", index: "LAST" });
-    virtuosoRef.current?.scrollToIndex({
-      index: "LAST",
-      align: "end",
-      offset: TRANSCRIPT_TAIL_CLAMP_OFFSET_PX,
-      behavior,
-    });
-  }, [liveTailActiveRef]);
+    if (!element) return;
+    const top = element.scrollHeight;
+    noteTranscriptScrollWrite({ owner: "tail-follow", kind: "scrollTo", top });
+    virtuosoRef.current?.scrollTo({ top, behavior });
+  }, []);
 
   const cancelTailSettle = useCallback(() => {
     if (tailSettleFrameRef.current !== null) cancelAnimationFrame(tailSettleFrameRef.current);
@@ -203,12 +199,18 @@ export function useTranscriptScrollArbiter({
         tailSettleProgressRef.current = null;
         return;
       }
-      scrollToTail("auto");
       const previous = tailSettleProgressRef.current;
+      const offBottomFrames = (previous?.offBottomFrames ?? 0) + 1;
+      if (offBottomFrames < TAIL_CONFIRM_OFF_BOTTOM_FRAMES) {
+        tailSettleProgressRef.current = { distance, stagnantFrames: 0, offBottomFrames };
+        tailSettleFrameRef.current = requestAnimationFrame(tick);
+        return;
+      }
+      scrollToTail("auto");
       const stagnantFrames = previous && Math.abs(previous.distance - distance) <= 0.5
         ? previous.stagnantFrames + 1
         : 0;
-      tailSettleProgressRef.current = { distance, stagnantFrames };
+      tailSettleProgressRef.current = { distance, stagnantFrames, offBottomFrames };
       if (stagnantFrames < TAIL_STAGNANT_FRAME_LIMIT) tailSettleFrameRef.current = requestAnimationFrame(tick);
     };
     tailSettleFrameRef.current = requestAnimationFrame(tick);
