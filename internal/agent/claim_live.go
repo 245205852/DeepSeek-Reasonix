@@ -69,3 +69,17 @@ func mergeRealized(existing []string, add WritePathSet) []string {
 	}
 	return out
 }
+
+// canStartIncomingLocked keeps a queued whole-workspace writer ahead of later
+// writers. Directory claims have an empty reservation before their first write,
+// so canStartLocked alone would otherwise let a steady stream bypass it.
+func (s *SubagentScheduler) canStartIncomingLocked(req AcquireRequest) (bool, string) {
+	if req.Writer {
+		for _, waiter := range s.waiters {
+			if waiter.req.Writer && waiter.req.WritePaths.WholeWorkspace {
+				return false, "queued whole-workspace writer has priority"
+			}
+		}
+	}
+	return s.canStartLocked(req)
+}

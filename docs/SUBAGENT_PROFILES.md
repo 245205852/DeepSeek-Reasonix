@@ -73,7 +73,8 @@ fleet(tasks=[
   (serializing at start). After path-bound writes only, that reservation
   shrinks to the files touched; `bash`/MCP makes it whole-workspace again. In
   `fleet`, concurrent omitted claims queue in the scheduler instead of failing
-  preflight; concurrent directory claims start together.
+  preflight; concurrent directory claims start together. Once a whole-workspace
+  writer is queued, later writers cannot bypass it.
 - Session defaults: `agent.max_subagent_concurrency = 6`,
   `agent.max_parallel_writers = 3` (both configurable 1–32; writers ≤ total).
 

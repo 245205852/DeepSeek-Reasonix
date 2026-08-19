@@ -97,7 +97,7 @@ func (s *SubagentScheduler) AcquireWithID(ctx context.Context, req AcquireReques
 	}
 
 	s.mu.Lock()
-	if ok, reason := s.canStartLocked(req); ok {
+	if ok, reason := s.canStartIncomingLocked(req); ok {
 		id := s.activateLocked(req)
 		s.mu.Unlock()
 		return s.makeReleaseID(id), id, nil
