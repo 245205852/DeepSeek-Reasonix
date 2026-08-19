@@ -63,9 +63,7 @@ type AssistantReasoningDisplay = "normal" | "hide";
 const EMPTY_CHECKPOINTS: CheckpointMeta[] = [];
 const EMPTY_INVOCATION_METADATA: InvocationMetadataMap = {};
 const NO_HELD_ROWS: readonly TranscriptRow[] = [];
-const SHOW_SCROLL_DIAGNOSTICS = typeof __BUILD_CHANNEL__ === "undefined"
-  || __BUILD_CHANNEL__ === "test"
-  || import.meta.env.DEV;
+const SHOW_SCROLL_DIAGNOSTICS = typeof __BUILD_CHANNEL__ === "undefined" || __BUILD_CHANNEL__ === "test" || import.meta.env.DEV;
 const ScrollDiagnosticPanel = SHOW_SCROLL_DIAGNOSTICS ? lazy(() => import("./ScrollDiagnosticPanel")) : null;
 
 const LiveAssistantMessage = memo(function LiveAssistantMessage({
@@ -121,10 +119,7 @@ type TranscriptVirtuosoContext = {
   scrollElement: HTMLDivElement | null;
   nativeScrollbarDragging: boolean;
   overlayRevision: string;
-  scrollDiagnostics?: {
-    heightEstimates: readonly number[];
-    contentRevision: number;
-  };
+  scrollDiagnostics?: { heightEstimates: readonly number[]; contentRevision: number };
   /** The active turn's in-flow footer region; null when no turn is live. */
   liveRegion: null | {
     rows: readonly TranscriptRow[];
@@ -147,9 +142,7 @@ const TranscriptVirtuosoItem = forwardRef<HTMLDivElement, ItemProps<TranscriptRo
       if (entryId) getTranscriptStore().requestEntryFullContent(context.tabId, entryId);
     }, [context.tabId, entryId]);
     const knownSize = Number.parseFloat(String(props["data-known-size"] ?? ""));
-    // react-virtuoso exposes the zero-based data index separately from its
-    // absolute item index. Diagnostics use the former so prepends do not leak
-    // the large firstItemIndex anchor into exported row coordinates.
+    // data-index is logical; data-item-index includes the large prepend anchor.
     const rowIndex = SHOW_SCROLL_DIAGNOSTICS
       ? Number.parseInt(String(props["data-index"] ?? ""), 10)
       : Number.NaN;
@@ -646,10 +639,7 @@ export function Transcript({
     onScrollEnd: finishProgrammaticScroll,
     onSelectionPointerDown: selectionRetention.onPointerDownCapture,
   });
-  // Re-read the mutable measurement store whenever a remount will consume
-  // heightEstimates. Keeping this array stable across unrelated live renders
-  // prevents Virtuoso from seeing a new estimates prop for every streamed
-  // token while still replaying the latest measurements after recovery.
+  // Keep estimates stable across token patches; refresh for rows, width, or remount.
   const heightEstimates = useMemo(
     () => measuredSizes.synthesize(virtualRows, layoutWidth),
     [layoutWidth, measuredSizes, virtuosoResetKey, virtualRows],
@@ -1079,11 +1069,7 @@ export function Transcript({
           <ArrowDown size={18} strokeWidth={2.2} aria-hidden="true" />
         </button>
       )}
-      {ScrollDiagnosticPanel && (
-        <Suspense fallback={null}>
-          <ScrollDiagnosticPanel scrollElement={scrollElement} totalRows={virtualRows.length} />
-        </Suspense>
-      )}
+      {ScrollDiagnosticPanel && <Suspense fallback={null}><ScrollDiagnosticPanel scrollElement={scrollElement} totalRows={virtualRows.length} /></Suspense>}
     </div>
     </TranscriptLayoutIntentProvider>
     </MarkdownImageTabContext.Provider>

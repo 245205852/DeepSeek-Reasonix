@@ -1,6 +1,5 @@
 // Wails and the browser mock share this React-to-Go contract.
-// @ts-ignore `wails generate module` creates this locally; fresh checkouts keep
-// typecheck green by falling back to a disabled drift check below.
+// @ts-ignore generated locally; fresh checkouts use the disabled drift check below.
 import type * as GeneratedApp from "../../wailsjs/go/main/App";
 import type { InvocationRequest } from "./invocationDisplay";
 import { addBreadcrumb } from "./breadcrumbs";
@@ -20,6 +19,7 @@ import { decisionSurfaceMockFromInput, isLongDecisionOptionsMockInput } from "./
 import { mockWorkspaceFile } from "./mockWorkspaceFile";
 import { mockAIRenameSession, type SessionTitleBindings } from "./mockSessionTitle";
 import { mockHistoryContentField, mockHistorySlice } from "./bridgeHistoryFixtures";
+import type { ScrollDiagnosticBindings } from "./scrollDiagnosticBridge";
 import type {
   RemoteHostView,
   RemoteHostInput,
@@ -174,7 +174,7 @@ interface DesktopWindowState {
 
 // AppBindings is the hand-written React-to-Go contract. _CheckGeneratedBindings
 // catches generated methods missing here; update this interface and typecheck.
-export interface AppBindings extends SessionCatalogBindings, ProjectTreeOrganizationBindings, HistoryCatalogBindings, TaskCatalogBindings, BlankProjectBindings, QualityFloorBindings, SessionTitleBindings {
+export interface AppBindings extends SessionCatalogBindings, ProjectTreeOrganizationBindings, HistoryCatalogBindings, TaskCatalogBindings, BlankProjectBindings, QualityFloorBindings, SessionTitleBindings, ScrollDiagnosticBindings {
   Platform(): Promise<string>;
   MinimiseMainWindow(): Promise<void>;
   ToggleMaximiseMainWindow(): Promise<void>;
@@ -452,7 +452,6 @@ export interface AppBindings extends SessionCatalogBindings, ProjectTreeOrganiza
   PickExportFile(defaultFilename: string, mimeType: string): Promise<string>;
   SaveExportFile(path: string, payload: string, base64Encoded: boolean): Promise<void>;
   SaveExportImageFiles(path: string, payloads: string[]): Promise<void>;
-  ExportScrollDiagnostics?(payload: string): Promise<string>;
   AttachDropped(path: string): Promise<DroppedItem>;
   AttachmentDataURL(path: string): Promise<string>;
   Models(): Promise<ModelInfo[]>;

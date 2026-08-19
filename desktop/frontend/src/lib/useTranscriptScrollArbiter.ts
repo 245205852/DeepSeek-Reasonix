@@ -1,11 +1,11 @@
-import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type {
   KeyboardEvent as ReactKeyboardEvent,
   PointerEvent as ReactPointerEvent,
   TouchEvent as ReactTouchEvent,
   WheelEvent as ReactWheelEvent,
 } from "react";
-import type { FlatIndexLocationWithAlign, SizeFunction, StateSnapshot, VirtuosoHandle } from "react-virtuoso";
+import type { SizeFunction, StateSnapshot, VirtuosoHandle } from "react-virtuoso";
 import { isEditableTarget } from "./keyboardShortcuts";
 import { findVerticalScrollTarget } from "./nestedScrollHandoff";
 import { isNativeVerticalScrollbarPointer, measureTranscriptVirtuosoItem } from "./transcriptNativeScrollbar";
@@ -23,93 +23,41 @@ import {
   type TranscriptScrollState,
 } from "./transcriptScrollArbiter";
 import { noteTranscriptRowMeasurement, noteTranscriptScrollWrite, recordTranscriptScrollDiagnostic } from "./transcriptScrollProbe";
+import {
+  CAPTURE_TRANSCRIPT_SCROLL_DIAGNOSTICS,
+  recordTranscriptScrollTransition,
+  type TranscriptScrollDiagnosticSource,
+  type TranscriptTailWriteDiagnostic,
+} from "./transcriptScrollDiagnosticProbe";
+import type {
+  ActiveTranscriptRecovery,
+  TranscriptRecoveryRequestSpec,
+  TranscriptRecoveryTerminal,
+} from "./transcriptScrollRecovery";
 import type { TranscriptRow } from "./transcriptRows";
 import { captureTranscriptLayoutAnchor, type TranscriptLayoutAnchor } from "./transcriptVirtuosoRecovery";
+export type {
+  TranscriptRecoveryRequestSpec,
+  TranscriptRecoveryTerminal,
+  TranscriptScrollArbiterRecoveryApi,
+} from "./transcriptScrollRecovery";
 
 const SCROLL_UP_KEYS = new Set(["ArrowUp", "PageUp", "Home"]);
 const SCROLL_DOWN_KEYS = new Set(["ArrowDown", "PageDown", "End", " ", "Spacebar"]);
 export const TRANSCRIPT_AT_BOTTOM_THRESHOLD_PX = 4;
 const TAIL_STAGNANT_FRAME_LIMIT = 2;
-// A tail displacement must survive one full frame before the writer acts.
-// Layout churn (row remeasurement, content-visibility flips, md hydration)
-// alternates off-bottom/at-bottom on consecutive frames; writing against it
-// perturbs layout again and sustains the oscillation — the reduced-motion
-// flicker of #9028/#9089. Real growth stays off-bottom and converges one
-// frame (~16ms) later, which is imperceptible.
+// Ignore one-frame extent oscillation; real growth remains displaced and
+// converges on the following frame (#9028/#9089).
 const TAIL_CONFIRM_OFF_BOTTOM_FRAMES = 2;
 const JUMP_TAIL_TRANSACTION_MS = 240;
 const LAYOUT_TRANSIENT_IDLE_MS = 160;
 const READER_INTENT_IDLE_MS = 180;
-// Anchor restores wait for the anchor row to actually mount. An 8-frame
-// budget (~128 ms) expired before heavy rows mounted on WebView2, stranding
-// the view at the estimate-based (higher) scrollToIndex landing — the
-// scroll-down/snap-up loop. Bound by wall clock instead; on expiry the
-// request suspends (no intermediate scrollBy ever lands while the anchor row
-// is unmounted) and retries after a bounded quiet window, up to
-// RECOVERY_MAX_RETRIES times before going terminally expired. User intent
-// still preempts a suspended request instead of letting the retry take over.
+// Slow WebView2 rows need a wall-clock mount budget. Expiry suspends without
+// an intermediate scrollBy, then retries after a bounded quiet window.
 const ANCHOR_RESTORE_BUDGET_MS = 1_000;
 const RECOVERY_MAX_RETRIES = 2;
 const RECOVERY_CORRECTION_TOLERANCE_PX = 1;
 const RECOVERY_STABLE_FRAMES = 2;
-const CAPTURE_SCROLL_DIAGNOSTIC_DETAILS = typeof __BUILD_CHANNEL__ === "undefined"
-  || __BUILD_CHANNEL__ === "test"
-  || import.meta.env.DEV;
-
-type TranscriptScrollDiagnosticSource =
-  | "reset"
-  | "user-scroll-intent"
-  | "manual-reading"
-  | "reader-intent-ended"
-  | "scroll-delivered"
-  | "tail-content-changed"
-  | "content-shrank"
-  | "layout-height-changed"
-  | "viewport-resized"
-  | "user-resize-begin"
-  | "user-resize-end"
-  | "selection-begin"
-  | "selection-end"
-  | "programmatic-begin"
-  | "programmatic-end"
-  | "jump-bottom"
-  | "jump-index"
-  | "scroll-offset"
-  | "recovery-begin"
-  | "recovery-end"
-  | "native-scrollbar-release";
-
-type TranscriptTailWriteDiagnostic = {
-  source: TranscriptScrollDiagnosticSource;
-  phase: "initial" | "settle";
-  settle?: { frame: number; offBottomFrames: number; stagnantFrames: number };
-};
-
-function diagnosticSourceForScrollEvent(event: TranscriptScrollEvent["type"]): TranscriptScrollDiagnosticSource {
-  switch (event) {
-    case "RESET": return "reset";
-    case "USER_SCROLL_INTENT": return "user-scroll-intent";
-    case "MANUAL_READING": return "manual-reading";
-    case "READER_INTENT_ENDED": return "reader-intent-ended";
-    case "SCROLL_DELIVERED": return "scroll-delivered";
-    case "TAIL_CONTENT_CHANGED": return "tail-content-changed";
-    case "CONTENT_SHRANK": return "content-shrank";
-    case "LAYOUT_HEIGHT_CHANGED": return "layout-height-changed";
-    case "VIEWPORT_RESIZED": return "viewport-resized";
-    case "USER_RESIZE_BEGIN": return "user-resize-begin";
-    case "USER_RESIZE_END": return "user-resize-end";
-    case "SELECTION_BEGIN": return "selection-begin";
-    case "SELECTION_END": return "selection-end";
-    case "PROGRAMMATIC_BEGIN": return "programmatic-begin";
-    case "PROGRAMMATIC_END": return "programmatic-end";
-    case "JUMP_TO_BOTTOM": return "jump-bottom";
-    case "JUMP_TO_INDEX": return "jump-index";
-    case "SCROLL_TO_OFFSET": return "scroll-offset";
-    case "RECOVERY_BEGIN": return "recovery-begin";
-    case "RECOVERY_END": return "recovery-end";
-  }
-}
-
 export function nativeTranscriptDistanceFromBottom(element: {
   scrollHeight: number;
   scrollTop: number;
@@ -129,57 +77,8 @@ export function hasTranscriptScrollableRange(
   return nativeTranscriptBottomTop(element) > threshold;
 }
 
-/** Terminal state every recovery request reaches; reported to diagnostics. */
-export type TranscriptRecoveryTerminal = {
-  id: number;
-  outcome: "done" | "cancelled" | "expired";
-  reason?: TranscriptRecoveryCancelReason;
-};
-
-/** One layout-recovery job the arbiter executes on the integrity hook's
- *  behalf. The arbiter owns every scroll write; the spec supplies only
- *  geometry lookups and lifecycle callbacks. */
-export type TranscriptRecoveryRequestSpec = {
-  anchor: TranscriptLayoutAnchor;
-  /** Absolute Virtuoso location for the current anchor, recomputed per re-aim. */
-  locate: (anchor: TranscriptLayoutAnchor) => FlatIndexLocationWithAlign | undefined;
-  /** The user's resting viewport anchor, sampled at takeover/retry time. */
-  captureUserAnchor: () => TranscriptLayoutAnchor | undefined;
-  onSettle?: (anchor: TranscriptLayoutAnchor) => void;
-  onCancel?: (reason: TranscriptRecoveryCancelReason) => void;
-  onSuspend?: (id: number) => void;
-  onExpired?: (id: number) => void;
-};
-
-/** The recovery lane of the arbiter, consumed by useTranscriptLayoutIntegrity. */
-export type TranscriptScrollArbiterRecoveryApi = {
-  submitRecoveryRequest: (spec: TranscriptRecoveryRequestSpec) => number;
-  retryRecoveryRequest: (id: number) => void;
-  lastGoodAnchorRef: RefObject<TranscriptLayoutAnchor | null>;
-  /** Synchronous getState read on the live Virtuoso handle; null when the
-   *  handle is unmounted. Used to snapshot the measured tree + scrollTop
-   *  before a keyed remount. */
-  captureStateSnapshot: () => StateSnapshot | null;
-};
-
-type ActiveTranscriptRecovery = {
-  id: number;
-  spec: TranscriptRecoveryRequestSpec;
-  anchor: TranscriptLayoutAnchor;
-  retries: number;
-  status: "active" | "suspended";
-  stableFrames: number;
-  deadline: number;
-  frame: number | null;
-};
-
-/**
- * One scroll coordinator around React Virtuoso. No native scrollTop writes.
- * This is the single writer on the Virtuoso handle: tail-follow, jumps,
- * selection edge scrolls, and recovery restores all dispatch through the
- * reducer, which arbitrates preemption (selection > user intent >
- * programmatic > recovery > tail-follow).
- */
+/** Single Virtuoso writer for tail-follow, jumps, selection, and recovery.
+ * The reducer arbitrates selection > user > programmatic > recovery > tail. */
 export function useTranscriptScrollArbiter({
   onRecoveryTerminal,
   onItemMeasured,
@@ -187,8 +86,7 @@ export function useTranscriptScrollArbiter({
   /** Receives the terminal state of every recovery request (done /
    *  cancelled / expired); wired into session diagnostics by the caller. */
   onRecoveryTerminal?: (terminal: TranscriptRecoveryTerminal) => void;
-  /** Receives real, unfrozen DOM measurements produced by Virtuoso's
-   *  itemSize callback. `data-known-size` is deliberately not consulted. */
+  /** Receives real, unfrozen itemSize measurements; data-known-size is ignored. */
   onItemMeasured?: (rowKey: string, kind: TranscriptRow["kind"], height: number, width: number) => void;
 } = {}) {
   const virtuosoRef = useRef<VirtuosoHandle>(null);
@@ -227,14 +125,8 @@ export function useTranscriptScrollArbiter({
   const [isAtBottom, setIsAtBottom] = useState(true);
   const [scrollElement, setScrollElement] = useState<HTMLDivElement | null>(null);
 
-  // Tail writes aim at the scroller's native extent, never at Virtuoso's size
-  // tree. scrollToIndex("LAST") resolves against the estimated tree, which can
-  // already believe it is at the bottom while the DOM extent sits hundreds of
-  // pixels lower; the write then lands nowhere, the arbiter still reads a
-  // non-bottom distance, and the settle loop re-arms every frame (#9028: 340
-  // no-op tail writes in 11s with scrollTop frozen — the reduced-motion
-  // flicker loop). The browser clamps scrollTo against the real extent, so a
-  // native-extent write always converges and is idempotent at the bottom.
+  // Native-extent writes converge against real DOM geometry and avoid
+  // scrollToIndex("LAST") retries against a stale Virtuoso size tree (#9028).
   const scrollToTail = useCallback((
     behavior: "auto" | "smooth",
     diagnostic?: TranscriptTailWriteDiagnostic,
@@ -242,7 +134,7 @@ export function useTranscriptScrollArbiter({
     const element = scrollRef.current;
     if (!element) return;
     const top = element.scrollHeight;
-    if (CAPTURE_SCROLL_DIAGNOSTIC_DETAILS && diagnostic) {
+    if (CAPTURE_TRANSCRIPT_SCROLL_DIAGNOSTICS && diagnostic) {
       noteTranscriptScrollWrite({
         owner: "tail-follow",
         kind: "scrollTo",
@@ -306,7 +198,7 @@ export function useTranscriptScrollArbiter({
         if (element && element === transactionElement && modeRef.current === "tail-follow") {
           const distance = nativeTranscriptDistanceFromBottom(element);
           if (distance > TRANSCRIPT_AT_BOTTOM_THRESHOLD_PX) {
-            scrollToTail("auto", CAPTURE_SCROLL_DIAGNOSTIC_DETAILS && source
+            scrollToTail("auto", CAPTURE_TRANSCRIPT_SCROLL_DIAGNOSTICS && source
               ? { source, phase: "settle", settle: { frame: 0, offBottomFrames: 0, stagnantFrames: 0 } }
               : undefined);
           }
@@ -348,7 +240,7 @@ export function useTranscriptScrollArbiter({
       const stagnantFrames = previous && Math.abs(previous.distance - distance) <= 0.5
         ? previous.stagnantFrames + 1
         : 0;
-      scrollToTail("auto", CAPTURE_SCROLL_DIAGNOSTIC_DETAILS && source
+      scrollToTail("auto", CAPTURE_TRANSCRIPT_SCROLL_DIAGNOSTICS && source
         ? { source, phase: "settle", settle: { frame: offBottomFrames, offBottomFrames, stagnantFrames } }
         : undefined);
       tailSettleProgressRef.current = { distance, stagnantFrames, offBottomFrames };
@@ -383,7 +275,7 @@ export function useTranscriptScrollArbiter({
       if (anchor) lastGoodAnchorRef.current = anchor;
     }
     recovery.spec.onCancel?.(reason);
-    if (CAPTURE_SCROLL_DIAGNOSTIC_DETAILS) recordTranscriptScrollDiagnostic("recovery", { state: "cancelled", reason });
+    if (CAPTURE_TRANSCRIPT_SCROLL_DIAGNOSTICS) recordTranscriptScrollDiagnostic("recovery", { state: "cancelled", reason });
     onRecoveryTerminalRef.current?.({ id, outcome: "cancelled", reason });
   }, []);
 
@@ -405,7 +297,7 @@ export function useTranscriptScrollArbiter({
         scheduleTailSettle(false, source);
         return;
       case "SCROLL_TO_LAST":
-        scrollToTail(command.behavior, CAPTURE_SCROLL_DIAGNOSTIC_DETAILS && source
+        scrollToTail(command.behavior, CAPTURE_TRANSCRIPT_SCROLL_DIAGNOSTICS && source
           ? { source, phase: "initial" }
           : undefined);
         // Re-aim across a bounded number of frames: the first LAST request
@@ -447,32 +339,7 @@ export function useTranscriptScrollArbiter({
     }
     const previousState = stateRef.current;
     const result = reduceTranscriptScroll(previousState, event);
-    const source = CAPTURE_SCROLL_DIAGNOSTIC_DETAILS ? diagnosticSourceForScrollEvent(event.type) : undefined;
-    const tailCommand = result.commands.some((command) => command.type === "AUTOSCROLL_TO_BOTTOM" || command.type === "SCROLL_TO_LAST");
-    const stateChanged = previousState.mode !== result.state.mode
-      || previousState.atBottom !== result.state.atBottom
-      || previousState.scrollable !== result.state.scrollable
-      || previousState.readerIntent !== result.state.readerIntent
-      || previousState.readerIntentCanClaimTail !== result.state.readerIntentCanClaimTail
-      || previousState.recoveryId !== result.state.recoveryId;
-    if (CAPTURE_SCROLL_DIAGNOSTIC_DETAILS && source && (stateChanged || tailCommand || event.type === "CONTENT_SHRANK" || event.type === "LAYOUT_HEIGHT_CHANGED")) {
-      const element = scrollRef.current;
-      recordTranscriptScrollDiagnostic("scroll-state", {
-        source,
-        previousMode: previousState.mode,
-        mode: result.state.mode,
-        atBottom: result.state.atBottom,
-        scrollable: result.state.scrollable,
-        readerIntent: result.state.readerIntent,
-        canClaimTail: result.state.readerIntentCanClaimTail,
-        substantial: event.type === "SCROLL_DELIVERED" ? event.substantial === true : undefined,
-        tailCommand,
-        scrollTop: element?.scrollTop,
-        scrollHeight: element?.scrollHeight,
-        clientHeight: element?.clientHeight,
-        bottomDistance: element ? nativeTranscriptDistanceFromBottom(element) : undefined,
-      });
-    }
+    const source = recordTranscriptScrollTransition(event, previousState, result.state, result.commands, scrollRef.current);
     publishState(result.state);
     for (const command of result.commands) runCommand(command, source);
     return result;
@@ -529,7 +396,7 @@ export function useTranscriptScrollArbiter({
     } else {
       recovery.spec.onCancel?.(terminal.reason);
     }
-    if (CAPTURE_SCROLL_DIAGNOSTIC_DETAILS) {
+    if (CAPTURE_TRANSCRIPT_SCROLL_DIAGNOSTICS) {
       recordTranscriptScrollDiagnostic("recovery", {
         state: terminal.outcome === "cancelled" ? "cancelled" : terminal.outcome,
         reason: terminal.outcome === "cancelled" ? terminal.reason : undefined,
@@ -556,15 +423,11 @@ export function useTranscriptScrollArbiter({
       const row = Array.from(element.querySelectorAll<HTMLElement>(".transcript__row[data-row-key]"))
         .find((candidate) => candidate.dataset.rowKey === anchor.rowKey);
       if (!row) {
-        // Heavy rows can take far longer than a few frames to mount after a
-        // rebuild on slow renderers. Keep re-aiming until the wall-clock
-        // budget expires — re-aims only, never an intermediate scrollBy into
-        // the estimate-based void. On expiry the request suspends; the
-        // integrity owner schedules a bounded retry unless user intent
-        // explicitly cancels it (#8657/#8688).
+        // Re-aim until the mount budget expires, without an intermediate
+        // scrollBy into estimate-only space (#8657/#8688).
         if (Date.now() >= recovery.deadline) {
           recovery.status = "suspended";
-          if (CAPTURE_SCROLL_DIAGNOSTIC_DETAILS) recordTranscriptScrollDiagnostic("recovery", { state: "suspend" });
+          if (CAPTURE_TRANSCRIPT_SCROLL_DIAGNOSTICS) recordTranscriptScrollDiagnostic("recovery", { state: "suspend" });
           recovery.spec.onSuspend?.(recovery.id);
           return;
         }
@@ -608,7 +471,7 @@ export function useTranscriptScrollArbiter({
     // The reducer preempts any older in-flight request ("superseded") before
     // this one becomes active, keeping at most one recovery writer.
     dispatch({ type: "RECOVERY_BEGIN", id, settleMode: spec.anchor.mode === "tail" ? "tail-follow" : "manual" });
-    if (CAPTURE_SCROLL_DIAGNOSTIC_DETAILS) {
+    if (CAPTURE_TRANSCRIPT_SCROLL_DIAGNOSTICS) {
       recordTranscriptScrollDiagnostic("recovery", { state: "begin", mode: spec.anchor.mode === "tail" ? "tail-follow" : "manual" });
     }
     recoveryRef.current = recovery;
@@ -631,7 +494,7 @@ export function useTranscriptScrollArbiter({
     recovery.status = "active";
     recovery.stableFrames = 0;
     recovery.deadline = Date.now() + ANCHOR_RESTORE_BUDGET_MS;
-    if (CAPTURE_SCROLL_DIAGNOSTIC_DETAILS) recordTranscriptScrollDiagnostic("recovery", { state: "retry" });
+    if (CAPTURE_TRANSCRIPT_SCROLL_DIAGNOSTICS) recordTranscriptScrollDiagnostic("recovery", { state: "retry" });
     launchRecovery(recovery);
   }, [finishRecovery, launchRecovery]);
 
@@ -665,7 +528,7 @@ export function useTranscriptScrollArbiter({
     setNativeScrollbarDragging(false);
     if (modeRef.current === "tail-follow") scheduleTailSettle(
       false,
-      CAPTURE_SCROLL_DIAGNOSTIC_DETAILS ? "native-scrollbar-release" : undefined,
+      CAPTURE_TRANSCRIPT_SCROLL_DIAGNOSTICS ? "native-scrollbar-release" : undefined,
     );
   }, [deliverScroll, dispatch, endReaderIntent, scheduleTailSettle]);
 
@@ -710,7 +573,7 @@ export function useTranscriptScrollArbiter({
   const itemSize = useCallback<SizeFunction>((element, field) => {
     const frozen = nativeScrollbarDragRef.current || nativeScrollbarDragging;
     const measured = measureTranscriptVirtuosoItem(element, field, frozen);
-    if (CAPTURE_SCROLL_DIAGNOSTIC_DETAILS) noteTranscriptRowMeasurement(element, field, measured);
+    if (CAPTURE_TRANSCRIPT_SCROLL_DIAGNOSTICS) noteTranscriptRowMeasurement(element, field, measured);
     if (!frozen && field === "offsetHeight") {
       const rowKey = element.dataset.rowKey;
       const kind = element.dataset.rowKind as TranscriptRow["kind"] | undefined;

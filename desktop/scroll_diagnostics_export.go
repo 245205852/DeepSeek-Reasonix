@@ -26,6 +26,11 @@ const (
 
 var scrollDiagnosticReportIDPattern = regexp.MustCompile(`^[a-f0-9]{32,64}$`)
 var scrollDiagnosticBuildValuePattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
+var allowedScrollDiagnosticEventTypes = map[string]bool{
+	"start": true, "stop": true, "mark": true, "sample": true, "wheel": true,
+	"scroll": true, "scroll-write": true, "items-rendered": true, "list-height": true,
+	"row-measure": true, "scroll-state": true, "blank-check": true, "blank-reset": true, "recovery": true,
+}
 
 type scrollDiagnosticPayload struct {
 	SchemaVersion int                      `json:"schemaVersion"`
@@ -127,7 +132,28 @@ func validateScrollDiagnosticsPayload(payload scrollDiagnosticPayload) error {
 	if payload.SchemaVersion != scrollDiagnosticSchemaVersion {
 		return errors.New("unsupported scroll diagnostic schema")
 	}
-	manifest := payload.Manifest
+	if err := validateScrollDiagnosticManifest(payload.Manifest); err != nil {
+		return err
+	}
+	if err := validateScrollDiagnosticSummary(payload.Summary, len(payload.Events)); err != nil {
+		return err
+	}
+	markerCount := 0
+	for _, event := range payload.Events {
+		if err := validateScrollDiagnosticEvent(event, payload.Summary.DurationMS); err != nil {
+			return err
+		}
+		if event.Type == "mark" {
+			markerCount++
+		}
+	}
+	if markerCount != payload.Summary.MarkerCount {
+		return errors.New("invalid scroll diagnostic marker count")
+	}
+	return nil
+}
+
+func validateScrollDiagnosticManifest(manifest scrollDiagnosticManifest) error {
 	if !scrollDiagnosticReportIDPattern.MatchString(manifest.ReportID) {
 		return errors.New("invalid scroll diagnostic report id")
 	}
@@ -146,6 +172,10 @@ func validateScrollDiagnosticsPayload(payload scrollDiagnosticPayload) error {
 	if len(manifest.UserAgent) == 0 || len(manifest.UserAgent) > 512 || hasUnsafeDiagnosticText(manifest.UserAgent) {
 		return errors.New("invalid scroll diagnostic user agent")
 	}
+	return validateScrollDiagnosticDisplay(manifest)
+}
+
+func validateScrollDiagnosticDisplay(manifest scrollDiagnosticManifest) error {
 	if !finiteInRange(manifest.DevicePixelRatio, 0.25, 16) || manifest.ViewportWidth < 0 || manifest.ViewportWidth > 32768 || manifest.ViewportHeight < 0 || manifest.ViewportHeight > 32768 ||
 		!finiteInRange(manifest.TranscriptWidth, 0, 32768) || !finiteInRange(manifest.ContentWidth, 0, 32768) ||
 		!finiteInRange(manifest.FontSize, 0, 512) || !finiteInRange(manifest.LineHeight, 0, 1024) {
@@ -154,23 +184,15 @@ func validateScrollDiagnosticsPayload(payload scrollDiagnosticPayload) error {
 	if !oneOf(manifest.ProcessFold, "auto", "expanded") || !oneOf(manifest.ReasoningDisplay, "hidden", "summary", "auto", "expanded", "legacy-collapsed", "pending") {
 		return errors.New("invalid scroll diagnostic display preferences")
 	}
-	if len(payload.Events) == 0 || len(payload.Events) > maxScrollDiagnosticEvents {
+	return nil
+}
+
+func validateScrollDiagnosticSummary(summary scrollDiagnosticSummary, eventCount int) error {
+	if eventCount == 0 || eventCount > maxScrollDiagnosticEvents {
 		return errors.New("invalid scroll diagnostic event count")
 	}
-	if payload.Summary.EventCount != len(payload.Events) || payload.Summary.DurationMS < 0 || payload.Summary.DurationMS > 95_000 || payload.Summary.DroppedEventCount < 0 || payload.Summary.DroppedEventCount > 1_000_000 || payload.Summary.MarkerCount < 0 || payload.Summary.MarkerCount > len(payload.Events) {
+	if summary.EventCount != eventCount || summary.DurationMS < 0 || summary.DurationMS > 95_000 || summary.DroppedEventCount < 0 || summary.DroppedEventCount > 1_000_000 || summary.MarkerCount < 0 || summary.MarkerCount > eventCount {
 		return errors.New("invalid scroll diagnostic summary")
-	}
-	markerCount := 0
-	for _, event := range payload.Events {
-		if err := validateScrollDiagnosticEvent(event, payload.Summary.DurationMS); err != nil {
-			return err
-		}
-		if event.Type == "mark" {
-			markerCount++
-		}
-	}
-	if markerCount != payload.Summary.MarkerCount {
-		return errors.New("invalid scroll diagnostic marker count")
 	}
 	return nil
 }
@@ -189,12 +211,7 @@ func finiteInRange(value, min, max float64) bool {
 }
 
 func validateScrollDiagnosticEvent(event scrollDiagnosticEvent, durationMS int) error {
-	allowedTypes := map[string]bool{
-		"start": true, "stop": true, "mark": true, "sample": true, "wheel": true,
-		"scroll": true, "scroll-write": true, "items-rendered": true, "list-height": true,
-		"row-measure": true, "scroll-state": true, "blank-check": true, "blank-reset": true, "recovery": true,
-	}
-	if !allowedTypes[event.Type] || event.T < 0 || event.T > durationMS+1_000 {
+	if !allowedScrollDiagnosticEventTypes[event.Type] || event.T < 0 || event.T > durationMS+1_000 {
 		return errors.New("invalid scroll diagnostic event")
 	}
 	for _, value := range []*float64{
@@ -216,19 +233,31 @@ func validateScrollDiagnosticEvent(event scrollDiagnosticEvent, durationMS int) 
 			return errors.New("invalid scroll diagnostic event counter")
 		}
 	}
-	if len(event.TargetIndex) > 0 {
-		var number float64
-		if err := json.Unmarshal(event.TargetIndex, &number); err == nil {
-			if !finiteInRange(number, 0, 1_000_000_000) || number != math.Trunc(number) {
-				return errors.New("invalid scroll diagnostic target index")
-			}
-		} else {
-			var label string
-			if json.Unmarshal(event.TargetIndex, &label) != nil || label != "LAST" {
-				return errors.New("invalid scroll diagnostic target index")
-			}
-		}
+	if err := validateScrollDiagnosticTargetIndex(event.TargetIndex); err != nil {
+		return err
 	}
+	return validateScrollDiagnosticEventLabels(event)
+}
+
+func validateScrollDiagnosticTargetIndex(value json.RawMessage) error {
+	if len(value) == 0 {
+		return nil
+	}
+	var number float64
+	if err := json.Unmarshal(value, &number); err == nil {
+		if finiteInRange(number, 0, 1_000_000_000) && number == math.Trunc(number) {
+			return nil
+		}
+		return errors.New("invalid scroll diagnostic target index")
+	}
+	var label string
+	if json.Unmarshal(value, &label) != nil || label != "LAST" {
+		return errors.New("invalid scroll diagnostic target index")
+	}
+	return nil
+}
+
+func validateScrollDiagnosticEventLabels(event scrollDiagnosticEvent) error {
 	if event.Mode != "" && !oneOf(event.Mode, "tail-follow", "manual", "user-resize", "selection", "restoring", "unknown") {
 		return errors.New("invalid scroll diagnostic mode")
 	}
