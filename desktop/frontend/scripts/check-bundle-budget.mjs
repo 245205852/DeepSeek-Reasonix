@@ -74,7 +74,12 @@ console.log("\nbundle budgets");
 // recovery probe add less than 0.1% gzip; retain them with a 0.5 KiB (0.118%)
 // production ratchet rather than weakening either recovery contract. The
 // bounded allowance also covers small gzip drift from the embedded build SHA.
-const initialJSBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 428.0 : 425.5;
+// Reader extent stabilization adds 1.2 KiB gzip (0.28%) in production for its
+// bounded input, collapse, rebound, and ownership transaction. Retain it with
+// a 1.5 KiB (0.35%) ratchet instead of weakening the Windows scroll invariant.
+// Test diagnostics add 1.0 KiB gzip (0.23%) and 4.0 KiB raw (0.17%); keep that
+// raw allowance channel-specific so the production ceiling does not widen.
+const initialJSBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 428.0 : 427.0;
 assertBudget("initial JavaScript gzip", initialJSGzip, initialJSBudgetKiB * 1024);
 assertBudget("largest initial JavaScript chunk gzip", largestInitialJS, 280 * 1024);
 assertBudget("render-blocking CSS gzip", initialCSSGzip, 4 * 1024);
@@ -107,5 +112,6 @@ const rawInitialBytes = [...initialJS, ...initialCSS, ...appShellCSS]
   .reduce((total, path) => total + statSync(path).size, 0);
 // The maintained Virtuoso engine adds 49.1 KiB raw (2.2%) over the previous
 // 2268.7 KiB gate. Retain 1% headroom to bound hash/minifier drift.
-assertBudget("initial raw JavaScript and CSS", rawInitialBytes, 2_341 * 1024);
+const rawInitialBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 2_344 : 2_341;
+assertBudget("initial raw JavaScript and CSS", rawInitialBytes, rawInitialBudgetKiB * 1024);
 assertBudget("largest initial JavaScript chunk raw", largestInitialJSRaw, 1_000 * 1024);
