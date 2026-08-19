@@ -6,7 +6,8 @@
 // refs, and the markdown cache budget.
 
 import { TranscriptStore } from "../lib/transcriptStore";
-import { historyMessagesToItems, historyTurnsToLoad, type Item } from "../lib/useController";
+import { historyPageRequestBudget } from "../lib/historyPaging";
+import { historyMessagesToItems, type Item } from "../lib/useController";
 import type {
   HistoryContentChunk,
   HistoryContentRef,
@@ -104,7 +105,8 @@ class FakeBackend {
     };
   }
 
-  // Turn-budgeted windowing, mirroring the Go slice semantics.
+  // Turn- and entry-budgeted windowing, mirroring the Go slice semantics for
+  // the compact stress fixtures used below.
   async HistorySliceForTab(_tabID: string, req: HistorySliceRequest): Promise<HistorySlice> {
     this.sliceCalls.push(req);
     if (this.sliceGate) {
@@ -135,6 +137,8 @@ class FakeBackend {
         if (turnsOf[i] >= oldestTurn) { lo = i; break; }
       }
     }
+    const entries = Math.max(1, Math.floor(req.entries || 120));
+    lo = Math.max(lo, before - entries);
     return this.slice(lo, before);
   }
 
@@ -271,9 +275,9 @@ console.log("\ntranscript store");
   const startedAt = performance.now();
   let projection = await store.loadLatest("tab-stress", "/s/stress.jsonl", { turns: 60 });
   let pages = 1;
-  while (projection?.hasOlder && pages <= 25) {
-    const turns = historyTurnsToLoad(projection.startTurn, projection.totalTurns, 1);
-    const older = await store.loadOlder("tab-stress", "/s/stress.jsonl", { turns });
+  while (projection?.hasOlder && pages <= 40) {
+    const budget = historyPageRequestBudget(projection.startTurn, projection.totalTurns, 1);
+    const older = await store.loadOlder("tab-stress", "/s/stress.jsonl", budget);
     if (!older) break;
     projection = older;
     pages += 1;
@@ -281,8 +285,9 @@ console.log("\ntranscript store");
   const elapsedMs = performance.now() - startedAt;
   const users = (projection?.items ?? []).filter((item): item is Extract<Item, { kind: "user" }> => item.kind === "user");
   eq(projection?.hasOlder, false, "10,000-turn target paging reaches the first page");
-  eq(pages, 21, "10,000-turn target paging uses one 60-turn page plus twenty bounded pages");
-  eq(backend.sliceCalls.length, 21, "10,000-turn target paging performs the expected bounded backend calls");
+  eq(pages, 32, "10,000-turn target paging respects both turn and production entry bounds");
+  eq(backend.sliceCalls.length, 32, "10,000-turn target paging performs the expected bounded backend calls");
+  ok(backend.sliceCalls.slice(1).every((request) => request.entries === 1000), "targeted pages use the backend's bounded 1000-entry capacity");
   eq(users.length, 10_000, "10,000-turn target paging preserves every question");
   eq(users[0]?.historyTurn, 1, "10,000-turn target paging lands on absolute turn one");
   eq(users[users.length - 1]?.historyTurn, 10_000, "10,000-turn target paging keeps the tail coordinate");

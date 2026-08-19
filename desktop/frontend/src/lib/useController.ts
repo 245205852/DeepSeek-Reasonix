@@ -25,6 +25,7 @@ import { applyHydrateErrorState, hydratePlaceholderItems as resolveHydratePlaceh
 import { isHostRecoveryGuidance } from "./hostRecoverySteer";
 import { activeTabHydrationPlan, canAdoptUnboundLiveSurface, duplicateLiveItemIds, hasCachedLiveTurn, hasReusableCachedTranscript, hydratedHistoryApplyMode, sameSessionHydrateIdentity, sameSessionPlaceholderItems, shouldPreferResidentHistory, type HydrateSurfacePolicy } from "./hydrateHistoryApply";
 import { hydrateIdentityCurrent } from "./sessionIdentity";
+import { historyPageRequestBudget } from "./historyPaging";
 import { sameStringList, sameTodoList } from "./todoVisibility";
 import { resolveSnapshotTurnStartedAt, resolveTurnStartedAt, snapshotPredatesTurnLifecycle } from "./turnTiming";
 import { useStaleTurnWatchdog } from "./useStaleTurnWatchdog";
@@ -232,17 +233,6 @@ type ModelSwitchQueueState = {
   fallbackBalance?: BalanceInfo;
 };
 const HISTORY_PAGE_TURNS = 60;
-const HISTORY_JUMP_MAX_TURNS = 500;
-
-export function historyTurnsToLoad(startTurn: number, totalTurns: number, targetTurn?: number): number {
-  const normalizedTarget = Number.isInteger(targetTurn) && (targetTurn ?? 0) > 0
-    ? Math.min(Math.max(1, totalTurns), targetTurn as number)
-    : undefined;
-  const missingTurns = normalizedTarget === undefined
-    ? HISTORY_PAGE_TURNS
-    : Math.max(HISTORY_PAGE_TURNS, startTurn - normalizedTarget);
-  return Math.min(HISTORY_JUMP_MAX_TURNS, missingTurns);
-}
 
 export type TurnPhaseName = "working" | "checking" | "verifying" | "reviewing" | string;
 export type Item =
@@ -3144,14 +3134,14 @@ export function useController() {
     const sessionPath = state.meta?.sessionPath ?? "";
     const sessionRevision = state.meta?.sessionRevision ?? state.historyRevision;
     const sessionDigest = state.meta?.sessionDigest ?? state.historyDigest;
-    const pageTurns = historyTurnsToLoad(state.historyStartTurn, state.historyTotalTurns, targetTurn);
+    const pageBudget = historyPageRequestBudget(state.historyStartTurn, state.historyTotalTurns, targetTurn);
     const requestSeq = (historyOlderSeq.current.get(targetTabId) ?? 0) + 1;
     historyOlderSeq.current.set(targetTabId, requestSeq);
     ensureTranscriptSubscription(targetTabId);
     dispatchTo(targetTabId, { type: "history_older_start" });
     const startedAt = Date.now();
     try {
-      const result = await getTranscriptStore().loadOlder(targetTabId, sessionPath, { turns: pageTurns });
+      const result = await getTranscriptStore().loadOlder(targetTabId, sessionPath, pageBudget);
       if (historyOlderSeq.current.get(targetTabId) !== requestSeq) return false;
       const current = statesRef.current.get(targetTabId);
       if (!current) return false;

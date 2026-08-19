@@ -1,6 +1,7 @@
 // Run: tsx src/__tests__/use-controller-meta.test.ts
 
-import { currentTurnWaitMs, effortSwitchNoticeText, foregroundRunningFromRuntimeMeta, historyMessagesToItems, historyTurnsToLoad, initialState, localizedBackendNoticeText, localizedNoticeText, metaFromTab, modelSwitchNoticeText, reducer, sameMeta, type Item } from "../lib/useController";
+import { currentTurnWaitMs, effortSwitchNoticeText, foregroundRunningFromRuntimeMeta, historyMessagesToItems, initialState, localizedBackendNoticeText, localizedNoticeText, metaFromTab, modelSwitchNoticeText, reducer, sameMeta, type Item } from "../lib/useController";
+import { historyPageRequestBudget, historyTurnsToLoad } from "../lib/historyPaging";
 import { shouldReconcileStaleTurn } from "../lib/useStaleTurnWatchdog";
 import { parseTodos } from "../lib/tools";
 import { resolveTodoPanelTodos } from "../lib/todoVisibility";
@@ -276,6 +277,8 @@ console.log("\nuse controller meta");
   eq(historyTurnsToLoad(941, 1_000, 1), 500, "a distant question jump uses the bounded 500-turn history window");
   eq(historyTurnsToLoad(441, 1_000, 1), 440, "the follow-up jump page reaches the requested turn without overfetching");
   eq(historyTurnsToLoad(2, 61), 60, "ordinary automatic history loading keeps the standard page size");
+  eq(JSON.stringify(historyPageRequestBudget(941, 1_000, 1)), JSON.stringify({ turns: 500, entries: 1000 }), "a distant jump uses the backend's bounded entry capacity");
+  eq(JSON.stringify(historyPageRequestBudget(2, 61)), JSON.stringify({ turns: 60 }), "ordinary history loading keeps the default entry and byte budgets");
 
   let s = reducer(initialState, {
     type: "event",
