@@ -2679,6 +2679,7 @@ export const en = {
   "settings.addProvider.confirmResetPreset": "Confirm reset",
   "settings.customProviderName": "Custom provider name",
   "settings.customProviderNamePlaceholder": "e.g. my-proxy",
+  "settings.customProviderNameReadonlyHint": "Changing the provider name is not supported yet",
   "settings.providerNamePlaceholder": "Provider name (e.g. deepseek-proxy)",
   "settings.providerProtocol": "Connection protocol",
   "settings.providerProtocolOpenAI": "OpenAI-compatible",

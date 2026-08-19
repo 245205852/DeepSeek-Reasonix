@@ -294,6 +294,55 @@ func TestPlanModeTodoWriteCanCompleteCurrentItem(t *testing.T) {
 	}
 }
 
+func TestPlanModeTodoCreatedInTurnUsesTodoWriteRecovery(t *testing.T) {
+	reg := tool.NewRegistry()
+	reg.Add(mustBuiltinTool(t, "todo_write"))
+	reg.Add(mustBuiltinTool(t, "complete_step"))
+	a := New(nil, reg, NewSession(""), Options{}, event.Discard)
+	a.SetPlanMode(true)
+
+	created := a.executeOne(context.Background(), &a.turn, provider.ToolCall{
+		ID:   "todo",
+		Name: "todo_write",
+		Arguments: `{"todos":[
+			{"content":"finish the cleanup","status":"in_progress","step_id":"cleanup_step_01"}
+		]}`,
+	})
+	if created.blocked || created.errMsg != "" {
+		t.Fatalf("create Plan todo outcome = %+v", created)
+	}
+
+	signoff := a.executeOne(context.Background(), &a.turn, provider.ToolCall{
+		ID:   "sign-off",
+		Name: "complete_step",
+		Arguments: `{
+			"step_id":"cleanup_step_01",
+			"result":"cleanup finished",
+			"evidence":[{"kind":"manual","summary":"confirmed the cleanup output"}]
+		}`,
+	})
+	if !signoff.blocked || !strings.Contains(signoff.output, "only available after plan approval") {
+		t.Fatalf("Plan complete_step outcome = %+v, want phase block", signoff)
+	}
+	if got := a.CanonicalTodoState(); len(got) != 1 || got[0].Status != "in_progress" {
+		t.Fatalf("blocked sign-off changed canonical todos = %+v", got)
+	}
+
+	completed := a.executeOne(context.Background(), &a.turn, provider.ToolCall{
+		ID:   "complete-todo",
+		Name: "todo_write",
+		Arguments: `{"todos":[
+			{"content":"finish the cleanup","status":"completed","step_id":"cleanup_step_01"}
+		]}`,
+	})
+	if completed.blocked || completed.errMsg != "" {
+		t.Fatalf("todo_write recovery outcome = %+v", completed)
+	}
+	if got := a.CanonicalTodoState(); len(got) != 1 || got[0].Status != "completed" {
+		t.Fatalf("todo_write recovery state = %+v, want completed", got)
+	}
+}
+
 func TestPlanModeKeepsCompleteStepUnavailable(t *testing.T) {
 	reg := tool.NewRegistry()
 	reg.Add(mustBuiltinTool(t, "complete_step"))
