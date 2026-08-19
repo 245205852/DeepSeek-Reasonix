@@ -119,6 +119,106 @@ func TestRapidCtrlVDoesNotDropSecondTextFallback(t *testing.T) {
 	}
 }
 
+func TestOverlappingCtrlVDoesNotDropSecondTextFallback(t *testing.T) {
+	setLocalClipboardSession(t)
+	stubEmptyImageClipboard(t, "text")
+
+	m := newComposerMouseTestTUI(t, 60, 16)
+	next, imageProbe := m.Update(imagePasteKey())
+	m = next.(chatTUI)
+	next, duplicateProbe := m.Update(imagePasteKey())
+	m = next.(chatTUI)
+	if duplicateProbe != nil {
+		t.Fatal("overlapping clipboard requests should share one image probe")
+	}
+
+	next, textFallback := m.Update(imageProbe())
+	m = next.(chatTUI)
+	result := clipboardTextPasteResultFromCmd(t, textFallback)
+	next, _ = m.Update(result)
+	m = next.(chatTUI)
+
+	if got, want := m.input.Value(), "texttext"; got != want {
+		t.Fatalf("overlapping clipboard fallbacks produced %q, want %q", got, want)
+	}
+}
+
+func TestOverlappingCtrlVPreservesRequestNotOwnedByTerminal(t *testing.T) {
+	setLocalClipboardSession(t)
+	stubEmptyImageClipboard(t, "text")
+
+	m := newComposerMouseTestTUI(t, 60, 16)
+	next, imageProbe := m.Update(imagePasteKey())
+	m = next.(chatTUI)
+	next, _ = m.Update(imagePasteKey())
+	m = next.(chatTUI)
+
+	// One bracketed paste satisfies one request while the shared image probe is
+	// in flight. The other request must still use the native-text fallback.
+	next, _ = m.Update(tea.PasteMsg{Content: "text"})
+	m = next.(chatTUI)
+	next, textFallback := m.Update(imageProbe())
+	m = next.(chatTUI)
+	result := clipboardTextPasteResultFromCmd(t, textFallback)
+	next, _ = m.Update(result)
+	m = next.(chatTUI)
+
+	if got, want := m.input.Value(), "texttext"; got != want {
+		t.Fatalf("mixed terminal and clipboard fallbacks produced %q, want %q", got, want)
+	}
+}
+
+func TestOverlappingCtrlVStillAttachesImageOnce(t *testing.T) {
+	setLocalClipboardSession(t)
+	m := newComposerMouseTestTUI(t, 60, 16)
+
+	next, imageProbe := m.Update(imagePasteKey())
+	m = next.(chatTUI)
+	if imageProbe == nil {
+		t.Fatal("first image paste shortcut did not start a probe")
+	}
+	next, duplicateProbe := m.Update(imagePasteKey())
+	m = next.(chatTUI)
+	if duplicateProbe != nil {
+		t.Fatal("overlapping image paste started a duplicate probe")
+	}
+
+	next, _ = m.Update(clipboardImageMsg{path: ".reasonix/attachments/test.png"})
+	m = next.(chatTUI)
+	if got, want := m.input.Value(), "[image #1] "; got != want {
+		t.Fatalf("overlapping image paste produced %q, want %q", got, want)
+	}
+	if m.clipboardImagePending || m.clipboardImageRequests != 0 {
+		t.Fatalf("completed image paste kept pending state: pending=%v requests=%d", m.clipboardImagePending, m.clipboardImageRequests)
+	}
+}
+
+func TestLateTerminalPasteCancelsScheduledTextFallback(t *testing.T) {
+	setLocalClipboardSession(t)
+	stubEmptyImageClipboard(t, "term text")
+
+	m := newComposerMouseTestTUI(t, 60, 16)
+	next, imageProbe := m.Update(imagePasteKey())
+	m = next.(chatTUI)
+	next, textFallback := m.Update(imageProbe())
+	m = next.(chatTUI)
+	if textFallback == nil {
+		t.Fatal("empty image clipboard did not schedule a text fallback")
+	}
+
+	// The terminal paste arrives after the image result but before the native
+	// text read completes. It still owns this paste and must cancel the fallback.
+	next, _ = m.Update(tea.PasteMsg{Content: "term text"})
+	m = next.(chatTUI)
+	result := clipboardTextPasteResultFromCmd(t, textFallback)
+	next, _ = m.Update(result)
+	m = next.(chatTUI)
+
+	if got, want := m.input.Value(), "term text"; got != want {
+		t.Fatalf("late terminal paste was duplicated: %q, want %q", got, want)
+	}
+}
+
 func TestClipboardImagePasteKeepsNoticeForRealFailures(t *testing.T) {
 	setLocalClipboardSession(t)
 	m := newComposerMouseTestTUI(t, 60, 16)

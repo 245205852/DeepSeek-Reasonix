@@ -275,15 +275,16 @@ type chatTUI struct {
 	copyNoticeText string
 	copyNoticeSeq  int
 	// clipboardImagePending keeps the footer honest while the platform clipboard
-	// is being decoded and prevents repeated Ctrl+V presses from attaching the
-	// same image multiple times before the first read completes.
-	clipboardImagePending bool
+	// is being decoded. clipboardImageRequests counts shortcuts coalesced into the
+	// probe: an image attaches once, while a text fallback preserves every press.
+	clipboardImagePending  bool
+	clipboardImageRequests int
 
 	// terminalPasteSeq counts bracketed pastes delivered by the terminal.
 	// clipboardImageTerminalPasteSeq snapshots it when an image probe starts, so a
 	// terminal that pastes text itself is never pasted into twice.
-	terminalPasteSeq               int
-	clipboardImageTerminalPasteSeq int
+	terminalPasteSeq               uint64
+	clipboardImageTerminalPasteSeq uint64
 
 	// The user bubble is echoed to scrollback immediately on Enter (bubbleStartIdx
 	// marks where in the transcript it landed). It stays "un-sendable" until the
@@ -2016,7 +2017,9 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, m.startTurnWithRaw(sent, msg.display, msg.restore, msg.display))
 
 	case clipboardImageMsg:
+		requests := max(m.clipboardImageRequests, 1)
 		m.clipboardImagePending = false
+		m.clipboardImageRequests = 0
 		if msg.err != nil {
 			// An empty image clipboard is the normal case for a text paste on
 			// terminals that hand Ctrl+V to the application instead of pasting
@@ -2025,8 +2028,9 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// Skip the fallback when the terminal already delivered a
 				// bracketed paste for this key press; it owns the paste and
 				// pasting again would duplicate the text.
-				if m.terminalPasteSeq == m.clipboardImageTerminalPasteSeq {
-					cmds = append(cmds, pasteClipboardText())
+				pending := pendingClipboardTextPastes(requests, m.clipboardImageTerminalPasteSeq, m.terminalPasteSeq)
+				if pending > 0 {
+					cmds = append(cmds, pasteClipboardTextGuarded(m.terminalPasteSeq, pending))
 				}
 				break
 			}
@@ -2051,7 +2055,14 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.text == "" {
 			break
 		}
-		return m.applyComposerPaste(tea.PasteMsg{Content: msg.text}, false)
+		count := 1
+		if msg.pending > 0 {
+			count = pendingClipboardTextPastes(msg.pending, msg.terminalPasteSeq, m.terminalPasteSeq)
+			if count == 0 {
+				break
+			}
+		}
+		return m.applyComposerPasteCount(tea.PasteMsg{Content: msg.text}, false, count)
 
 	case clipboardCopyMsg:
 		if msg.statusHint && msg.seq != m.copyNoticeSeq {
