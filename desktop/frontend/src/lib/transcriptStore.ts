@@ -273,7 +273,7 @@ function convertRecord(
   }
   if (m.role === "user") {
     if (m.content.trim() !== "") {
-      items.push({ kind: "user", id, text: m.content, submitText: m.submitText, createdAt: m.createdAt, checkpointTurn: m.checkpointTurn });
+      items.push({ kind: "user", id, text: m.content, submitText: m.submitText, createdAt: m.createdAt, checkpointTurn: m.checkpointTurn, historyTurn: rec.turn > 0 ? rec.turn : undefined });
     }
     return { items, claims, unresolvedIds, pendingPositional, matches };
   }

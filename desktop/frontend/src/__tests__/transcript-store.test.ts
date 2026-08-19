@@ -219,6 +219,11 @@ console.log("\ntranscript store");
   const first = await store.loadLatest("tab-1", "/s/one.jsonl", { turns: 12 });
   ok(!!first && first.items.length > 0, "latest page projects items");
   eq(first?.hasOlder, true, "latest page reports older history");
+  const projectedTurns = (first?.items ?? [])
+    .filter((item): item is Extract<Item, { kind: "user" }> => item.kind === "user")
+    .map((item) => item.historyTurn);
+  eq(projectedTurns[projectedTurns.length - 1], 46, "history user items retain their absolute turn for complete-session navigation");
+  ok(projectedTurns.every((turn) => Number.isInteger(turn) && (turn ?? 0) > 0), "every paged user item carries an absolute history turn");
   const firstIds = (first?.items ?? []).map((item) => item.id);
   await drainOlder(store, "tab-1", "/s/one.jsonl", 12);
   const full = store.peek("tab-1", "/s/one.jsonl");

@@ -904,7 +904,7 @@ await act(async () => {
 });
 await waitFor("tab-l metadata advances", () => controller?.state.meta?.sessionRevision === 2);
 historyLOlder = deferred<HistorySlice>();
-let olderLoad: Promise<void> | undefined;
+let olderLoad: Promise<boolean> | undefined;
 await act(async () => {
   olderLoad = controller?.loadOlderHistory("tab-l");
   await flushPromises();
@@ -922,6 +922,7 @@ await act(async () => {
 });
 ok(!(controller?.state.items.some((item) => item.kind === "user" && item.text === "stale older L") ?? false), "stale older page is discarded after session fingerprint changes");
 eq(controller?.state.historyOlderLoading, false, "stale older page releases its loading state");
+eq(controller?.state.historyOlderError, "history identity changed", "stale older page enters the explicit retry state instead of silently auto-retrying");
 
 // The backend transcript and sidecar are separate durable files. If a save
 // advances between those reads, hydration must reconcile the pair instead of

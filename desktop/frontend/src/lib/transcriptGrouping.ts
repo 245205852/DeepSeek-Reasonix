@@ -1,19 +1,17 @@
 import { replaceAttachmentRefsForDisplay } from "./attachmentDisplay";
 import type { Item } from "./useController";
 
-export type QuestionAnchor = { id: string; text: string; turn: number; checkpointTurn?: number };
+export type QuestionAnchor = { id: string; text: string; turn: number; checkpointTurn?: number; loaded?: boolean };
 export type QuestionAnchorPosition = { turn: number; top: number };
 
 export function activeQuestionTurn(
-  questions: readonly QuestionAnchor[],
   positions: readonly QuestionAnchorPosition[],
   viewportTop = 0,
 ): number | undefined {
-  const questionTurns = new Set(questions.map((question) => question.turn));
   let firstMounted: QuestionAnchorPosition | undefined;
   let active: QuestionAnchorPosition | undefined;
   for (const position of positions) {
-    if (!questionTurns.has(position.turn) || !Number.isFinite(position.top)) continue;
+    if (!Number.isInteger(position.turn) || !Number.isFinite(position.top)) continue;
     if (!firstMounted || position.top < firstMounted.top) firstMounted = position;
     if (position.top <= viewportTop && (!active || position.top > active.top)) active = position;
   }

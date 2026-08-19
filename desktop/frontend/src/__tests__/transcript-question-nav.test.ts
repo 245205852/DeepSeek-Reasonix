@@ -24,7 +24,7 @@ const questions = [
 console.log("\ntranscript question navigation");
 
 equal(
-  activeQuestionTurn(questions, [
+  activeQuestionTurn([
     { turn: 0, top: -520 },
     { turn: 1, top: -36 },
     { turn: 2, top: 240 },
@@ -34,7 +34,7 @@ equal(
 );
 
 equal(
-  activeQuestionTurn(questions, [
+  activeQuestionTurn([
     { turn: 1, top: 28 },
     { turn: 2, top: 300 },
   ] satisfies QuestionAnchorPosition[], 0),
@@ -43,12 +43,12 @@ equal(
 );
 
 equal(
-  activeQuestionTurn(questions, [{ turn: 2, top: -12 }] satisfies QuestionAnchorPosition[], 0),
+  activeQuestionTurn([{ turn: 2, top: -12 }] satisfies QuestionAnchorPosition[], 0),
   2,
   "virtualized scrolling can update from the mounted question window",
 );
 
-equal(activeQuestionTurn(questions, [], 0), undefined, "missing anchors leave the active question unchanged");
+equal(activeQuestionTurn([], 0), undefined, "missing anchors leave the active question unchanged");
 
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);

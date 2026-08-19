@@ -1,6 +1,6 @@
 // Run: tsx src/__tests__/use-controller-meta.test.ts
 
-import { currentTurnWaitMs, effortSwitchNoticeText, foregroundRunningFromRuntimeMeta, historyMessagesToItems, initialState, localizedBackendNoticeText, localizedNoticeText, metaFromTab, modelSwitchNoticeText, reducer, sameMeta, type Item } from "../lib/useController";
+import { currentTurnWaitMs, effortSwitchNoticeText, foregroundRunningFromRuntimeMeta, historyMessagesToItems, historyTurnsToLoad, initialState, localizedBackendNoticeText, localizedNoticeText, metaFromTab, modelSwitchNoticeText, reducer, sameMeta, type Item } from "../lib/useController";
 import { shouldReconcileStaleTurn } from "../lib/useStaleTurnWatchdog";
 import { parseTodos } from "../lib/tools";
 import { resolveTodoPanelTodos } from "../lib/todoVisibility";
@@ -273,6 +273,10 @@ console.log("\nuse controller meta");
 }
 
 {
+  eq(historyTurnsToLoad(941, 1_000, 1), 500, "a distant question jump uses the bounded 500-turn history window");
+  eq(historyTurnsToLoad(441, 1_000, 1), 440, "the follow-up jump page reaches the requested turn without overfetching");
+  eq(historyTurnsToLoad(2, 61), 60, "ordinary automatic history loading keeps the standard page size");
+
   let s = reducer(initialState, {
     type: "event",
     e: { kind: "notice", level: "warn", code: "session_recovery_depth_cap", text: "reworded recovery maintenance" },
@@ -726,6 +730,10 @@ eq(sameMeta(meta({ collaborationMode: "normal" }), meta({ collaborationMode: "pl
   eq(recentUser?.kind === "user" && recentUser.checkpointTurn, 1060, "paged history hydrates its authoritative checkpoint turn");
   s = reducer(s, { type: "history_older_start" });
   eq(s.historyOlderLoading, true, "older history request marks loading");
+  s = reducer(s, { type: "history_older_error", error: "read failed" });
+  eq(s.historyOlderError, "read failed", "older history failures remain available to the retry UI");
+  s = reducer(s, { type: "history_older_start" });
+  eq(s.historyOlderError, undefined, "retrying older history clears the previous failure");
   s = reducer(s, {
     type: "history_page",
     mode: "prepend",

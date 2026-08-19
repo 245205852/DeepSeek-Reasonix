@@ -3417,6 +3417,9 @@ export default function App() {
     !transcriptHydrating &&
     !hydratePlaceholderActive;
   const transcriptItems = hydratePlaceholderActive ? state.hydratePlaceholderItems! : state.items;
+  const handleLoadOlderHistory = useCallback((targetTurn?: number) => (
+    activeTabId ? loadOlderHistory(activeTabId, targetTurn) : Promise.resolve(false)
+  ), [activeTabId, loadOlderHistory]);
 
   // Display items: backend history is authoritative after immediate commit.
   // rewindState only drives the undo banner, not optimistic truncation.
@@ -4886,9 +4889,11 @@ export default function App() {
                   revealSignal={transcriptRevealSignal}
                   hydrating={runtimeTransitioning || transcriptHydrating}
                   hasOlderHistory={!runtimeTransitioning && state.historyHasOlder && !rewindState}
-                  olderHistoryCount={state.historyStartTurn}
+                  historyStartTurn={state.historyStartTurn}
+                  historyTotalTurns={state.historyTotalTurns}
                   loadingOlderHistory={state.historyOlderLoading}
-                  onLoadOlderHistory={() => activeTabId && loadOlderHistory(activeTabId)}
+                  olderHistoryError={state.historyOlderError}
+                  onLoadOlderHistory={handleLoadOlderHistory}
                   invocationMetadata={activeTabId ? invocationMetadataByTab[activeTabId] : undefined}
                 />
                 {!runtimeTransitioning && state.hydrateError ? <div className="history-load-error" role="alert"><span>{state.hydrateError}</span><button type="button" className="btn btn--small" onClick={() => void retrySessionHistory(activeTabId)}>{t("common.retry")}</button></div> : null}

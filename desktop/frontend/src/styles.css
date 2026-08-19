@@ -3477,6 +3477,22 @@ a[href] {
   margin-left: auto;
   margin-right: auto;
 }
+.transcript__older-status {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 36px;
+  color: var(--fg-muted);
+  font-size: 12px;
+}
+.transcript__older-status .btn {
+  flex-shrink: 0;
+}
+.transcript__older-spinner {
+  flex-shrink: 0;
+  animation: spin 0.8s linear infinite;
+}
 .transcript-selection-overlay {
   position: absolute;
   inset: 0;
@@ -3881,40 +3897,26 @@ a[href] {
   animation: jump-bar-in 0.18s ease-out 0.08s forwards;
 }
 .jump-scroll {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 6px;
-  max-height: 100%;
-  padding: 8px 0;
-  overflow-y: auto;
+  position: relative;
+  width: 32px;
+  height: 100%;
   cursor: pointer;
   pointer-events: auto;
-  scrollbar-width: none;
-  -webkit-mask-image: linear-gradient(to bottom, transparent 0%, #000 16%, #000 84%, transparent 100%);
-  mask-image: linear-gradient(to bottom, transparent 0%, #000 16%, #000 84%, transparent 100%);
-}
-.jump-scroll::-webkit-scrollbar {
-  display: none;
+  outline: none;
 }
 .jump-item {
-  position: relative;
+  position: absolute;
+  left: 0;
   display: flex;
-  flex-shrink: 0;
   align-items: center;
   justify-content: flex-end;
   width: 32px;
-  min-height: 14px;
-  padding: 0;
-  border: 0;
-  background: transparent;
-  cursor: pointer;
+  height: 3px;
+  transform: translateY(-50%);
   pointer-events: none;
 }
-.jump-item:focus {
-  outline: none;
-}
-.jump-item:focus-visible .jump-dot {
+.jump-scroll:focus-visible {
+  border-radius: 4px;
   box-shadow: 0 0 0 3px var(--accent-soft);
 }
 .jump-dot {
@@ -3926,6 +3928,15 @@ a[href] {
     background 200ms,
     width 400ms cubic-bezier(0.34, 1.56, 0.64, 1),
     box-shadow 150ms;
+}
+.jump-scroll[data-density="compact"] .jump-dot {
+  height: 2px;
+}
+.jump-scroll[data-density="packed"] .jump-dot {
+  height: 1px;
+}
+.jump-item[data-loaded="false"] .jump-dot {
+  background: color-mix(in srgb, var(--border) 55%, transparent);
 }
 .jump-dot[data-d="0"] {
   background: var(--accent);

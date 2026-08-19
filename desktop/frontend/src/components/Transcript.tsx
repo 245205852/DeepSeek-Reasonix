@@ -7,7 +7,7 @@ import { useT } from "../lib/i18n";
 import { AssistantMessage, InvocationMetadataContext, TurnActions, UserMessage } from "./Message";
 import { ToolCard } from "./ToolCard";
 import { ExtensionCard } from "./ExtensionCard";
-import { ArrowDown, Loader2 } from "lucide-react";
+import { ArrowDown, Loader2, RotateCcw } from "lucide-react";
 import { Welcome } from "./Welcome";
 import { ReadOnlyBatch } from "./ReadOnlyBatch";
 import { ToolGroup } from "./ToolGroup";
@@ -66,6 +66,7 @@ import { MarkdownImageTabContext } from "./MarkdownImageContext";
 export { NoticeCard } from "./TranscriptCards";
 type OpenTurnAction = { turn: number; menu: "summary" | "rewind" };
 const QUESTION_NAV_MIN_COUNT = 2;
+const HISTORY_AUTO_COMPLETE_TURNS = 60;
 type AssistantReasoningDisplay = "normal" | "hide";
 const EMPTY_CHECKPOINTS: CheckpointMeta[] = [];
 const EMPTY_INVOCATION_METADATA: InvocationMetadataMap = {};
@@ -135,8 +136,8 @@ type TranscriptVirtuosoContext = {
   };
   olderHistory: null | {
     loading: boolean;
-    label: string;
-    onLoad?: () => void;
+    error?: string;
+    onRetry: () => void;
   };
 };
 
@@ -181,17 +182,27 @@ const TranscriptVirtuosoList = forwardRef<HTMLDivElement, ListProps & { context:
 );
 
 function TranscriptVirtuosoHeader({ context }: { context: TranscriptVirtuosoContext }) {
-  if (!context.olderHistory) return null;
+  const t = useT();
+  const older = context.olderHistory;
+  if (!older) return null;
   return (
     <div className="transcript__header">
-      <button
-        type="button"
-        className="warm-collapse transcript__older"
-        onClick={context.olderHistory.onLoad}
-        disabled={context.olderHistory.loading}
-      >
-        {context.olderHistory.label}
-      </button>
+      <div className="transcript__older-status" role={older.error ? "alert" : "status"}>
+        {older.loading ? (
+          <>
+            <Loader2 className="transcript__older-spinner" size={14} aria-hidden="true" />
+            <span>{t("common.loading")}</span>
+          </>
+        ) : (
+          <>
+            <span>{older.error}</span>
+            <button type="button" className="btn btn--small" onClick={older.onRetry}>
+              <RotateCcw size={14} aria-hidden="true" />
+              <span>{t("common.retry")}</span>
+            </button>
+          </>
+        )}
+      </div>
     </div>
   );
 }
@@ -258,8 +269,10 @@ export function Transcript({
   revealSignal = 0,
   hydrating = false,
   hasOlderHistory = false,
-  olderHistoryCount = 0,
+  historyStartTurn = 0,
+  historyTotalTurns = 0,
   loadingOlderHistory = false,
+  olderHistoryError,
   onLoadOlderHistory,
   turnStartAt,
   invocationMetadata = EMPTY_INVOCATION_METADATA,
@@ -288,9 +301,11 @@ export function Transcript({
   revealSignal?: number;
   hydrating?: boolean;
   hasOlderHistory?: boolean;
-  olderHistoryCount?: number;
+  historyStartTurn?: number;
+  historyTotalTurns?: number;
   loadingOlderHistory?: boolean;
-  onLoadOlderHistory?: () => void;
+  olderHistoryError?: string;
+  onLoadOlderHistory?: (targetTurn?: number) => boolean | Promise<boolean>;
   turnStartAt?: number;
   invocationMetadata?: InvocationMetadataMap;
 }) {
@@ -372,30 +387,46 @@ export function Transcript({
     finishProgrammaticScroll,
   });
 
-  const questions = useMemo<QuestionAnchor[]>(() => {
-    const anchors: QuestionAnchor[] = [];
-    let turn = 0;
+  const questionNavigation = useMemo(() => {
+    const loadedByTurn = new Map<number, QuestionAnchor>();
+    let nextTurn = historyStartTurn > 0 ? historyStartTurn - 1 : 0;
     for (const it of items) {
       if (it.kind !== "user") continue;
-      anchors.push({ id: it.id, text: compactQuestionText(it.text), turn, checkpointTurn: it.checkpointTurn });
-      turn += 1;
+      const turn = it.historyTurn != null && it.historyTurn > 0 ? it.historyTurn - 1 : nextTurn;
+      loadedByTurn.set(turn, {
+        id: it.id,
+        text: compactQuestionText(it.text),
+        turn,
+        checkpointTurn: it.checkpointTurn,
+        loaded: true,
+      });
+      nextTurn = Math.max(nextTurn, turn + 1);
     }
-    return anchors;
-  }, [items]);
-  const showQuestionNav = questionNavigator && questions.length >= QUESTION_NAV_MIN_COUNT;
+    return {
+      loaded: Array.from(loadedByTurn.values()).sort((left, right) => left.turn - right.turn),
+      loadedByTurn,
+      total: Math.max(historyTotalTurns, nextTurn),
+    };
+  }, [historyStartTurn, historyTotalTurns, items]);
+  const questions = questionNavigation.loaded;
+  const totalQuestions = questionNavigation.total;
+  const showQuestionNav = questionNavigator && totalQuestions >= QUESTION_NAV_MIN_COUNT;
+  const questionTurnByAnchorId = useMemo(() => new Map(
+    questions.map((question) => [questionAnchorId(question.id), question.turn]),
+  ), [questions]);
 
   const syncActiveQuestion = useCallback(() => {
     if (!scrollElement || questions.length === 0) return;
     const scrollerTop = scrollElement.getBoundingClientRect().top;
     const positions: QuestionAnchorPosition[] = [];
     scrollElement.querySelectorAll<HTMLElement>("[data-question-anchor]").forEach((anchor) => {
-      const turn = Number(anchor.dataset.turn);
-      if (!Number.isInteger(turn)) return;
+      const turn = questionTurnByAnchorId.get(anchor.id);
+      if (turn == null) return;
       positions.push({ turn, top: anchor.getBoundingClientRect().top - scrollerTop });
     });
-    const next = activeQuestionTurn(questions, positions);
+    const next = activeQuestionTurn(positions);
     if (next != null) setActiveQuestion(next);
-  }, [questions, scrollElement]);
+  }, [questionTurnByAnchorId, questions.length, scrollElement]);
 
   const scheduleActiveQuestionSync = useCallback(() => {
     if (activeQuestionFrame.current != null) return;
@@ -417,13 +448,13 @@ export function Transcript({
   // A new local question is an explicit request to reveal the tail. Prepending
   // older history keeps the same last id and is left entirely to Virtuoso's
   // firstItemIndex anchor contract.
-  const questionTailRef = useRef({ length: 0, lastId: "" });
+  const questionTailRef = useRef({ total: 0, lastId: "" });
   useEffect(() => {
     const lastId = questions[questions.length - 1]?.id ?? "";
     const prev = questionTailRef.current;
-    questionTailRef.current = { length: questions.length, lastId };
-    if (prev.length > 0 && questions.length > prev.length && lastId !== prev.lastId) scrollToBottom();
-  }, [questions, scrollToBottom]);
+    questionTailRef.current = { total: totalQuestions, lastId };
+    if (prev.total > 0 && totalQuestions > prev.total && lastId !== prev.lastId) scrollToBottom();
+  }, [questions, scrollToBottom, totalQuestions]);
 
   // Reset the auto-scroll pin when switching tabs so the new session always
   // starts at the bottom. Without this, stick.current from the previous tab
@@ -659,7 +690,19 @@ export function Transcript({
     scheduleBlankViewportCheck();
   }, [creationMode, deliverScroll, handleCreationScroll, noteScrollActivity, scheduleActiveQuestionSync, scheduleBlankViewportCheck]);
   // ── JumpBar integration ───────────────────────────────────────────────────
-  const handleJumpToQuestion = useCallback((question: QuestionAnchor) => {
+  const [pendingQuestion, setPendingQuestion] = useState<{ surfaceKey: string; turn: number } | null>(null);
+  const olderRequestInFlightRef = useRef<string | null>(null);
+  const requestOlderHistory = useCallback(async (targetTurn?: number, retry = false): Promise<boolean> => {
+    if (!hasOlderHistory || loadingOlderHistory || running || !onLoadOlderHistory || (!retry && olderHistoryError)) return false;
+    if (olderRequestInFlightRef.current === layoutSurfaceKey) return false;
+    olderRequestInFlightRef.current = layoutSurfaceKey;
+    try {
+      return Boolean(await onLoadOlderHistory(targetTurn));
+    } finally {
+      if (olderRequestInFlightRef.current === layoutSurfaceKey) olderRequestInFlightRef.current = null;
+    }
+  }, [hasOlderHistory, layoutSurfaceKey, loadingOlderHistory, olderHistoryError, onLoadOlderHistory, running]);
+  const jumpToLoadedQuestion = useCallback((question: QuestionAnchor) => {
     const index = rowIndexByKey.get(String(userRowKey(question.id)));
     if (index == null) return;
     // WebView2 can lose the pointerup that ends a transcript text-selection
@@ -671,6 +714,50 @@ export function Transcript({
     setActiveQuestion(question.turn);
     scrollToDataIndex(index, "smooth");
   }, [clearTranscriptSelection, invalidateAnchors, rowIndexByKey, scrollToDataIndex]);
+  const handleJumpToQuestion = useCallback((question: QuestionAnchor) => {
+    setActiveQuestion(question.turn);
+    if (question.loaded !== false) {
+      setPendingQuestion(null);
+      jumpToLoadedQuestion(question);
+      return;
+    }
+    document.getSelection()?.removeAllRanges();
+    clearTranscriptSelection("question-navigation");
+    setPendingQuestion({ surfaceKey: layoutSurfaceKey, turn: question.turn });
+    void requestOlderHistory(question.turn + 1, true);
+  }, [clearTranscriptSelection, jumpToLoadedQuestion, layoutSurfaceKey, requestOlderHistory]);
+
+  useEffect(() => {
+    if (!pendingQuestion || pendingQuestion.surfaceKey !== layoutSurfaceKey) return;
+    const question = questionNavigation.loadedByTurn.get(pendingQuestion.turn);
+    if (question?.loaded !== false && question) {
+      setPendingQuestion(null);
+      jumpToLoadedQuestion(question);
+      return;
+    }
+    if (!loadingOlderHistory && !olderHistoryError) {
+      void requestOlderHistory(pendingQuestion.turn + 1);
+    }
+  }, [jumpToLoadedQuestion, layoutSurfaceKey, loadingOlderHistory, olderHistoryError, pendingQuestion, questionNavigation, requestOlderHistory]);
+
+  useEffect(() => {
+    setPendingQuestion(null);
+    if (olderRequestInFlightRef.current !== layoutSurfaceKey) olderRequestInFlightRef.current = null;
+  }, [layoutSurfaceKey]);
+
+  const earlierTurnsRemaining = Math.max(0, historyStartTurn - 1);
+  useEffect(() => {
+    if (earlierTurnsRemaining > 0 && earlierTurnsRemaining < HISTORY_AUTO_COMPLETE_TURNS) {
+      void requestOlderHistory();
+    }
+  }, [earlierTurnsRemaining, requestOlderHistory]);
+  const handleEarlierHistoryReached = useCallback(() => {
+    void requestOlderHistory();
+  }, [requestOlderHistory]);
+  const retryOlderHistory = useCallback(() => {
+    const targetTurn = pendingQuestion?.surfaceKey === layoutSurfaceKey ? pendingQuestion.turn + 1 : undefined;
+    void requestOlderHistory(targetTurn, true);
+  }, [layoutSurfaceKey, pendingQuestion, requestOlderHistory]);
 
   // The jump-bottom click is explicit user intent: it outranks any in-flight
   // recovery anchor restore and ends a stale selection gesture whose
@@ -702,16 +789,7 @@ export function Transcript({
   const renderRow = useCallback((row: TranscriptRow): ReactNode => {
     switch (row.kind) {
       case "older-history":
-        return (
-          <button
-            type="button"
-            className="warm-collapse transcript__older"
-            onClick={onLoadOlderHistory}
-            disabled={loadingOlderHistory}
-          >
-            {loadingOlderHistory ? t("common.loading") : t("transcript.showEarlierHistory", { n: olderHistoryCount })}
-          </button>
-        );
+        return null;
       case "user": {
         const user = row.item;
         const checkpoint = row.turn == null ? undefined : checkpointsByTurn.get(row.turn);
@@ -838,12 +916,9 @@ export function Transcript({
     handleFoldToggle,
     handleReasoningManualOpen,
     lastTurn,
-    loadingOlderHistory,
-    olderHistoryCount,
     onDeliveryContinue,
     onAcceptDelivery,
     onEditPrompt,
-    onLoadOlderHistory,
     onOpenChanges,
     onOpenVerification,
     onPrompt,
@@ -942,11 +1017,11 @@ export function Transcript({
           onPointerDownCapture: selectionRetention.onPointerDownCapture,
         }
       : null,
-    olderHistory: hasOlderHistory
+    olderHistory: hasOlderHistory && (loadingOlderHistory || Boolean(olderHistoryError))
       ? {
           loading: loadingOlderHistory,
-          label: loadingOlderHistory ? t("common.loading") : t("transcript.showEarlierHistory", { n: olderHistoryCount }),
-          onLoad: onLoadOlderHistory,
+          error: olderHistoryError ? t("transcript.loadEarlierFailed") : undefined,
+          onRetry: retryOlderHistory,
         }
       : null,
   }), [
@@ -957,10 +1032,10 @@ export function Transcript({
     loadingOlderHistory,
     measuredSizes,
     nativeScrollbarDragging,
-    olderHistoryCount,
-    onLoadOlderHistory,
+    olderHistoryError,
     overlayRevision,
     renderRow,
+    retryOlderHistory,
     scrollElement,
     selectionRetention.onPointerDownCapture,
     showLiveRegion,
@@ -997,7 +1072,7 @@ export function Transcript({
             data-transcript-row-count={virtualRows.length}
             data={virtualRows}
             context={virtuosoContext}
-            components={hasOlderHistory ? TRANSCRIPT_VIRTUOSO_COMPONENTS_WITH_HEADER : TRANSCRIPT_VIRTUOSO_COMPONENTS}
+            components={virtuosoContext.olderHistory ? TRANSCRIPT_VIRTUOSO_COMPONENTS_WITH_HEADER : TRANSCRIPT_VIRTUOSO_COMPONENTS}
             computeItemKey={(_index, row) => `${tabId ?? ""}:${String(row.key)}`}
             firstItemIndex={firstItemIndex}
             // A captured state snapshot (measured tree + scrollTop) restores
@@ -1016,6 +1091,7 @@ export function Transcript({
             increaseViewportBy={{ top: 480, bottom: 480 }}
             scrollerRef={handleScrollerRef}
             itemsRendered={handleItemsRendered}
+            startReached={handleEarlierHistoryReached}
             totalListHeightChanged={followGrowingTail}
             itemContent={renderVirtuosoRow}
             onScroll={handleTranscriptScroll}
@@ -1045,7 +1121,12 @@ export function Transcript({
       )}
 
       {!empty && showQuestionNav && (
-        <QuestionJumpBar questions={questions} activeTurn={activeQuestion} onJump={handleJumpToQuestion} />
+        <QuestionJumpBar
+          loadedQuestions={questions}
+          totalQuestions={totalQuestions}
+          activeTurn={activeQuestion}
+          onJump={handleJumpToQuestion}
+        />
       )}
 
       {!empty && !isAtBottom && scrollElement && hasTranscriptScrollableRange(scrollElement) && (
