@@ -57,6 +57,56 @@ func TestAcquireWithExternalTimeoutRejectsInvalidBudget(t *testing.T) {
 	}
 }
 
+func TestAcquireSharedAllowsConcurrentReaders(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.lock")
+	first, err := AcquireMode(context.Background(), path, ModeShared)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := AcquireMode(context.Background(), path, ModeShared)
+	if err != nil {
+		first()
+		t.Fatal(err)
+	}
+	first()
+	second()
+}
+
+func TestAcquireSharedConflictsWithExclusive(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.lock")
+	shared, err := AcquireMode(context.Background(), path, ModeShared)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if _, err := Acquire(ctx, path); !errors.Is(err, context.DeadlineExceeded) {
+		shared()
+		t.Fatalf("exclusive vs shared error = %v, want deadline exceeded", err)
+	}
+	shared()
+	exclusive, err := Acquire(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	exclusive()
+}
+
+func TestAcquireZeroValueRemainsExclusive(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.lock")
+	first, err := AcquireMode(context.Background(), path, ModeExclusive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if _, err := Acquire(ctx, path); !errors.Is(err, context.DeadlineExceeded) {
+		first()
+		t.Fatalf("zero-value exclusive error = %v", err)
+	}
+	first()
+}
+
 func TestLocalRegistryReclaimsReleasedEntries(t *testing.T) {
 	before := RegistrySizeForTest()
 	path := filepath.Join(t.TempDir(), "ephemeral.lock")

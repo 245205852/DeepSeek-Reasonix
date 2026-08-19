@@ -3,6 +3,8 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -136,4 +138,64 @@ func TestDeniedDeliveryWriterDoesNotAcquireWorkspaceLease(t *testing.T) {
 
 func providerToolCall(id, name string) provider.ToolCall {
 	return provider.ToolCall{ID: id, Name: name, Arguments: `{}`}
+}
+
+func TestNestedRepoWriteFileLeasesDoNotBlock(t *testing.T) {
+	parent, locks := t.TempDir(), t.TempDir()
+	repoA := filepath.Join(parent, "A")
+	repoB := filepath.Join(parent, "B")
+	for _, repo := range []string{repoA, repoB} {
+		if err := os.MkdirAll(filepath.Join(repo, ".git"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	first, err := workspacelease.New(parent, locks, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := workspacelease.New(parent, locks, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w1 := &recordingWriter{name: "write_file"}
+	w2 := &recordingWriter{name: "write_file"}
+	reg1 := tool.NewRegistry()
+	reg1.Add(w1)
+	a1 := New(nil, reg1, NewSession(""), Options{
+		WorkspaceLease: first, WriteWorkspaceRoot: parent,
+	}, event.Discard)
+	a1.turn.deliveryCriteriaEstablished = true
+	a1.setTodoState([]evidence.TodoItem{{Content: "mutate", Status: "in_progress"}})
+	reg2 := tool.NewRegistry()
+	reg2.Add(w2)
+	a2 := New(nil, reg2, NewSession(""), Options{
+		WorkspaceLease: second, WriteWorkspaceRoot: parent,
+	}, event.Discard)
+	a2.turn.deliveryCriteriaEstablished = true
+	a2.setTodoState([]evidence.TodoItem{{Content: "mutate", Status: "in_progress"}})
+	first.BeginRun()
+	second.BeginRun()
+	defer first.EndRun()
+	defer second.EndRun()
+
+	out1 := a1.executeOne(context.Background(), &a1.turn, provider.ToolCall{
+		ID:   "w1",
+		Name: "write_file",
+		Arguments: string(mustJSON(t, map[string]string{
+			"path": filepath.Join(repoA, "a.go"), "content": "a",
+		})),
+	})
+	if out1.blocked || out1.errMsg != "" {
+		t.Fatalf("first nested write: %+v", out1)
+	}
+	out2 := a2.executeOne(context.Background(), &a2.turn, provider.ToolCall{
+		ID:   "w2",
+		Name: "write_file",
+		Arguments: string(mustJSON(t, map[string]string{
+			"path": filepath.Join(repoB, "b.go"), "content": "b",
+		})),
+	})
+	if out2.blocked || out2.errMsg != "" {
+		t.Fatalf("second nested write should not wait on the first: %+v", out2)
+	}
 }

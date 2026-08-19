@@ -59,6 +59,10 @@ re-check existence, SHA-256, and mode before publish. A mismatch returns
 ## Worktree fallback
 
 Delivery worktrees stay optional. Non-isolated directories use the workspace
-lease (`filelock`). Conflict cards can recommend an existing worktree. Git is
-never required; Windows without Git still serializes writers through the
-workspace lease.
+lease (`filelock`). Path-bound writes in a nested git repo under a parent
+workspace take a shared parent lock plus an exclusive repo lock, so two
+sessions can write different nested repos at once. `bash`/MCP and same-repo
+writers still take the exclusive workspace lock. Conflict cards can recommend
+an existing worktree. Git is never required; Windows without Git still
+serializes writers through the workspace lease. Same-repo concurrent writes
+are still serialized — use a worktree for isolation.

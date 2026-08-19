@@ -51,5 +51,8 @@ v2 兼容 marker 同时也是 v3 turn 的存活标记。旧版本截断 `turn-N.
 ## Worktree 回退
 
 Delivery worktree 仍是可选能力。非隔离目录使用 workspace lease（`filelock`）。
-冲突卡片可以推荐已有 worktree。Git 不是运行前提；未安装 Git 的 Windows 仍通过
-workspace lease 串行写入。
+路径型写入若落在工作区内部的嵌套 Git 仓库，会对父工作区加 shared 锁、对该仓加
+exclusive 锁，因此两个会话可以同时写不同嵌套仓。`bash`/MCP 以及同一仓库的写入
+仍独占打开的工作区。冲突卡片可以推荐已有 worktree。Git 不是运行前提；未安装
+Git 的 Windows 仍通过 workspace lease 串行写入。同一仓库的多会话写入默认仍串行，
+真隔离请用 worktree。

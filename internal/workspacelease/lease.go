@@ -40,6 +40,8 @@ type WaitNotice func()
 // use different Owners, even when they share a workspace.
 type Owner struct {
 	lockPath   string
+	lockDir    string
+	canonical  string
 	onWait     WaitNotice
 	graceAfter time.Duration
 
@@ -47,10 +49,13 @@ type Owner struct {
 	activeRuns    int
 	background    int
 	acquired      bool
+	exclusive     bool
+	shared        bool
 	acquiring     bool
 	waiting       bool
 	acquireDone   chan struct{}
 	releaseSystem func()
+	repoHeld      map[string]func()
 	// leaseEpoch changes on every acquisition so a pending grace release can
 	// prove it still targets the lease it was armed for.
 	leaseEpoch uint64
@@ -94,9 +99,37 @@ func New(workspaceRoot, lockDir string, onWait WaitNotice) (*Owner, error) {
 
 	return &Owner{
 		lockPath:   filepath.Join(lockDir, key+".lock"),
+		lockDir:    lockDir,
+		canonical:  canonical,
 		onWait:     onWait,
 		graceAfter: backgroundGrace,
 	}, nil
+}
+
+func lockFileFor(lockDir, canonical string) string {
+	sum := sha256.Sum256([]byte(canonical))
+	return filepath.Join(lockDir, hex.EncodeToString(sum[:])+".lock")
+}
+
+// HeldKeys returns the workspace identity and any nested repo identities this
+// session currently holds. Desktop uses the set to match a waiting tab to a
+// local holder. Nil/empty means no write lock is held.
+func (o *Owner) HeldKeys() []string {
+	if o == nil {
+		return nil
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if !o.acquired {
+		return nil
+	}
+	out := []string{o.canonical}
+	for repo := range o.repoHeld {
+		if repo != "" && repo != o.canonical {
+			out = append(out, repo)
+		}
+	}
+	return out
 }
 
 // CanonicalWorkspace returns the stable identity used to key a workspace. It
@@ -188,7 +221,7 @@ func (o *Owner) AcquireWrite(ctx context.Context) error {
 	}
 	for {
 		o.mu.Lock()
-		if o.acquired {
+		if o.exclusive {
 			o.mu.Unlock()
 			return nil
 		}
@@ -205,7 +238,11 @@ func (o *Owner) AcquireWrite(ctx context.Context) error {
 		o.acquiring = true
 		o.acquireDone = make(chan struct{})
 		done := o.acquireDone
+		old := o.detachHoldsLocked()
 		o.mu.Unlock()
+		for _, rel := range old {
+			rel()
+		}
 
 		release, err := o.acquire(ctx)
 		o.mu.Lock()
@@ -213,6 +250,8 @@ func (o *Owner) AcquireWrite(ctx context.Context) error {
 		o.waiting = false
 		if err == nil {
 			o.acquired = true
+			o.exclusive = true
+			o.shared = false
 			o.releaseSystem = release
 			o.leaseEpoch++
 		}
@@ -224,6 +263,24 @@ func (o *Owner) AcquireWrite(ctx context.Context) error {
 		}
 		return err
 	}
+}
+
+func (o *Owner) detachHoldsLocked() []func() {
+	var old []func()
+	for _, rel := range o.repoHeld {
+		if rel != nil {
+			old = append(old, rel)
+		}
+	}
+	if o.releaseSystem != nil {
+		old = append(old, o.releaseSystem)
+	}
+	o.repoHeld = nil
+	o.releaseSystem = nil
+	o.shared = false
+	o.exclusive = false
+	o.acquired = false
+	return old
 }
 
 // RetainUntil keeps an already-acquired lease alive for a background job. It
@@ -269,10 +326,15 @@ func (o *Owner) releaseIfIdleLocked() func() {
 // no two paths can release the same acquisition.
 func (o *Owner) takeLeaseLocked() func() {
 	o.cancelGraceLocked()
-	release := o.releaseSystem
-	o.acquired = false
-	o.releaseSystem = nil
-	return release
+	old := o.detachHoldsLocked()
+	if len(old) == 0 {
+		return nil
+	}
+	return func() {
+		for _, rel := range old {
+			rel()
+		}
+	}
 }
 
 // armGraceLocked schedules the bounded release that keeps a resident background

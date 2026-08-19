@@ -544,18 +544,9 @@ func (a *Agent) prepareToolExecution(ctx context.Context, plan *toolCallPlan) (t
 	// shell code and can themselves change the workspace. This keeps readers
 	// concurrent and avoids holding the workspace during an approval prompt while
 	// still covering every write-side action that follows authorization.
-	// Lazy workspace lease on the first real writer for every role setting.
-	if plan.effects.WorkspaceMutation && a.svc.workspaceLease != nil {
-		if err := a.svc.workspaceLease.AcquireWrite(ctx); err != nil {
-			return toolOutcome{
-				output:  fmt.Sprintf("blocked: the workspace did not become available for writing: %v", err),
-				blocked: true,
-				errMsg:  "blocked: workspace write lease unavailable",
-			}, true
-		}
-	}
-	// Resolve the concrete execution target before hooks. A proxy may carry a
-	// different target/name/argument set than the provider-visible call.
+	// Resolve the concrete execution target before hooks and lease selection.
+	// A proxy may carry a different target/name/argument set than the
+	// provider-visible call; the lease must follow the tool that will Execute.
 	plan.runTool = plan.execTool
 	plan.runArgs = plan.execArgs
 	if plan.resolved.Target != nil {
@@ -563,6 +554,18 @@ func (a *Agent) prepareToolExecution(ctx context.Context, plan *toolCallPlan) (t
 		plan.runArgs = plan.resolved.Args
 		if len(plan.runArgs) == 0 {
 			plan.runArgs = json.RawMessage(`{}`)
+		}
+	}
+	// Lazy workspace lease on the first real writer for every role setting.
+	// Path-bound tools lock the nested git repo; bash/MCP keep the exclusive
+	// workspace lock.
+	if plan.effects.WorkspaceMutation && a.svc.workspaceLease != nil {
+		if err := a.acquireWorkspaceLease(ctx, plan); err != nil {
+			return toolOutcome{
+				output:  fmt.Sprintf("blocked: the workspace did not become available for writing: %v", err),
+				blocked: true,
+				errMsg:  "blocked: workspace write lease unavailable",
+			}, true
 		}
 	}
 	// Hold the parent claim before PreToolUse: hooks are user shell code and may
@@ -579,6 +582,9 @@ func (a *Agent) prepareToolExecution(ctx context.Context, plan *toolCallPlan) (t
 		}, true
 	} else if releaseParentWrite != nil {
 		plan.releaseParentWrite = releaseParentWrite
+	}
+	if blocked, early := a.applyLiveWriteReservation(ctx, plan); early {
+		return blocked, true
 	}
 	// Acquire the checkpoint barrier before preimage capture and any hook. It is
 	// held through post hooks and AfterMutation so rewind cannot interleave with
@@ -855,4 +861,62 @@ func (a *Agent) observeAfterMutation(plan *toolCallPlan) bool {
 		plan.effects.ContentMutation = true
 	}
 	return changed
+}
+
+func (a *Agent) applyLiveWriteReservation(ctx context.Context, plan *toolCallPlan) (toolOutcome, bool) {
+	if a == nil || plan == nil || !plan.effects.WorkspaceMutation || a.svc.writeScheduler == nil || plan.runTool == nil {
+		return toolOutcome{}, false
+	}
+	id := SubagentClaimID(ctx)
+	if id == 0 {
+		return toolOutcome{}, false
+	}
+	name := plan.runTool.Name()
+	if pathBoundWriterNames[name] {
+		claim, err := parentWriteReservation(a.writeWorkspaceRoot, name, plan.runArgs)
+		if err != nil {
+			return toolOutcome{
+				output:  "blocked: " + err.Error(),
+				blocked: true,
+				errMsg:  "blocked: write path claimed by background subagent",
+			}, true
+		}
+		if err := a.svc.writeScheduler.Realize(id, claim); err != nil {
+			return toolOutcome{
+				output:  "blocked: " + err.Error(),
+				blocked: true,
+				errMsg:  "blocked: write path claimed by background subagent",
+			}, true
+		}
+		return toolOutcome{}, false
+	}
+	if parentWriteGuardTarget(name) {
+		if err := a.svc.writeScheduler.MarkOpaque(id); err != nil {
+			return toolOutcome{
+				output:  "blocked: " + err.Error(),
+				blocked: true,
+				errMsg:  "blocked: write path claimed by background subagent",
+			}, true
+		}
+	}
+	return toolOutcome{}, false
+}
+
+func (a *Agent) acquireWorkspaceLease(ctx context.Context, plan *toolCallPlan) error {
+	if a == nil || a.svc.workspaceLease == nil || plan == nil || plan.runTool == nil {
+		return nil
+	}
+	name := plan.runTool.Name()
+	if pathBoundWriterNames[name] {
+		paths, err := extractWritePathsFromArgs(name, a.writeWorkspaceRoot, plan.runArgs)
+		if err == nil && len(paths) > 0 {
+			for _, p := range paths {
+				if acqErr := a.svc.workspaceLease.AcquireWriteForPath(ctx, resolveMaybeRelative(a.writeWorkspaceRoot, p)); acqErr != nil {
+					return acqErr
+				}
+			}
+			return nil
+		}
+	}
+	return a.svc.workspaceLease.AcquireWrite(ctx)
 }

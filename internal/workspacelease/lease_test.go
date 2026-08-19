@@ -385,6 +385,136 @@ func TestLeaseWaitsForEveryRetainedBackgroundJob(t *testing.T) {
 	second.EndRun()
 }
 
+func TestNestedRepoPathWritesRunInParallel(t *testing.T) {
+	parent, locks := t.TempDir(), t.TempDir()
+	repoA := filepath.Join(parent, "A")
+	repoB := filepath.Join(parent, "B")
+	for _, repo := range []string{repoA, repoB} {
+		if err := os.MkdirAll(filepath.Join(repo, ".git"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	first, err := New(parent, locks, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := New(parent, locks, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first.BeginRun()
+	second.BeginRun()
+	if err := first.AcquireWriteForPath(context.Background(), filepath.Join(repoA, "a.go")); err != nil {
+		t.Fatal(err)
+	}
+	if err := second.AcquireWriteForPath(context.Background(), filepath.Join(repoB, "b.go")); err != nil {
+		t.Fatal(err)
+	}
+	first.EndRun()
+	second.EndRun()
+}
+
+func TestExclusiveWorkspaceWriteBlocksNestedRepoPath(t *testing.T) {
+	parent, locks := t.TempDir(), t.TempDir()
+	repoB := filepath.Join(parent, "B")
+	if err := os.MkdirAll(filepath.Join(repoB, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	first, err := New(parent, locks, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := New(parent, locks, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first.BeginRun()
+	second.BeginRun()
+	if err := first.AcquireWrite(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 80*time.Millisecond)
+	if err := second.AcquireWriteForPath(ctx, filepath.Join(repoB, "b.go")); !errors.Is(err, context.DeadlineExceeded) {
+		cancel()
+		t.Fatalf("nested path write acquired under exclusive workspace: %v", err)
+	}
+	cancel()
+	first.EndRun()
+	if err := second.AcquireWriteForPath(context.Background(), filepath.Join(repoB, "b.go")); err != nil {
+		t.Fatal(err)
+	}
+	second.EndRun()
+}
+
+func TestSameRepoPathWritesStillSerialize(t *testing.T) {
+	repo, locks := t.TempDir(), t.TempDir()
+	if err := os.Mkdir(filepath.Join(repo, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	first, err := New(repo, locks, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := New(repo, locks, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first.BeginRun()
+	second.BeginRun()
+	if err := first.AcquireWriteForPath(context.Background(), filepath.Join(repo, "a.go")); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 80*time.Millisecond)
+	if err := second.AcquireWriteForPath(ctx, filepath.Join(repo, "b.go")); !errors.Is(err, context.DeadlineExceeded) {
+		cancel()
+		t.Fatalf("same-repo path writes must still serialize: %v", err)
+	}
+	cancel()
+	first.EndRun()
+	if err := second.AcquireWriteForPath(context.Background(), filepath.Join(repo, "b.go")); err != nil {
+		t.Fatal(err)
+	}
+	second.EndRun()
+}
+
+func TestPathWriteUpgradeToExclusiveBlocksOtherRepo(t *testing.T) {
+	parent, locks := t.TempDir(), t.TempDir()
+	repoA := filepath.Join(parent, "A")
+	repoB := filepath.Join(parent, "B")
+	for _, repo := range []string{repoA, repoB} {
+		if err := os.MkdirAll(filepath.Join(repo, ".git"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	first, err := New(parent, locks, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := New(parent, locks, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first.BeginRun()
+	second.BeginRun()
+	if err := first.AcquireWriteForPath(context.Background(), filepath.Join(repoA, "a.go")); err != nil {
+		t.Fatal(err)
+	}
+	if err := first.AcquireWrite(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 80*time.Millisecond)
+	if err := second.AcquireWriteForPath(ctx, filepath.Join(repoB, "b.go")); !errors.Is(err, context.DeadlineExceeded) {
+		cancel()
+		t.Fatalf("upgrade to exclusive should block other repo: %v", err)
+	}
+	cancel()
+	first.EndRun()
+	if err := second.AcquireWriteForPath(context.Background(), filepath.Join(repoB, "b.go")); err != nil {
+		t.Fatal(err)
+	}
+	second.EndRun()
+}
+
 func TestRetainWithoutWriteDoesNotBlockReaders(t *testing.T) {
 	root, locks := t.TempDir(), t.TempDir()
 	reader, _ := New(root, locks, nil)

@@ -5547,6 +5547,12 @@ func (c *Controller) WorkspaceLeaseState() workspacelease.State {
 	return c.workspaceLease.State()
 }
 
+// WorkspaceLeaseHeldKeys is the lock-domain identity this controller currently
+// holds. Empty when no write lease is held.
+func (c *Controller) WorkspaceLeaseHeldKeys() []string {
+	return c.workspaceLease.HeldKeys()
+}
+
 // SetToolApprovalMode changes the runtime approval posture for permission-gated
 // tools. It does not answer business asks or plan approval. Sub-agents (task,
 // writer-capable skill sub-agents, the planner) have no UI to prompt through,

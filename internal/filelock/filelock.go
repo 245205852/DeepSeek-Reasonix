@@ -18,13 +18,16 @@ const retryInterval = 20 * time.Millisecond
 // Callers normally see their context error after Acquire's bounded retry loop.
 var ErrHeld = errors.New("file lock held")
 
-// localLock serializes goroutines in this process for one canonical path.
+// localLock is a process-local reader-writer lock for one canonical path.
 // refs counts acquirers currently between registry entry and release/timeout
 // so the registry can reclaim entries when no one is waiting or holding —
 // important for short-lived paths such as session-temp owner locks.
 type localLock struct {
-	token chan struct{}
-	refs  int
+	mu        sync.Mutex
+	cond      *sync.Cond
+	exclusive bool
+	readers   int
+	refs      int
 }
 
 var localRegistry = struct {
@@ -36,7 +39,12 @@ var localRegistry = struct {
 // function is called. It serializes both goroutines in this process and other
 // Reasonix processes, and never waits past ctx's deadline.
 func Acquire(ctx context.Context, path string) (func(), error) {
-	return acquire(ctx, path, 0)
+	return acquire(ctx, path, 0, ModeExclusive)
+}
+
+// AcquireMode obtains a lock in exclusive or shared mode.
+func AcquireMode(ctx context.Context, path string, mode Mode) (func(), error) {
+	return acquire(ctx, path, 0, mode)
 }
 
 // AcquireWithExternalTimeout obtains an exclusive lock while keeping the
@@ -47,10 +55,10 @@ func AcquireWithExternalTimeout(ctx context.Context, path string, externalTimeou
 	if externalTimeout <= 0 {
 		return nil, errors.New("external file lock timeout must be positive")
 	}
-	return acquire(ctx, path, externalTimeout)
+	return acquire(ctx, path, externalTimeout, ModeExclusive)
 }
 
-func acquire(ctx context.Context, path string, externalTimeout time.Duration) (func(), error) {
+func acquire(ctx context.Context, path string, externalTimeout time.Duration, mode Mode) (func(), error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -58,11 +66,10 @@ func acquire(ctx context.Context, path string, externalTimeout time.Duration) (f
 	if err != nil {
 		return nil, err
 	}
-	local, releaseLocal, err := acquireLocal(ctx, key)
+	releaseLocal, err := acquireLocal(ctx, key, mode)
 	if err != nil {
 		return nil, err
 	}
-	_ = local
 	fileCtx := ctx
 	cancel := func() {}
 	if externalTimeout > 0 {
@@ -71,7 +78,7 @@ func acquire(ctx context.Context, path string, externalTimeout time.Duration) (f
 	defer cancel()
 
 	for {
-		releaseFile, err := tryLockFile(key)
+		releaseFile, err := tryLockFileMode(key, mode)
 		if err == nil {
 			var once sync.Once
 			return func() {
@@ -108,13 +115,12 @@ func TryAcquire(path string) (func(), error) {
 	if err != nil {
 		return nil, err
 	}
-	local, releaseLocal, ok := tryAcquireLocal(key)
+	releaseLocal, ok := tryAcquireLocal(key, ModeExclusive)
 	if !ok {
 		return nil, ErrHeld
 	}
-	_ = local
 
-	releaseFile, err := tryLockFile(key)
+	releaseFile, err := tryLockFileMode(key, ModeExclusive)
 	if err != nil {
 		releaseLocal()
 		if errors.Is(err, ErrHeld) {
@@ -131,67 +137,102 @@ func TryAcquire(path string) (func(), error) {
 	}, nil
 }
 
-func acquireLocal(ctx context.Context, key string) (*localLock, func(), error) {
-	localRegistry.Lock()
+func lookupLocal(key string) *localLock {
 	local := localRegistry.locks[key]
 	if local == nil {
-		local = &localLock{token: make(chan struct{}, 1)}
-		local.token <- struct{}{}
+		local = &localLock{}
+		local.cond = sync.NewCond(&local.mu)
 		localRegistry.locks[key] = local
 	}
 	local.refs++
+	return local
+}
+
+func acquireLocal(ctx context.Context, key string, mode Mode) (func(), error) {
+	localRegistry.Lock()
+	local := lookupLocal(key)
 	localRegistry.Unlock()
 
-	select {
-	case <-local.token:
-		return local, releaseLocalFunc(key, local), nil
-	case <-ctx.Done():
-		localRegistry.Lock()
-		local.refs--
-		if local.refs == 0 {
-			delete(localRegistry.locks, key)
+	stop := context.AfterFunc(ctx, func() {
+		local.mu.Lock()
+		local.cond.Broadcast()
+		local.mu.Unlock()
+	})
+	defer stop()
+
+	local.mu.Lock()
+	for {
+		if ctx.Err() != nil {
+			local.mu.Unlock()
+			dropLocalRef(key, local)
+			return nil, fmt.Errorf("acquire file lock: %w", ctx.Err())
 		}
-		localRegistry.Unlock()
-		return nil, nil, fmt.Errorf("acquire file lock: %w", ctx.Err())
+		if mode == ModeShared {
+			if !local.exclusive {
+				local.readers++
+				local.mu.Unlock()
+				return releaseLocalFunc(key, local, mode), nil
+			}
+		} else if !local.exclusive && local.readers == 0 {
+			local.exclusive = true
+			local.mu.Unlock()
+			return releaseLocalFunc(key, local, mode), nil
+		}
+		local.cond.Wait()
 	}
 }
 
-func tryAcquireLocal(key string) (*localLock, func(), bool) {
+func tryAcquireLocal(key string, mode Mode) (func(), bool) {
 	localRegistry.Lock()
-	defer localRegistry.Unlock()
+	local := lookupLocal(key)
+	localRegistry.Unlock()
 
-	local := localRegistry.locks[key]
-	if local == nil {
-		local = &localLock{token: make(chan struct{}, 1)}
-		local.token <- struct{}{}
-		localRegistry.locks[key] = local
+	local.mu.Lock()
+	if mode == ModeShared {
+		if local.exclusive {
+			local.mu.Unlock()
+			dropLocalRef(key, local)
+			return nil, false
+		}
+		local.readers++
+		local.mu.Unlock()
+		return releaseLocalFunc(key, local, mode), true
 	}
-	select {
-	case <-local.token:
-		local.refs++
-		return local, releaseLocalFunc(key, local), true
-	default:
-		// A newly created entry always succeeds above while the registry lock
-		// is held, so this is an existing lock held by another goroutine.
-		return nil, nil, false
+	if local.exclusive || local.readers > 0 {
+		local.mu.Unlock()
+		dropLocalRef(key, local)
+		return nil, false
 	}
+	local.exclusive = true
+	local.mu.Unlock()
+	return releaseLocalFunc(key, local, mode), true
 }
 
-func releaseLocalFunc(key string, local *localLock) func() {
+func dropLocalRef(key string, local *localLock) {
+	localRegistry.Lock()
+	local.refs--
+	if local.refs <= 0 {
+		local.refs = 0
+		delete(localRegistry.locks, key)
+	}
+	localRegistry.Unlock()
+}
+
+func releaseLocalFunc(key string, local *localLock, mode Mode) func() {
 	var once sync.Once
 	return func() {
 		once.Do(func() {
-			localRegistry.Lock()
-			select {
-			case local.token <- struct{}{}:
-			default:
+			local.mu.Lock()
+			if mode == ModeShared {
+				if local.readers > 0 {
+					local.readers--
+				}
+			} else {
+				local.exclusive = false
 			}
-			local.refs--
-			if local.refs <= 0 {
-				local.refs = 0
-				delete(localRegistry.locks, key)
-			}
-			localRegistry.Unlock()
+			local.cond.Broadcast()
+			local.mu.Unlock()
+			dropLocalRef(key, local)
 		})
 	}
 }

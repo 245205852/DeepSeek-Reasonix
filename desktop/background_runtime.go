@@ -201,6 +201,7 @@ func (a *App) RevealBackgroundRuntime(tabID string) (TabMeta, error) {
 
 type workspaceLeaseReporter interface {
 	WorkspaceLeaseState() workspacelease.State
+	WorkspaceLeaseHeldKeys() []string
 }
 
 func controllerWorkspaceLeaseState(ctrl control.SessionAPI) workspacelease.State {
@@ -208,6 +209,37 @@ func controllerWorkspaceLeaseState(ctrl control.SessionAPI) workspacelease.State
 		return reporter.WorkspaceLeaseState()
 	}
 	return workspacelease.State{}
+}
+
+func controllerWorkspaceLeaseKeys(ctrl control.SessionAPI) []string {
+	if reporter, ok := ctrl.(workspaceLeaseReporter); ok {
+		return reporter.WorkspaceLeaseHeldKeys()
+	}
+	return nil
+}
+
+func leaseDomainsOverlap(waitingRoot string, waitingKeys []string, holderRoot string, holderKeys []string) bool {
+	if waitingRoot != "" && waitingRoot == holderRoot {
+		return true
+	}
+	seen := make(map[string]bool, len(waitingKeys)+1)
+	for _, key := range waitingKeys {
+		if key != "" {
+			seen[key] = true
+		}
+	}
+	if waitingRoot != "" {
+		seen[waitingRoot] = true
+	}
+	if holderRoot != "" && seen[holderRoot] {
+		return true
+	}
+	for _, key := range holderKeys {
+		if key != "" && seen[key] {
+			return true
+		}
+	}
+	return false
 }
 
 // WorkspaceConflictForTab classifies the owner that a Delivery writer is
@@ -264,9 +296,13 @@ func (a *App) WorkspaceConflictForTab(tabID string) WorkspaceConflictView {
 	}
 	a.mu.RUnlock()
 
+	targetKeys := controllerWorkspaceLeaseKeys(targetCtrl)
 	for _, candidate := range candidates {
 		root, err := workspacelease.CanonicalWorkspace(candidate.root)
-		if err != nil || root != targetRoot || !controllerWorkspaceLeaseState(candidate.ctrl).Acquired {
+		if err != nil || !controllerWorkspaceLeaseState(candidate.ctrl).Acquired {
+			continue
+		}
+		if !leaseDomainsOverlap(targetRoot, targetKeys, root, controllerWorkspaceLeaseKeys(candidate.ctrl)) {
 			continue
 		}
 		return WorkspaceConflictView{

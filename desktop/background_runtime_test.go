@@ -34,6 +34,9 @@ func (c *backgroundRuntimeController) Cancel() { c.turnCancel++ }
 func (c *backgroundRuntimeController) WorkspaceLeaseState() workspacelease.State {
 	return c.lease
 }
+func (c *backgroundRuntimeController) WorkspaceLeaseHeldKeys() []string {
+	return nil
+}
 
 func TestBackgroundRuntimeAPIsKeepDetachedJobsActionable(t *testing.T) {
 	targetCtrl := &backgroundRuntimeController{
