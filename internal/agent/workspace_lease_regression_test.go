@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"reasonix/internal/provider"
 	"reasonix/internal/workspacelease"
 )
 
@@ -92,5 +93,38 @@ func TestWritableHooksReserveWholeParentWorkspace(t *testing.T) {
 	}
 	if hooks.acquireErr == nil {
 		t.Fatal("hook-side path bypassed the parent workspace reservation")
+	}
+}
+
+func TestWritableHooksSerializeReadOnlyToolBatch(t *testing.T) {
+	root := t.TempDir()
+	first := &workspaceLeaseTestTool{name: "lease_reader_a", readOnly: true}
+	second := &workspaceLeaseTestTool{name: "lease_reader_b", readOnly: true}
+	hooks := &workspaceWritingHooks{path: filepath.Join(root, "hook-side.go")}
+	a := deliveryLeaseTestAgent(t, nil, first, second)
+	a.svc.writeScheduler = NewSubagentScheduler(4, 2)
+	a.writeWorkspaceRoot = root
+	calls := []provider.ToolCall{
+		providerToolCall("read-a", first.Name()),
+		providerToolCall("read-b", second.Name()),
+	}
+
+	if batches := a.toolCallBatches(calls); len(batches) != 1 || !batches[0].parallel {
+		t.Fatalf("ordinary read batches = %+v, want unchanged parallel fan-out", batches)
+	}
+	a.svc.hooks = hooks
+	batches := a.toolCallBatches(calls)
+	if len(batches) != 1 || batches[0].parallel {
+		t.Fatalf("hook-capable read batches = %+v, want one serial batch", batches)
+	}
+	result := a.executeBatch(context.Background(), &a.turn, calls)
+	for i, outcome := range result.outcomes {
+		if outcome.blocked || outcome.errMsg != "" {
+			t.Fatalf("read-only call %d was dropped by hook coordination: %+v", i, outcome)
+		}
+	}
+	if first.calls.Load() != 1 || second.calls.Load() != 1 || hooks.calls.Load() != 2 {
+		t.Fatalf("executions first=%d second=%d hooks=%d, want 1/1/2",
+			first.calls.Load(), second.calls.Load(), hooks.calls.Load())
 	}
 }
