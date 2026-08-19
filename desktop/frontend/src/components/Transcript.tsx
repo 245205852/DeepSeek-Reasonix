@@ -33,6 +33,7 @@ import {
   type ToolItem,
   type TranscriptLiveFlags,
   type TranscriptRow,
+  transcriptRowMeasurementVersion,
 } from "../lib/transcriptRows";
 import { getTranscriptStore } from "../lib/transcriptStore";
 import { createTranscriptMeasuredSizes } from "../lib/transcriptMeasuredSizes";
@@ -166,6 +167,7 @@ const TranscriptVirtuosoItem = forwardRef<HTMLDivElement, ItemProps<TranscriptRo
         style={frozenStyle}
         data-row-key={String(item.key)}
         data-row-kind={item.kind}
+        data-layout-version={transcriptRowMeasurementVersion(item)}
         {...diagnosticAttributes}
         className="transcript__row"
       >
@@ -1019,10 +1021,10 @@ export function Transcript({
             heightEstimates={heightEstimates}
             itemSize={itemSize}
             minOverscanItemCount={layoutSafeMode
-              ? { top: virtualRows.length, bottom: virtualRows.length }
+              ? { top: 32, bottom: 32 }
               : { top: VIRTUAL_OVERSCAN_ROWS, bottom: VIRTUAL_OVERSCAN_ROWS }}
             increaseViewportBy={layoutSafeMode
-              ? { top: 1_000_000, bottom: 1_000_000 }
+              ? { top: (scrollElement?.clientHeight ?? 0) * 2, bottom: (scrollElement?.clientHeight ?? 0) * 2 }
               : { top: 480, bottom: 480 }}
             scrollerRef={handleScrollerRef}
             itemsRendered={handleItemsRendered}

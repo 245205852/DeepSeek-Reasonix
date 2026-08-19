@@ -87,7 +87,7 @@ export function useTranscriptScrollArbiter({
    *  cancelled / expired); wired into session diagnostics by the caller. */
   onRecoveryTerminal?: (terminal: TranscriptRecoveryTerminal) => void;
   /** Receives real, unfrozen itemSize measurements; data-known-size is ignored. */
-  onItemMeasured?: (rowKey: string, kind: TranscriptRow["kind"], height: number, width: number) => void;
+  onItemMeasured?: (rowKey: string, kind: TranscriptRow["kind"], height: number, width: number, measurementVersion?: string) => void;
 } = {}) {
   const virtuosoRef = useRef<VirtuosoHandle>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -579,7 +579,7 @@ export function useTranscriptScrollArbiter({
       const kind = element.dataset.rowKind as TranscriptRow["kind"] | undefined;
       const width = Math.round(element.getBoundingClientRect().width);
       if (rowKey && kind && measured > 0 && width > 0) {
-        onItemMeasuredRef.current?.(rowKey, kind, measured, width);
+        onItemMeasuredRef.current?.(rowKey, kind, measured, width, element.dataset.layoutVersion);
       }
     }
     return measured;

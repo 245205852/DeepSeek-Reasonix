@@ -70,8 +70,10 @@ console.log("\nbundle budgets");
 // narrowly rounded 1 KiB ratchet.
 // Diagnostic builds intentionally keep content-free row geometry and scroll
 // transition probes in the initial transcript path. Stable builds retain the
-// existing production ratchet.
-const initialJSBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 428.0 : 425.0;
+// existing production ratchet. Per-row measurement versions and a bounded
+// recovery probe add 361 B gzip (0.083%); retain them with a 0.5 KiB (0.118%)
+// production ratchet rather than weakening either recovery contract.
+const initialJSBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 428.0 : 425.5;
 assertBudget("initial JavaScript gzip", initialJSGzip, initialJSBudgetKiB * 1024);
 assertBudget("largest initial JavaScript chunk gzip", largestInitialJS, 280 * 1024);
 assertBudget("render-blocking CSS gzip", initialCSSGzip, 4 * 1024);

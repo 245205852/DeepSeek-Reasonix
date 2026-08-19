@@ -416,15 +416,16 @@ check(scrollToBottomCalls === 1, "a reset without an anchor settles at the botto
 await advanceClock(2_100);
 await triggerWatchdogRebuild();
 check(integrity?.resetKey === "surface-c:2", "the same broken layout generation cannot enter a reset loop");
-check(integrity?.safeMode === true, "a repeatedly blank generation falls back to full-row measurement instead of another remount");
+check(integrity?.safeMode === true, "a repeatedly blank generation enters one bounded measurement probe instead of another remount");
 const safeModeResetKey = integrity?.resetKey;
 rowElement.getBoundingClientRect = () => rectAt(0);
 await flushBlankCheck();
-check(
-  integrity?.safeMode === false && integrity?.resetKey === safeModeResetKey,
-  "a healthy measured viewport exits full-row fallback without remounting",
-);
+check(integrity?.safeMode === false && integrity?.resetKey === safeModeResetKey,
+  "a healthy measured viewport exits the bounded probe without remounting");
 rowElement.getBoundingClientRect = () => rectAt(200);
+await triggerWatchdogRebuild();
+check(integrity?.safeMode === false && integrity?.resetKey === safeModeResetKey,
+  "an exhausted generation cannot re-enter its measurement probe");
 let recoveryRows = [...baseRows, { kind: "answer", key: "generation-1", item: { ...item, id: "generation-1" } } satisfies TranscriptRow];
 await act(async () => root.render(<Probe surfaceKey="surface-c" rows={recoveryRows} />));
 check(integrity?.safeMode === false, "a real layout generation change exits the automatic measurement fallback");
@@ -754,6 +755,36 @@ await act(async () => integrity?.handleItemsRendered(1));
 await flushFrames();
 check(scrollToBottomCalls === scrollToBottomBeforeSnapshot + 2, "a disjoint snapshot-less first mount settles at the bottom");
 stubSnapshot = null;
+
+// A 10,000-row generation gets only one keyed reset and one bounded probe.
+const longRows: TranscriptRow[] = Array.from({ length: 10_000 }, (_, index) => ({
+  kind: "answer", key: `long-${index}`,
+  item: { ...item, id: `long-${index}` },
+}));
+await switchSurface("surface-long", longRows);
+await act(async () => arbiter?.releaseTailFollow());
+await advanceClock(2_100);
+const longResetBefore = integrity?.resetKey;
+await triggerWatchdogRebuild();
+const longResetAfter = integrity?.resetKey;
+check(longResetAfter !== longResetBefore, "a 10,000-row generation spends its single hard-reset budget");
+await act(async () => integrity?.invalidateAnchors());
+await act(async () => integrity?.handleItemsRendered(1));
+await triggerWatchdogRebuild();
+check(integrity?.safeMode === true, "long-history recovery keeps the probe independent of total row count");
+await triggerWatchdogRebuild();
+check(integrity?.safeMode === false, "an unsuccessful long-history probe exits after its bounded attempt");
+for (let cycle = 0; cycle < 3; cycle += 1) await triggerWatchdogRebuild();
+check(integrity?.resetKey === longResetAfter && integrity?.safeMode === false,
+  "repeated blank cycles cannot remount or re-enter the probe after the generation budget is exhausted");
+const nextLongRows = [...longRows.slice(0, -1), { kind: "answer" as const, key: "long-next-generation",
+  item: { ...item, id: "long-next-generation" } }];
+await act(async () => root.render(<Probe surfaceKey="surface-long" rows={nextLongRows} />));
+check(integrity?.safeMode === false, "a changed 10,000-row generation resets the probe state");
+await advanceClock(2_100);
+const nextGenerationResetBefore = integrity?.resetKey;
+await triggerWatchdogRebuild();
+check(integrity?.resetKey !== nextGenerationResetBefore, "a changed 10,000-row generation receives a fresh hard-reset budget");
 
 await act(async () => root.unmount());
 Date.now = originalDateNow;

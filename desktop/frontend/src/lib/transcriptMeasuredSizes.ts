@@ -17,14 +17,20 @@
  * disarmed even when a remount cannot be avoided.
  */
 
-import { estimateTranscriptRowSize, type TranscriptRow } from "./transcriptRows";
+import { estimateTranscriptRowSize, transcriptRowMeasurementVersion, type TranscriptRow } from "./transcriptRows";
 
 /** Samples kept per row kind for the median fallback. */
 const KIND_SAMPLE_CAP = 100;
 
 export type TranscriptMeasuredSizes = {
   /** Record one measured row height (px). Non-positive/NaN ignored. */
-  record: (rowKey: string, kind: TranscriptRow["kind"], height: number, width?: number) => void;
+  record: (
+    rowKey: string,
+    kind: TranscriptRow["kind"],
+    height: number,
+    width?: number,
+    measurementVersion?: string,
+  ) => void;
   /** Estimate array aligned with `rows`, for Virtuoso's heightEstimates. */
   synthesize: (rows: readonly TranscriptRow[], width?: number) => number[];
   /** Drop all measurements (surface switch). */
@@ -41,19 +47,20 @@ function medianOf(samples: readonly number[]): number | undefined {
 }
 
 export function createTranscriptMeasuredSizes(): TranscriptMeasuredSizes {
-  type Sample = { kind: TranscriptRow["kind"]; height: number; width?: number };
+  type Sample = { kind: TranscriptRow["kind"]; height: number; width?: number; measurementVersion: string };
   const measured = new Map<string, Sample>();
 
   const widthMatches = (sample: Sample, width?: number) => width === undefined
     || (sample.width !== undefined && Math.abs(sample.width - width) <= 1);
 
-  const record: TranscriptMeasuredSizes["record"] = (rowKey, kind, height, width) => {
+  const record: TranscriptMeasuredSizes["record"] = (rowKey, kind, height, width, measurementVersion = "0:0") => {
     if (!Number.isFinite(height) || height <= 0) return;
     measured.delete(rowKey);
     measured.set(rowKey, {
       kind,
       height,
       width: Number.isFinite(width) && (width ?? 0) > 0 ? width : undefined,
+      measurementVersion,
     });
   };
 
@@ -67,6 +74,13 @@ export function createTranscriptMeasuredSizes(): TranscriptMeasuredSizes {
   return {
     record,
     synthesize: (rows, width) => {
+      // Remove changed-content samples before computing any kind median; a
+      // stale exact height must not influence another row's fallback.
+      for (const row of rows) {
+        const rowKey = String(row.key);
+        const sample = measured.get(rowKey);
+        if (sample && sample.measurementVersion !== transcriptRowMeasurementVersion(row)) measured.delete(rowKey);
+      }
       const medians = new Map<TranscriptRow["kind"], number | undefined>();
       return rows.map((row) => {
         const exact = measured.get(String(row.key));
