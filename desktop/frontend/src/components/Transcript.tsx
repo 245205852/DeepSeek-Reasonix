@@ -1,4 +1,4 @@
-import { forwardRef, memo, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type TouchEvent as ReactTouchEvent, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type WheelEvent as ReactWheelEvent } from "react";
+import { forwardRef, lazy, memo, Suspense, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type TouchEvent as ReactTouchEvent, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type WheelEvent as ReactWheelEvent } from "react";
 import { Virtuoso, type Components, type ItemProps, type ListItem, type ListProps } from "react-virtuoso";
 import type { ControllerLiveStore, Item, LiveStream } from "../lib/useController";
 import type { CheckpointMeta, WireCompletionSummary } from "../lib/types";
@@ -50,7 +50,6 @@ import { useReasoningDisplayMode } from "../lib/reasoningDisplayPreference";
 import { InlineAssistantReasoning } from "./InlineAssistantReasoning";
 import { LiveTurnRegion } from "./LiveTurnRegion";
 import { ProcessFoldHeader } from "./ProcessFoldHeader";
-import { QuestionJumpBar } from "./QuestionJumpBar";
 import { CompactionCard, NoticeCard, PhaseCard, SteerCard } from "./TranscriptCards";
 import { LiveStreamContext } from "./LiveStreamContext";
 import { useTranscriptSelectableRows } from "../lib/useTranscriptSelectableRows";
@@ -71,6 +70,7 @@ type AssistantReasoningDisplay = "normal" | "hide";
 const EMPTY_CHECKPOINTS: CheckpointMeta[] = [];
 const EMPTY_INVOCATION_METADATA: InvocationMetadataMap = {};
 const NO_HELD_ROWS: readonly TranscriptRow[] = [];
+const QuestionJumpBar = lazy(() => import("./QuestionJumpBar"));
 
 const LiveAssistantMessage = memo(function LiveAssistantMessage({
   item,
@@ -398,7 +398,6 @@ export function Transcript({
         text: compactQuestionText(it.text),
         turn,
         checkpointTurn: it.checkpointTurn,
-        loaded: true,
       });
       nextTurn = Math.max(nextTurn, turn + 1);
     }
@@ -730,7 +729,7 @@ export function Transcript({
   useEffect(() => {
     if (!pendingQuestion || pendingQuestion.surfaceKey !== layoutSurfaceKey) return;
     const question = questionNavigation.loadedByTurn.get(pendingQuestion.turn);
-    if (question?.loaded !== false && question) {
+    if (question) {
       setPendingQuestion(null);
       jumpToLoadedQuestion(question);
       return;
@@ -1121,12 +1120,14 @@ export function Transcript({
       )}
 
       {!empty && showQuestionNav && (
-        <QuestionJumpBar
-          loadedQuestions={questions}
-          totalQuestions={totalQuestions}
-          activeTurn={activeQuestion}
-          onJump={handleJumpToQuestion}
-        />
+        <Suspense fallback={null}>
+          <QuestionJumpBar
+            loadedQuestions={questions}
+            totalQuestions={totalQuestions}
+            activeTurn={activeQuestion}
+            onJump={handleJumpToQuestion}
+          />
+        </Suspense>
       )}
 
       {!empty && !isAtBottom && scrollElement && hasTranscriptScrollableRange(scrollElement) && (

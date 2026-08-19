@@ -67,8 +67,9 @@ console.log("\nbundle budgets");
 // guards add 611 bytes gzip over main-v2's 423.988 KiB startup path after the
 // blank-project flow landed; project-topic sort invalidation and request
 // ordering add another bounded 0.2 KiB. Retain both owner boundaries with a
-// narrowly rounded 1 KiB ratchet.
-assertBudget("initial JavaScript gzip", initialJSGzip, 425.0 * 1024);
+// narrowly rounded 1 KiB ratchet. The lazy question-rail boundary and absolute
+// turn wiring add 25 bytes; retain that 0.0057% growth with a 0.1 KiB increment.
+assertBudget("initial JavaScript gzip", initialJSGzip, 425.1 * 1024);
 assertBudget("largest initial JavaScript chunk gzip", largestInitialJS, 280 * 1024);
 assertBudget("render-blocking CSS gzip", initialCSSGzip, 4 * 1024);
 // Extension surfaces, Task Monitor, and compact decision receipts share the

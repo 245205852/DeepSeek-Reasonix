@@ -204,3 +204,5 @@ export function QuestionJumpBar({
     </nav>
   );
 }
+
+export default QuestionJumpBar;

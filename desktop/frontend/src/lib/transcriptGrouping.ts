@@ -8,14 +8,12 @@ export function activeQuestionTurn(
   positions: readonly QuestionAnchorPosition[],
   viewportTop = 0,
 ): number | undefined {
-  let firstMounted: QuestionAnchorPosition | undefined;
-  let active: QuestionAnchorPosition | undefined;
+  let active = positions[0];
   for (const position of positions) {
-    if (!Number.isInteger(position.turn) || !Number.isFinite(position.top)) continue;
-    if (!firstMounted || position.top < firstMounted.top) firstMounted = position;
-    if (position.top <= viewportTop && (!active || position.top > active.top)) active = position;
+    if (position.top > viewportTop) break;
+    active = position;
   }
-  return active?.turn ?? firstMounted?.turn;
+  return active?.turn;
 }
 
 export interface TurnGroup {
