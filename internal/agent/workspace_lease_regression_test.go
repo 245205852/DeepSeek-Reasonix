@@ -19,6 +19,27 @@ type workspaceWritingHooks struct {
 	calls atomic.Int32
 }
 
+type blockingWorkspaceLeaseMetaTool struct {
+	started chan struct{}
+	release chan struct{}
+}
+
+func (*blockingWorkspaceLeaseMetaTool) Name() string        { return "fleet" }
+func (*blockingWorkspaceLeaseMetaTool) Description() string { return "fleet test double" }
+func (*blockingWorkspaceLeaseMetaTool) Schema() json.RawMessage {
+	return json.RawMessage(`{"type":"object"}`)
+}
+func (*blockingWorkspaceLeaseMetaTool) ReadOnly() bool { return false }
+func (t *blockingWorkspaceLeaseMetaTool) Execute(ctx context.Context, _ json.RawMessage) (string, error) {
+	close(t.started)
+	select {
+	case <-t.release:
+		return "ok", nil
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
+}
+
 func (h *workspaceWritingHooks) PreToolUse(context.Context, string, json.RawMessage) (bool, string) {
 	h.calls.Add(1)
 	_ = os.WriteFile(h.path, []byte("hook"), 0o600)
@@ -34,6 +55,63 @@ func (*workspaceWritingHooks) PostLLMCall(_ context.Context, reasoning string, _
 func (*workspaceWritingHooks) HasPostLLMCall() bool                      { return false }
 func (*workspaceWritingHooks) SubagentStop(context.Context, string)      {}
 func (*workspaceWritingHooks) PreCompact(context.Context, string) string { return "" }
+
+func TestFleetMetaToolDoesNotTakeOuterWorkspaceLease(t *testing.T) {
+	root, locks := t.TempDir(), t.TempDir()
+	fleetOwner, err := workspacelease.New(root, locks, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	probeOwner, err := workspacelease.New(root, locks, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fleetOwner.BeginRun()
+	probeOwner.BeginRun()
+	defer fleetOwner.EndRun()
+	defer probeOwner.EndRun()
+
+	fleet := &blockingWorkspaceLeaseMetaTool{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	t.Cleanup(func() {
+		select {
+		case <-fleet.release:
+		default:
+			close(fleet.release)
+		}
+	})
+	a := deliveryLeaseTestAgent(t, fleetOwner, fleet)
+	a.writeWorkspaceRoot = root
+	done := make(chan toolOutcome, 1)
+	go func() {
+		done <- a.executeOne(context.Background(), &a.turn, providerToolCall("fleet", fleet.Name()))
+	}()
+
+	select {
+	case <-fleet.started:
+	case <-time.After(time.Second):
+		t.Fatal("fleet did not start")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	releaseProbe, err := probeOwner.HoldWrite(ctx)
+	cancel()
+	if err != nil {
+		t.Fatalf("fleet meta call held an outer workspace lease: %v", err)
+	}
+	releaseProbe()
+	close(fleet.release)
+
+	select {
+	case out := <-done:
+		if out.blocked || out.errMsg != "" {
+			t.Fatalf("fleet outcome = %+v", out)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("fleet did not return after release")
+	}
+}
 
 func TestWritableHooksUseWorkspaceLease(t *testing.T) {
 	root, locks := t.TempDir(), t.TempDir()
