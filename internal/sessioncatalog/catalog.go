@@ -307,6 +307,14 @@ func (c *Catalog) UpsertSession(ctx context.Context, record SessionRecord) error
 }
 
 func (c *Catalog) upsertSessions(ctx context.Context, records []SessionRecord, generations map[string]int64, reason string) error {
+	return c.upsertSessionsWithNotification(ctx, records, generations, reason, true)
+}
+
+func (c *Catalog) upsertSessionsWithoutNotification(ctx context.Context, records []SessionRecord, generations map[string]int64, reason string) error {
+	return c.upsertSessionsWithNotification(ctx, records, generations, reason, false)
+}
+
+func (c *Catalog) upsertSessionsWithNotification(ctx context.Context, records []SessionRecord, generations map[string]int64, reason string, notify bool) error {
 	if len(records) == 0 {
 		return nil
 	}
@@ -408,7 +416,11 @@ func (c *Catalog) upsertSessions(ctx context.Context, records []SessionRecord, g
 	if err := tx.Commit(); err != nil {
 		return err
 	}
-	c.publishRevision(revision, mapKeys(roots), reason)
+	if notify {
+		c.publishRevision(revision, mapKeys(roots), reason)
+	} else {
+		c.rememberRevision(revision)
+	}
 	c.refreshCounts(ctx)
 	return nil
 }
@@ -487,13 +499,17 @@ func bumpRevision(ctx context.Context, tx *sql.Tx) (uint64, error) {
 }
 
 func (c *Catalog) publishRevision(revision uint64, roots []string, reason string) {
+	c.rememberRevision(revision)
+	if c.opts.OnRevision != nil {
+		c.opts.OnRevision(revision, roots, reason)
+	}
+}
+
+func (c *Catalog) rememberRevision(revision uint64) {
 	c.revision.Store(revision)
 	c.statusMu.Lock()
 	c.status.Revision = revision
 	c.statusMu.Unlock()
-	if c.opts.OnRevision != nil {
-		c.opts.OnRevision(revision, roots, reason)
-	}
 }
 
 func mapKeys(values map[string]struct{}) []string {

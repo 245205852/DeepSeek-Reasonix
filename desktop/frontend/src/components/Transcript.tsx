@@ -1,13 +1,13 @@
-import { forwardRef, memo, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type TouchEvent as ReactTouchEvent, useCallback, useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore, type WheelEvent as ReactWheelEvent } from "react";
+import { forwardRef, memo, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type TouchEvent as ReactTouchEvent, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type WheelEvent as ReactWheelEvent } from "react";
 import { Virtuoso, type Components, type ItemProps, type ListItem, type ListProps } from "react-virtuoso";
 import type { ControllerLiveStore, Item, LiveStream } from "../lib/useController";
-import type { CheckpointMeta } from "../lib/types";
+import type { CheckpointMeta, WireCompletionSummary } from "../lib/types";
 import type { InvocationMetadataMap } from "../lib/invocationDisplay";
 import { useT } from "../lib/i18n";
 import { AssistantMessage, InvocationMetadataContext, TurnActions, UserMessage } from "./Message";
 import { ToolCard } from "./ToolCard";
 import { ExtensionCard } from "./ExtensionCard";
-import { ArrowDown } from "lucide-react";
+import { ArrowDown, Loader2 } from "lucide-react";
 import { Welcome } from "./Welcome";
 import { ReadOnlyBatch } from "./ReadOnlyBatch";
 import { ToolGroup } from "./ToolGroup";
@@ -233,7 +233,9 @@ export function Transcript({
   footerHeight = 0,
   onPrompt,
   onDeliveryContinue,
+  onAcceptDelivery,
   onOpenChanges,
+  onOpenVerification,
   onEditPrompt,
   onRewind,
   checkpoints = EMPTY_CHECKPOINTS,
@@ -261,7 +263,9 @@ export function Transcript({
   footerHeight?: number;
   onPrompt: (text: string) => void;
   onDeliveryContinue?: () => void;
+  onAcceptDelivery?: () => void;
   onOpenChanges?: () => void;
+  onOpenVerification?: (summary: WireCompletionSummary) => void;
   onEditPrompt?: (turn: number, displayText: string, submitText?: string) => boolean | void | Promise<boolean | void>;
   onRewind?: (turn: number, scope: string) => void;
   checkpoints?: CheckpointMeta[];
@@ -292,7 +296,6 @@ export function Transcript({
     [liveProp, liveStore, tabId],
   );
   const live = useSyncExternalStore(subscribeLive, getLiveSnapshot, getLiveSnapshot);
-  const liveTailActiveRef = useRef(false);
   const {
     virtuosoRef,
     scrollRef,
@@ -305,10 +308,12 @@ export function Transcript({
     onNestedScrollIntent,
     onTouchStartIntent,
     onTouchMoveIntent,
+    onTouchEndIntent,
     onKeyScrollIntent,
     isAtBottom,
     scrollerRef,
     atBottomStateChange,
+    deliverScroll,
     scrollToBottom,
     followGrowingTail,
     beginUserResize,
@@ -322,7 +327,7 @@ export function Transcript({
     retryRecoveryRequest,
     lastGoodAnchorRef,
     captureStateSnapshot,
-  } = useTranscriptScrollArbiter({ liveTailActiveRef, onRecoveryTerminal: noteTranscriptRecoveryTerminal });
+  } = useTranscriptScrollArbiter({ onRecoveryTerminal: noteTranscriptRecoveryTerminal });
   const virtuosoReadyRef = useRef(false);
   const layoutSurfaceKey = `${tabId ?? ""}:${revealSignal}`;
 
@@ -384,7 +389,7 @@ export function Transcript({
   // starts at the bottom. Without this, stick.current from the previous tab
   // persists across React re-renders (Transcript is not keyed by tabId) and
   // disables auto-scroll when the user had scrolled up in the old tab (#4584).
-  useEffect(() => {
+  useLayoutEffect(() => {
     resetScroll();
     virtuosoReadyRef.current = false;
   }, [resetScroll, revealSignal, tabId]);
@@ -554,35 +559,40 @@ export function Transcript({
     writeOffset,
     cancelStreamingScroll: cancelStreamingAndFollow,
   });
+  const clearTranscriptSelection = selectionRetention.clear;
   // User scroll intent is reported to the layout-integrity hook (idle gating
   // for the blank watchdog) and to the scroll arbiter itself, which preempts
   // any in-flight recovery restore on its own intent events (#8657/#8688
   // follow-up).
   const onWheelIntentWithRecovery = useCallback((event: ReactWheelEvent<HTMLElement>) => {
-    noteUserScrollIntent();
-    return onWheelIntent(event);
+    const accepted = onWheelIntent(event);
+    if (accepted) noteUserScrollIntent();
+    return accepted;
   }, [noteUserScrollIntent, onWheelIntent]);
   const onTouchStartIntentWithRecovery = useCallback((event: ReactTouchEvent<HTMLElement>) => {
-    noteUserScrollIntent();
     onTouchStartIntent(event);
-  }, [noteUserScrollIntent, onTouchStartIntent]);
+  }, [onTouchStartIntent]);
   const onTouchMoveIntentWithRecovery = useCallback((event: ReactTouchEvent<HTMLElement>) => {
-    noteUserScrollIntent();
-    return onTouchMoveIntent(event);
+    const accepted = onTouchMoveIntent(event);
+    if (accepted) noteUserScrollIntent();
+    return accepted;
   }, [noteUserScrollIntent, onTouchMoveIntent]);
   const onKeyScrollIntentWithRecovery = useCallback((event: ReactKeyboardEvent<HTMLElement>) => {
-    noteUserScrollIntent();
-    return onKeyScrollIntent(event);
+    const accepted = onKeyScrollIntent(event);
+    if (accepted) noteUserScrollIntent();
+    return accepted;
   }, [noteUserScrollIntent, onKeyScrollIntent]);
   const onPointerDownIntentWithRecovery = useCallback((event: ReactPointerEvent<HTMLElement>) => {
-    noteUserScrollIntent();
-    return onPointerDownIntent(event);
+    const accepted = onPointerDownIntent(event);
+    if (accepted) noteUserScrollIntent();
+    return accepted;
   }, [noteUserScrollIntent, onPointerDownIntent]);
   const scrollInteractions = useTranscriptScrollInteractions({
-    scrollRef,
+    scrollElement,
     cancelStreamingScroll: cancelStreamingAutoScroll,
     onWheelIntent: onWheelIntentWithRecovery,
     onTouchMoveIntent: onTouchMoveIntentWithRecovery,
+    onTouchEndIntent,
     onKeyScrollIntent: onKeyScrollIntentWithRecovery,
     onPointerDownIntent: onPointerDownIntentWithRecovery,
     onNestedScrollIntent,
@@ -602,17 +612,23 @@ export function Transcript({
     entranceRef.current = node instanceof HTMLElement ? node as HTMLDivElement : null;
   }, [entranceRef, scrollerRef]);
   const handleTranscriptScroll = useCallback(() => {
+    deliverScroll();
     noteScrollActivity();
     if (creationMode) handleCreationScroll();
     scheduleBlankViewportCheck();
-  }, [creationMode, handleCreationScroll, noteScrollActivity, scheduleBlankViewportCheck]);
+  }, [creationMode, deliverScroll, handleCreationScroll, noteScrollActivity, scheduleBlankViewportCheck]);
   // ── JumpBar integration ───────────────────────────────────────────────────
   const handleJumpToQuestion = useCallback((question: QuestionAnchor) => {
     const index = rowIndexByKey.get(String(userRowKey(question.id)));
     if (index == null) return;
+    // WebView2 can lose the pointerup that ends a transcript text-selection
+    // gesture. An explicit navigator click owns the next viewport position,
+    // so clear that stale selection before asking the scroll arbiter to jump.
+    document.getSelection()?.removeAllRanges();
+    clearTranscriptSelection("question-navigation");
     invalidateAnchors();
-    scrollToDataIndex(firstItemIndex, index, "smooth");
-  }, [firstItemIndex, invalidateAnchors, rowIndexByKey, scrollToDataIndex]);
+    scrollToDataIndex(index, "smooth");
+  }, [clearTranscriptSelection, invalidateAnchors, rowIndexByKey, scrollToDataIndex]);
 
   // The jump-bottom click is explicit user intent: it outranks any in-flight
   // recovery anchor restore and ends a stale selection gesture whose
@@ -631,7 +647,7 @@ export function Transcript({
     const index = rowIndexByKey.get(String(userRowKey(lastQ.id)));
     if (index == null) return;
     invalidateAnchors();
-    scrollToDataIndex(firstItemIndex, index);
+    scrollToDataIndex(index);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rewindSignal]);
 
@@ -745,6 +761,8 @@ export function Transcript({
               : row.item.action === "open_changes"
                 ? onOpenChanges
                 : undefined}
+            onOpenVerification={row.item.variant === "completion" ? onOpenVerification : undefined}
+            onAccept={row.item.action === "continue_delivery" ? onAcceptDelivery : undefined}
           />
         );
       case "extension":
@@ -781,9 +799,11 @@ export function Transcript({
     loadingOlderHistory,
     olderHistoryCount,
     onDeliveryContinue,
+    onAcceptDelivery,
     onEditPrompt,
     onLoadOlderHistory,
     onOpenChanges,
+    onOpenVerification,
     onPrompt,
     onRewind,
     openAction,
@@ -849,7 +869,6 @@ export function Transcript({
   }, [holdingLiveRegion]);
   const heldLiveRows = heldSurfaceRef.current === layoutSurfaceKey ? heldLiveRowsRef.current : NO_HELD_ROWS;
   const showLiveRegion = liveSplit.liveActive || (holdingLiveRegion && heldLiveRows.length > 0);
-  liveTailActiveRef.current = showLiveRegion;
 
   const handleItemsRendered = useCallback((rendered: ListItem<TranscriptRow>[]) => {
     noteTranscriptRowCounts(rendered.length, virtualRows.length);
@@ -917,8 +936,14 @@ export function Transcript({
         <div
           className={`transcript transcript--empty${creationMode ? " transcript--creation-scrollbar" : ""}`}
           ref={(node) => handleScrollerRef(node)}
+          aria-busy={hydrating || undefined}
         >
-          {!hydrating && <Welcome onPrompt={onPrompt} variant={welcomeVariant} />}
+          {hydrating ? (
+            <div className="transcript__loading" role="status" aria-live="polite">
+              <Loader2 className="transcript__loading-icon" aria-hidden="true" />
+              <span>{t("common.loading")}</span>
+            </div>
+          ) : <Welcome onPrompt={onPrompt} variant={welcomeVariant} />}
         </div>
       ) : (
         <LiveStreamContext.Provider value={live}>
@@ -954,6 +979,8 @@ export function Transcript({
             onWheelCapture={scrollInteractions.onWheelCapture}
             onTouchStartCapture={onTouchStartIntentWithRecovery}
             onTouchMoveCapture={scrollInteractions.onTouchMoveCapture}
+            onTouchEndCapture={scrollInteractions.onTouchEndCapture}
+            onTouchCancelCapture={scrollInteractions.onTouchEndCapture}
             onKeyDownCapture={scrollInteractions.onKeyDownCapture}
             onPointerDownCapture={scrollInteractions.onPointerDownCapture}
           />

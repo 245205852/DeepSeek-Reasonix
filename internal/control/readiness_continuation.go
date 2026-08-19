@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"reasonix/internal/agent"
@@ -123,7 +124,7 @@ func (o *turnOrchestrator) continueUntilReady(ctx context.Context, turnErr error
 		if automaticTurns > 0 && !readinessMadeProgress(previousProgress, readinessErr.ProgressKey) {
 			return finalReadinessWithAttempts(turnErr, initialAttempts+automaticTurns)
 		}
-		prompt := readinessContinuationPrompt(o.c.goalTodos(), readinessErr.Reason)
+		prompt := readinessContinuationPrompt(o.c.goalTodos(), readinessErr.Missing, readinessErr.Reason)
 		if prompt == "" {
 			return finalReadinessWithAttempts(turnErr, initialAttempts+automaticTurns)
 		}
@@ -159,9 +160,9 @@ func (o *turnOrchestrator) continueUntilReady(ctx context.Context, turnErr error
 // readinessContinuationPrompt states only host-observed missing work. It is an
 // append-only user turn, leaving the system prompt and tool-schema cache prefix
 // unchanged.
-func readinessContinuationPrompt(todos []evidence.TodoItem, reason string) string {
+func readinessContinuationPrompt(todos []evidence.TodoItem, missing []string, reason string) string {
 	var parts []string
-	if incomplete := evidence.IncompleteTodos(todos); len(incomplete) > 0 {
+	if incomplete := evidence.IncompleteTodos(todos); slices.Contains(missing, "todo") && len(incomplete) > 0 {
 		var b strings.Builder
 		b.WriteString("these tasks are still incomplete:")
 		for _, todo := range incomplete {

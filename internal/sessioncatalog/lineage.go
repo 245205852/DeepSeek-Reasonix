@@ -513,7 +513,10 @@ func (c *Catalog) refreshDirectoryRecoveryLineage(ctx context.Context, target Di
 	if err := tx.Commit(); err != nil {
 		return err
 	}
-	c.publishRevision(revision, []string{target.WorkspaceRoot}, "recovery_lineage")
+	// Recovery lineage is the final projection step inside ReconcileDirectory.
+	// Keep its revision internal; finishDirectoryScan publishes the one complete
+	// directory snapshot after missing-row cleanup and readiness are committed.
+	c.rememberRevision(revision)
 	return nil
 }
 

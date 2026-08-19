@@ -7,9 +7,11 @@ import type {
 } from "react";
 import type { FlatIndexLocationWithAlign, SizeFunction, StateSnapshot, VirtuosoHandle } from "react-virtuoso";
 import { isEditableTarget } from "./keyboardShortcuts";
+import { findVerticalScrollTarget } from "./nestedScrollHandoff";
 import { isNativeVerticalScrollbarPointer, measureTranscriptVirtuosoItem } from "./transcriptNativeScrollbar";
 import {
   INITIAL_TRANSCRIPT_SCROLL_STATE,
+  isSubstantialTranscriptDisplacement,
   isTranscriptContentShrink,
   isTranscriptSelectionMode,
   reduceTranscriptScroll,
@@ -26,14 +28,15 @@ import { captureTranscriptLayoutAnchor, type TranscriptLayoutAnchor } from "./tr
 const SCROLL_UP_KEYS = new Set(["ArrowUp", "PageUp", "Home"]);
 const SCROLL_DOWN_KEYS = new Set(["ArrowDown", "PageDown", "End", " ", "Spacebar"]);
 export const TRANSCRIPT_AT_BOTTOM_THRESHOLD_PX = 4;
-// LAST/end can stop just above the native extent when the scroller owns
-// vertical padding or fractional row measurements. A bounded positive offset
-// is clamped by the browser and keeps the write within Virtuoso's API.
-const TRANSCRIPT_TAIL_CLAMP_OFFSET_PX = 64;
-// Bounded follow budget: re-aim at the last row across a few frames so late
-// row measurements cannot leave the view parked above the real bottom.
-const TAIL_SETTLE_MAX_ATTEMPTS = 6;
-const TAIL_SETTLE_BUDGET_MS = 500;
+const TAIL_STAGNANT_FRAME_LIMIT = 2;
+// A tail displacement must survive one full frame before the writer acts.
+// Layout churn (row remeasurement, content-visibility flips, md hydration)
+// alternates off-bottom/at-bottom on consecutive frames; writing against it
+// perturbs layout again and sustains the oscillation — the reduced-motion
+// flicker of #9028/#9089. Real growth stays off-bottom and converges one
+// frame (~16ms) later, which is imperceptible.
+const TAIL_CONFIRM_OFF_BOTTOM_FRAMES = 2;
+const READER_INTENT_IDLE_MS = 180;
 // Anchor restores wait for the anchor row to actually mount. An 8-frame
 // budget (~128 ms) expired before heavy rows mounted on WebView2, stranding
 // the view at the estimate-based (higher) scrollToIndex landing — the
@@ -118,12 +121,8 @@ type ActiveTranscriptRecovery = {
  * programmatic > recovery > tail-follow).
  */
 export function useTranscriptScrollArbiter({
-  liveTailActiveRef,
   onRecoveryTerminal,
 }: {
-  /** While the live-region footer is mounted, the true bottom sits below the
-   *  last virtual row; tail writes then aim at the DOM extent instead. */
-  liveTailActiveRef?: RefObject<boolean>;
   /** Receives the terminal state of every recovery request (done /
    *  cancelled / expired); wired into session diagnostics by the caller. */
   onRecoveryTerminal?: (terminal: TranscriptRecoveryTerminal) => void;
@@ -135,9 +134,13 @@ export function useTranscriptScrollArbiter({
   const modeRef = useRef<TranscriptScrollMode>("tail-follow");
   const touchStartYRef = useRef<number | null>(null);
   const nativeScrollbarDragRef = useRef(false);
+  const middlePointerScrollRef = useRef(false);
+  const generationRef = useRef(0);
   const followFrameRef = useRef<number | null>(null);
   const tailSettleFrameRef = useRef<number | null>(null);
+  const tailSettleProgressRef = useRef<{ distance: number; stagnantFrames: number; offBottomFrames: number } | null>(null);
   const resizeSettleFrameRef = useRef<number | null>(null);
+  const readerIntentTimerRef = useRef<number | null>(null);
   const lastFollowExtentRef = useRef<number | null>(null);
   const recoveryRef = useRef<ActiveTranscriptRecovery | null>(null);
   const nextRecoveryIdRef = useRef(0);
@@ -151,47 +154,76 @@ export function useTranscriptScrollArbiter({
   const [isAtBottom, setIsAtBottom] = useState(true);
   const [scrollElement, setScrollElement] = useState<HTMLDivElement | null>(null);
 
-  // Re-aim at the tail across a few frames: the first request can still use
-  // Virtuoso's pre-measurement size tree, and late tail-row measurements
-  // would otherwise leave the view parked above the real bottom.
-  // User-ownership events cancel the pending frame through dispatch().
+  // Tail writes aim at the scroller's native extent, never at Virtuoso's size
+  // tree. scrollToIndex("LAST") resolves against the estimated tree, which can
+  // already believe it is at the bottom while the DOM extent sits hundreds of
+  // pixels lower; the write then lands nowhere, the arbiter still reads a
+  // non-bottom distance, and the settle loop re-arms every frame (#9028: 340
+  // no-op tail writes in 11s with scrollTop frozen — the reduced-motion
+  // flicker loop). The browser clamps scrollTo against the real extent, so a
+  // native-extent write always converges and is idempotent at the bottom.
   const scrollToTail = useCallback((behavior: "auto" | "smooth") => {
     const element = scrollRef.current;
-    if (liveTailActiveRef?.current && element) {
-      // The live-region footer extends past the last virtual row. Virtuoso's
-      // scrollTo clamps against the scroller's real DOM scrollHeight, footer
-      // included, so this lands on the true bottom.
-      noteTranscriptScrollWrite({ owner: "tail-follow", kind: "scrollTo", top: element.scrollHeight });
-      virtuosoRef.current?.scrollTo({ top: element.scrollHeight, behavior });
-      return;
-    }
-    noteTranscriptScrollWrite({ owner: "tail-follow", kind: "scrollToIndex", index: "LAST" });
-    virtuosoRef.current?.scrollToIndex({
-      index: "LAST",
-      align: "end",
-      offset: TRANSCRIPT_TAIL_CLAMP_OFFSET_PX,
-      behavior,
-    });
-  }, [liveTailActiveRef]);
+    if (!element) return;
+    const top = element.scrollHeight;
+    noteTranscriptScrollWrite({ owner: "tail-follow", kind: "scrollTo", top });
+    virtuosoRef.current?.scrollTo({ top, behavior });
+  }, []);
+
+  const cancelTailSettle = useCallback(() => {
+    if (tailSettleFrameRef.current !== null) cancelAnimationFrame(tailSettleFrameRef.current);
+    tailSettleFrameRef.current = null;
+    tailSettleProgressRef.current = null;
+  }, []);
 
   const scheduleTailSettle = useCallback(() => {
-    if (tailSettleFrameRef.current !== null) cancelAnimationFrame(tailSettleFrameRef.current);
-    const deadline = performance.now() + TAIL_SETTLE_BUDGET_MS;
-    let attempts = 0;
+    if (tailSettleFrameRef.current !== null) return;
+    const generation = generationRef.current;
+    const scrollElement = scrollRef.current;
     const tick = () => {
       tailSettleFrameRef.current = null;
-      if (modeRef.current !== "tail-follow") return;
-      scrollToTail("auto");
-      attempts += 1;
-      const element = scrollRef.current;
-      const settled = !element
-        || nativeTranscriptDistanceFromBottom(element) <= TRANSCRIPT_AT_BOTTOM_THRESHOLD_PX;
-      if (!settled && attempts < TAIL_SETTLE_MAX_ATTEMPTS && performance.now() < deadline) {
-        tailSettleFrameRef.current = requestAnimationFrame(tick);
+      if (
+        generationRef.current !== generation
+        || scrollRef.current !== scrollElement
+        || modeRef.current !== "tail-follow"
+      ) {
+        tailSettleProgressRef.current = null;
+        return;
       }
+      const element = scrollRef.current;
+      if (!element) return;
+      const distance = nativeTranscriptDistanceFromBottom(element);
+      if (distance <= TRANSCRIPT_AT_BOTTOM_THRESHOLD_PX) {
+        // Already converged: a redundant write would still be a visible
+        // programmatic scrollTop touch for an idle tail.
+        tailSettleProgressRef.current = null;
+        return;
+      }
+      const previous = tailSettleProgressRef.current;
+      const offBottomFrames = (previous?.offBottomFrames ?? 0) + 1;
+      if (offBottomFrames < TAIL_CONFIRM_OFF_BOTTOM_FRAMES) {
+        tailSettleProgressRef.current = { distance, stagnantFrames: 0, offBottomFrames };
+        tailSettleFrameRef.current = requestAnimationFrame(tick);
+        return;
+      }
+      scrollToTail("auto");
+      const stagnantFrames = previous && Math.abs(previous.distance - distance) <= 0.5
+        ? previous.stagnantFrames + 1
+        : 0;
+      tailSettleProgressRef.current = { distance, stagnantFrames, offBottomFrames };
+      if (stagnantFrames < TAIL_STAGNANT_FRAME_LIMIT) tailSettleFrameRef.current = requestAnimationFrame(tick);
     };
     tailSettleFrameRef.current = requestAnimationFrame(tick);
   }, [scrollToTail]);
+
+  const invalidateAsyncFrames = useCallback(() => {
+    generationRef.current += 1;
+    if (followFrameRef.current !== null) cancelAnimationFrame(followFrameRef.current);
+    if (resizeSettleFrameRef.current !== null) cancelAnimationFrame(resizeSettleFrameRef.current);
+    followFrameRef.current = null;
+    resizeSettleFrameRef.current = null;
+    cancelTailSettle();
+  }, [cancelTailSettle]);
 
   // Executes the reducer's CANCEL_RECOVERY command. The cancelling event
   // already cleared recoveryId in the published state, so no RECOVERY_END
@@ -252,6 +284,7 @@ export function useTranscriptScrollArbiter({
   const dispatch = useCallback((event: TranscriptScrollEvent) => {
     if (
       event.type === "USER_SCROLL_INTENT"
+      || event.type === "MANUAL_READING"
       || event.type === "USER_RESIZE_BEGIN"
       || event.type === "SELECTION_BEGIN"
       || event.type === "PROGRAMMATIC_BEGIN"
@@ -259,8 +292,7 @@ export function useTranscriptScrollArbiter({
       || event.type === "SCROLL_TO_OFFSET"
       || event.type === "CONTENT_SHRANK"
     ) {
-      if (tailSettleFrameRef.current !== null) cancelAnimationFrame(tailSettleFrameRef.current);
-      tailSettleFrameRef.current = null;
+      cancelTailSettle();
     }
     if (event.type === "RESET") lastGoodAnchorRef.current = null;
     if (event.type === "USER_SCROLL_INTENT") {
@@ -272,7 +304,33 @@ export function useTranscriptScrollArbiter({
     publishState(result.state);
     for (const command of result.commands) runCommand(command);
     return result;
-  }, [publishState, runCommand]);
+  }, [cancelTailSettle, publishState, runCommand]);
+
+  const endReaderIntent = useCallback(() => {
+    if (readerIntentTimerRef.current !== null) window.clearTimeout(readerIntentTimerRef.current);
+    readerIntentTimerRef.current = null;
+    dispatch({ type: "READER_INTENT_ENDED" });
+  }, [dispatch]);
+
+  const armReaderIntentIdle = useCallback(() => {
+    if (readerIntentTimerRef.current !== null) window.clearTimeout(readerIntentTimerRef.current);
+    readerIntentTimerRef.current = window.setTimeout(() => {
+      readerIntentTimerRef.current = null;
+      dispatch({ type: "READER_INTENT_ENDED" });
+    }, READER_INTENT_IDLE_MS);
+  }, [dispatch]);
+
+  const deliverScroll = useCallback((element = scrollRef.current) => {
+    if (!element) return;
+    const distance = nativeTranscriptDistanceFromBottom(element);
+    dispatch({
+      type: "SCROLL_DELIVERED",
+      atBottom: distance <= TRANSCRIPT_AT_BOTTOM_THRESHOLD_PX,
+      scrollable: hasTranscriptScrollableRange(element),
+      substantial: isSubstantialTranscriptDisplacement(distance),
+    });
+    if (stateRef.current.readerIntent) armReaderIntentIdle();
+  }, [armReaderIntentIdle, dispatch]);
 
   const scrollToBottom = useCallback((behavior: ScrollBehavior = "auto") => {
     if (isTranscriptSelectionMode(modeRef.current)) return;
@@ -394,40 +452,68 @@ export function useTranscriptScrollArbiter({
     launchRecovery(recovery);
   }, [finishRecovery, launchRecovery]);
 
+  const reset = useCallback(() => {
+    invalidateAsyncFrames();
+    endReaderIntent();
+    lastFollowExtentRef.current = null;
+    dispatch({ type: "RESET" });
+  }, [dispatch, endReaderIntent, invalidateAsyncFrames]);
+
   const setMode = useCallback((mode: TranscriptScrollMode, _reason?: string) => {
     switch (mode) {
-      case "tail-follow": dispatch({ type: "RESET" }); break;
-      case "manual": dispatch({ type: "USER_SCROLL_INTENT" }); break;
+      case "tail-follow": reset(); break;
+      case "manual": dispatch({ type: "MANUAL_READING" }); break;
       case "user-resize": dispatch({ type: "USER_RESIZE_BEGIN" }); break;
       case "selection": dispatch({ type: "SELECTION_BEGIN" }); break;
       case "restoring": dispatch({ type: "PROGRAMMATIC_BEGIN" }); break;
     }
-  }, [dispatch]);
+  }, [dispatch, reset]);
 
   const finishNativeScrollbarDrag = useCallback(() => {
     if (!nativeScrollbarDragRef.current) return;
-    nativeScrollbarDragRef.current = false;
     const element = scrollRef.current;
-    if (element) delete element.dataset.nativeScrollbarDrag;
+    if (element) {
+      dispatch({ type: "USER_SCROLL_INTENT", canClaimTail: true });
+      deliverScroll(element);
+      delete element.dataset.nativeScrollbarDrag;
+    }
+    endReaderIntent();
+    nativeScrollbarDragRef.current = false;
     setNativeScrollbarDragging(false);
-  }, []);
+    if (modeRef.current === "tail-follow") scheduleTailSettle();
+  }, [deliverScroll, dispatch, endReaderIntent, scheduleTailSettle]);
+
+  const finishPointerIntent = useCallback(() => {
+    if (nativeScrollbarDragRef.current) finishNativeScrollbarDrag();
+    if (middlePointerScrollRef.current) {
+      middlePointerScrollRef.current = false;
+      endReaderIntent();
+    }
+  }, [endReaderIntent, finishNativeScrollbarDrag]);
+
+  const finishAllReaderIntent = useCallback(() => {
+    finishPointerIntent();
+    endReaderIntent();
+  }, [endReaderIntent, finishPointerIntent]);
 
   useEffect(() => {
-    window.addEventListener("pointerup", finishNativeScrollbarDrag, true);
-    window.addEventListener("pointercancel", finishNativeScrollbarDrag, true);
-    window.addEventListener("blur", finishNativeScrollbarDrag);
+    window.addEventListener("pointerup", finishPointerIntent, true);
+    window.addEventListener("pointercancel", finishPointerIntent, true);
+    window.addEventListener("blur", finishAllReaderIntent);
     return () => {
-      window.removeEventListener("pointerup", finishNativeScrollbarDrag, true);
-      window.removeEventListener("pointercancel", finishNativeScrollbarDrag, true);
-      window.removeEventListener("blur", finishNativeScrollbarDrag);
+      window.removeEventListener("pointerup", finishPointerIntent, true);
+      window.removeEventListener("pointercancel", finishPointerIntent, true);
+      window.removeEventListener("blur", finishAllReaderIntent);
     };
-  }, [finishNativeScrollbarDrag]);
+  }, [finishAllReaderIntent, finishPointerIntent]);
 
   useEffect(() => () => {
     if (followFrameRef.current !== null) cancelAnimationFrame(followFrameRef.current);
     if (tailSettleFrameRef.current !== null) cancelAnimationFrame(tailSettleFrameRef.current);
     if (resizeSettleFrameRef.current !== null) cancelAnimationFrame(resizeSettleFrameRef.current);
+    if (readerIntentTimerRef.current !== null) window.clearTimeout(readerIntentTimerRef.current);
     if (recoveryRef.current?.frame != null) cancelAnimationFrame(recoveryRef.current.frame);
+    generationRef.current += 1;
     recoveryRef.current = null;
   }, []);
 
@@ -437,36 +523,42 @@ export function useTranscriptScrollArbiter({
 
   const scrollerRef = useCallback((node: HTMLElement | Window | null) => {
     const element = node instanceof HTMLElement ? node as HTMLDivElement : null;
-    if (scrollRef.current !== element) finishNativeScrollbarDrag();
+    if (scrollRef.current !== element) {
+      finishNativeScrollbarDrag();
+      invalidateAsyncFrames();
+    }
     scrollRef.current = element;
     if (element) {
       element.dataset.scrollMode = stateRef.current.mode;
-      dispatch({
-        type: "AT_BOTTOM_CHANGED",
-        atBottom: nativeTranscriptDistanceFromBottom(element) <= TRANSCRIPT_AT_BOTTOM_THRESHOLD_PX,
-        scrollable: hasTranscriptScrollableRange(element),
-      });
+      deliverScroll(element);
     }
     setScrollElement((current) => current === element ? current : element);
-  }, [dispatch, finishNativeScrollbarDrag]);
+  }, [deliverScroll, finishNativeScrollbarDrag, invalidateAsyncFrames]);
 
-  const releaseTailFollow = useCallback(() => {
+  const releaseTailFollow = useCallback((claimPhysicalBottom = false) => {
     if (isTranscriptSelectionMode(modeRef.current)) return;
     const element = scrollRef.current;
     if (element && !stateRef.current.scrollable && hasTranscriptScrollableRange(element)) {
-      dispatch({
-        type: "AT_BOTTOM_CHANGED",
-        atBottom: nativeTranscriptDistanceFromBottom(element) <= TRANSCRIPT_AT_BOTTOM_THRESHOLD_PX,
-        scrollable: true,
-      });
+      deliverScroll(element);
     }
-    dispatch({ type: "USER_SCROLL_INTENT" });
-  }, [dispatch]);
+    dispatch({ type: "USER_SCROLL_INTENT", canClaimTail: claimPhysicalBottom });
+    if (
+      claimPhysicalBottom
+      && element
+      && nativeTranscriptDistanceFromBottom(element) <= TRANSCRIPT_AT_BOTTOM_THRESHOLD_PX
+    ) {
+      deliverScroll(element);
+    }
+    armReaderIntentIdle();
+  }, [armReaderIntentIdle, deliverScroll, dispatch]);
 
   const followGrowingTail = useCallback(() => {
     if (followFrameRef.current !== null) return;
+    const generation = generationRef.current;
+    const scrollElement = scrollRef.current;
     followFrameRef.current = requestAnimationFrame(() => {
       followFrameRef.current = null;
+      if (generationRef.current !== generation || scrollRef.current !== scrollElement) return;
       const element = scrollRef.current;
       if (element) {
         const scrollHeight = element.scrollHeight;
@@ -484,27 +576,22 @@ export function useTranscriptScrollArbiter({
   const beginUserResize = useCallback(() => {
     dispatch({ type: "USER_RESIZE_BEGIN" });
     if (resizeSettleFrameRef.current !== null) cancelAnimationFrame(resizeSettleFrameRef.current);
+    const generation = generationRef.current;
+    const scrollElement = scrollRef.current;
     resizeSettleFrameRef.current = requestAnimationFrame(() => {
+      if (generationRef.current !== generation || scrollRef.current !== scrollElement) {
+        resizeSettleFrameRef.current = null;
+        return;
+      }
       resizeSettleFrameRef.current = requestAnimationFrame(() => {
         resizeSettleFrameRef.current = null;
+        if (generationRef.current !== generation || scrollRef.current !== scrollElement) return;
         dispatch({ type: "USER_RESIZE_END" });
       });
     });
   }, [dispatch]);
 
-  const atBottomStateChange = useCallback((atBottom: boolean) => {
-    const element = scrollRef.current;
-    dispatch({
-      type: "AT_BOTTOM_CHANGED",
-      atBottom,
-      scrollable: element ? hasTranscriptScrollableRange(element) : stateRef.current.scrollable,
-    });
-  }, [dispatch]);
-
-  const reset = useCallback(() => {
-    lastFollowExtentRef.current = null;
-    dispatch({ type: "RESET" });
-  }, [dispatch]);
+  const atBottomStateChange = useCallback((_atBottom: boolean) => deliverScroll(), [deliverScroll]);
 
   const writeOffset = useCallback((owner: TranscriptScrollOwner, top: number, behavior: ScrollBehavior = "auto") => {
     if (isTranscriptSelectionMode(modeRef.current) && owner !== "selection-edge-scroll") return false;
@@ -513,12 +600,15 @@ export function useTranscriptScrollArbiter({
     return true;
   }, [dispatch]);
 
-  const scrollToDataIndex = useCallback((firstItemIndex: number, dataIndex: number, behavior: "auto" | "smooth" = "auto") => {
+  const scrollToDataIndex = useCallback((dataIndex: number, behavior: "auto" | "smooth" = "auto") => {
     if (isTranscriptSelectionMode(modeRef.current)) return;
-    dispatch({ type: "JUMP_TO_INDEX", index: firstItemIndex + dataIndex, behavior });
+    dispatch({ type: "JUMP_TO_INDEX", index: dataIndex, behavior });
   }, [dispatch]);
 
-  const finishProgrammaticScroll = useCallback(() => dispatch({ type: "PROGRAMMATIC_END" }), [dispatch]);
+  const finishProgrammaticScroll = useCallback(() => {
+    dispatch({ type: "PROGRAMMATIC_END" });
+    endReaderIntent();
+  }, [dispatch, endReaderIntent]);
 
   // getState invokes its callback synchronously with the live measured tree
   // and scrollTop (header height excluded).
@@ -533,15 +623,17 @@ export function useTranscriptScrollArbiter({
   const restoreTailIfNotScrollable = useCallback(() => {
     const element = scrollRef.current;
     if (!element || hasTranscriptScrollableRange(element)) return false;
-    dispatch({ type: "AT_BOTTOM_CHANGED", atBottom: true, scrollable: false });
+    deliverScroll(element);
     return true;
-  }, [dispatch]);
+  }, [deliverScroll]);
 
   const onWheelIntent = useCallback((event: ReactWheelEvent<HTMLElement>) => {
     if (event.ctrlKey || event.deltaY === 0 || Math.abs(event.deltaX) > Math.abs(event.deltaY)) return false;
+    const element = scrollRef.current;
+    if (element && findVerticalScrollTarget(event.target, element, event.deltaY)) return false;
     if (restoreTailIfNotScrollable()) return false;
     if (event.deltaY < 0 || !pinnedRef.current) {
-      releaseTailFollow();
+      releaseTailFollow(event.deltaY > 0);
       return true;
     }
     return false;
@@ -557,18 +649,23 @@ export function useTranscriptScrollArbiter({
     if (start == null || current == null || Math.abs(current - start) < 2) return false;
     if (restoreTailIfNotScrollable()) return false;
     if (current > start || !pinnedRef.current) {
-      releaseTailFollow();
+      releaseTailFollow(current < start);
       return true;
     }
     return false;
   }, [releaseTailFollow, restoreTailIfNotScrollable]);
+
+  const onTouchEndIntent = useCallback(() => {
+    touchStartYRef.current = null;
+    if (stateRef.current.readerIntent) armReaderIntentIdle();
+  }, [armReaderIntentIdle]);
 
   const onKeyScrollIntent = useCallback((event: ReactKeyboardEvent<HTMLElement>) => {
     if (isEditableTarget(event.target)) return false;
     if (!SCROLL_UP_KEYS.has(event.key) && !SCROLL_DOWN_KEYS.has(event.key)) return false;
     if (restoreTailIfNotScrollable()) return false;
     if (SCROLL_UP_KEYS.has(event.key) || !pinnedRef.current) {
-      releaseTailFollow();
+      releaseTailFollow(SCROLL_DOWN_KEYS.has(event.key));
       return true;
     }
     return false;
@@ -586,6 +683,7 @@ export function useTranscriptScrollArbiter({
       return true;
     }
     if (event.button !== 1 || restoreTailIfNotScrollable()) return false;
+    middlePointerScrollRef.current = true;
     releaseTailFollow();
     return true;
   }, [releaseTailFollow, restoreTailIfNotScrollable]);
@@ -593,7 +691,7 @@ export function useTranscriptScrollArbiter({
   const onNestedScrollIntent = useCallback((deltaY: number) => {
     if (deltaY === 0 || restoreTailIfNotScrollable()) return false;
     if (deltaY < 0 || !pinnedRef.current) {
-      releaseTailFollow();
+      releaseTailFollow(deltaY > 0);
       return true;
     }
     return false;
@@ -619,9 +717,11 @@ export function useTranscriptScrollArbiter({
     releaseTailFollow,
     beginUserResize,
     atBottomStateChange,
+    deliverScroll,
     onWheelIntent,
     onTouchStartIntent,
     onTouchMoveIntent,
+    onTouchEndIntent,
     onKeyScrollIntent,
     onPointerDownIntent,
     onNestedScrollIntent,

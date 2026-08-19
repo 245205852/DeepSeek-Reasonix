@@ -76,6 +76,7 @@ import { ModalCloseButton } from "./ModalCloseButton";
 import { ShortcutComboDisplay } from "./ShortcutComboDisplay";
 import { SettingsNavigation, SETTINGS_NAV_TABS } from "./SettingsNavigation";
 import { StatusBarItemsEditor } from "./StatusBarItemsEditor";
+import { DesktopCloseBehaviorHint } from "./DesktopCloseBehaviorHint";
 export type SettingsInitialFocus =
   | { target: "bot-allowlist"; connectionId?: string; requestId?: number }
   | { target: "model-access"; requestId?: number }
@@ -1592,7 +1593,6 @@ function thinkingModeLabel(mode: string, t: ReturnType<typeof useT>): string {
       return t("settings.thinkingMode.auto");
   }
 }
-
 function GeneralSection({ s, busy, apply, agentRunning }: SectionProps & { agentRunning: boolean }) {
   const { t, setPref } = useI18n();
   const closeBehavior = normalizeCloseBehavior(s.closeBehavior);
@@ -1739,7 +1739,7 @@ function GeneralSection({ s, busy, apply, agentRunning }: SectionProps & { agent
       </SettingsSection>
 
       <SettingsSection title={t("settings.general.sectionSystem")} description={t("settings.general.sectionSystemHint")}>
-      <SettingsField label={t("settings.closeBehavior")} hint={t("settings.closeBehaviorHint")} icon={<Power size={18} />}>
+      <SettingsField label={t("settings.closeBehavior")} hint={<DesktopCloseBehaviorHint backgroundSelected={closeBehavior === "background"} hint={t("settings.closeBehaviorHint")} unavailableHint={t("settings.closeBehaviorUnavailable")} />} icon={<Power size={18} />}>
         <div className="set-seg">
           {(["background", "quit"] as const).map((mode) => (
             <button
@@ -5089,6 +5089,12 @@ function providerPresetDescription(preset: ProviderPresetView, t: ReturnType<typ
       return t("settings.addProvider.preset.stepfunDesc");
     case "stepfun-anthropic":
       return t("settings.addProvider.preset.stepfunAnthropicDesc");
+    case "stepfun-responses":
+      return t("settings.addProvider.preset.stepfunResponsesDesc");
+    case "stepfun-api":
+      return t("settings.addProvider.preset.stepfunApiDesc");
+    case "stepfun-api-anthropic":
+      return t("settings.addProvider.preset.stepfunApiAnthropicDesc");
     case "novita":
       return t("settings.addProvider.preset.novitaDesc");
     case "gmi":
@@ -5118,6 +5124,16 @@ function providerPresetLabel(preset: ProviderPresetView, t: ReturnType<typeof us
       return t("settings.addProvider.preset.deepseekResponsesLabel");
     case "token-rhythm":
       return t("settings.addProvider.preset.tokenRhythmLabel");
+    case "stepfun":
+      return t("settings.addProvider.preset.stepfunLabel");
+    case "stepfun-anthropic":
+      return t("settings.addProvider.preset.stepfunAnthropicLabel");
+    case "stepfun-responses":
+      return t("settings.addProvider.preset.stepfunResponsesLabel");
+    case "stepfun-api":
+      return t("settings.addProvider.preset.stepfunApiLabel");
+    case "stepfun-api-anthropic":
+      return t("settings.addProvider.preset.stepfunApiAnthropicLabel");
     default:
       return preset.label;
   }

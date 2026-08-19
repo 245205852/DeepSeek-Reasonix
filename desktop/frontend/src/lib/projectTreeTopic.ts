@@ -85,6 +85,25 @@ export function mergeProjectTopicPage(current: ProjectNode[], incoming: ProjectN
   return next;
 }
 
+// A directory scan commits catalog rows in batches, but an incomplete page is
+// not authoritative for replacement, deletion, timestamps, or order. Keep the
+// last complete resident rows byte-for-byte and append only newly discovered
+// keys until a complete page can replace the canonical first page.
+export function mergeIncompleteProjectTopicPage(current: ProjectNode[], incoming: ProjectNode[]): ProjectNode[] {
+  const residentKeys = new Set(current.map((node) => node.key));
+  const discovered = incoming.filter((node) => !residentKeys.has(node.key));
+  return discovered.length === 0 ? current : [...current, ...discovered];
+}
+
+export function projectTreeTopicPageSignature(
+  query: string,
+  timeFilter: string,
+  sortMode: WorkbenchSortMode,
+  limit: number,
+): string {
+  return [query.trim(), timeFilter, sortMode, String(limit)].join("\u001f");
+}
+
 // Topic page loads rewrite children, so a signature keyed only on the project
 // shells lets the debounced reload effect observe arrivals without re-arming
 // itself on its own writes.

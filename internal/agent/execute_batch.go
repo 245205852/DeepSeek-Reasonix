@@ -90,6 +90,9 @@ func (a *Agent) executeBatch(ctx context.Context, turn *turnRuntime, calls []pro
 	// state separate so refreshing a dependent preview never mutates shared
 	// session memory outside Session's lock.
 	calls = append([]provider.ToolCall(nil), calls...)
+	if a.task.ledger != nil {
+		ctx = withObservationBoundary(ctx, a.task.ledger.ObservationBoundary())
+	}
 	for _, c := range calls {
 		a.emitFullToolDispatch(ctx, c, false)
 	}
@@ -98,7 +101,6 @@ func (a *Agent) executeBatch(ctx context.Context, turn *turnRuntime, calls []pro
 	outcomes := make([]toolOutcome, len(calls))
 	durations := make([]int64, len(calls))
 	startedAt := make([]int64, len(calls))
-	completedStepInBatch := false
 	// Snapshot the receipt count before the batch runs: if a loop guard fires
 	// for this batch, successes recorded during it (a mixed batch where only one
 	// call was guard-blocked) must already count as progress against the pass.
@@ -125,16 +127,6 @@ func (a *Agent) executeBatch(ctx context.Context, turn *turnRuntime, calls []pro
 		}
 		start := time.Now()
 		startedAt[i] = start.UnixMilli()
-		if calls[i].Name == "complete_step" && completedStepInBatch {
-			output := "blocked: only one successful complete_step is allowed per tool-call round. Continue from the newly promoted in_progress todo in the next round instead of batching sign-offs."
-			outcomes[i] = toolOutcome{output: output, blocked: true, errMsg: "blocked: complete_step sign-offs must be serial"}
-			if a.task.ledger != nil {
-				a.task.ledger.Record(evidence.ReceiptFromToolCall(calls[i].Name, json.RawMessage(calls[i].Arguments), false, true))
-			}
-			durations[i] = time.Since(start).Milliseconds()
-			results[i] = output
-			return
-		}
 		outcomes[i] = a.executeOne(ctx, turn, calls[i])
 		recordWorkspaceMutation(a.svc.sink, outcomes[i].workspaceMutation)
 		if outcomes[i].executed {
@@ -146,9 +138,6 @@ func (a *Agent) executeBatch(ctx context.Context, turn *turnRuntime, calls []pro
 			calls[i].CapabilityID = outcomes[i].capabilityID
 			calls[i].ResolvedReadOnly = &readOnly
 			surfaceWriters[i] = !readOnly
-		}
-		if calls[i].Name == "complete_step" && outcomes[i].errMsg == "" {
-			completedStepInBatch = true
 		}
 		durations[i] = time.Since(start).Milliseconds()
 		results[i] = outcomes[i].output

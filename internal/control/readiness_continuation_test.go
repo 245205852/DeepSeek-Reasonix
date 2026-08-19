@@ -9,6 +9,7 @@ import (
 
 	"reasonix/internal/agent"
 	"reasonix/internal/event"
+	"reasonix/internal/evidence"
 	"reasonix/internal/i18n"
 	"reasonix/internal/instruction"
 	"reasonix/internal/provider"
@@ -29,6 +30,11 @@ func readinessContinuationControllerWithOptions(t *testing.T, turns [][]provider
 	prov := &scriptedTurns{turns: turns}
 	executor := agent.New(prov, reg, agent.NewSession("stable-system-prefix"), opts, event.Discard)
 	c := New(Options{Runner: executor, Executor: executor, Sink: sink})
+	// Readiness continuation is a delivery-floor mechanism: the standard floor
+	// never pauses on a readiness gap, so these turns run under delivery.
+	if err := c.SetQualityFloor(QualityFloorDelivery); err != nil {
+		t.Fatalf("SetQualityFloor: %v", err)
+	}
 	t.Cleanup(c.Close)
 	return c, prov
 }
@@ -89,7 +95,7 @@ func TestOrdinaryTurnAutomaticallyFinishesKnownChecks(t *testing.T) {
 }
 
 func TestReadinessContinuationPromptStaysHiddenFromUserHistory(t *testing.T) {
-	prompt := readinessContinuationPrompt(nil, "run the missing verification")
+	prompt := readinessContinuationPrompt(nil, []string{"verification"}, "run the missing verification")
 	if !IsSyntheticUserMessage(prompt) {
 		t.Fatalf("readiness continuation was treated as user-authored text: %q", prompt)
 	}
@@ -97,6 +103,19 @@ func TestReadinessContinuationPromptStaysHiddenFromUserHistory(t *testing.T) {
 		if !strings.Contains(prompt, forbidden) {
 			t.Fatalf("readiness continuation prompt = %q, want safety clause %q", prompt, forbidden)
 		}
+	}
+}
+
+func TestReadinessContinuationPromptIncludesOnlyReportedTodoGaps(t *testing.T) {
+	todos := []evidence.TodoItem{{Content: "future task", Status: "pending"}}
+	verification := readinessContinuationPrompt(todos, []string{"verification"}, "run verification")
+	if strings.Contains(verification, "future task") || strings.Contains(verification, "tasks are still incomplete") {
+		t.Fatalf("verification-only continuation leaked ordinary cross-turn todos: %q", verification)
+	}
+
+	todoGap := readinessContinuationPrompt(todos, []string{"todo"}, "finish the delivery plan")
+	if !strings.Contains(todoGap, "future task") || !strings.Contains(todoGap, "tasks are still incomplete") {
+		t.Fatalf("todo readiness gap omitted its incomplete task context: %q", todoGap)
 	}
 }
 
@@ -119,7 +138,62 @@ func TestReadinessProgressRequiresTwoDistinctEvidenceKeys(t *testing.T) {
 	}
 }
 
-func TestOrdinaryGenericReadinessContinuationStopsAfterOneTurn(t *testing.T) {
+// The standard floor is the 1.23.0 balanced feel: a readiness gap is recorded
+// but never pauses the turn, so the user never meets a recovery card.
+func TestStandardFloorNeverPausesOnReadinessGap(t *testing.T) {
+	c, prov := readinessContinuationController(t, [][]provider.Chunk{
+		{toolCallChunk("write", "write_file", `{"path":"main.go","content":"package main"}`), {Type: provider.ChunkDone}},
+		textTurn("implemented without checks"),
+	}, event.Discard)
+	if err := c.SetQualityFloor(QualityFloorStandard); err != nil {
+		t.Fatalf("SetQualityFloor: %v", err)
+	}
+
+	err := newTurnOrchestrator(c).runGoalLoopWithRawDisplay(context.Background(), "update main.go", "update main.go", "")
+	var readinessErr *agent.FinalReadinessError
+	if errors.As(err, &readinessErr) {
+		t.Fatalf("standard floor paused on a readiness gap: %v", err)
+	}
+	if err != nil {
+		t.Fatalf("standard floor turn returned error: %v", err)
+	}
+	if got := readinessSyntheticTurns(c); got != 0 {
+		t.Fatalf("synthetic readiness turns = %d, want 0 under the standard floor", got)
+	}
+	if prov.call != 2 {
+		t.Fatalf("provider calls = %d, want exactly the scripted work and answer", prov.call)
+	}
+}
+
+// Problem-one regression: the floor alone decides the pause. Goal mode used to
+// force it through deliveryScopeActive, so a standard-floor goal session still
+// met the recovery card. The goal FSM reads Agent.ReadinessResult directly, so
+// suppressing the pause costs it nothing.
+func TestStandardFloorSuppressesThePauseInsideGoalMode(t *testing.T) {
+	c, _ := readinessContinuationController(t, [][]provider.Chunk{
+		{toolCallChunk("write", "write_file", `{"path":"main.go","content":"package main"}`), {Type: provider.ChunkDone}},
+		textTurn("implemented without checks"),
+	}, event.Discard)
+	if err := c.SetQualityFloor(QualityFloorStandard); err != nil {
+		t.Fatalf("SetQualityFloor: %v", err)
+	}
+	c.SetGoal("ship main.go")
+	t.Cleanup(c.ClearGoal)
+
+	err := newTurnOrchestrator(c).runGoalLoopWithRawDisplay(context.Background(), "update main.go", "update main.go", "")
+	var readinessErr *agent.FinalReadinessError
+	if errors.As(err, &readinessErr) {
+		t.Fatalf("standard floor paused inside goal mode: %v", err)
+	}
+	// The FSM still sees the gap through the executor, not through the error.
+	if got := c.executor.ReadinessResult(); got.Ready {
+		t.Fatal("executor reported ready despite the unmet readiness requirement")
+	}
+}
+
+// The delivery floor deepens verification; it does not take over persistence.
+// The generic continuation stays bounded exactly as it was before the floor.
+func TestDeliveryGenericReadinessContinuationStopsAfterOneTurn(t *testing.T) {
 	c, prov := readinessContinuationController(t, [][]provider.Chunk{
 		{toolCallChunk("write", "write_file", `{"path":"main.go","content":"package main"}`), {Type: provider.ChunkDone}},
 		textTurn("implemented without checks"),
@@ -132,9 +206,6 @@ func TestOrdinaryGenericReadinessContinuationStopsAfterOneTurn(t *testing.T) {
 	}
 	if readinessErr.Attempts != 2 {
 		t.Fatalf("readiness attempts = %d, want original + one automatic turn", readinessErr.Attempts)
-	}
-	if readinessErr.ContinuationClass != agent.ReadinessContinuationGeneric || readinessErr.ProgressKey == "" {
-		t.Fatalf("readiness classification = (%q, %q), want generic with a progress key", readinessErr.ContinuationClass, readinessErr.ProgressKey)
 	}
 	if got := readinessSyntheticTurns(c); got != 1 {
 		t.Fatalf("synthetic readiness turns = %d, want 1", got)

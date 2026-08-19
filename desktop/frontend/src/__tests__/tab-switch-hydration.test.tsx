@@ -642,7 +642,7 @@ await act(async () => {
 });
 eq(controller?.activeTabId, "tab-d", "openProjectTab activates the opened tab");
 eq(controller?.state.items.length, 0, "open topic keeps the new tab transcript empty while hydrating");
-ok(controller?.state.hydratePlaceholderItems?.some((item) => item.kind === "user" && item.text === "streaming C") ?? false, "open topic stores previous transcript only as a hydration placeholder");
+eq(controller?.state.hydratePlaceholderItems?.length ?? 0, 0, "cross-session open never reuses the source transcript as a placeholder");
 
 await act(async () => {
   historyD.resolve([userMessage("history D")]);
@@ -792,10 +792,9 @@ await act(async () => {
   await controller?.openProjectTab(tabH.workspaceRoot, tabH.topicId || "");
   await flushPromises();
 });
-await waitFor("reopened tab-h treats stale late meta as discarded", () =>
-  controller?.activeTabId === "tab-h" &&
-  controller.state.hydrating === true &&
-  (controller.state.hydratePlaceholderItems?.some((item) => item.kind === "user" && item.text === "history G") ?? false)
+await waitFor("reopened tab-h isolates the prior surface while loading", () =>
+  controller?.activeTabId === "tab-h" && controller.state.hydrating === true && controller.state.items.length === 0 &&
+  (controller.state.hydratePlaceholderItems?.length ?? 0) === 0
 );
 await act(async () => {
   historyH.resolve([userMessage("history H after stale meta")]);

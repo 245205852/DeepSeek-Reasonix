@@ -1327,6 +1327,7 @@ type AgentConfig struct {
 	// PlanModeReadOnlyCommands is retained for old config/session round trips. Main
 	// Plan bash calls now use the ordinary Permissions classifier and Sandbox.
 	PlanModeReadOnlyCommands []string `toml:"plan_mode_read_only_commands"`
+	LegacyAnchorSafetyGate   bool     `toml:"legacy_anchor_safety_gate"` // user-global rollback to the full-read guard
 }
 
 // ProviderEntry declares a model provider instance. ContextWindow is the model's

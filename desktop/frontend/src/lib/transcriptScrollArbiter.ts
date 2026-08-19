@@ -24,6 +24,8 @@ export type TranscriptScrollState = {
   mode: TranscriptScrollMode;
   atBottom: boolean;
   scrollable: boolean;
+  readerIntent: boolean;
+  readerIntentCanClaimTail: boolean;
   settleMode: "tail-follow" | "manual";
   /** Id of the in-flight recovery request; at most one at a time. */
   recoveryId: number | null;
@@ -31,8 +33,10 @@ export type TranscriptScrollState = {
 
 export type TranscriptScrollEvent =
   | { type: "RESET" }
-  | { type: "USER_SCROLL_INTENT" }
-  | { type: "AT_BOTTOM_CHANGED"; atBottom: boolean; scrollable: boolean }
+  | { type: "USER_SCROLL_INTENT"; canClaimTail: boolean }
+  | { type: "MANUAL_READING" }
+  | { type: "READER_INTENT_ENDED" }
+  | { type: "SCROLL_DELIVERED"; atBottom: boolean; scrollable: boolean; substantial?: boolean }
   | { type: "TAIL_CONTENT_CHANGED" }
   | { type: "CONTENT_SHRANK" }
   | { type: "LAYOUT_HEIGHT_CHANGED" }
@@ -65,6 +69,8 @@ export const INITIAL_TRANSCRIPT_SCROLL_STATE: TranscriptScrollState = {
   mode: "tail-follow",
   atBottom: true,
   scrollable: false,
+  readerIntent: false,
+  readerIntentCanClaimTail: false,
   settleMode: "tail-follow",
   recoveryId: null,
 };
@@ -72,6 +78,15 @@ export const INITIAL_TRANSCRIPT_SCROLL_STATE: TranscriptScrollState = {
 // Fold collapse drops at least one process row (~28px). Smaller deltas are
 // Virtuoso measurement jitter and must keep following the tail.
 export const TRANSCRIPT_CONTENT_SHRINK_THRESHOLD_PX = 24;
+
+// A delivery this far above the bottom is a real physical displacement (thumb
+// drop, row remeasure), not bottom-adjacent jitter. Re-converging these is the
+// tail writer's job even when the previous delivery was already non-bottom.
+export const TRANSCRIPT_SUBSTANTIAL_DISPLACEMENT_PX = 24;
+
+export function isSubstantialTranscriptDisplacement(distance: number): boolean {
+  return distance >= TRANSCRIPT_SUBSTANTIAL_DISPLACEMENT_PX;
+}
 
 export function isTranscriptContentShrink(delta: number): boolean {
   return delta <= -TRANSCRIPT_CONTENT_SHRINK_THRESHOLD_PX;
@@ -111,21 +126,47 @@ export function reduceTranscriptScroll(
       return preempt(INITIAL_TRANSCRIPT_SCROLL_STATE, [], "surface-switch");
     case "USER_SCROLL_INTENT":
       if (!state.scrollable) {
-        return preempt({ ...state, mode: "tail-follow", atBottom: true, settleMode: "tail-follow" });
+        return preempt({ ...state, mode: "tail-follow", atBottom: true, readerIntent: false, readerIntentCanClaimTail: false, settleMode: "tail-follow" });
       }
-      return preempt({ ...state, mode: "manual", atBottom: false, settleMode: "manual" });
-    case "AT_BOTTOM_CHANGED": {
+      return preempt({ ...state, mode: "manual", readerIntent: true, readerIntentCanClaimTail: event.canClaimTail, settleMode: "manual" });
+    case "MANUAL_READING":
+      return preempt({ ...state, mode: "manual", readerIntent: false, readerIntentCanClaimTail: false, settleMode: "manual" });
+    case "READER_INTENT_ENDED":
+      return transition(state.readerIntent ? { ...state, readerIntent: false, readerIntentCanClaimTail: false } : state);
+    case "SCROLL_DELIVERED": {
       if (!event.scrollable) {
-        return transition({ ...state, mode: "tail-follow", atBottom: true, scrollable: false, settleMode: "tail-follow" });
+        return transition({ ...state, mode: "tail-follow", atBottom: true, scrollable: false, readerIntent: false, readerIntentCanClaimTail: false, settleMode: "tail-follow" });
       }
       const next = { ...state, atBottom: event.atBottom, scrollable: true };
-      if (event.atBottom && state.mode !== "selection" && state.mode !== "user-resize" && state.mode !== "restoring") {
+      if (
+        event.atBottom
+        && state.readerIntent
+        && state.readerIntentCanClaimTail
+        && state.mode !== "selection"
+        && state.mode !== "user-resize"
+        && state.mode !== "restoring"
+      ) {
         next.mode = "tail-follow";
         next.settleMode = "tail-follow";
       }
-      // `false` is only a physical report. Dynamic measurement and viewport
-      // changes can produce it, so it never revokes tail ownership by itself.
-      return transition(next);
+      return transition(
+        next,
+        // One physical displacement may produce several scroll deliveries
+        // while WebView2/Virtuoso remeasures variable-height rows. Re-arming
+        // the tail writer for every repeated `false` delivery creates a
+        // visible write loop; layout/viewport events remain the convergence
+        // lane for later geometry changes. A substantial displacement is a
+        // real repositioning: the tail writer reconverges even when the
+        // previous delivery was already non-bottom, because a misread shrink
+        // (CONTENT_SHRANK below) can otherwise strand the viewport with no
+        // remaining convergence lane.
+        state.mode === "tail-follow"
+          && !event.atBottom
+          && !state.readerIntent
+          && (state.atBottom || event.substantial === true)
+          ? [{ type: "AUTOSCROLL_TO_BOTTOM" }]
+          : [],
+      );
     }
     case "TAIL_CONTENT_CHANGED":
     case "LAYOUT_HEIGHT_CHANGED":
@@ -137,34 +178,43 @@ export function reduceTranscriptScroll(
       // tail re-aim here visibly tugs the viewport after the collapse.
       return transition(state);
     case "USER_RESIZE_BEGIN":
-      return preempt({ ...state, mode: "user-resize", settleMode: "manual" });
+      return preempt({
+        ...state,
+        mode: "user-resize",
+        readerIntent: false,
+        readerIntentCanClaimTail: false,
+        settleMode: state.mode === "tail-follow" ? "tail-follow" : "manual",
+      });
     case "USER_RESIZE_END":
-      return transition(state.mode === "user-resize" ? { ...state, mode: "manual", settleMode: "manual" } : state);
+      return transition(
+        state.mode === "user-resize" ? { ...state, mode: state.settleMode } : state,
+        state.mode === "user-resize" && state.settleMode === "tail-follow" ? [{ type: "AUTOSCROLL_TO_BOTTOM" }] : [],
+      );
     case "SELECTION_BEGIN":
-      return preempt({ ...state, mode: "selection", settleMode: "manual" });
+      return preempt({ ...state, mode: "selection", readerIntent: false, readerIntentCanClaimTail: false, settleMode: "manual" });
     case "SELECTION_END":
       return transition(state.mode === "selection" ? { ...state, mode: "manual", settleMode: "manual" } : state);
     case "PROGRAMMATIC_BEGIN":
-      return preempt({ ...state, mode: "restoring", settleMode: event.settleMode ?? "manual" });
+      return preempt({ ...state, mode: "restoring", readerIntent: false, readerIntentCanClaimTail: false, settleMode: event.settleMode ?? "manual" });
     case "PROGRAMMATIC_END":
       return transition(state.mode === "restoring" ? { ...state, mode: state.settleMode } : state);
     case "JUMP_TO_BOTTOM":
       return preempt(
-        { ...state, mode: "tail-follow", atBottom: true, settleMode: "tail-follow" },
+        { ...state, mode: "tail-follow", atBottom: true, readerIntent: false, readerIntentCanClaimTail: false, settleMode: "tail-follow" },
         [{ type: "SCROLL_TO_LAST", behavior: event.behavior === "smooth" ? "smooth" : "auto" }],
       );
     case "JUMP_TO_INDEX":
       return preempt(
-        { ...state, mode: "restoring", atBottom: false, settleMode: "manual" },
+        { ...state, mode: "restoring", atBottom: false, readerIntent: false, readerIntentCanClaimTail: false, settleMode: "manual" },
         [{ type: "SCROLL_TO_INDEX", index: event.index, behavior: event.behavior ?? "auto" }],
       );
     case "SCROLL_TO_OFFSET":
       return preempt(
         event.owner === "selection-edge-scroll"
-          ? { ...state, mode: "selection", settleMode: "manual" }
+          ? { ...state, mode: "selection", readerIntent: false, readerIntentCanClaimTail: false, settleMode: "manual" }
           : event.owner === "jump-bottom"
-            ? { ...state, mode: "tail-follow", atBottom: true, settleMode: "tail-follow" }
-            : { ...state, mode: "restoring", atBottom: false, settleMode: "manual" },
+            ? { ...state, mode: "tail-follow", atBottom: true, readerIntent: false, readerIntentCanClaimTail: false, settleMode: "tail-follow" }
+            : { ...state, mode: "restoring", atBottom: false, readerIntent: false, readerIntentCanClaimTail: false, settleMode: "manual" },
         [{ type: "SCROLL_TO_OFFSET", owner: event.owner, top: event.top, behavior: event.behavior ?? "auto" }],
       );
     case "RECOVERY_BEGIN":
@@ -172,11 +222,11 @@ export function reduceTranscriptScroll(
       // through the same explicit cancel transition a takeover would use.
       if (state.recoveryId !== null && state.recoveryId !== event.id) {
         return transition(
-          { ...state, mode: "restoring", settleMode: event.settleMode ?? "manual", recoveryId: event.id },
+          { ...state, mode: "restoring", readerIntent: false, readerIntentCanClaimTail: false, settleMode: event.settleMode ?? "manual", recoveryId: event.id },
           [{ type: "CANCEL_RECOVERY", id: state.recoveryId, reason: "superseded" }],
         );
       }
-      return transition({ ...state, mode: "restoring", settleMode: event.settleMode ?? "manual", recoveryId: event.id });
+      return transition({ ...state, mode: "restoring", readerIntent: false, readerIntentCanClaimTail: false, settleMode: event.settleMode ?? "manual", recoveryId: event.id });
     case "RECOVERY_END":
       if (state.recoveryId !== event.id) return transition(state);
       return transition({

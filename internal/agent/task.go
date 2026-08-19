@@ -1167,6 +1167,9 @@ func (t *restrictedCapabilityProxy) check(args json.RawMessage) error {
 	if id == "" {
 		return fmt.Errorf("capability_id is required")
 	}
+	if id == sessionToolResultCapabilityID {
+		return nil
+	}
 	if !t.allowed[id] {
 		return fmt.Errorf("capability %q is outside this subagent's allowed-tools", id)
 	}
@@ -1207,55 +1210,6 @@ func (t *restrictedCapabilityProxy) Execute(ctx context.Context, args json.RawMe
 		return filterCapabilityListResult(out, t.servers), nil
 	}
 	return out, nil
-}
-
-// emptyCapabilityListResult is the fail-closed list payload: no server metadata.
-func emptyCapabilityListResult(note string) string {
-	if strings.TrimSpace(note) == "" {
-		note = "list is filtered to this subagent's allowed MCP servers."
-	}
-	b, err := json.MarshalIndent(map[string]any{
-		"servers": []listServerInfo{},
-		"note":    note,
-	}, "", "  ")
-	if err != nil {
-		return `{"servers":[],"note":"list is filtered to this subagent's allowed MCP servers."}`
-	}
-	return string(b)
-}
-
-// filterCapabilityListResult keeps only servers in the allowlist for restricted
-// proxies. Empty allowlist or unreadable payloads fail closed (empty server
-// list) so discovery never leaks the full configured MCP inventory.
-func filterCapabilityListResult(raw string, servers map[string]bool) string {
-	const baseNote = "list is filtered to this subagent's allowed MCP servers."
-	if len(servers) == 0 {
-		return emptyCapabilityListResult(baseNote + " No allowed MCP servers were resolved from the profile allowlist.")
-	}
-	var payload struct {
-		Servers []listServerInfo `json:"servers"`
-		Note    string           `json:"note"`
-	}
-	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
-		return emptyCapabilityListResult(baseNote + " List payload was unreadable; returning no servers (fail-closed).")
-	}
-	filtered := make([]listServerInfo, 0, len(payload.Servers))
-	for _, s := range payload.Servers {
-		if servers[strings.TrimSpace(s.Name)] {
-			filtered = append(filtered, s)
-		}
-	}
-	payload.Servers = filtered
-	if payload.Note == "" {
-		payload.Note = baseNote
-	} else if !strings.Contains(payload.Note, "Filtered to this subagent") {
-		payload.Note = payload.Note + " Filtered to this subagent's allowed MCP servers."
-	}
-	b, err := json.MarshalIndent(payload, "", "  ")
-	if err != nil {
-		return emptyCapabilityListResult(baseNote + " Failed to encode filtered list (fail-closed).")
-	}
-	return string(b)
 }
 
 // validMCPServerCapabilityID accepts mcp-server:<non-empty-name> only.
@@ -1351,10 +1305,7 @@ func newSubagentCapabilityFrontend(parent *tool.Registry, runtime *MCPCapability
 	if !ok {
 		return nil
 	}
-	if uc, ok := inner.(*UseCapabilityTool); ok {
-		return uc.CloneForAgent(nil, nil)
-	}
-	return inner
+	return cloneCapabilityFrontend(inner)
 }
 
 // mcpCapabilityAllowlist converts profile/call tool names into capability IDs
@@ -1782,6 +1733,7 @@ func RunSubAgentWithSession(ctx context.Context, prov provider.Provider, reg *to
 	}
 	ctx, releaseTemp := withSubagentSessionTemp(ctx)
 	defer releaseTemp()
+	opts.SessionTemp = sessiontemp.FromContext(ctx)
 	if opts.SubagentDepth > 0 {
 		ctx = WithSubagentDepth(ctx, opts.SubagentDepth)
 	}

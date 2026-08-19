@@ -549,9 +549,11 @@ func (a *Agent) handleFinalResponse(ctx context.Context, state *turnRuntime, tex
 	if readiness.reason != "" {
 		// The host owns the concrete missing requirements. Return them to the
 		// controller when automatic continuation is armed (or for the existing
-		// strict/Goal path). Unarmed ordinary agents retain their Partial
-		// contract and do not unexpectedly change the direct Agent API.
-		if a.turn.automaticReadinessContinuation || a.closedLoopActive() || readiness.incompleteTodos > 0 || readiness.missingSignoff > 0 || readiness.missingActionEvidence > 0 {
+		// strict/Goal path). Unfinished todos are hard failures only in closed-loop
+		// turns; in ordinary turns they remain visible cross-turn work state.
+		// readinessPauseActive keeps the standard floor out of this entirely.
+		if a.readinessPauseActive() &&
+			(a.turn.automaticReadinessContinuation || a.closedLoopActive() || readiness.missingSignoff > 0 || readiness.missingActionEvidence > 0) {
 			event.RecordReadinessAudit(a.svc.sink, readiness.audit(evidence.ReadinessErrored, false))
 			a.pending.finalReadinessRecovery = true
 			a.persistFinalReadinessRecovery(readiness.missingIDs())
@@ -647,8 +649,8 @@ func (a *Agent) handleToolRound(ctx context.Context, state *turnRuntime, step in
 			ToolCallID: call.ID,
 			Name:       call.Name,
 		}
-		// Content is the old-reader-safe bounded form. Full originals ride on
-		// RawContent and are promoted only on the new provider request copy.
+		// Content is the stable bounded provider form. Full originals remain in
+		// local RawContent and enter model context only through explicit paging.
 		if i < len(batch.outcomes) && batch.outcomes[i].rawOutput != "" && batch.outcomes[i].rawOutput != results[i] {
 			msg.RawContent = batch.outcomes[i].rawOutput
 		}
