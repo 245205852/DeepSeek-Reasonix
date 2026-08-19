@@ -119,6 +119,7 @@ func (s *SubagentScheduler) AcquireWithID(ctx context.Context, req AcquireReques
 	case <-ctx.Done():
 		s.mu.Lock()
 		s.removeWaiterLocked(w)
+		s.pumpWaitersLocked()
 		s.mu.Unlock()
 		select {
 		case <-w.ready:
@@ -361,13 +362,23 @@ func (s *SubagentScheduler) pumpWaitersLocked() {
 		return
 	}
 	remaining := s.waiters[:0]
+	// A blocked whole-workspace writer is a FIFO barrier for later writers,
+	// while read-only work may still use otherwise available capacity.
+	wholeWriterPending := false
 	for _, w := range s.waiters {
+		if wholeWriterPending && w.req.Writer {
+			remaining = append(remaining, w)
+			continue
+		}
 		if ok, _ := s.canStartLocked(w.req); ok {
 			w.id = s.activateLocked(w.req)
 			close(w.ready)
 			continue
 		}
 		remaining = append(remaining, w)
+		if w.req.Writer && w.req.WritePaths.WholeWorkspace {
+			wholeWriterPending = true
+		}
 	}
 	s.waiters = remaining
 }
