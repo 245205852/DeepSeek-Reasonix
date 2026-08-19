@@ -156,7 +156,7 @@ func TestPathLockFilesUseBoundedStripes(t *testing.T) {
 		t.Fatal(err)
 	}
 	seen := map[string]bool{}
-	for i := 0; i < pathLockStripes*3; i++ {
+	for i := range pathLockStripes * 3 {
 		seen[owner.pathLockPath(fmt.Sprintf("file-%d", i))] = true
 	}
 	if len(seen) > pathLockStripes {
