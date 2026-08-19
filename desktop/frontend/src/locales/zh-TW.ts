@@ -2051,6 +2051,7 @@ export const zhTW: Record<DictKey, string> = {
   "notice.completionChangesTitle": "本輪改動",
   "notice.completionChangesBody": "{count} 項變更",
   "notice.completionViewChanges": "查看變更",
+  "notice.completionViewVerification": "本輪驗證",
   "completion.panelTitle": "本輪驗證",
   "completion.verdictPartial": "部分完成",
   "completion.verdictBlocked": "受阻",

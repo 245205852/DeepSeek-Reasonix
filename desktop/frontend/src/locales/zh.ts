@@ -2942,6 +2942,7 @@ export const zh: Record<DictKey, string> = {
   "notice.completionChangesTitle": "本轮改动",
   "notice.completionChangesBody": "{count} 项变更",
   "notice.completionViewChanges": "查看改动",
+  "notice.completionViewVerification": "本轮验证",
   "completion.panelTitle": "本轮验证",
   "completion.verdictPartial": "部分完成",
   "completion.verdictBlocked": "受阻",

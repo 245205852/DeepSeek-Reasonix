@@ -2939,6 +2939,7 @@ export const en = {
   "notice.completionChangesTitle": "Changes this turn",
   "notice.completionChangesBody": "{count} changes",
   "notice.completionViewChanges": "View changes",
+  "notice.completionViewVerification": "Turn verification",
   "completion.panelTitle": "Turn verification",
   "completion.verdictPartial": "Partially complete",
   "completion.verdictBlocked": "Blocked",

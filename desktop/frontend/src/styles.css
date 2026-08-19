@@ -10333,6 +10333,9 @@ body > .mermaid-diagram--fullscreen {
 .workspace-completion-summary--attention {
   border-color: color-mix(in srgb, var(--warn) 35%, var(--border-soft));
 }
+.workspace-completion-summary {
+  cursor: default;
+}
 .workspace-completion-summary__head,
 .workspace-completion-summary__metrics,
 .workspace-completion-summary__details {
@@ -10340,9 +10343,11 @@ body > .mermaid-diagram--fullscreen {
   flex-wrap: wrap;
   gap: 4px 8px;
 }
-.workspace-completion-summary__head strong {
-  margin-right: auto;
+.workspace-completion-summary__title {
+  margin: 0 auto 0 0;
   color: var(--fg);
+  font: inherit;
+  font-weight: 650;
 }
 .workspace-completion-summary__metrics {
   margin-top: 6px;
