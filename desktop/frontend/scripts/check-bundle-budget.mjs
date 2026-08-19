@@ -77,11 +77,13 @@ console.log("\nbundle budgets");
 // Reader extent stabilization adds 1.2 KiB gzip (0.28%) in production for its
 // bounded input, collapse, rebound, and ownership transaction. Retain it with
 // a 1.5 KiB (0.35%) ratchet instead of weakening the Windows scroll invariant.
-// Test diagnostics add 1.0 KiB gzip (0.23%) and 4.0 KiB raw (0.17%); keep that
-// raw allowance channel-specific so the production ceiling does not widen.
-// DingTalk channel status and locale wiring add 0.4 KiB (0.09%); another
-// narrowly rounded 0.5 KiB keeps that user-visible startup contract.
-const initialJSBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 428.5 : 427.5;
+// Complete-history navigation adds 0.3 KiB gzip (0.070%) to that production
+// path while keeping its 1.68 KiB question rail lazy-loaded. Test diagnostics
+// plus the navigation owner add 0.7 KiB gzip (0.164%) over the merged test gate.
+// DingTalk channel status and locale wiring move the current-base production
+// build from 427.2 to 427.7 KiB and test from 428.6 to 429.1 KiB. Keep about
+// 0.1 KiB of build-SHA headroom with a 0.5 KiB (about 0.117%) ratchet per gate.
+const initialJSBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 429.2 : 427.8;
 assertBudget("initial JavaScript gzip", initialJSGzip, initialJSBudgetKiB * 1024);
 assertBudget("largest initial JavaScript chunk gzip", largestInitialJS, 280 * 1024);
 assertBudget("render-blocking CSS gzip", initialCSSGzip, 4 * 1024);
@@ -115,11 +117,11 @@ for (const path of localeChunks) {
 const rawInitialBytes = [...initialJS, ...initialCSS, ...appShellCSS]
   .reduce((total, path) => total + statSync(path).size, 0);
 // The maintained Virtuoso engine adds 49.1 KiB raw (2.2%) over the previous
-// 2268.7 KiB gate. Retain 1% headroom to bound hash/minifier drift.
-// DingTalk startup wiring adds 2.6 KiB raw (+0.111%) over current main-v2.
-// Existing production headroom absorbs 2.3 KiB, so only a 0.5 KiB (+0.021%)
-// ratchet is needed there. The test build sits at its old ceiling; retain its
-// diagnostics and DingTalk wiring with a rounded 3 KiB (+0.128%) ratchet.
-const rawInitialBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 2_347 : 2_341.5;
+// 2268.7 KiB gate. Navigation remains inside the 2341 KiB production ceiling;
+// its combined diagnostic wiring adds 2.2 KiB (0.094%) to the test channel.
+// DingTalk startup wiring moves current-base production from 2341.0 to
+// 2343.6 KiB and test from 2346.2 to 2348.8 KiB. Retain about 0.1 KiB build-SHA
+// headroom with a 2.7 KiB (about 0.115%) ratchet per channel.
+const rawInitialBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 2_348.9 : 2_343.7;
 assertBudget("initial raw JavaScript and CSS", rawInitialBytes, rawInitialBudgetKiB * 1024);
 assertBudget("largest initial JavaScript chunk raw", largestInitialJSRaw, 1_000 * 1024);

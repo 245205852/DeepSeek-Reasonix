@@ -80,7 +80,7 @@ deepEqual(measurementEvents, [{
 passed += 1;
 delete row.dataset.knownSize;
 noteTranscriptRowMeasurement(row, "offsetHeight", 420);
-deepEqual(measurementEvents.at(-1), {
+deepEqual(measurementEvents[measurementEvents.length - 1], {
   type: "row-measure",
   fields: {
     rowIndex: 44,

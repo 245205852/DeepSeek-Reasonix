@@ -67,7 +67,7 @@
       "essay": 2
     },
     "desktop/frontend/src/App.tsx": {
-      "file-size": 4678
+      "file-size": 4683
     },
     "desktop/frontend/src/__tests__/app-chrome-tabs.test.ts": {
       "test-file-size": 19
@@ -163,7 +163,7 @@
       "file-size": 1601
     },
     "desktop/frontend/src/lib/useController.ts": {
-      "file-size": 3994
+      "file-size": 4035
     },
     "desktop/heartbeat.go": {
       "essay": 12,

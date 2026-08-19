@@ -7,6 +7,7 @@
 // actually mounted in the viewport, not just that a jump was dispatched.
 
 import { createTranscriptHarness } from "./transcript-dom-harness";
+import { QUESTION_JUMP_MAX_MARKERS } from "../components/QuestionJumpBar";
 import type { Item } from "../lib/useController";
 import { act } from "react";
 
@@ -32,6 +33,14 @@ function turns(count: number, prefix = ""): Item[] {
   return items;
 }
 
+function historyTurns(start: number, end: number): Item[] {
+  const items: Item[] = [];
+  for (let turn = start; turn <= end; turn += 1) {
+    items.push({ kind: "user", id: `history-u${turn}`, text: `history question ${turn}`, historyTurn: turn });
+  }
+  return items;
+}
+
 function dispatchScroll(el: HTMLElement) {
   el.dispatchEvent(new Event("scroll"));
 }
@@ -41,12 +50,14 @@ function stubRailGeometry(container: HTMLElement, count: number) {
   const jumpScroll = container.querySelector<HTMLElement>(".jump-scroll");
   if (!jumpBar || !jumpScroll) throw new Error("question jump bar is not mounted");
   jumpBar.getBoundingClientRect = () => ({ top: 0, bottom: 240, left: 0, right: 56, height: 240, width: 56 } as DOMRect);
-  const items = jumpScroll.querySelectorAll<HTMLButtonElement>(".jump-item");
-  items.forEach((item, index) => {
-    item.getBoundingClientRect = () => ({ top: index * 20, bottom: index * 20 + 14, left: 0, right: 32, height: 14, width: 32 } as DOMRect);
-  });
+  jumpScroll.getBoundingClientRect = () => ({ top: 0, bottom: 240, left: 0, right: 32, height: 240, width: 32 } as DOMRect);
+  const items = jumpScroll.querySelectorAll<HTMLElement>(".jump-item");
   if (items.length !== count) throw new Error(`expected ${count} jump markers, found ${items.length}`);
   return jumpScroll;
+}
+
+function railClientY(turn: number, total: number): number {
+  return ((turn + 0.5) / total) * 240;
 }
 
 function visibleRows(container: HTMLElement): string[] {
@@ -99,7 +110,7 @@ console.log("\ntranscript question jump landing");
 
     const targetIndices = [0, 31, 3, 36, 12, 28, 39];
     for (const targetIndex of targetIndices) {
-      const clientY = targetIndex * 20 + 7;
+      const clientY = railClientY(targetIndex, 40);
       await act(async () => {
         jumpScroll.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0, clientY }));
         jumpScroll.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, button: 0, clientY, detail: 1 }));
@@ -148,8 +159,8 @@ console.log("\ntranscript question jump landing");
 
     const targetIndex = 4;
     await act(async () => {
-      jumpScroll.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0, clientY: targetIndex * 20 + 7 }));
-      jumpScroll.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, button: 0, clientY: targetIndex * 20 + 7, detail: 1 }));
+      jumpScroll.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0, clientY: railClientY(targetIndex, 20) }));
+      jumpScroll.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, button: 0, clientY: railClientY(targetIndex, 20), detail: 1 }));
       dispatchScroll(el);
     });
     await harness.waitFor(
@@ -211,8 +222,8 @@ console.log("\ntranscript question jump landing");
 
     const targetIndex = 9; // old-u1 sits at marker 3; pick a post-prepend question
     await act(async () => {
-      jumpScroll.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0, clientY: targetIndex * 20 + 7 }));
-      jumpScroll.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, button: 0, clientY: targetIndex * 20 + 7, detail: 1 }));
+      jumpScroll.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0, clientY: railClientY(targetIndex, 18) }));
+      jumpScroll.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, button: 0, clientY: railClientY(targetIndex, 18), detail: 1 }));
       dispatchScroll(el);
     });
     await harness.waitFor(
@@ -221,6 +232,145 @@ console.log("\ntranscript question jump landing");
     );
     ok(Boolean(harness.container.querySelector("#question-anchor-u6")), "a jump after older-history prepend lands on the selected question");
     ok(visibleRows(harness.container).length > 0, "mounted rows remain in the viewport after the prepend jump");
+  } finally {
+    await harness.unmount();
+    await harness.close();
+  }
+}
+
+// ── A one-turn remainder auto-loads without restoring the old fold button ───
+{
+  const harness = await createTranscriptHarness({ viewportHeight: 200, rowHeight: 100 });
+  try {
+    HTMLElement.prototype.scrollIntoView = () => {};
+    let loads = 0;
+    await harness.render(historyTurns(2, 61), {
+      running: false,
+      questionNavigator: true,
+      hasOlderHistory: true,
+      historyStartTurn: 2,
+      historyTotalTurns: 61,
+      onLoadOlderHistory: async () => {
+        loads += 1;
+        return true;
+      },
+    });
+    await harness.waitFor(() => loads > 0, "the final missing history turn to auto-load");
+    ok(harness.container.querySelectorAll(".jump-item").length === 61, "the first page renders a marker for every session question");
+    ok(!harness.container.querySelector(".transcript__older"), "the ordinary show-earlier fold button is absent");
+  } finally {
+    await harness.unmount();
+    await harness.close();
+  }
+}
+
+// ── Extreme sessions keep a bounded rail and exact lazy-load targeting ──────
+{
+  const harness = await createTranscriptHarness({ viewportHeight: 200, rowHeight: 100 });
+  try {
+    HTMLElement.prototype.scrollIntoView = () => {};
+    const requestedTurns: Array<number | undefined> = [];
+    await harness.render(historyTurns(9_941, 10_000), {
+      running: false,
+      questionNavigator: true,
+      hasOlderHistory: true,
+      historyStartTurn: 9_941,
+      historyTotalTurns: 10_000,
+      olderHistoryError: "pause automatic loading for this rail-only fixture",
+      onLoadOlderHistory: async (targetTurn) => {
+        requestedTurns.push(targetTurn);
+        return true;
+      },
+    });
+    await harness.settle();
+    const jumpScroll = stubRailGeometry(harness.container, QUESTION_JUMP_MAX_MARKERS);
+    ok(harness.container.querySelectorAll(".jump-item").length === QUESTION_JUMP_MAX_MARKERS, "10,000 turns keep a fixed-size question rail");
+
+    const targetTurn = 1_234;
+    await act(async () => {
+      jumpScroll.dispatchEvent(new MouseEvent("mousedown", {
+        bubbles: true,
+        cancelable: true,
+        button: 0,
+        clientY: railClientY(targetTurn, 10_000),
+      }));
+    });
+    await harness.waitFor(() => requestedTurns.includes(targetTurn + 1), "the aggregate rail to request the exact absolute turn");
+    ok(requestedTurns.includes(targetTurn + 1), "the bounded rail preserves exact unloaded-question targeting");
+  } finally {
+    await harness.unmount();
+    await harness.close();
+  }
+}
+
+// ── Clicking an unloaded complete-rail marker loads and lands on that turn ──
+{
+  const harness = await createTranscriptHarness({ viewportHeight: 200, rowHeight: 100 });
+  try {
+    HTMLElement.prototype.scrollIntoView = () => {};
+    const requestedTurns: Array<number | undefined> = [];
+    const onLoadOlderHistory = async (targetTurn?: number) => {
+      requestedTurns.push(targetTurn);
+      return true;
+    };
+    await harness.render(historyTurns(81, 100), {
+      running: false,
+      questionNavigator: true,
+      hasOlderHistory: true,
+      historyStartTurn: 81,
+      historyTotalTurns: 100,
+      onLoadOlderHistory,
+    });
+    await harness.settle();
+    const jumpScroll = stubRailGeometry(harness.container, 100);
+    await act(async () => {
+      jumpScroll.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0, clientY: railClientY(10, 100) }));
+    });
+    await harness.waitFor(() => requestedTurns.includes(11), "the unloaded marker to request its absolute turn");
+
+    await harness.render(historyTurns(11, 100), {
+      running: false,
+      questionNavigator: true,
+      hasOlderHistory: false,
+      historyStartTurn: 11,
+      historyTotalTurns: 100,
+      onLoadOlderHistory,
+    });
+    await harness.waitFor(
+      () => Boolean(harness.container.querySelector("#question-anchor-history-u11")),
+      "the newly loaded question to land in the viewport",
+    );
+    ok(Boolean(harness.container.querySelector("#question-anchor-history-u11")), "an unloaded marker loads and lands on the selected question");
+  } finally {
+    await harness.unmount();
+    await harness.close();
+  }
+}
+
+// ── Failed automatic loading stops and exposes a compact retry state ─────────
+{
+  const harness = await createTranscriptHarness({ viewportHeight: 200, rowHeight: 100 });
+  try {
+    HTMLElement.prototype.scrollIntoView = () => {};
+    let retries = 0;
+    await harness.render(historyTurns(81, 100), {
+      running: false,
+      questionNavigator: true,
+      hasOlderHistory: true,
+      historyStartTurn: 81,
+      historyTotalTurns: 100,
+      olderHistoryError: "backend detail stays out of the UI",
+      onLoadOlderHistory: async () => {
+        retries += 1;
+        return true;
+      },
+    });
+    const retry = Array.from(harness.container.querySelectorAll<HTMLButtonElement>("button"))
+      .find((button) => button.textContent?.trim() === "Retry");
+    ok(Boolean(retry), "a failed older-history load exposes a retry action");
+    ok(harness.container.textContent?.includes("Earlier conversation could not be loaded") ?? false, "the failure uses a path-free user-facing message");
+    await act(async () => retry?.click());
+    await harness.waitFor(() => retries === 1, "the older-history retry to run once");
   } finally {
     await harness.unmount();
     await harness.close();
