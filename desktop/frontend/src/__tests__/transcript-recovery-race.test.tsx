@@ -371,7 +371,7 @@ for (let i = 0; i < 6; i += 1) await flushFrames();
 check(scrollToCalls <= 2, `one jump-bottom transaction emits at most two effective writes (${scrollToCalls})`);
 check(
   scrollElement.scrollTop === scrollExtent - scrollElement.clientHeight,
-  "the bounded jump-bottom transaction still converges on the final native bottom",
+  `the bounded jump-bottom transaction still converges on the final native bottom (${scrollElement.scrollTop}/${scrollExtent - scrollElement.clientHeight})`,
 );
 
 scrollExtent = 500;

@@ -74,9 +74,14 @@ console.log("\nbundle budgets");
 // recovery probe add less than 0.1% gzip; retain them with a 0.5 KiB (0.118%)
 // production ratchet rather than weakening either recovery contract. The
 // bounded allowance also covers small gzip drift from the embedded build SHA.
-// DingTalk channel status and locale wiring add 0.4 KiB (0.09%); a second
-// narrowly rounded 0.5 KiB (0.118%) keeps that user-visible startup contract.
-const initialJSBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 428.0 : 426.0;
+// Reader extent stabilization adds 1.2 KiB gzip (0.28%) in production for its
+// bounded input, collapse, rebound, and ownership transaction. Retain it with
+// a 1.5 KiB (0.35%) ratchet instead of weakening the Windows scroll invariant.
+// Test diagnostics add 1.0 KiB gzip (0.23%) and 4.0 KiB raw (0.17%); keep that
+// raw allowance channel-specific so the production ceiling does not widen.
+// DingTalk channel status and locale wiring add 0.4 KiB (0.09%); another
+// narrowly rounded 0.5 KiB keeps that user-visible startup contract.
+const initialJSBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 428.5 : 427.5;
 assertBudget("initial JavaScript gzip", initialJSGzip, initialJSBudgetKiB * 1024);
 assertBudget("largest initial JavaScript chunk gzip", largestInitialJS, 280 * 1024);
 assertBudget("render-blocking CSS gzip", initialCSSGzip, 4 * 1024);
@@ -111,5 +116,10 @@ const rawInitialBytes = [...initialJS, ...initialCSS, ...appShellCSS]
   .reduce((total, path) => total + statSync(path).size, 0);
 // The maintained Virtuoso engine adds 49.1 KiB raw (2.2%) over the previous
 // 2268.7 KiB gate. Retain 1% headroom to bound hash/minifier drift.
-assertBudget("initial raw JavaScript and CSS", rawInitialBytes, 2_341 * 1024);
+// DingTalk startup wiring adds 2.6 KiB raw (+0.111%) over current main-v2.
+// Existing production headroom absorbs 2.3 KiB, so only a 0.5 KiB (+0.021%)
+// ratchet is needed there. The test build sits at its old ceiling; retain its
+// diagnostics and DingTalk wiring with a rounded 3 KiB (+0.128%) ratchet.
+const rawInitialBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 2_347 : 2_341.5;
+assertBudget("initial raw JavaScript and CSS", rawInitialBytes, rawInitialBudgetKiB * 1024);
 assertBudget("largest initial JavaScript chunk raw", largestInitialJSRaw, 1_000 * 1024);
