@@ -243,6 +243,31 @@ func TestRememberInboundSessionLegacyDingtalkMapping(t *testing.T) {
 	if len(got2.Bot.Connections[0].SessionMappings) != 1 {
 		t.Fatalf("connection mappings = %+v, want the rotated session", got2.Bot.Connections[0].SessionMappings)
 	}
+
+	// 禁用的 connection 不接管入站，也不能阻止 legacy 映射持久化。
+	cfg3 := config.Default()
+	cfg3.Bot.Dingtalk.Enabled = true
+	cfg3.Bot.Connections = []config.BotConnectionConfig{
+		{ID: "ding-disabled", Provider: "dingtalk", Enabled: false},
+	}
+	if err := cfg3.SaveTo(config.UserConfigPath()); err != nil {
+		t.Fatalf("save disabled connection config: %v", err)
+	}
+	if err := RememberInboundSession(bot.InboundMessage{
+		Platform: bot.PlatformDingtalk,
+		ChatType: bot.ChatDM,
+		ChatID:   "cid-ding-disabled-conn",
+		UserID:   "user-1",
+	}, "path:/sessions/legacy-with-disabled-conn.jsonl"); err != nil {
+		t.Fatalf("remember inbound session with disabled connection: %v", err)
+	}
+	got3 := config.LoadForEdit(config.UserConfigPath())
+	if mappings := got3.Bot.Dingtalk.SessionMappings; len(mappings) != 1 || mappings[0].RemoteID != "cid-ding-disabled-conn" {
+		t.Fatalf("legacy dingtalk mappings = %+v, want mapping when only disabled connection exists", mappings)
+	}
+	if mappings := got3.Bot.Connections[0].SessionMappings; len(mappings) != 0 {
+		t.Fatalf("disabled connection mappings = %+v, want none", mappings)
+	}
 }
 
 func TestRememberInboundSessionKeepsDistinctGroupUsers(t *testing.T) {

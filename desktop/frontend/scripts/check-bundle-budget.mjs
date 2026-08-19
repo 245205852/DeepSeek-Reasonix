@@ -74,7 +74,9 @@ console.log("\nbundle budgets");
 // recovery probe add less than 0.1% gzip; retain them with a 0.5 KiB (0.118%)
 // production ratchet rather than weakening either recovery contract. The
 // bounded allowance also covers small gzip drift from the embedded build SHA.
-const initialJSBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 428.0 : 425.5;
+// DingTalk channel status and locale wiring add 0.4 KiB (0.09%); a second
+// narrowly rounded 0.5 KiB (0.118%) keeps that user-visible startup contract.
+const initialJSBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 428.0 : 426.0;
 assertBudget("initial JavaScript gzip", initialJSGzip, initialJSBudgetKiB * 1024);
 assertBudget("largest initial JavaScript chunk gzip", largestInitialJS, 280 * 1024);
 assertBudget("render-blocking CSS gzip", initialCSSGzip, 4 * 1024);
@@ -98,8 +100,10 @@ for (const path of localeChunks) {
   // floor segmented control adds two labels plus one explanatory tooltip,
   // measured at 23 B gzip for zh and 8 B for zh-TW. Completion receipts add
   // six short status labels in each locale, requiring another 0.2 KiB per
-  // language. Retain all with the smallest 0.1 KiB ratchet increments.
-  const budget = name.startsWith("zh-TW-") ? 56.4 * 1024 : 55.7 * 1024;
+  // language. DingTalk setup and mention guidance add at most 0.2 KiB more
+  // (0.36%); retain the complete security and group-chat copy instead of
+  // abbreviating user-facing instructions to fit the old locale ratchet.
+  const budget = name.startsWith("zh-TW-") ? 56.6 * 1024 : 55.9 * 1024;
   assertBudget(`${name} gzip`, gzipBytes(path), budget);
 }
 

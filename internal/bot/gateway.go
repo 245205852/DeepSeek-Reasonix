@@ -194,6 +194,7 @@ type BotGateway struct {
 	adapterHealth           map[string]*AdapterHealthSnapshot
 	controlServer           *controlHTTPServer
 	sessionOverrides        map[string]sessionRuntimeOverride
+	buildController         func(context.Context, boot.Options) (*control.Controller, error)
 
 	logger *slog.Logger
 }
@@ -323,6 +324,7 @@ func NewGatewayWithAdapterBindings(cfg GatewayConfig, adapters []AdapterBinding,
 		outboundMessageIDs:      make(map[string]time.Time),
 		adapterHealth:           make(map[string]*AdapterHealthSnapshot),
 		sessionOverrides:        make(map[string]sessionRuntimeOverride),
+		buildController:         boot.Build,
 		logger:                  logger.With("component", "bot_gateway"),
 	}
 	gw.buildAllowlist()
@@ -1653,13 +1655,13 @@ func (gw *BotGateway) handleSlashCommandCore(ctx context.Context, adapter Adapte
 		if !gw.requireCommandRole(ctx, adapter, msg, "admin") {
 			return
 		}
-		_ = gw.sendText(ctx, adapter, msg, gw.handleUseProjectCommand(key, msg.Text))
+		_ = gw.sendText(ctx, adapter, msg, gw.handleUseProjectCommand(ctx, msg, msg.Text))
 
 	case slashCommandVerb(msg.Text) == "/model":
 		if !gw.requireCommandRole(ctx, adapter, msg, "admin") {
 			return
 		}
-		_ = gw.sendText(ctx, adapter, msg, gw.handleModelCommand(msg, msg.Text))
+		_ = gw.sendText(ctx, adapter, msg, gw.handleModelCommand(ctx, msg, msg.Text))
 
 	case slashCommandVerb(msg.Text) == "/sessions":
 		if !gw.requireCommandRole(ctx, adapter, msg, "admin") {
@@ -1671,7 +1673,7 @@ func (gw *BotGateway) handleSlashCommandCore(ctx context.Context, adapter Adapte
 		if !gw.requireCommandRole(ctx, adapter, msg, "admin") {
 			return
 		}
-		_ = gw.sendText(ctx, adapter, msg, gw.handleAttachSessionCommand(key, msg.Text))
+		_ = gw.sendText(ctx, adapter, msg, gw.handleAttachSessionCommand(ctx, msg, msg.Text))
 
 	case slashCommandVerb(msg.Text) == "/search":
 		if !gw.requireCommandRole(ctx, adapter, msg, "admin") {
@@ -1726,13 +1728,18 @@ func slashCommandVerb(text string) string {
 	return strings.ToLower(parts[0])
 }
 
-func (gw *BotGateway) handleUseProjectCommand(key, text string) string {
+func (gw *BotGateway) handleUseProjectCommand(ctx context.Context, msg InboundMessage, text string) string {
+	key := BuildSessionKey(msg.Session())
 	selector := parseUseProjectSelector(text)
 	if selector == "" {
 		return "用法: /use project <项目 id|名称|路径>，或 /use project default 恢复默认路由。"
 	}
 	if isDefaultBotSelector(selector) {
-		if !gw.setSessionRuntimeOverride(key, sessionRuntimeOverride{}, false) {
+		switched, err := gw.setSessionRuntimeOverride(ctx, key, msg, sessionRuntimeOverride{}, false)
+		if err != nil {
+			return botRuntimeSwitchFailedText("切换项目")
+		}
+		if !switched {
 			return botRuntimeSwitchBusyText()
 		}
 		return "已恢复当前远端会话的默认项目路由。下一条消息会按 bot 配置重新选择 workspace。"
@@ -1745,10 +1752,14 @@ func (gw *BotGateway) handleUseProjectCommand(key, text string) string {
 		}
 		return "没有匹配的项目。可先用 /projects 查看当前索引。"
 	}
-	if !gw.setSessionRuntimeOverride(key, sessionRuntimeOverride{
+	switched, err := gw.setSessionRuntimeOverride(ctx, key, msg, sessionRuntimeOverride{
 		channel: ChannelConfig{WorkspaceRoot: project.Root},
 		label:   "project:" + project.ID,
-	}, true) {
+	}, true)
+	if err != nil {
+		return botRuntimeSwitchFailedText("切换项目")
+	}
+	if !switched {
 		return botRuntimeSwitchBusyText()
 	}
 	return fmt.Sprintf("已将当前远端会话切到项目 %s %s。\n下一条消息将在 %s 中运行。", project.ID, project.Name, displayBotPath(project.Root))
@@ -1757,7 +1768,7 @@ func (gw *BotGateway) handleUseProjectCommand(key, text string) string {
 // handleModelCommand 处理 /model：无参查询当前会话生效模型，带参切换当前
 // 远端会话的模型（可选 --provider <name> 一并切换供应商）。模型以
 // provider/model 写入会话运行时覆盖，仅影响当前会话。
-func (gw *BotGateway) handleModelCommand(msg InboundMessage, text string) string {
+func (gw *BotGateway) handleModelCommand(ctx context.Context, msg InboundMessage, text string) string {
 	model, provider, statusOnly, ok := parseModelSelector(text)
 	if !ok {
 		return "用法: /model <模型名> [--provider <供应商>]，或 /model 查看当前模型。"
@@ -1794,7 +1805,11 @@ func (gw *BotGateway) handleModelCommand(msg InboundMessage, text string) string
 	existing = gw.sessionOverrides[key]
 	gw.mu.Unlock()
 	existing.channel.Model = ref
-	if !gw.setSessionRuntimeOverride(key, existing, true) {
+	switched, err := gw.setSessionRuntimeOverride(ctx, key, msg, existing, true)
+	if err != nil {
+		return botRuntimeSwitchFailedText("切换模型")
+	}
+	if !switched {
 		return botRuntimeSwitchBusyText()
 	}
 	if provider != "" {
@@ -1862,7 +1877,8 @@ func parseSessionsQuery(text string) string {
 	return strings.TrimSpace(strings.Join(parts[1:], " "))
 }
 
-func (gw *BotGateway) handleAttachSessionCommand(key, text string) string {
+func (gw *BotGateway) handleAttachSessionCommand(ctx context.Context, msg InboundMessage, text string) string {
+	key := BuildSessionKey(msg.Session())
 	selector := parseAttachSessionSelector(text)
 	if selector == "" {
 		return "用法: /attach session <会话 id|关键词|path:...>"
@@ -1887,11 +1903,15 @@ func (gw *BotGateway) handleAttachSessionCommand(key, text string) string {
 		project := botProjectForPath(projects, session.SessionPath)
 		workspaceRoot = project.Root
 	}
-	if !gw.setSessionRuntimeOverride(key, sessionRuntimeOverride{
+	switched, err := gw.setSessionRuntimeOverride(ctx, key, msg, sessionRuntimeOverride{
 		channel:     ChannelConfig{WorkspaceRoot: workspaceRoot},
 		sessionPath: session.SessionPath,
 		label:       "session:" + session.ID,
-	}, true) {
+	}, true)
+	if err != nil {
+		return botRuntimeSwitchFailedText("attach")
+	}
+	if !switched {
 		return botRuntimeSwitchBusyText()
 	}
 	projectName := firstNonEmptyString(session.ProjectName, botProjectName(workspaceRoot), "global")
@@ -1919,35 +1939,6 @@ func (gw *BotGateway) handleProjectSearchCommand(ctx context.Context, text strin
 		return "检索失败：" + err.Error()
 	}
 	return formatBotProjectSearchResults(results, botSearchListLimit)
-}
-
-func botRuntimeSwitchBusyText() string {
-	return "当前会话仍有正在运行、等待确认或后台执行的任务。请先完成或停止这些任务，再切换项目或 attach 会话。"
-}
-
-func (gw *BotGateway) setSessionRuntimeOverride(key string, override sessionRuntimeOverride, enabled bool) bool {
-	return gw.sessions.runIfIdle(key, func() bool {
-		var old *sessionState
-		gw.mu.Lock()
-		if state, ok := gw.controllers[key]; ok {
-			if botSessionHasActiveWork(state) {
-				gw.mu.Unlock()
-				return false
-			}
-			old = state
-			delete(gw.controllers, key)
-		}
-		if enabled {
-			override.sessionPath = canonicalBotPath(override.sessionPath)
-			override.channel.WorkspaceRoot = canonicalBotPath(override.channel.WorkspaceRoot)
-			gw.sessionOverrides[key] = override
-		} else {
-			delete(gw.sessionOverrides, key)
-		}
-		gw.mu.Unlock()
-		gw.closeSessionState(old)
-		return true
-	})
 }
 
 func botSessionHasActiveWork(state *sessionState) bool {
@@ -2470,10 +2461,15 @@ func updateSessionStateRuntime(state *sessionState, msg InboundMessage, profile 
 }
 
 func (gw *BotGateway) sessionProfileForMessage(msg InboundMessage) sessionRuntimeProfile {
-	model, workspaceRoot, toolApprovalMode := gw.sessionOptionsForMessage(msg)
+	override, enabled := gw.sessionRuntimeOverrideForMessage(msg)
+	return gw.sessionProfileForResolvedOverride(msg, override, enabled)
+}
+
+func (gw *BotGateway) sessionProfileForResolvedOverride(msg InboundMessage, override sessionRuntimeOverride, enabled bool) sessionRuntimeProfile {
+	model, workspaceRoot, toolApprovalMode := gw.sessionOptionsForResolvedOverride(msg, override, enabled)
 	var sessionPath string
 	sessionPathOptional := false
-	if override, ok := gw.sessionRuntimeOverrideForMessage(msg); ok {
+	if enabled {
 		sessionPath = override.sessionPath
 	}
 	// A persisted session_mappings binding is the durable chat→session link
@@ -2715,10 +2711,14 @@ func botSessionTarget(sessionPath string) string {
 }
 
 func (gw *BotGateway) sessionOptionsForMessage(msg InboundMessage) (model string, workspaceRoot string, toolApprovalMode string) {
+	override, enabled := gw.sessionRuntimeOverrideForMessage(msg)
+	return gw.sessionOptionsForResolvedOverride(msg, override, enabled)
+}
+
+func (gw *BotGateway) sessionOptionsForResolvedOverride(msg InboundMessage, override sessionRuntimeOverride, enabled bool) (model string, workspaceRoot string, toolApprovalMode string) {
 	// cfg.ToolApprovalMode / Channels / ConnectionChannels are rewritten under
 	// gw.mu at runtime (/yolo, UpdateConnectionToolApprovalMode), so snapshot them
-	// under a short lock and resolve outside it — applyRuntimeOverrideOptions
-	// takes gw.mu itself. Copying the ChannelConfig value is enough: writers
+	// under a short lock and resolve outside it. Copying the ChannelConfig value is enough: writers
 	// replace whole map entries and never mutate SessionMappings in place.
 	gw.mu.Lock()
 	model = gw.cfg.Model
@@ -2740,7 +2740,9 @@ func (gw *BotGateway) sessionOptionsForMessage(msg InboundMessage) (model string
 			workspaceRoot = workspaceRootForSessionMapping(mapping, workspaceRoot)
 		}
 		model, workspaceRoot, toolApprovalMode = gw.applyRouteOptions(msg, model, workspaceRoot, toolApprovalMode)
-		model, workspaceRoot, toolApprovalMode = gw.applyRuntimeOverrideOptions(msg, model, workspaceRoot, toolApprovalMode)
+		if enabled {
+			applyBotChannelOptions(override.channel, &model, &workspaceRoot, &toolApprovalMode)
+		}
 		return model, workspaceRoot, toolApprovalMode
 	}
 	if platOK {
@@ -2751,12 +2753,7 @@ func (gw *BotGateway) sessionOptionsForMessage(msg InboundMessage) (model string
 		workspaceRoot = workspaceRootForSessionMapping(mapping, workspaceRoot)
 	}
 	model, workspaceRoot, toolApprovalMode = gw.applyRouteOptions(msg, model, workspaceRoot, toolApprovalMode)
-	model, workspaceRoot, toolApprovalMode = gw.applyRuntimeOverrideOptions(msg, model, workspaceRoot, toolApprovalMode)
-	return model, workspaceRoot, toolApprovalMode
-}
-
-func (gw *BotGateway) applyRuntimeOverrideOptions(msg InboundMessage, model, workspaceRoot, toolApprovalMode string) (string, string, string) {
-	if override, ok := gw.sessionRuntimeOverrideForMessage(msg); ok {
+	if enabled {
 		applyBotChannelOptions(override.channel, &model, &workspaceRoot, &toolApprovalMode)
 	}
 	return model, workspaceRoot, toolApprovalMode

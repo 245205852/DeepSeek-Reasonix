@@ -15,7 +15,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -56,41 +55,6 @@ const (
 // 以便测试覆盖为 httptest 桩地址。
 var emotionURL = "https://api.dingtalk.com/v1.0/robot/emotion"
 
-// dingtalkWebhookHosts 会话回复 webhook 允许的主机名白名单。sessionWebhook
-// 由钉钉官方回调携带，只应指向钉钉域名；回复 POST 不携带 access token
-// （官方文档：会话 webhook 无需额外认证），故更不允许向任意主机发送请求。
-// 测试通过 webhookHosts 覆盖为 httptest 桩地址。
-var dingtalkWebhookHosts = []string{"api.dingtalk.com", "oapi.dingtalk.com"}
-
-// webhookHosts 当前允许的 webhook 主机；生产为 dingtalkWebhookHosts，
-// 测试可覆盖为 httptest 桩 host。
-var webhookHosts = dingtalkWebhookHosts
-
-// validDingtalkWebhook 校验回复 webhook：仅接受 https（或 http，仅测试桩
-// 场景）且主机在允许名单内，防止把钉钉会话 webhook 能力外泄到任意 URL。
-func validDingtalkWebhook(raw string) bool {
-	u, err := url.Parse(strings.TrimSpace(raw))
-	if err != nil {
-		return false
-	}
-	if u.Scheme != "https" && u.Scheme != "http" {
-		return false
-	}
-	if u.Host == "" {
-		return false
-	}
-	host := u.Host
-	if h, _, err := net.SplitHostPort(host); err == nil {
-		host = h
-	}
-	for _, allowed := range webhookHosts {
-		if strings.EqualFold(host, allowed) {
-			return true
-		}
-	}
-	return false
-}
-
 // adapter 钉钉适配器实现。
 type adapter struct {
 	cfg    config.DingtalkBotConfig
@@ -100,6 +64,9 @@ type adapter struct {
 
 	// httpClient 复用连接，避免每消息重建。
 	httpClient *http.Client
+	// webhookHosts 与 allowHTTPWebhook 属于 adapter，避免测试修改包级安全策略。
+	webhookHosts     []string
+	allowHTTPWebhook bool
 	// tokenMu 保护 token 缓存。
 	tokenMu sync.Mutex
 	token   string
@@ -149,12 +116,13 @@ type robotTextContent struct {
 // New 创建钉钉适配器。
 func New(cfg config.DingtalkBotConfig, logger *slog.Logger) bot.Adapter {
 	return &adapter{
-		cfg:        cfg,
-		logger:     logger.With("platform", "dingtalk"),
-		seen:       make(map[string]bool),
-		webhooks:   make(map[string]string),
-		msgChats:   make(map[string]string),
-		httpClient: &http.Client{Timeout: connTimeout},
+		cfg:          cfg,
+		logger:       logger.With("platform", "dingtalk"),
+		seen:         make(map[string]bool),
+		webhooks:     make(map[string]string),
+		msgChats:     make(map[string]string),
+		httpClient:   &http.Client{Timeout: connTimeout},
+		webhookHosts: append([]string(nil), dingtalkWebhookHosts...),
 	}
 }
 
@@ -163,23 +131,30 @@ func (a *adapter) Name() string           { return "dingtalk" }
 
 func (a *adapter) Start(ctx context.Context) error {
 	a.msgCh = make(chan bot.InboundMessage, 64)
-	ctx, a.cancel = context.WithCancel(ctx)
+	ctx, cancel := context.WithCancel(ctx)
 	// 同步校验凭据与连接，失败直接报错而非标记 running 后由重连循环静默失败。
 	checkCtx, checkCancel := context.WithTimeout(ctx, connTimeout)
 	defer checkCancel()
 	if id := a.clientID(); strings.TrimSpace(id) == "" {
+		cancel()
 		return fmt.Errorf("dingtalk client_id is not configured")
 	}
 	if secret := a.clientSecret(); strings.TrimSpace(secret) == "" {
+		cancel()
 		return fmt.Errorf("dingtalk client_secret is not configured")
 	}
 	if _, err := a.accessToken(checkCtx); err != nil {
+		cancel()
 		return fmt.Errorf("dingtalk credentials rejected: %w", err)
 	}
-	if _, err := a.openConnection(checkCtx); err != nil {
+	conn, err := a.dialConnection(checkCtx)
+	if err != nil {
+		cancel()
 		return fmt.Errorf("dingtalk connection failed: %w", err)
 	}
-	go a.runWithRetry(ctx)
+	a.cancel = cancel
+	a.setConn(conn)
+	go a.runWithRetry(ctx, conn)
 	return nil
 }
 
@@ -210,6 +185,21 @@ func (a *adapter) closeConn() {
 		_ = a.conn.Close()
 		a.conn = nil
 	}
+}
+
+func (a *adapter) setConn(conn *websocket.Conn) {
+	a.connMu.Lock()
+	a.conn = conn
+	a.connMu.Unlock()
+}
+
+func (a *adapter) releaseConn(conn *websocket.Conn) {
+	a.connMu.Lock()
+	if a.conn == conn {
+		a.conn = nil
+	}
+	a.connMu.Unlock()
+	_ = conn.Close()
 }
 
 // clientID 返回配置或环境变量中的 AppKey。
@@ -311,17 +301,50 @@ func (a *adapter) openConnection(ctx context.Context) (string, error) {
 	return ep.Endpoint + "?ticket=" + url.QueryEscape(ep.Ticket), nil
 }
 
-// runWithRetry 建连并处理消息，断线后带退避重连。
-func (a *adapter) runWithRetry(ctx context.Context) {
+// dialConnection 换取一次连接地址并完成 WebSocket 握手。
+func (a *adapter) dialConnection(ctx context.Context) (*websocket.Conn, error) {
+	wsURL, err := a.openConnection(ctx)
+	if err != nil {
+		return nil, err
+	}
+	dialer := websocket.Dialer{HandshakeTimeout: connTimeout}
+	conn, _, err := dialer.DialContext(ctx, wsURL, nil)
+	return conn, err
+}
+
+// runWithRetry 先处理 Start 已握手的连接，断线后带退避重连。
+func (a *adapter) runWithRetry(ctx context.Context, conn *websocket.Conn) {
 	backoff := time.Second
 	for {
-		if err := a.runOnce(ctx); err != nil && ctx.Err() == nil {
+		if conn == nil {
+			var err error
+			conn, err = a.dialConnection(ctx)
+			if err != nil {
+				if ctx.Err() != nil {
+					return
+				}
+				a.logger.Warn("dingtalk connection failed; reconnecting", "err", err, "backoff", backoff)
+				if !waitForRetry(ctx, backoff) {
+					return
+				}
+				if backoff < 30*time.Second {
+					backoff *= 2
+				}
+				continue
+			}
+			if ctx.Err() != nil {
+				_ = conn.Close()
+				return
+			}
+			a.setConn(conn)
+			backoff = time.Second
+		}
+		if err := a.serveConnection(ctx, conn); err != nil && ctx.Err() == nil {
 			a.logger.Warn("dingtalk connection closed; reconnecting", "err", err, "backoff", backoff)
 		}
-		select {
-		case <-ctx.Done():
+		conn = nil
+		if ctx.Err() != nil || !waitForRetry(ctx, backoff) {
 			return
-		case <-time.After(backoff):
 		}
 		if backoff < 30*time.Second {
 			backoff *= 2
@@ -329,21 +352,20 @@ func (a *adapter) runWithRetry(ctx context.Context) {
 	}
 }
 
-// runOnce 建立一次 WebSocket 连接并处理消息，直到断开或 ctx 取消。
-func (a *adapter) runOnce(ctx context.Context) error {
-	wsURL, err := a.openConnection(ctx)
-	if err != nil {
-		return err
+func waitForRetry(ctx context.Context, delay time.Duration) bool {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
 	}
-	dialer := websocket.Dialer{HandshakeTimeout: connTimeout}
-	conn, _, err := dialer.DialContext(ctx, wsURL, nil)
-	if err != nil {
-		return err
-	}
-	a.connMu.Lock()
-	a.conn = conn
-	a.connMu.Unlock()
-	defer a.closeConn()
+}
+
+// serveConnection 处理一条已握手连接，直到断开或 ctx 取消。
+func (a *adapter) serveConnection(ctx context.Context, conn *websocket.Conn) error {
+	defer a.releaseConn(conn)
 	a.logger.Info("dingtalk stream connected")
 
 	// 读消息循环（处理 SYSTEM/CALLBACK）。
@@ -504,7 +526,7 @@ func (a *adapter) normalizeMessage(raw robotMessage) *bot.InboundMessage {
 		chatType = bot.ChatGroup
 	}
 	webhook := strings.TrimSpace(raw.SessionWebhook)
-	if webhook != "" && validDingtalkWebhook(webhook) {
+	if webhook != "" && a.validDingtalkWebhook(webhook) {
 		// 记录会话 webhook，供后续回复查表使用；同时记录最近会话供测试发送。
 		// 仅记录钉钉官方域名的 webhook，恶意/伪造回调无法注入任意回复目标。
 		a.webhookMu.Lock()
@@ -692,7 +714,7 @@ func (a *adapter) markSeen(messageID string) bool {
 // 无需额外认证），避免向任意 URL 泄漏 token 或形成 SSRF。
 func (a *adapter) sendMessage(ctx context.Context, msg bot.OutboundMessage) (bot.SendResult, error) {
 	webhook := strings.TrimSpace(msg.SessionWebhook)
-	if webhook != "" && !validDingtalkWebhook(webhook) {
+	if webhook != "" && !a.validDingtalkWebhook(webhook) {
 		return bot.SendResult{}, fmt.Errorf("dingtalk send rejected: session webhook %q is not a dingtalk endpoint", truncate(webhook, 64))
 	}
 	if webhook == "" {
@@ -701,7 +723,7 @@ func (a *adapter) sendMessage(ctx context.Context, msg bot.OutboundMessage) (bot
 	if webhook == "" {
 		return bot.SendResult{}, fmt.Errorf("dingtalk send requires a session webhook: no webhook known for chat %s (bot must receive a message in this chat first)", logHash(msg.ChatID))
 	}
-	if !validDingtalkWebhook(webhook) {
+	if !a.validDingtalkWebhook(webhook) {
 		return bot.SendResult{}, fmt.Errorf("dingtalk send rejected: webhook %q is not a dingtalk endpoint", truncate(webhook, 64))
 	}
 	// 一律以 markdown 类型发送：Reasonix bot 回复是 markdown 文本，钉钉
@@ -725,7 +747,7 @@ func (a *adapter) sendMessage(ctx context.Context, msg bot.OutboundMessage) (bot
 		return bot.SendResult{}, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := a.httpClient.Do(req)
+	resp, err := a.webhookClient().Do(req)
 	if err != nil {
 		return bot.SendResult{}, err
 	}

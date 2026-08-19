@@ -1616,7 +1616,7 @@ func TestGatewayRuntimeOverridePreservesControllersWithActiveWork(t *testing.T) 
 				}
 			}
 
-			text := gw.handleUseProjectCommand(key, "/use project default")
+			text := gw.handleUseProjectCommand(context.Background(), msg, "/use project default")
 			if !strings.Contains(text, "请先完成或停止") {
 				t.Fatalf("busy response = %q", text)
 			}
@@ -2656,28 +2656,28 @@ func TestHandleModelCommand(t *testing.T) {
 	msg := InboundMessage{Platform: PlatformWeixin, ConnectionID: "weixin-weixin", Domain: "weixin", ChatType: ChatDM, ChatID: "chat", UserID: "user"}
 	key := BuildSessionKey(msg.Session())
 	overrideModel := func() string { gw.mu.Lock(); defer gw.mu.Unlock(); return gw.sessionOverrides[key].channel.Model }
-	if got := gw.handleModelCommand(msg, "/model"); !strings.Contains(got, "deepseek-v4-flash") {
+	if got := gw.handleModelCommand(context.Background(), msg, "/model"); !strings.Contains(got, "deepseek-v4-flash") {
 		t.Fatalf("/model status = %q, want global default", got)
 	}
 	gw.mu.Lock()
 	gw.cfg.Channels = map[Platform]ChannelConfig{PlatformWeixin: {Model: "17an/deepseek-v4-flash"}}
 	gw.mu.Unlock()
-	if got := gw.handleModelCommand(msg, "/model"); !strings.Contains(got, "17an/deepseek-v4-flash") {
+	if got := gw.handleModelCommand(context.Background(), msg, "/model"); !strings.Contains(got, "17an/deepseek-v4-flash") {
 		t.Fatalf("/model status with channel model = %q, want channel model", got)
 	}
-	if got := gw.handleModelCommand(msg, "/model deepseek-v4-pro"); !strings.Contains(got, "deepseek-v4-pro") {
+	if got := gw.handleModelCommand(context.Background(), msg, "/model deepseek-v4-pro"); !strings.Contains(got, "deepseek-v4-pro") {
 		t.Fatalf("/model switch = %q", got)
 	}
 	if m := overrideModel(); m != "deepseek-v4-pro" {
 		t.Fatalf("override model = %q, want deepseek-v4-pro", m)
 	}
-	if got := gw.handleModelCommand(msg, "/model deepseek-v4-flash --provider 17an"); !strings.Contains(got, "17an") || !strings.Contains(got, "deepseek-v4-flash") {
+	if got := gw.handleModelCommand(context.Background(), msg, "/model deepseek-v4-flash --provider 17an"); !strings.Contains(got, "17an") || !strings.Contains(got, "deepseek-v4-flash") {
 		t.Fatalf("/model with provider = %q", got)
 	}
 	if m := overrideModel(); m != "17an/deepseek-v4-flash" {
 		t.Fatalf("override model = %q, want 17an/deepseek-v4-flash", m)
 	}
-	if got := gw.handleModelCommand(msg, "/model --provider deepseek"); !strings.Contains(got, "用法") {
+	if got := gw.handleModelCommand(context.Background(), msg, "/model --provider deepseek"); !strings.Contains(got, "用法") {
 		t.Fatalf("provider-only /model = %q, want usage message", got)
 	}
 	if m := overrideModel(); m != "17an/deepseek-v4-flash" {
@@ -2703,14 +2703,14 @@ func TestHandleModelCommandRejectsUnresolvableModel(t *testing.T) {
 	overrideModel := func() string { gw.mu.Lock(); defer gw.mu.Unlock(); return gw.sessionOverrides[key].channel.Model }
 
 	// 有效模型 → 写入覆盖。
-	if got := gw.handleModelCommand(msg, "/model deepseek-v4-flash"); !strings.Contains(got, "deepseek-v4-flash") {
+	if got := gw.handleModelCommand(context.Background(), msg, "/model deepseek-v4-flash"); !strings.Contains(got, "deepseek-v4-flash") {
 		t.Fatalf("/model switch = %q, want success", got)
 	}
 	if m := overrideModel(); m != "deepseek-v4-flash" {
 		t.Fatalf("override model = %q, want deepseek-v4-flash", m)
 	}
 	// 无效模型 → 拒绝且 override 保持原值（controller 未被销毁）。
-	if got := gw.handleModelCommand(msg, "/model nope-model"); !strings.Contains(got, "不可用") {
+	if got := gw.handleModelCommand(context.Background(), msg, "/model nope-model"); !strings.Contains(got, "不可用") {
 		t.Fatalf("/model invalid = %q, want rejection message", got)
 	}
 	if m := overrideModel(); m != "deepseek-v4-flash" {

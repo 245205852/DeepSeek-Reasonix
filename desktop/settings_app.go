@@ -3227,19 +3227,7 @@ func (a *App) SetBotSettings(b BotSettingsView) error {
 			TokenEnv:  strings.TrimSpace(b.Weixin.TokenEnv),
 			APIBase:   strings.TrimRight(strings.TrimSpace(b.Weixin.APIBase), "/"),
 		}
-		c.Bot.Dingtalk = config.DingtalkBotConfig{
-			Enabled:          b.Dingtalk.Enabled,
-			ClientID:         strings.TrimSpace(b.Dingtalk.ClientID),
-			ClientSecret:     c.Bot.Dingtalk.ClientSecret, // 保留直值（设置面板只管理 env 形式）
-			ClientIDEnv:      c.Bot.Dingtalk.ClientIDEnv,
-			SecretEnv:        strings.TrimSpace(b.Dingtalk.ClientSecretEnv),
-			BotName:          strings.TrimSpace(b.Dingtalk.BotName),
-			RequireMention:   b.Dingtalk.RequireMention,
-			Model:            strings.TrimSpace(b.Dingtalk.Model),
-			ToolApprovalMode: normalizeBotConnectionToolApprovalMode(b.Dingtalk.ToolApprovalMode),
-			WorkspaceRoot:    strings.TrimSpace(b.Dingtalk.WorkspaceRoot),
-			Access:           botAccessConfigFromView(b.Dingtalk.Access),
-		}
+		c.Bot.Dingtalk = dingtalkConfigFromView(b.Dingtalk, c.Bot.Dingtalk)
 		c.Bot.Connections = botConnectionConfigs(b.Connections)
 		return nil
 	})

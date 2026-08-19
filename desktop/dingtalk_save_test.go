@@ -17,6 +17,12 @@ func TestSetBotSettingsDingtalkRoundTrip(t *testing.T) {
 		SecretEnv:      "DINGTALK_CLIENT_SECRET",
 		BotName:        "InitialBot",
 		RequireMention: true,
+		SessionMappings: []config.BotConnectionSessionMapping{{
+			RemoteID:      "cid-preserved",
+			Scope:         "global",
+			SessionID:     "path:/sessions/preserved.jsonl",
+			SessionSource: "auto",
+		}},
 	}
 	if err := cfg.SaveTo(config.UserConfigPath()); err != nil {
 		t.Fatalf("save initial: %v", err)
@@ -44,6 +50,9 @@ func TestSetBotSettingsDingtalkRoundTrip(t *testing.T) {
 	}
 	if got.Bot.Dingtalk.SecretEnv != "DINGTALK_CLIENT_SECRET" {
 		t.Fatalf("secretEnv = %q, want DINGTALK_CLIENT_SECRET", got.Bot.Dingtalk.SecretEnv)
+	}
+	if mappings := got.Bot.Dingtalk.SessionMappings; len(mappings) != 1 || mappings[0].RemoteID != "cid-preserved" || mappings[0].SessionID != "path:/sessions/preserved.jsonl" {
+		t.Fatalf("session mappings = %+v, want hidden legacy mapping preserved", mappings)
 	}
 }
 

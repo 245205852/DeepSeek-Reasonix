@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -22,31 +21,33 @@ func newTestHTTPClient() *http.Client {
 }
 
 // allowTestWebhook 把 httptest 桩 server 的 host 加入 webhook 白名单，
-// 使发送测试可以打到桩地址；测试结束自动还原。
-func allowTestWebhook(t *testing.T, srv *httptest.Server) {
+// 并仅为该 adapter 允许 HTTP，使发送测试可以打到桩地址。
+func allowTestWebhook(t *testing.T, a *adapter, srv *httptest.Server) {
 	t.Helper()
 	u, err := url.Parse(srv.URL)
 	if err != nil {
 		t.Fatalf("parse httptest url %q: %v", srv.URL, err)
 	}
-	host := u.Host
-	if h, _, err := net.SplitHostPort(host); err == nil {
-		host = h
-	}
-	old := webhookHosts
-	webhookHosts = append(append([]string{}, old...), host)
-	t.Cleanup(func() { webhookHosts = old })
+	a.webhookHosts = append(a.webhookHosts, u.Hostname())
+	a.allowHTTPWebhook = true
 }
 
 func testAdapter(cfg config.DingtalkBotConfig) *adapter {
 	return &adapter{
-		cfg:        cfg,
-		logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
-		seen:       make(map[string]bool),
-		webhooks:   make(map[string]string),
-		msgChats:   make(map[string]string),
-		httpClient: newTestHTTPClient(),
+		cfg:          cfg,
+		logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+		seen:         make(map[string]bool),
+		webhooks:     make(map[string]string),
+		msgChats:     make(map[string]string),
+		httpClient:   newTestHTTPClient(),
+		webhookHosts: append([]string(nil), dingtalkWebhookHosts...),
 	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
 }
 
 func TestNormalizeDirectMessage(t *testing.T) {
@@ -244,6 +245,13 @@ func TestNormalizeRejectsForeignWebhook(t *testing.T) {
 	}
 }
 
+func TestValidDingtalkWebhookRejectsHTTPOfficialHost(t *testing.T) {
+	a := testAdapter(config.DingtalkBotConfig{})
+	if a.validDingtalkWebhook("http://api.dingtalk.com/v1.0/robot/send") {
+		t.Fatal("production webhook validation must require HTTPS")
+	}
+}
+
 // TestSendUsesLearnedWebhook: 入站学习到 webhook 后，sendMessage 应 POST 到
 // 该 webhook 而非 ReplyToMsgID（gateway 会把 ReplyToMsgID 填成消息 ID），
 // 且不携带 access token（会话 webhook 无需认证）。
@@ -256,9 +264,9 @@ func TestSendUsesLearnedWebhook(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
-	allowTestWebhook(t, srv)
 
 	a := testAdapter(config.DingtalkBotConfig{})
+	allowTestWebhook(t, a, srv)
 	a.httpClient = srv.Client()
 	// 入站消息学习 webhook。
 	if m := a.normalizeMessage(robotMessage{
@@ -281,6 +289,38 @@ func TestSendUsesLearnedWebhook(t *testing.T) {
 	}
 	if gotAuth != "" {
 		t.Fatalf("webhook request must not carry access token, got %q", gotAuth)
+	}
+}
+
+func TestSendRejectsRedirectToForeignWebhook(t *testing.T) {
+	targetHit := false
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		targetHit = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer target.Close()
+	foreignTarget := strings.Replace(target.URL, "127.0.0.1", "localhost", 1)
+
+	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Location", foreignTarget)
+		w.WriteHeader(http.StatusTemporaryRedirect)
+	}))
+	defer source.Close()
+
+	a := testAdapter(config.DingtalkBotConfig{})
+	allowTestWebhook(t, a, source)
+	a.httpClient = source.Client()
+	_, err := a.sendMessage(context.Background(), bot.OutboundMessage{
+		ChatID:         "cid-redirect",
+		ChatType:       bot.ChatDM,
+		Text:           "hi",
+		SessionWebhook: source.URL,
+	})
+	if err == nil || !strings.Contains(err.Error(), "redirect to non-dingtalk endpoint") {
+		t.Fatalf("foreign redirect must be rejected, got %v", err)
+	}
+	if targetHit {
+		t.Fatal("redirect target must not receive the webhook request")
 	}
 }
 
@@ -342,9 +382,9 @@ func TestSendPrefersSessionWebhookOverLearned(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
-	allowTestWebhook(t, srv)
 
 	a := testAdapter(config.DingtalkBotConfig{})
+	allowTestWebhook(t, a, srv)
 	a.httpClient = srv.Client()
 	a.token = "test-token"
 	a.tokenAt = time.Now()
@@ -373,9 +413,9 @@ func TestSendPlainTextUsesMarkdown(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
-	allowTestWebhook(t, srv)
 
 	a := testAdapter(config.DingtalkBotConfig{})
+	allowTestWebhook(t, a, srv)
 	a.httpClient = srv.Client()
 	a.token = "test-token"
 	a.tokenAt = time.Now()
@@ -404,9 +444,9 @@ func TestSendMarkdownCard(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
-	allowTestWebhook(t, srv)
 
 	a := testAdapter(config.DingtalkBotConfig{})
+	allowTestWebhook(t, a, srv)
 	a.httpClient = srv.Client()
 	a.token = "test-token"
 	a.tokenAt = time.Now()
@@ -521,6 +561,46 @@ func TestStartRejectsEmptySecret(t *testing.T) {
 	}
 }
 
+func TestStartReturnsWebSocketHandshakeFailure(t *testing.T) {
+	var srv *httptest.Server
+	gatewayCalls := 0
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/gettoken":
+			_, _ = io.WriteString(w, `{"access_token":"token","errcode":0}`)
+		case "/v1.0/gateway/connections/open":
+			gatewayCalls++
+			endpoint := "ws" + strings.TrimPrefix(srv.URL, "http") + "/ws"
+			_ = json.NewEncoder(w).Encode(gatewayEndpoint{Endpoint: endpoint, Ticket: "ticket-1"})
+		case "/ws":
+			http.Error(w, "handshake rejected", http.StatusBadGateway)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	target, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatalf("parse server URL: %v", err)
+	}
+	a := testAdapter(config.DingtalkBotConfig{ClientID: "app-key", ClientSecret: "secret"})
+	a.httpClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		localReq := req.Clone(req.Context())
+		localReq.URL.Scheme = target.Scheme
+		localReq.URL.Host = target.Host
+		return http.DefaultTransport.RoundTrip(localReq)
+	})}
+
+	err = a.Start(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "connection failed") {
+		t.Fatalf("Start must report WebSocket handshake failure, got %v", err)
+	}
+	if gatewayCalls != 1 {
+		t.Fatalf("gateway open calls = %d, want one initial ticket", gatewayCalls)
+	}
+}
+
 // TestTestSendWithoutKnownChat: 还没有任何交互过的会话时，测试发送返回
 // 可读错误，而不是发起真实请求。
 func TestTestSendWithoutKnownChat(t *testing.T) {
@@ -542,9 +622,9 @@ func TestTestSendUsesLatestLearnedChat(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
-	allowTestWebhook(t, srv)
 
 	a := testAdapter(config.DingtalkBotConfig{})
+	allowTestWebhook(t, a, srv)
 	a.httpClient = srv.Client()
 	a.token = "test-token"
 	a.tokenAt = time.Now()

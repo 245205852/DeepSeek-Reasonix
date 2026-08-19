@@ -637,7 +637,7 @@ func rememberInbound(msg bot.InboundMessage, sessionID string, actualWorkspaceRo
 // botHasDingtalkConnection 判断是否存在匹配的钉钉 connection 记录。
 func botHasDingtalkConnection(conns []config.BotConnectionConfig) bool {
 	for _, conn := range conns {
-		if strings.TrimSpace(conn.Provider) == string(bot.PlatformDingtalk) {
+		if conn.Enabled && strings.TrimSpace(conn.Provider) == string(bot.PlatformDingtalk) {
 			return true
 		}
 	}
