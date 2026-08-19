@@ -294,7 +294,7 @@ func pathChain(root, target string) []string {
 		return out
 	}
 	current := root
-	for _, part := range strings.Split(filepath.ToSlash(rel), "/") {
+	for part := range strings.SplitSeq(filepath.ToSlash(rel), "/") {
 		if part == "" || part == "." {
 			continue
 		}
