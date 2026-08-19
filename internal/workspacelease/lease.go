@@ -40,6 +40,11 @@ type systemHold struct {
 	release func()
 }
 
+type sharedSystemHold struct {
+	refs    int
+	release func()
+}
+
 type ownerLease struct {
 	acquiring   bool
 	waiting     bool
@@ -49,6 +54,7 @@ type ownerLease struct {
 	acquireDone chan struct{}
 	changed     chan struct{}
 	holds       map[uint64]*systemHold
+	shared      map[string]*sharedSystemHold
 	nextID      uint64
 	legacy      []func()
 	epoch       uint64
@@ -60,7 +66,6 @@ type ownerLease struct {
 // Owners even when they share a workspace.
 type Owner struct {
 	lockPath   string
-	queuePath  string
 	lockDir    string
 	canonical  string
 	onWait     WaitNotice
@@ -147,13 +152,15 @@ func New(workspaceRoot, lockDir string, onWait WaitNotice) (*Owner, error) {
 	if err := os.MkdirAll(lockDir, 0o700); err != nil {
 		return nil, fmt.Errorf("create workspace lease directory: %w", err)
 	}
-	sum := sha256.Sum256([]byte(canonical))
-	lockPath := filepath.Join(lockDir, hex.EncodeToString(sum[:])+".lock")
+	lockPath := workspaceLockPath(lockDir, canonical)
 	return &Owner{
-		lockPath: lockPath, queuePath: lockPath + ".queue", canonical: canonical,
+		lockPath: lockPath, canonical: canonical,
 		lockDir: lockDir,
 		onWait:  onWait, graceAfter: backgroundGrace,
-		lease: ownerLease{changed: make(chan struct{}), holds: map[uint64]*systemHold{}},
+		lease: ownerLease{
+			changed: make(chan struct{}), holds: map[uint64]*systemHold{},
+			shared: map[string]*sharedSystemHold{},
+		},
 	}, nil
 }
 
@@ -514,13 +521,162 @@ func (o *Owner) markWaiting() bool {
 }
 
 func (o *Owner) acquireWorkspace(ctx context.Context, mode filelock.Mode, notified *bool) (func(), error) {
-	queueRelease, err := o.acquireMode(ctx, o.queuePath, filelock.ModeExclusive, notified)
+	compatRelease, err := o.acquireCompatibilityRoots(ctx, ancestorDirectories(o.canonical), mode, notified)
 	if err != nil {
 		return nil, err
 	}
-	release, err := o.acquireMode(ctx, o.lockPath, mode, notified)
+	if mode != filelock.ModeExclusive {
+		return compatRelease, nil
+	}
+	treeRelease, err := o.acquireQueuedMode(ctx, o.treeLockPath(o.canonical), filelock.ModeExclusive, notified)
+	if err != nil {
+		compatRelease()
+		return nil, err
+	}
+	return func() { runReleases([]func(){compatRelease, treeRelease}) }, nil
+}
+
+// acquireCompatibilityRoots keeps the original per-workspace lock protocol in
+// the hierarchy. Previous Reasonix versions only know these exact lock files,
+// so descendants take their ancestor locks shared while a whole-workspace
+// writer takes its own root exclusively.
+func (o *Owner) acquireCompatibilityRoots(
+	ctx context.Context,
+	roots []string,
+	rootMode filelock.Mode,
+	notified *bool,
+) (func(), error) {
+	roots = orderedWorkspaceRoots(roots)
+	releases := make([]func(), 0, len(roots))
+	for _, root := range roots {
+		mode := filelock.ModeShared
+		if root == o.canonical {
+			mode = rootMode
+		}
+		release, err := o.acquireQueuedMode(ctx, workspaceLockPath(o.lockDir, root), mode, notified)
+		if err != nil {
+			runReleases(releases)
+			return nil, err
+		}
+		releases = append(releases, release)
+	}
+	return func() { runReleases(releases) }, nil
+}
+
+func (o *Owner) acquireQueuedMode(ctx context.Context, lockPath string, mode filelock.Mode, notified *bool) (func(), error) {
+	if mode == filelock.ModeShared {
+		return o.acquireSharedDomain(ctx, lockPath, notified)
+	}
+	return o.acquireQueuedModeRaw(ctx, lockPath, mode, notified)
+}
+
+func (o *Owner) acquireSharedDomain(ctx context.Context, lockPath string, notified *bool) (func(), error) {
+	lockPath = normalizeIdentityPath(lockPath)
+	o.mu.Lock()
+	// Re-enter before the writer-priority queue: its writer waits for this Owner's
+	// shared hold, so queueing the same Owner would deadlock. Other Owners still
+	// queue because they have no entry here.
+	if hold := o.lease.shared[lockPath]; hold != nil {
+		hold.refs++
+		o.mu.Unlock()
+		return o.releaseSharedDomainFunc(lockPath, hold), nil
+	}
+	o.mu.Unlock()
+
+	release, err := o.acquireQueuedModeRaw(ctx, lockPath, filelock.ModeShared, notified)
+	if err != nil {
+		return nil, err
+	}
+	hold := &sharedSystemHold{refs: 1, release: release}
+	o.mu.Lock()
+	o.lease.shared[lockPath] = hold
+	o.mu.Unlock()
+	return o.releaseSharedDomainFunc(lockPath, hold), nil
+}
+
+func (o *Owner) releaseSharedDomainFunc(lockPath string, target *sharedSystemHold) func() {
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			var release func()
+			o.mu.Lock()
+			if hold := o.lease.shared[lockPath]; hold == target {
+				hold.refs--
+				if hold.refs == 0 {
+					delete(o.lease.shared, lockPath)
+					release = hold.release
+				}
+			}
+			o.mu.Unlock()
+			if release != nil {
+				release()
+			}
+		})
+	}
+}
+
+func (o *Owner) acquireQueuedModeRaw(ctx context.Context, lockPath string, mode filelock.Mode, notified *bool) (func(), error) {
+	queueRelease, err := o.acquireMode(ctx, lockPath+".queue", filelock.ModeExclusive, notified)
+	if err != nil {
+		return nil, err
+	}
+	release, err := o.acquireMode(ctx, lockPath, mode, notified)
 	queueRelease()
 	return release, err
+}
+
+func workspaceLockPath(lockDir, canonical string) string {
+	canonical = normalizeIdentityPath(canonical)
+	sum := sha256.Sum256([]byte(canonical))
+	return filepath.Join(lockDir, hex.EncodeToString(sum[:])+".lock")
+}
+
+func ancestorDirectories(path string) []string {
+	path = normalizeIdentityPath(path)
+	reversed := []string{path}
+	for current := path; ; {
+		parent := normalizeIdentityPath(filepath.Dir(current))
+		if parent == current {
+			break
+		}
+		reversed = append(reversed, parent)
+		current = parent
+	}
+	out := make([]string, len(reversed))
+	for i := range reversed {
+		out[len(reversed)-1-i] = reversed[i]
+	}
+	return out
+}
+
+func orderedWorkspaceRoots(roots []string) []string {
+	seen := make(map[string]bool, len(roots))
+	out := make([]string, 0, len(roots))
+	for _, root := range roots {
+		root = normalizeIdentityPath(root)
+		if root == "" || seen[root] {
+			continue
+		}
+		seen[root] = true
+		out = append(out, root)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		leftDepth := len(ancestorDirectories(out[i]))
+		rightDepth := len(ancestorDirectories(out[j]))
+		if leftDepth == rightDepth {
+			return out[i] < out[j]
+		}
+		return leftDepth < rightDepth
+	})
+	return out
+}
+
+func normalizeIdentityPath(path string) string {
+	path = filepath.Clean(path)
+	if caseInsensitivePlatform() {
+		path = strings.ToLower(filepath.ToSlash(path))
+	}
+	return path
 }
 
 func (o *Owner) acquireMode(ctx context.Context, path string, mode filelock.Mode, notified *bool) (func(), error) {

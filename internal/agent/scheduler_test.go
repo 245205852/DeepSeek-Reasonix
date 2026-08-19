@@ -226,6 +226,57 @@ func TestSchedulerParentFileWriteAfterChildRealize(t *testing.T) {
 	}
 }
 
+func TestSchedulerWholeClaimNarrowsForNewSiblingsAndOpaqueRestoresExclusion(t *testing.T) {
+	s := NewSubagentScheduler(4, 3)
+	root := t.TempDir()
+	whole, err := WholeWorkspaceWriteClaim(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	releaseWhole, id, err := s.AcquireWithID(context.Background(), AcquireRequest{Writer: true, WritePaths: whole})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer releaseWhole()
+
+	fileA, err := NormalizeWritePaths(root, []string{"a.go"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fileB, err := NormalizeWritePaths(root, []string{"b.go"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.AcquireWithID(context.Background(), AcquireRequest{
+		Writer: true, WritePaths: fileB, Nested: true,
+	}); err == nil {
+		t.Fatal("new sibling must wait before the whole claim realizes a path")
+	}
+	if err := s.Realize(id, fileA); err != nil {
+		t.Fatal(err)
+	}
+	releaseB, _, err := s.AcquireWithID(context.Background(), AcquireRequest{
+		Writer: true, WritePaths: fileB, Nested: true,
+	})
+	if err != nil {
+		t.Fatalf("new disjoint sibling after realize: %v", err)
+	}
+	if _, _, err := s.AcquireWithID(context.Background(), AcquireRequest{
+		Writer: true, WritePaths: fileA, Nested: true,
+	}); err == nil {
+		t.Fatal("new same-file sibling must remain blocked")
+	}
+	releaseB()
+	if err := s.MarkOpaque(id); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.AcquireWithID(context.Background(), AcquireRequest{
+		Writer: true, WritePaths: fileB, Nested: true,
+	}); err == nil {
+		t.Fatal("opaque mutation must restore whole-workspace exclusion")
+	}
+}
+
 func TestSchedulerTryClaimWritePaths(t *testing.T) {
 	s := NewSubagentScheduler(4, 2)
 	root := t.TempDir()

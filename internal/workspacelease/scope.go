@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -16,6 +17,11 @@ import (
 // conservatively serialize unrelated files without allowing inode growth to
 // track every path ever written.
 const pathLockStripes = 4096
+
+// Hierarchy locks make overlapping workspace roots intersect without making a
+// whole-workspace writer take every path stripe. They are bounded separately so
+// historical directory names cannot create an unbounded set of lock files.
+const treeLockStripes = 4096
 
 type pathSpec struct {
 	key     string
@@ -54,6 +60,8 @@ func (o *Owner) HoldWriteForPaths(ctx context.Context, paths []string) (func(), 
 		return o.HoldWrite(ctx)
 	}
 	keys, slots := specKeys(specs), specSlots(specs)
+	compatibilityRoots := o.compatibilityRoots(specs)
+	treeSlots := o.pathTreeSlots(specs)
 	scope, label := pathScope(specs)
 	for {
 		o.mu.Lock()
@@ -95,7 +103,7 @@ func (o *Owner) HoldWriteForPaths(ctx context.Context, paths []string) (func(), 
 		o.mu.Unlock()
 
 		notified := false
-		release, err := o.acquirePathSystem(ctx, slots, &notified)
+		release, err := o.acquirePathSystem(ctx, compatibilityRoots, treeSlots, slots, &notified)
 		o.mu.Lock()
 		var id uint64
 		if err == nil {
@@ -203,12 +211,24 @@ func (o *Owner) pathOrderAllowedLocked(slots []string) bool {
 	return maxHeld == "" || slots[0] > maxHeld
 }
 
-func (o *Owner) acquirePathSystem(ctx context.Context, slots []string, notified *bool) (func(), error) {
-	parentRelease, err := o.acquireWorkspace(ctx, filelock.ModeShared, notified)
+func (o *Owner) acquirePathSystem(
+	ctx context.Context,
+	compatibilityRoots, treeSlots, slots []string,
+	notified *bool,
+) (func(), error) {
+	parentRelease, err := o.acquireCompatibilityRoots(ctx, compatibilityRoots, filelock.ModeShared, notified)
 	if err != nil {
 		return nil, err
 	}
 	releases := []func(){parentRelease}
+	for _, slot := range treeSlots {
+		release, acquireErr := o.acquireQueuedMode(ctx, slot, filelock.ModeShared, notified)
+		if acquireErr != nil {
+			runReleases(releases)
+			return nil, acquireErr
+		}
+		releases = append(releases, release)
+	}
 	for _, slot := range slots {
 		release, acquireErr := o.acquireMode(ctx, slot, filelock.ModeExclusive, notified)
 		if acquireErr != nil {
@@ -221,9 +241,67 @@ func (o *Owner) acquirePathSystem(ctx context.Context, slots []string, notified 
 }
 
 func (o *Owner) pathLockPath(key string) string {
+	return stripedLockPath(o.lockDir, "path", key, pathLockStripes)
+}
+
+func (o *Owner) treeLockPath(key string) string {
+	return stripedLockPath(o.lockDir, "tree", key, treeLockStripes)
+}
+
+func stripedLockPath(lockDir, prefix, key string, stripes int) string {
 	sum := sha256.Sum256([]byte(key))
-	stripe := (int(sum[0])<<8 | int(sum[1])) % pathLockStripes
-	return filepath.Join(o.lockDir, fmt.Sprintf("path-%03x.lock", stripe))
+	stripe := (int(sum[0])<<8 | int(sum[1])) % stripes
+	return filepath.Join(lockDir, fmt.Sprintf("%s-%03x.lock", prefix, stripe))
+}
+
+func (o *Owner) compatibilityRoots(specs []pathSpec) []string {
+	roots := ancestorDirectories(o.canonical)
+	for _, spec := range specs {
+		for _, dir := range pathChain(o.canonical, filepath.Dir(spec.key)) {
+			if _, err := os.Lstat(filepath.Join(dir, ".git")); err == nil {
+				roots = append(roots, dir)
+			}
+		}
+	}
+	return orderedWorkspaceRoots(roots)
+}
+
+func (o *Owner) pathTreeSlots(specs []pathSpec) []string {
+	seen := map[string]bool{}
+	var slots []string
+	for _, spec := range specs {
+		for _, identity := range pathChain(o.canonical, spec.key) {
+			slot := o.treeLockPath(identity)
+			if seen[slot] {
+				continue
+			}
+			seen[slot] = true
+			slots = append(slots, slot)
+		}
+	}
+	sort.Strings(slots)
+	return slots
+}
+
+func pathChain(root, target string) []string {
+	root, target = normalizeIdentityPath(root), normalizeIdentityPath(target)
+	if !canonicalContains(root, target) {
+		return []string{root}
+	}
+	out := []string{root}
+	rel, err := filepath.Rel(root, target)
+	if err != nil || rel == "." {
+		return out
+	}
+	current := root
+	for _, part := range strings.Split(filepath.ToSlash(rel), "/") {
+		if part == "" || part == "." {
+			continue
+		}
+		current = normalizeIdentityPath(filepath.Join(current, part))
+		out = append(out, current)
+	}
+	return out
 }
 
 func canonicalFileKey(abs string) (key, display string, err error) {
@@ -257,6 +335,7 @@ func canonicalFileKey(abs string) (key, display string, err error) {
 }
 
 func canonicalContains(root, path string) bool {
+	root, path = normalizeIdentityPath(root), normalizeIdentityPath(path)
 	if root == "" || path == "" {
 		return false
 	}
@@ -268,4 +347,62 @@ func canonicalContains(root, path string) bool {
 		return false
 	}
 	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// LeaseStatesOverlap reports whether a waiting process-local lease can be held
+// by the candidate. File keys are authoritative even when the two tabs opened
+// different, overlapping workspace roots; workspace scopes are matched against
+// the concrete keys when they are available.
+func LeaseStatesOverlap(waitingRoot string, waiting State, holderRoot string, holder State) bool {
+	holderScope := holder.HeldScope
+	if holderScope == "" {
+		holderScope = holder.Scope
+	}
+	waitingKeys, holderKeys := waiting.WaitingKeys, holder.HeldKeys
+	if waiting.Scope == "workspace" {
+		if holderScope == "workspace" || len(holderKeys) == 0 {
+			return workspaceRootsOverlap(waitingRoot, holderRoot)
+		}
+		return anyKeyWithin(waitingRoot, holderKeys)
+	}
+	if holderScope == "workspace" {
+		if len(waitingKeys) == 0 {
+			return workspaceRootsOverlap(waitingRoot, holderRoot)
+		}
+		return anyKeyWithin(holderRoot, waitingKeys)
+	}
+	if len(waitingKeys) > 0 && len(holderKeys) > 0 {
+		return keysIntersect(waitingKeys, holderKeys)
+	}
+	// Older process-local reporters do not carry keys. Root containment keeps
+	// their conservative behavior for overlapping workspaces.
+	return workspaceRootsOverlap(waitingRoot, holderRoot)
+}
+
+func keysIntersect(left, right []string) bool {
+	seen := make(map[string]bool, len(left))
+	for _, key := range left {
+		if key != "" {
+			seen[key] = true
+		}
+	}
+	for _, key := range right {
+		if key != "" && seen[key] {
+			return true
+		}
+	}
+	return false
+}
+
+func anyKeyWithin(root string, keys []string) bool {
+	for _, key := range keys {
+		if canonicalContains(root, key) {
+			return true
+		}
+	}
+	return false
+}
+
+func workspaceRootsOverlap(left, right string) bool {
+	return canonicalContains(left, right) || canonicalContains(right, left)
 }

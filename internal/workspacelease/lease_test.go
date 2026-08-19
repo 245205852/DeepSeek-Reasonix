@@ -104,6 +104,24 @@ func TestCanonicalWorkspaceKeepsLinkedWorktreesIndependent(t *testing.T) {
 	}
 }
 
+func TestWorkspaceIdentityHelpersPreserveCanonicalRoot(t *testing.T) {
+	owner, err := New(t.TempDir(), t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ancestors := ancestorDirectories(owner.canonical)
+	if len(ancestors) == 0 || ancestors[len(ancestors)-1] != owner.canonical {
+		t.Fatalf("ancestor chain = %q, want canonical root %q last", ancestors, owner.canonical)
+	}
+	if got := workspaceLockPath(owner.lockDir, ancestors[len(ancestors)-1]); got != owner.lockPath {
+		t.Fatalf("canonical root lock = %q, want owner lock %q", got, owner.lockPath)
+	}
+	chain := pathChain(owner.canonical, filepath.Join(owner.canonical, "nested", "file.go"))
+	if len(chain) == 0 || chain[0] != owner.canonical {
+		t.Fatalf("path chain = %q, want canonical root %q first", chain, owner.canonical)
+	}
+}
+
 func TestRepositoryRootAndSubdirectoryOwnersSerialize(t *testing.T) {
 	repo, locks := t.TempDir(), t.TempDir()
 	if err := os.Mkdir(filepath.Join(repo, ".git"), 0o755); err != nil {

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -168,6 +169,34 @@ func TestWorkspaceConflictMatchesTheWaitingFile(t *testing.T) {
 	conflict := app.WorkspaceConflictForTab("waiter")
 	if conflict.State != "local" || conflict.OwnerTabID != "right" {
 		t.Fatalf("WorkspaceConflictForTab = %+v, want right file owner", conflict)
+	}
+}
+
+func TestWorkspaceConflictMatchesWaitingFileAcrossNestedWorkspaceRoots(t *testing.T) {
+	parent := t.TempDir()
+	nested := filepath.Join(parent, "nested")
+	if err := os.MkdirAll(filepath.Join(nested, ".git"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(nested, "shared.go")
+	waiterCtrl := &backgroundRuntimeController{lease: workspacelease.State{
+		Waiting: true, Scope: "file", Label: "shared.go", WaitingKeys: []string{path},
+	}}
+	ownerCtrl := &backgroundRuntimeController{
+		lease:     workspacelease.State{Acquired: true, Scope: "file", Label: "shared.go"},
+		leaseKeys: []string{path},
+	}
+	app := &App{
+		tabs: map[string]*WorkspaceTab{
+			"waiter": {ID: "waiter", WorkspaceRoot: parent, Ctrl: waiterCtrl},
+			"owner":  {ID: "owner", WorkspaceRoot: nested, Ctrl: ownerCtrl},
+		},
+		tabOrder: []string{"waiter", "owner"}, activeTabID: "waiter",
+	}
+
+	conflict := app.WorkspaceConflictForTab("waiter")
+	if conflict.State != "local" || conflict.OwnerTabID != "owner" {
+		t.Fatalf("WorkspaceConflictForTab = %+v, want nested local owner", conflict)
 	}
 }
 

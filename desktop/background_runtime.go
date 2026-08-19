@@ -214,33 +214,7 @@ func controllerWorkspaceLeaseState(ctrl control.SessionAPI) workspacelease.State
 }
 
 func leaseDomainsOverlap(waitingRoot string, waiting workspacelease.State, holderRoot string, holder workspacelease.State) bool {
-	if waitingRoot == "" || waitingRoot != holderRoot {
-		return false
-	}
-	holderScope := holder.HeldScope
-	if holderScope == "" {
-		holderScope = holder.Scope
-	}
-	if waiting.Scope == "workspace" || holderScope == "workspace" {
-		return true
-	}
-	// Older process-local reporters do not carry keys. Falling back to the root
-	// preserves their conservative behavior without misrouting current owners.
-	if len(waiting.WaitingKeys) == 0 || len(holder.HeldKeys) == 0 {
-		return true
-	}
-	seen := make(map[string]bool, len(waiting.WaitingKeys))
-	for _, key := range waiting.WaitingKeys {
-		if key != "" {
-			seen[key] = true
-		}
-	}
-	for _, key := range holder.HeldKeys {
-		if key != "" && seen[key] {
-			return true
-		}
-	}
-	return false
+	return workspacelease.LeaseStatesOverlap(waitingRoot, waiting, holderRoot, holder)
 }
 
 // WorkspaceConflictForTab classifies the owner that a Delivery writer is

@@ -10,6 +10,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"reasonix/internal/filelock"
 )
 
 func TestReversePathBatchesSerializeWithoutDeadlock(t *testing.T) {
@@ -150,6 +152,83 @@ func TestWorkspaceWriterGetsPriorityOverNewPathReader(t *testing.T) {
 	late.release()
 }
 
+func TestSameOwnerReusesSharedDomainsWithoutLettingOtherReadersBypassWriter(t *testing.T) {
+	root, locks := t.TempDir(), t.TempDir()
+	owner, _ := New(root, locks, nil)
+	firstPath, secondPath := increasingPathSlots(t, owner)
+	releaseFirst, err := owner.HoldWriteForPath(context.Background(), firstPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	writerWaiting := make(chan struct{}, 1)
+	writer, _ := New(root, locks, func() { writerWaiting <- struct{}{} })
+	writerResult := make(chan holdResult, 1)
+	go func() {
+		release, acquireErr := writer.HoldWrite(context.Background())
+		writerResult <- holdResult{release: release, err: acquireErr}
+	}()
+	select {
+	case <-writerWaiting:
+	case <-time.After(2 * time.Second):
+		t.Fatal("workspace writer did not report waiting")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	releaseSecond, err := owner.HoldWriteForPath(ctx, secondPath)
+	cancel()
+	if err != nil {
+		releaseFirst()
+		t.Fatalf("same owner deadlocked behind a writer waiting on its first path hold: %v", err)
+	}
+
+	lateWaiting := make(chan struct{}, 1)
+	lateReader, _ := New(root, locks, func() { lateWaiting <- struct{}{} })
+	lateResult := make(chan holdResult, 1)
+	go func() {
+		release, acquireErr := lateReader.HoldWriteForPath(context.Background(), secondPath)
+		lateResult <- holdResult{release: release, err: acquireErr}
+	}()
+	select {
+	case <-lateWaiting:
+	case <-time.After(2 * time.Second):
+		t.Fatal("different owner did not queue behind the waiting workspace writer")
+	}
+
+	releaseSecond()
+	releaseFirst()
+	acquiredWriter := awaitHold(t, writerResult)
+	select {
+	case late := <-lateResult:
+		if late.release != nil {
+			late.release()
+		}
+		t.Fatalf("different owner bypassed the waiting workspace writer: %v", late.err)
+	default:
+	}
+	acquiredWriter.release()
+	acquiredLate := awaitHold(t, lateResult)
+	acquiredLate.release()
+}
+
+func increasingPathSlots(t *testing.T, owner *Owner) (string, string) {
+	t.Helper()
+	first := filepath.Join(owner.canonical, "slot-0.go")
+	firstSlot := owner.pathLockPath(first)
+	for i := 1; i < pathLockStripes*2; i++ {
+		candidate := filepath.Join(owner.canonical, fmt.Sprintf("slot-%d.go", i))
+		candidateSlot := owner.pathLockPath(candidate)
+		if candidateSlot > firstSlot {
+			return first, candidate
+		}
+		if candidateSlot < firstSlot {
+			return candidate, first
+		}
+	}
+	t.Fatal("could not find two distinct path lock slots")
+	return "", ""
+}
+
 func TestPathLockFilesUseBoundedStripes(t *testing.T) {
 	owner, err := New(t.TempDir(), t.TempDir(), nil)
 	if err != nil {
@@ -161,6 +240,238 @@ func TestPathLockFilesUseBoundedStripes(t *testing.T) {
 	}
 	if len(seen) > pathLockStripes {
 		t.Fatalf("path lock files = %d, want at most %d", len(seen), pathLockStripes)
+	}
+}
+
+func TestHierarchyLockFilesUseBoundedStripes(t *testing.T) {
+	owner, err := New(t.TempDir(), t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	for i := range treeLockStripes * 3 {
+		seen[owner.treeLockPath(fmt.Sprintf("directory-%d", i))] = true
+	}
+	if len(seen) > treeLockStripes {
+		t.Fatalf("hierarchy lock files = %d, want at most %d", len(seen), treeLockStripes)
+	}
+}
+
+func TestParentPathAndNestedWorkspaceWriterSerializeBothDirections(t *testing.T) {
+	parent, locks := t.TempDir(), t.TempDir()
+	nested := filepath.Join(parent, "nested")
+	if err := os.MkdirAll(filepath.Join(nested, ".git"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(nested, "shared.go")
+
+	t.Run("parent path blocks nested workspace", func(t *testing.T) {
+		parentOwner, err := New(parent, locks, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		waiting := make(chan struct{}, 1)
+		nestedOwner, err := New(nested, locks, func() { waiting <- struct{}{} })
+		if err != nil {
+			t.Fatal(err)
+		}
+		releasePath, err := parentOwner.HoldWriteForPath(context.Background(), path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		result := make(chan holdResult, 1)
+		go func() {
+			release, acquireErr := nestedOwner.HoldWrite(context.Background())
+			result <- holdResult{release: release, err: acquireErr}
+		}()
+		assertHoldWaiting(t, waiting, result)
+		releasePath()
+		acquired := awaitHold(t, result)
+		acquired.release()
+	})
+
+	t.Run("nested workspace blocks parent path", func(t *testing.T) {
+		nestedOwner, err := New(nested, locks, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		waiting := make(chan struct{}, 1)
+		parentOwner, err := New(parent, locks, func() { waiting <- struct{}{} })
+		if err != nil {
+			t.Fatal(err)
+		}
+		releaseWorkspace, err := nestedOwner.HoldWrite(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		result := make(chan holdResult, 1)
+		go func() {
+			release, acquireErr := parentOwner.HoldWriteForPath(context.Background(), path)
+			result <- holdResult{release: release, err: acquireErr}
+		}()
+		assertHoldWaiting(t, waiting, result)
+		releaseWorkspace()
+		acquired := awaitHold(t, result)
+		acquired.release()
+	})
+}
+
+func TestHierarchyLocksDoNotSerializeUnrelatedWorkspaces(t *testing.T) {
+	locks := t.TempDir()
+	base := t.TempDir()
+	firstRoot := filepath.Join(base, "workspace-a")
+	if err := os.Mkdir(firstRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	first, err := New(firstRoot, locks, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondRoot, secondPath := unrelatedTreePath(t, first, base)
+	second, err := New(secondRoot, locks, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	releaseWorkspace, err := first.HoldWrite(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer releaseWorkspace()
+	releasePath, err := second.HoldWriteForPath(context.Background(), secondPath)
+	if err != nil {
+		t.Fatalf("unrelated path write was serialized: %v", err)
+	}
+	releasePath()
+}
+
+func unrelatedTreePath(t *testing.T, blocker *Owner, base string) (string, string) {
+	t.Helper()
+	blockedSlot := blocker.treeLockPath(blocker.canonical)
+	for i := 1; i < treeLockStripes*2; i++ {
+		root := filepath.Join(base, fmt.Sprintf("workspace-%d", i))
+		path := filepath.Join(root, "b.go")
+		if blocker.treeLockPath(root) == blockedSlot || blocker.treeLockPath(path) == blockedSlot {
+			continue
+		}
+		if err := os.Mkdir(root, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		return root, path
+	}
+	t.Fatal("could not find unrelated hierarchy lock slots")
+	return "", ""
+}
+
+func TestHierarchyProtocolIntersectsOldExactWorkspaceLocks(t *testing.T) {
+	parent, locks := t.TempDir(), t.TempDir()
+	nested := filepath.Join(parent, "nested")
+	if err := os.MkdirAll(filepath.Join(nested, ".git"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(nested, "shared.go")
+	parentOwner, _ := New(parent, locks, nil)
+	nestedOwner, _ := New(nested, locks, nil)
+
+	t.Run("old parent blocks new nested workspace", func(t *testing.T) {
+		releaseOld, err := filelock.TryAcquire(parentOwner.lockPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		waiting := make(chan struct{}, 1)
+		contender, _ := New(nested, locks, func() { waiting <- struct{}{} })
+		result := make(chan holdResult, 1)
+		go func() {
+			release, acquireErr := contender.HoldWrite(context.Background())
+			result <- holdResult{release: release, err: acquireErr}
+		}()
+		assertHoldWaiting(t, waiting, result)
+		releaseOld()
+		acquired := awaitHold(t, result)
+		acquired.release()
+	})
+
+	t.Run("old nested git root blocks new parent path", func(t *testing.T) {
+		releaseOld, err := filelock.TryAcquire(nestedOwner.lockPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		waiting := make(chan struct{}, 1)
+		contender, _ := New(parent, locks, func() { waiting <- struct{}{} })
+		result := make(chan holdResult, 1)
+		go func() {
+			release, acquireErr := contender.HoldWriteForPath(context.Background(), path)
+			result <- holdResult{release: release, err: acquireErr}
+		}()
+		assertHoldWaiting(t, waiting, result)
+		releaseOld()
+		acquired := awaitHold(t, result)
+		acquired.release()
+	})
+}
+
+func TestLeaseStatesOverlapUsesKeysAcrossWorkspaceRoots(t *testing.T) {
+	parent := t.TempDir()
+	nested := filepath.Join(parent, "nested")
+	inside := filepath.Join(nested, "inside.go")
+	outside := filepath.Join(parent, "outside.go")
+	waitingFile := State{Scope: "file", WaitingKeys: []string{inside}}
+	holderFile := State{HeldScope: "file", HeldKeys: []string{inside}}
+	if !LeaseStatesOverlap(parent, waitingFile, nested, holderFile) {
+		t.Fatal("identical file keys must overlap across canonical roots")
+	}
+	if LeaseStatesOverlap(nested, State{Scope: "workspace", WaitingKeys: []string{nested}}, parent, State{
+		HeldScope: "file", HeldKeys: []string{outside},
+	}) {
+		t.Fatal("nested whole workspace must not match a parent path outside it")
+	}
+	if !LeaseStatesOverlap(nested, State{Scope: "workspace", WaitingKeys: []string{nested}}, parent, holderFile) {
+		t.Fatal("nested whole workspace must match a parent path inside it")
+	}
+	if !LeaseStatesOverlap(parent, waitingFile, nested, State{
+		HeldScope: "workspace", HeldKeys: []string{nested},
+	}) {
+		t.Fatal("nested whole holder must match a parent path inside it")
+	}
+}
+
+type holdResult struct {
+	release func()
+	err     error
+}
+
+func assertHoldWaiting(t *testing.T, waiting <-chan struct{}, result <-chan holdResult) {
+	t.Helper()
+	select {
+	case <-waiting:
+	case acquired := <-result:
+		if acquired.release != nil {
+			acquired.release()
+		}
+		t.Fatalf("conflicting hold acquired before release: %v", acquired.err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("conflicting hold did not report waiting")
+	}
+	select {
+	case acquired := <-result:
+		if acquired.release != nil {
+			acquired.release()
+		}
+		t.Fatalf("conflicting hold acquired while blocker remained: %v", acquired.err)
+	default:
+	}
+}
+
+func awaitHold(t *testing.T, result <-chan holdResult) holdResult {
+	t.Helper()
+	select {
+	case acquired := <-result:
+		if acquired.err != nil {
+			t.Fatal(acquired.err)
+		}
+		return acquired
+	case <-time.After(2 * time.Second):
+		t.Fatal("hold did not acquire after blocker released")
+		return holdResult{}
 	}
 }
 
