@@ -587,8 +587,8 @@ try {
   // A native scrollbar thumb drag owns the browser's scroll range. Keep
   // Virtuoso's estimated size tree fixed until pointer release so newly
   // visited variable-height rows cannot resize the thumb under the pointer.
-  // This is deliberately pointer-gutter-specific; the wheel assertions above
-  // continue to exercise ordinary chat-content scrolling and live measuring.
+  // Browser themes clamp the held thumb only after the pointer crosses the
+  // track end, so the target below deliberately overshoots the visible gutter.
   await transcript.evaluate((element) => {
     element.scrollTop = 0;
     element.dispatchEvent(new Event("scroll"));
@@ -604,7 +604,7 @@ try {
     return {
       x: Math.min(rect.right - 1, contentRight + Math.max(1, (rect.right - contentRight) / 2)),
       y: rect.top + 5,
-      bottomY: rect.bottom - 5,
+      bottomY: Math.min(window.innerHeight - 1, rect.bottom + Math.max(24, rect.height * 0.1)),
       knownSize: Number.parseFloat(row.dataset.knownSize || "0"),
       gutter: rect.right - contentRight,
       scrollHeight: element.scrollHeight,
