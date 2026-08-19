@@ -30357,7 +30357,7 @@ body > .mermaid-diagram--fullscreen {
 .project-tree__group-input {
   flex: 1 1 auto;
   min-width: 0;
-  font-size: 11px;
+  font-size: inherit;
   font-weight: 600;
   padding: 1px 4px;
   border-radius: 4px;
