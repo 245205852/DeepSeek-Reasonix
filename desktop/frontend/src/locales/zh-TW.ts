@@ -779,6 +779,8 @@ export const zhTW: Record<DictKey, string> = {
   "runtime.workspaceConflictTitle": "目前工作區正在被寫入",
   "runtime.workspaceConflictBadge": "工作區寫入",
   "runtime.workspaceConflictLocal": "「{title}」目前正在寫入這個工作區。",
+  "runtime.workspaceConflictLocalFile": "「{title}」正在寫入 {label}。讀取仍可繼續。",
+  "runtime.workspaceConflictLocalFiles": "「{title}」正在寫入 {label}。讀取仍可繼續。",
   "runtime.workspaceConflictExternal": "另一個 Reasonix 視窗目前正在寫入這個工作區。",
   "runtime.workspaceConflictNote": "占用者釋放工作區後，本任務會自動繼續。",
   "runtime.unknownTask": "另一個任務",

@@ -121,8 +121,8 @@ func TestFleetConcurrentDirectoryClaimsPassPreflight(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := concurrent.validateConcurrentWriteClaims([]WritePathSet{whole, whole}); err == nil {
-		t.Fatal("concurrent omitted write_paths must still fail preflight")
+	if err := concurrent.validateConcurrentWriteClaims([]WritePathSet{whole, whole}); err != nil {
+		t.Fatalf("omitted write_paths must queue in the scheduler, not fail preflight: %v", err)
 	}
 }
 

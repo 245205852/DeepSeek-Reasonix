@@ -1959,6 +1959,8 @@ export interface WorkspaceConflictView {
   state: "none" | "local" | "external";
   ownerTabId?: string;
   ownerTitle?: string;
+  ownerScope?: string;
+  ownerLabel?: string;
   ownerWork: ActiveWorkView;
   canReveal: boolean;
   canCreateWorktree: boolean;

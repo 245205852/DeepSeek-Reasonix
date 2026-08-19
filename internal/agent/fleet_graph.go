@@ -159,6 +159,9 @@ func (p fleetPlan) validateConcurrentWriteClaims(claims []WritePathSet) error {
 			if claims[j].Empty() || p.ordered(i, j) {
 				continue
 			}
+			if claims[i].WholeWorkspace || claims[j].WholeWorkspace {
+				continue
+			}
 			if ScheduleOverlaps(claims[i], claims[j]) {
 				return fmt.Errorf("%s and %s can run at the same time and their write claims conflict; add a depends_on between them or give them disjoint write_paths",
 					p.describe(i), p.describe(j))

@@ -43,6 +43,8 @@ type WorkspaceConflictView struct {
 	State             string         `json:"state"`
 	OwnerTabID        string         `json:"ownerTabId,omitempty"`
 	OwnerTitle        string         `json:"ownerTitle,omitempty"`
+	OwnerScope        string         `json:"ownerScope,omitempty"`
+	OwnerLabel        string         `json:"ownerLabel,omitempty"`
 	OwnerWork         ActiveWorkView `json:"ownerWork"`
 	CanReveal         bool           `json:"canReveal"`
 	CanCreateWorktree bool           `json:"canCreateWorktree"`
@@ -305,8 +307,10 @@ func (a *App) WorkspaceConflictForTab(tabID string) WorkspaceConflictView {
 		if !leaseDomainsOverlap(targetRoot, targetKeys, root, controllerWorkspaceLeaseKeys(candidate.ctrl)) {
 			continue
 		}
+		ownerState := controllerWorkspaceLeaseState(candidate.ctrl)
 		return WorkspaceConflictView{
 			State: "local", OwnerTabID: candidate.id, OwnerTitle: candidate.title,
+			OwnerScope: ownerState.Scope, OwnerLabel: ownerState.Label,
 			OwnerWork: activeWorkForController(candidate.ctrl), CanReveal: true,
 			CanCreateWorktree: availability.Available,
 		}

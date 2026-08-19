@@ -34,6 +34,9 @@ func (a *Agent) executeOne(ctx context.Context, turn *turnRuntime, call provider
 		if plan.releaseParentWrite != nil {
 			plan.releaseParentWrite()
 		}
+		if plan.releaseLease != nil {
+			plan.releaseLease()
+		}
 		if plan.resolvedMeta == nil {
 			return
 		}
@@ -560,13 +563,15 @@ func (a *Agent) prepareToolExecution(ctx context.Context, plan *toolCallPlan) (t
 	// Path-bound tools lock the nested git repo; bash/MCP keep the exclusive
 	// workspace lock.
 	if plan.effects.WorkspaceMutation && a.svc.workspaceLease != nil {
-		if err := a.acquireWorkspaceLease(ctx, plan); err != nil {
+		releaseLease, err := a.acquireWorkspaceLease(ctx, plan)
+		if err != nil {
 			return toolOutcome{
 				output:  fmt.Sprintf("blocked: the workspace did not become available for writing: %v", err),
 				blocked: true,
 				errMsg:  "blocked: workspace write lease unavailable",
 			}, true
 		}
+		plan.releaseLease = releaseLease
 	}
 	// Hold the parent claim before PreToolUse: hooks are user shell code and may
 	// mutate the same workspace. The reservation remains live through hooks,
@@ -902,21 +907,32 @@ func (a *Agent) applyLiveWriteReservation(ctx context.Context, plan *toolCallPla
 	return toolOutcome{}, false
 }
 
-func (a *Agent) acquireWorkspaceLease(ctx context.Context, plan *toolCallPlan) error {
+func (a *Agent) acquireWorkspaceLease(ctx context.Context, plan *toolCallPlan) (func(), error) {
+	noop := func() {}
 	if a == nil || a.svc.workspaceLease == nil || plan == nil || plan.runTool == nil {
-		return nil
+		return noop, nil
 	}
 	name := plan.runTool.Name()
 	if pathBoundWriterNames[name] {
 		paths, err := extractWritePathsFromArgs(name, a.writeWorkspaceRoot, plan.runArgs)
 		if err == nil && len(paths) > 0 {
+			var holds []func()
 			for _, p := range paths {
-				if acqErr := a.svc.workspaceLease.AcquireWriteForPath(ctx, resolveMaybeRelative(a.writeWorkspaceRoot, p)); acqErr != nil {
-					return acqErr
+				rel, acqErr := a.svc.workspaceLease.HoldWriteForPath(ctx, resolveMaybeRelative(a.writeWorkspaceRoot, p))
+				if acqErr != nil {
+					for i := len(holds) - 1; i >= 0; i-- {
+						holds[i]()
+					}
+					return noop, acqErr
 				}
+				holds = append(holds, rel)
 			}
-			return nil
+			return func() {
+				for i := len(holds) - 1; i >= 0; i-- {
+					holds[i]()
+				}
+			}, nil
 		}
 	}
-	return a.svc.workspaceLease.AcquireWrite(ctx)
+	return a.svc.workspaceLease.HoldWrite(ctx)
 }

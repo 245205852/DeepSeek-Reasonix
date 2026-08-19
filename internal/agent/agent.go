@@ -1240,8 +1240,8 @@ func (a *Agent) Run(ctx context.Context, input string) (runErr error) {
 	runMaxSteps := a.maxSteps
 	runMaxStepsKey := a.maxStepsKey
 	a.recovery.runSeq.Add(1)
-	// All role settings participate in the workspace lease for the run; the
-	// exclusive write lock is still acquired lazily on the first real writer.
+	// All role settings participate in the workspace lease for the run; write
+	// locks are acquired per mutating tool and released when that tool ends.
 	if a.svc.workspaceLease != nil {
 		a.svc.workspaceLease.BeginRun()
 		defer a.svc.workspaceLease.EndRun()

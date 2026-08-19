@@ -1,8 +1,7 @@
 // Package workspacelease serializes Delivery writers that target the same
-// workspace. Readers never acquire a lease. A writer keeps its lease from the
-// first mutation until every participating agent run has finished; a retained
-// background job then extends it only for a bounded grace period, so a resident
-// service cannot pin the workspace against other sessions forever.
+// workspace. Readers never acquire a lease. A writer keeps a lease only while
+// a write-tool hold is active; a retained background job then extends it for a
+// bounded grace period so a finished conversation cannot pin the workspace.
 //
 // Owner is participation accounting only. Cross-process and in-process
 // serialization is delegated to internal/filelock.
@@ -53,9 +52,14 @@ type Owner struct {
 	shared        bool
 	acquiring     bool
 	waiting       bool
+	waitingScope  string
+	waitingLabel  string
+	toolHolds     int
 	acquireDone   chan struct{}
 	releaseSystem func()
-	repoHeld      map[string]func()
+	fileHeld      map[string]func()
+	fileCounts    map[string]int
+	fileNames     map[string]string
 	// leaseEpoch changes on every acquisition so a pending grace release can
 	// prove it still targets the lease it was armed for.
 	leaseEpoch uint64
@@ -63,10 +67,13 @@ type Owner struct {
 }
 
 // State is a sanitized process-local snapshot used by Desktop to explain a
-// workspace conflict. It deliberately contains no path, PID, or lock token.
+// workspace conflict. Scope/Label never include home paths or PIDs — Label is
+// a basename or a file count.
 type State struct {
 	Acquired bool
 	Waiting  bool
+	Scope    string
+	Label    string
 }
 
 // State returns the current acquisition state without performing lease I/O.
@@ -76,7 +83,32 @@ func (o *Owner) State() State {
 	}
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	return State{Acquired: o.acquired, Waiting: o.waiting}
+	st := State{Acquired: o.acquired, Waiting: o.waiting}
+	if o.waiting {
+		st.Scope = o.waitingScope
+		st.Label = o.waitingLabel
+		if st.Scope == "" {
+			st.Scope = "workspace"
+		}
+		return st
+	}
+	st.Scope, st.Label = o.holdScopeLocked()
+	return st
+}
+
+func (o *Owner) holdScopeLocked() (scope, label string) {
+	if o.exclusive {
+		return "workspace", ""
+	}
+	switch len(o.fileCounts) {
+	case 0:
+		return "workspace", ""
+	case 1:
+		for key := range o.fileCounts {
+			return "file", o.fileNames[key]
+		}
+	}
+	return "files", fmt.Sprintf("%d files", len(o.fileCounts))
 }
 
 // New returns a Delivery-session lease owner for workspaceRoot. lockDir must be
@@ -124,9 +156,9 @@ func (o *Owner) HeldKeys() []string {
 		return nil
 	}
 	out := []string{o.canonical}
-	for repo := range o.repoHeld {
-		if repo != "" && repo != o.canonical {
-			out = append(out, repo)
+	for key := range o.fileCounts {
+		if key != "" && key != o.canonical {
+			out = append(out, key)
 		}
 	}
 	return out
@@ -193,8 +225,8 @@ func (o *Owner) BeginRun() {
 	o.mu.Unlock()
 }
 
-// EndRun releases the lease after the final participating run and retained
-// background job finishes.
+// EndRun drops leftover tool holds when the last run finishes, then releases
+// the flock if nothing else is retaining it.
 func (o *Owner) EndRun() {
 	if o == nil {
 		return
@@ -203,6 +235,9 @@ func (o *Owner) EndRun() {
 	if o.activeRuns > 0 {
 		o.activeRuns--
 	}
+	if o.activeRuns == 0 {
+		o.toolHolds = 0
+	}
 	release := o.releaseIfIdleLocked()
 	o.mu.Unlock()
 	if release != nil {
@@ -210,11 +245,18 @@ func (o *Owner) EndRun() {
 	}
 }
 
-// AcquireWrite lazily acquires this session's exclusive write lease. It is
-// re-entrant across parallel tool calls and shared subagents.
+// AcquireWrite acquires an exclusive workspace write lease. Pair with
+// ReleaseWrite (or EndRun) so the flock does not outlive the write.
 func (o *Owner) AcquireWrite(ctx context.Context) error {
+	_, err := o.HoldWrite(ctx)
+	return err
+}
+
+// HoldWrite acquires exclusive workspace write and returns a release for this
+// hold. The flock drops when no holds remain, even if a Run is still active.
+func (o *Owner) HoldWrite(ctx context.Context) (func(), error) {
 	if o == nil {
-		return nil
+		return func() {}, nil
 	}
 	if ctx == nil {
 		ctx = context.Background()
@@ -222,8 +264,10 @@ func (o *Owner) AcquireWrite(ctx context.Context) error {
 	for {
 		o.mu.Lock()
 		if o.exclusive {
+			o.toolHolds++
+			o.cancelGraceLocked()
 			o.mu.Unlock()
-			return nil
+			return o.releaseHold, nil
 		}
 		if o.acquiring {
 			done := o.acquireDone
@@ -232,12 +276,14 @@ func (o *Owner) AcquireWrite(ctx context.Context) error {
 			case <-done:
 				continue
 			case <-ctx.Done():
-				return ctx.Err()
+				return func() {}, ctx.Err()
 			}
 		}
 		o.acquiring = true
 		o.acquireDone = make(chan struct{})
 		done := o.acquireDone
+		o.waitingScope = "workspace"
+		o.waitingLabel = ""
 		old := o.detachHoldsLocked()
 		o.mu.Unlock()
 		for _, rel := range old {
@@ -248,11 +294,15 @@ func (o *Owner) AcquireWrite(ctx context.Context) error {
 		o.mu.Lock()
 		o.acquiring = false
 		o.waiting = false
+		o.waitingScope = ""
+		o.waitingLabel = ""
 		if err == nil {
 			o.acquired = true
 			o.exclusive = true
 			o.shared = false
 			o.releaseSystem = release
+			o.toolHolds++
+			o.cancelGraceLocked()
 			o.leaseEpoch++
 		}
 		close(done)
@@ -261,13 +311,39 @@ func (o *Owner) AcquireWrite(ctx context.Context) error {
 		if releaseIfIdle != nil {
 			releaseIfIdle()
 		}
-		return err
+		if err != nil {
+			return func() {}, err
+		}
+		return o.releaseHold, nil
+	}
+}
+
+// ReleaseWrite drops one exclusive/path hold acquired without HoldWrite.
+func (o *Owner) ReleaseWrite() {
+	if o == nil {
+		return
+	}
+	o.releaseHold()
+}
+
+func (o *Owner) releaseHold() {
+	if o == nil {
+		return
+	}
+	o.mu.Lock()
+	if o.toolHolds > 0 {
+		o.toolHolds--
+	}
+	release := o.releaseIfIdleLocked()
+	o.mu.Unlock()
+	if release != nil {
+		release()
 	}
 }
 
 func (o *Owner) detachHoldsLocked() []func() {
 	var old []func()
-	for _, rel := range o.repoHeld {
+	for _, rel := range o.fileHeld {
 		if rel != nil {
 			old = append(old, rel)
 		}
@@ -275,7 +351,9 @@ func (o *Owner) detachHoldsLocked() []func() {
 	if o.releaseSystem != nil {
 		old = append(old, o.releaseSystem)
 	}
-	o.repoHeld = nil
+	o.fileHeld = nil
+	o.fileCounts = nil
+	o.fileNames = nil
 	o.releaseSystem = nil
 	o.shared = false
 	o.exclusive = false
@@ -312,7 +390,7 @@ func (o *Owner) RetainUntil(done <-chan struct{}) {
 }
 
 func (o *Owner) releaseIfIdleLocked() func() {
-	if !o.acquired || o.acquiring || o.activeRuns != 0 {
+	if !o.acquired || o.acquiring || o.toolHolds > 0 {
 		return nil
 	}
 	if o.background != 0 {
@@ -348,7 +426,7 @@ func (o *Owner) armGraceLocked() {
 	epoch := o.leaseEpoch
 	o.graceTimer = time.AfterFunc(o.graceAfter, func() {
 		o.mu.Lock()
-		if o.graceTimer == nil || o.leaseEpoch != epoch || !o.acquired || o.acquiring || o.activeRuns != 0 {
+		if o.graceTimer == nil || o.leaseEpoch != epoch || !o.acquired || o.acquiring || o.toolHolds > 0 {
 			o.mu.Unlock()
 			return
 		}

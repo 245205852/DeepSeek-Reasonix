@@ -446,7 +446,7 @@ func TestExclusiveWorkspaceWriteBlocksNestedRepoPath(t *testing.T) {
 	second.EndRun()
 }
 
-func TestSameRepoPathWritesStillSerialize(t *testing.T) {
+func TestSameRepoDifferentFilesRunInParallel(t *testing.T) {
 	repo, locks := t.TempDir(), t.TempDir()
 	if err := os.Mkdir(filepath.Join(repo, ".git"), 0o755); err != nil {
 		t.Fatal(err)
@@ -464,16 +464,72 @@ func TestSameRepoPathWritesStillSerialize(t *testing.T) {
 	if err := first.AcquireWriteForPath(context.Background(), filepath.Join(repo, "a.go")); err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 80*time.Millisecond)
-	if err := second.AcquireWriteForPath(ctx, filepath.Join(repo, "b.go")); !errors.Is(err, context.DeadlineExceeded) {
-		cancel()
-		t.Fatalf("same-repo path writes must still serialize: %v", err)
-	}
-	cancel()
-	first.EndRun()
 	if err := second.AcquireWriteForPath(context.Background(), filepath.Join(repo, "b.go")); err != nil {
 		t.Fatal(err)
 	}
+	first.EndRun()
+	second.EndRun()
+}
+
+func TestSameFilePathWritesStillSerialize(t *testing.T) {
+	repo, locks := t.TempDir(), t.TempDir()
+	if err := os.Mkdir(filepath.Join(repo, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	first, err := New(repo, locks, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := New(repo, locks, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first.BeginRun()
+	second.BeginRun()
+	path := filepath.Join(repo, "a.go")
+	if err := first.AcquireWriteForPath(context.Background(), path); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 80*time.Millisecond)
+	if err := second.AcquireWriteForPath(ctx, path); !errors.Is(err, context.DeadlineExceeded) {
+		cancel()
+		t.Fatalf("same file must still serialize: %v", err)
+	}
+	cancel()
+	first.EndRun()
+	if err := second.AcquireWriteForPath(context.Background(), path); err != nil {
+		t.Fatal(err)
+	}
+	second.EndRun()
+}
+
+func TestHoldWriteReleasesBeforeEndRun(t *testing.T) {
+	root, locks := t.TempDir(), t.TempDir()
+	first, err := New(root, locks, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := New(root, locks, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first.BeginRun()
+	second.BeginRun()
+	release, err := first.HoldWrite(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 80*time.Millisecond)
+	if err := second.AcquireWrite(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		cancel()
+		t.Fatalf("held write should block: %v", err)
+	}
+	cancel()
+	release()
+	if err := second.AcquireWrite(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	first.EndRun()
 	second.EndRun()
 }
 
