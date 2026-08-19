@@ -127,6 +127,7 @@ func botStart(args []string, version string) int {
 		Enabled:            enabledPlatforms,
 		Allowlist:          botAllowlistConfig(cfg.Bot.Allowlist),
 		Debounce:           time.Duration(cfg.Bot.DebounceMs) * time.Millisecond,
+		ModelResolver:      botruntime.ModelResolver(cfg),
 		OnInbound:          rememberInboundRemote,
 		OnSessionReady:     botruntime.NewSessionRemembererWithWorkspace(logger, workspaceRoot),
 	}

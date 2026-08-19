@@ -904,6 +904,10 @@ type DingtalkBotConfig struct {
 	ToolApprovalMode string          `toml:"tool_approval_mode"` // ask|auto|yolo；空 = 全局默认
 	WorkspaceRoot    string          `toml:"workspace_root"`     // 会话工作目录；空 = 启动 Bot 时的 cwd
 	Access           BotAccessConfig `toml:"access"`             // 该渠道访问控制（allowlist）
+	// SessionMappings 直配渠道的会话绑定（与 [[bot.connections]] 同构）。
+	// legacy [bot.dingtalk] 没有 connection 记录，/new 旋转后的新会话路径
+	// 持久化在这里，重启后仍能恢复（见 botruntime.rememberInbound）。
+	SessionMappings []BotConnectionSessionMapping `toml:"session_mappings"`
 }
 
 // BotConnectionConfig is the desktop-friendly connection record for IM bot

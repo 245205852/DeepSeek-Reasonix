@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -2681,5 +2682,38 @@ func TestHandleModelCommand(t *testing.T) {
 	}
 	if m := overrideModel(); m != "17an/deepseek-v4-flash" {
 		t.Fatalf("provider-only /model mutated override to %q, want unchanged", m)
+	}
+}
+
+// TestHandleModelCommandRejectsUnresolvableModel: /model 切换前必须预校验
+// 模型；无效模型直接拒绝且不写入覆盖（失败原子性，保留当前 controller）。
+func TestHandleModelCommandRejectsUnresolvableModel(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	gw := NewGatewayWithAdapterBindings(GatewayConfig{
+		Model: "deepseek/deepseek-v4-flash",
+		ModelResolver: func(ref string) error {
+			if strings.TrimSpace(ref) == "deepseek-v4-flash" {
+				return nil
+			}
+			return fmt.Errorf("未配置该模型（provider/model 不存在）")
+		},
+	}, []AdapterBinding{}, logger)
+	msg := InboundMessage{Platform: PlatformWeixin, ConnectionID: "weixin-weixin", Domain: "weixin", ChatType: ChatDM, ChatID: "chat", UserID: "user"}
+	key := BuildSessionKey(msg.Session())
+	overrideModel := func() string { gw.mu.Lock(); defer gw.mu.Unlock(); return gw.sessionOverrides[key].channel.Model }
+
+	// 有效模型 → 写入覆盖。
+	if got := gw.handleModelCommand(msg, "/model deepseek-v4-flash"); !strings.Contains(got, "deepseek-v4-flash") {
+		t.Fatalf("/model switch = %q, want success", got)
+	}
+	if m := overrideModel(); m != "deepseek-v4-flash" {
+		t.Fatalf("override model = %q, want deepseek-v4-flash", m)
+	}
+	// 无效模型 → 拒绝且 override 保持原值（controller 未被销毁）。
+	if got := gw.handleModelCommand(msg, "/model nope-model"); !strings.Contains(got, "不可用") {
+		t.Fatalf("/model invalid = %q, want rejection message", got)
+	}
+	if m := overrideModel(); m != "deepseek-v4-flash" {
+		t.Fatalf("invalid /model mutated override to %q, want unchanged", m)
 	}
 }

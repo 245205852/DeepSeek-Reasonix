@@ -665,6 +665,9 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 		if parts := renderBotAccess(c.Bot.Dingtalk.Access); parts != "" {
 			fmt.Fprintf(&b, "access = %s\n", parts)
 		}
+		if len(c.Bot.Dingtalk.SessionMappings) > 0 {
+			fmt.Fprintf(&b, "session_mappings = %s\n", renderBotSessionMappings(c.Bot.Dingtalk.SessionMappings))
+		}
 		for _, conn := range c.Bot.Connections {
 			b.WriteString("\n[[bot.connections]]\n")
 			fmt.Fprintf(&b, "id = %q\n", conn.ID)

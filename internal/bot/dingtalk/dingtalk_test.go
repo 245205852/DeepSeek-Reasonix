@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -17,6 +19,23 @@ import (
 
 func newTestHTTPClient() *http.Client {
 	return &http.Client{}
+}
+
+// allowTestWebhook 把 httptest 桩 server 的 host 加入 webhook 白名单，
+// 使发送测试可以打到桩地址；测试结束自动还原。
+func allowTestWebhook(t *testing.T, srv *httptest.Server) {
+	t.Helper()
+	u, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatalf("parse httptest url %q: %v", srv.URL, err)
+	}
+	host := u.Host
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	old := webhookHosts
+	webhookHosts = append(append([]string{}, old...), host)
+	t.Cleanup(func() { webhookHosts = old })
 }
 
 func testAdapter(cfg config.DingtalkBotConfig) *adapter {
@@ -104,6 +123,42 @@ func TestNormalizeGroupRequiresMention(t *testing.T) {
 	if only == nil || only.Text != "" {
 		t.Fatalf("bare mention should pass gating with empty text, got %+v", only)
 	}
+	// 官方回调 isInAtList=true、正文无前导 @token → 按结构化字段放行。
+	structured := a.normalizeMessage(robotMessage{
+		ConversationID:   "cid-grp",
+		ConversationType: "2",
+		MsgID:            "msg-g4",
+		Text:             &robotTextContent{Content: "今天天气如何"},
+		IsInAtList:       true,
+	})
+	if structured == nil {
+		t.Fatal("group message with isInAtList=true should pass gating even without leading @token")
+	}
+	if structured.Text != "今天天气如何" {
+		t.Fatalf("text = %q, want original content (no mention prefix to strip)", structured.Text)
+	}
+	// isInAtList=false 且正文无前导 @ → 拒绝。
+	noMention := a.normalizeMessage(robotMessage{
+		ConversationID:   "cid-grp",
+		ConversationType: "2",
+		MsgID:            "msg-g5",
+		Text:             &robotTextContent{Content: "今天天气如何"},
+		IsInAtList:       false,
+	})
+	if noMention != nil {
+		t.Fatal("group message with isInAtList=false should be rejected when require_mention is set")
+	}
+	// isInAtList=true 且正文残留前导 @token → 剥离。
+	both := a.normalizeMessage(robotMessage{
+		ConversationID:   "cid-grp",
+		ConversationType: "2",
+		MsgID:            "msg-g6",
+		Text:             &robotTextContent{Content: "@我的助手 今天天气如何"},
+		IsInAtList:       true,
+	})
+	if both == nil || both.Text != "今天天气如何" {
+		t.Fatalf("mention + isInAtList should strip prefix, got %+v", both)
+	}
 }
 
 func TestNormalizeDeduplicatesByMsgID(t *testing.T) {
@@ -145,8 +200,8 @@ func TestSendRequiresSessionWebhook(t *testing.T) {
 	}
 }
 
-// TestNormalizeRecordsSessionWebhook: normalize 必须把 webhook 记入
-// chatID→webhook 映射表，并透传到 InboundMessage。
+// TestNormalizeRecordsSessionWebhook: normalize 必须把钉钉官方域名的
+// webhook 记入 chatID→webhook 映射表，并透传到 InboundMessage。
 func TestNormalizeRecordsSessionWebhook(t *testing.T) {
 	a := testAdapter(config.DingtalkBotConfig{})
 	msg := a.normalizeMessage(robotMessage{
@@ -154,21 +209,44 @@ func TestNormalizeRecordsSessionWebhook(t *testing.T) {
 		ConversationType: "1",
 		MsgID:            "msg-w1",
 		Text:             &robotTextContent{Content: "hi"},
-		SessionWebhook:   "https://webhook/learned",
+		SessionWebhook:   "https://api.dingtalk.com/v1.0/robot/oToMessages/send?sessionWebhook=abc",
 	})
 	if msg == nil {
 		t.Fatal("message should be accepted")
 	}
-	if msg.SessionWebhook != "https://webhook/learned" {
+	if msg.SessionWebhook != "https://api.dingtalk.com/v1.0/robot/oToMessages/send?sessionWebhook=abc" {
 		t.Fatalf("inbound session_webhook = %q, want learned value", msg.SessionWebhook)
 	}
-	if got := a.webhookFor("cid-web"); got != "https://webhook/learned" {
+	if got := a.webhookFor("cid-web"); got != "https://api.dingtalk.com/v1.0/robot/oToMessages/send?sessionWebhook=abc" {
 		t.Fatalf("webhook map = %q, want learned value", got)
 	}
 }
 
+// TestNormalizeRejectsForeignWebhook: 非钉钉官方域名的 sessionWebhook 不得
+// 记入映射表，也不得透传（防伪造回调注入任意回复目标）。
+func TestNormalizeRejectsForeignWebhook(t *testing.T) {
+	a := testAdapter(config.DingtalkBotConfig{})
+	msg := a.normalizeMessage(robotMessage{
+		ConversationID:   "cid-web",
+		ConversationType: "1",
+		MsgID:            "msg-w2",
+		Text:             &robotTextContent{Content: "hi"},
+		SessionWebhook:   "http://169.254.169.254/latest/meta-data/",
+	})
+	if msg == nil {
+		t.Fatal("message should be accepted")
+	}
+	if msg.SessionWebhook != "" {
+		t.Fatalf("inbound session_webhook = %q, want empty for foreign host", msg.SessionWebhook)
+	}
+	if got := a.webhookFor("cid-web"); got != "" {
+		t.Fatalf("webhook map = %q, want empty for foreign host", got)
+	}
+}
+
 // TestSendUsesLearnedWebhook: 入站学习到 webhook 后，sendMessage 应 POST 到
-// 该 webhook 而非 ReplyToMsgID（gateway 会把 ReplyToMsgID 填成消息 ID）。
+// 该 webhook 而非 ReplyToMsgID（gateway 会把 ReplyToMsgID 填成消息 ID），
+// 且不携带 access token（会话 webhook 无需认证）。
 func TestSendUsesLearnedWebhook(t *testing.T) {
 	var gotAuth, gotBody string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -178,12 +256,10 @@ func TestSendUsesLearnedWebhook(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
+	allowTestWebhook(t, srv)
 
 	a := testAdapter(config.DingtalkBotConfig{})
 	a.httpClient = srv.Client()
-	// 预置 token 缓存，避免测试发起真实 gettoken 请求。
-	a.token = "test-token"
-	a.tokenAt = time.Now()
 	// 入站消息学习 webhook。
 	if m := a.normalizeMessage(robotMessage{
 		ConversationID: "cid-learn", ConversationType: "1", MsgID: "m1",
@@ -203,18 +279,17 @@ func TestSendUsesLearnedWebhook(t *testing.T) {
 	if !strings.Contains(gotBody, "回复") {
 		t.Fatalf("webhook body = %q, want reply text", gotBody)
 	}
-	if gotAuth != "test-token" {
-		t.Fatalf("access token header = %q, want test-token", gotAuth)
+	if gotAuth != "" {
+		t.Fatalf("webhook request must not carry access token, got %q", gotAuth)
 	}
 }
 
-// TestSendPrefersExplicitURLWebhook: ReplyToMsgID 为显式 http(s) URL 时优先使用
-// （桌面端测试发送场景），不必先收到入站消息。
-func TestSendPrefersExplicitURLWebhook(t *testing.T) {
-	var gotBody string
+// TestSendRejectsForeignWebhook: 非钉钉官方域名的 webhook（SessionWebhook
+// 或映射表）必须被拒绝，且不得发出任何请求——防止 SSRF 与 token 外泄。
+func TestSendRejectsForeignWebhook(t *testing.T) {
+	hit := false
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		b, _ := io.ReadAll(r.Body)
-		gotBody = string(b)
+		hit = true
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
@@ -223,16 +298,38 @@ func TestSendPrefersExplicitURLWebhook(t *testing.T) {
 	a.httpClient = srv.Client()
 	a.token = "test-token"
 	a.tokenAt = time.Now()
-	if _, err := a.sendMessage(context.Background(), bot.OutboundMessage{
+	// SessionWebhook 指向非白名单主机（内网元数据地址）→ 拒绝，不发请求。
+	_, err := a.sendMessage(context.Background(), bot.OutboundMessage{
+		ChatID:         "cid-x",
+		ChatType:       bot.ChatDM,
+		Text:           "hi",
+		SessionWebhook: "http://169.254.169.254/latest/meta-data/",
+	})
+	if err == nil || !strings.Contains(err.Error(), "not a dingtalk endpoint") {
+		t.Fatalf("foreign session webhook must be rejected, got %v", err)
+	}
+	// ReplyToMsgID 为 URL 时同样被拒绝（不再作为 webhook 来源）。
+	_, err = a.sendMessage(context.Background(), bot.OutboundMessage{
 		ChatID:       "cid-x",
 		ChatType:     bot.ChatDM,
-		Text:         "显式发送",
+		Text:         "hi",
 		ReplyToMsgID: srv.URL,
-	}); err != nil {
-		t.Fatalf("send with explicit webhook URL failed: %v", err)
+	})
+	if err == nil {
+		t.Fatal("ReplyToMsgID URL must not be used as webhook")
 	}
-	if !strings.Contains(gotBody, "显式发送") {
-		t.Fatalf("webhook body = %q, want explicit text", gotBody)
+	// 映射表里的非白名单 webhook 也被拒绝。
+	a.webhooks["cid-x"] = "https://evil.example.com/hook"
+	_, err = a.sendMessage(context.Background(), bot.OutboundMessage{
+		ChatID:   "cid-x",
+		ChatType: bot.ChatDM,
+		Text:     "hi",
+	})
+	if err == nil || !strings.Contains(err.Error(), "not a dingtalk endpoint") {
+		t.Fatalf("foreign mapped webhook must be rejected, got %v", err)
+	}
+	if hit {
+		t.Fatal("no request may reach a foreign webhook host")
 	}
 }
 
@@ -245,6 +342,7 @@ func TestSendPrefersSessionWebhookOverLearned(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
+	allowTestWebhook(t, srv)
 
 	a := testAdapter(config.DingtalkBotConfig{})
 	a.httpClient = srv.Client()
@@ -275,16 +373,17 @@ func TestSendPlainTextUsesMarkdown(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
+	allowTestWebhook(t, srv)
 
 	a := testAdapter(config.DingtalkBotConfig{})
 	a.httpClient = srv.Client()
 	a.token = "test-token"
 	a.tokenAt = time.Now()
 	if _, err := a.sendMessage(context.Background(), bot.OutboundMessage{
-		ChatID:       "cid-md",
-		ChatType:     bot.ChatDM,
-		Text:         "**加粗** 和 `code`",
-		ReplyToMsgID: srv.URL,
+		ChatID:         "cid-md",
+		ChatType:       bot.ChatDM,
+		Text:           "**加粗** 和 `code`",
+		SessionWebhook: srv.URL,
 	}); err != nil {
 		t.Fatalf("send failed: %v", err)
 	}
@@ -305,17 +404,18 @@ func TestSendMarkdownCard(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
+	allowTestWebhook(t, srv)
 
 	a := testAdapter(config.DingtalkBotConfig{})
 	a.httpClient = srv.Client()
 	a.token = "test-token"
 	a.tokenAt = time.Now()
 	_, err := a.sendMessage(context.Background(), bot.OutboundMessage{
-		ChatID:       "cid-card",
-		ChatType:     bot.ChatDM,
-		Text:         "**bold** content",
-		ReplyToMsgID: srv.URL,
-		Card:         &bot.InteractiveCard{Header: "标题"},
+		ChatID:         "cid-card",
+		ChatType:       bot.ChatDM,
+		Text:           "**bold** content",
+		SessionWebhook: srv.URL,
+		Card:           &bot.InteractiveCard{Header: "标题"},
 	})
 	if err != nil {
 		t.Fatalf("send markdown card failed: %v", err)
@@ -442,6 +542,7 @@ func TestTestSendUsesLatestLearnedChat(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
+	allowTestWebhook(t, srv)
 
 	a := testAdapter(config.DingtalkBotConfig{})
 	a.httpClient = srv.Client()

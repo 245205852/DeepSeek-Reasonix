@@ -1,6 +1,7 @@
 package botruntime
 
 import (
+	"fmt"
 	"log/slog"
 	"path/filepath"
 	"strings"
@@ -167,7 +168,7 @@ func ConnectionChannelConfigs(connections []config.BotConnectionConfig, includeM
 		}
 		if includeWorkspaceRoot {
 			channel.WorkspaceRoot = strings.TrimSpace(conn.WorkspaceRoot)
-			channel.SessionMappings = botSessionMappings(conn.SessionMappings)
+			channel.SessionMappings = SessionMappings(conn.SessionMappings)
 		}
 		if value := normalizeToolApprovalMode(conn.ToolApprovalMode); value != "" {
 			channel.ToolApprovalMode = value
@@ -245,7 +246,9 @@ func trimStringSlice(values []string) []string {
 	return out
 }
 
-func botSessionMappings(mappings []config.BotConnectionSessionMapping) []bot.SessionMapping {
+// SessionMappings 把配置层会话绑定转换为 gateway 运行时映射（connection 与
+// legacy 直配渠道共用）。
+func SessionMappings(mappings []config.BotConnectionSessionMapping) []bot.SessionMapping {
 	if len(mappings) == 0 {
 		return nil
 	}
@@ -324,8 +327,9 @@ func MergeLegacyDingtalkChannel(dt config.DingtalkBotConfig, channels map[bot.Pl
 		Model:            strings.TrimSpace(dt.Model),
 		ToolApprovalMode: normalizeToolApprovalMode(dt.ToolApprovalMode),
 		WorkspaceRoot:    strings.TrimSpace(dt.WorkspaceRoot),
+		SessionMappings:  SessionMappings(dt.SessionMappings),
 	}
-	if channel.Model == "" && channel.ToolApprovalMode == "" && channel.WorkspaceRoot == "" {
+	if channel.Model == "" && channel.ToolApprovalMode == "" && channel.WorkspaceRoot == "" && len(channel.SessionMappings) == 0 {
 		return channels, connectionChannels
 	}
 	if channels == nil {
@@ -438,10 +442,26 @@ func ModelName(cfg *config.Config, override string) string {
 	return strings.TrimSpace(cfg.DefaultModel)
 }
 
+// ModelResolver 构造 /model 切换前的模型预校验器：模型必须可解析
+// （provider/model 存在）且该 provider 已配置 API key，否则拒绝切换并
+// 保留当前会话 controller（失败原子性，见 bot.GatewayConfig.ModelResolver）。
+func ModelResolver(cfg *config.Config) func(string) error {
+	return func(ref string) error {
+		entry, ok := cfg.ResolveModel(strings.TrimSpace(ref))
+		if !ok {
+			return fmt.Errorf("未配置该模型（provider/model 不存在）")
+		}
+		if !entry.Configured() {
+			return fmt.Errorf("%s 未配置 API key，无法使用", entry.Name)
+		}
+		return nil
+	}
+}
+
 func AllowlistUserCount(a config.BotAllowlist) int {
-	return len(a.QQUsers) + len(a.FeishuUsers) + len(a.WeixinUsers) +
-		len(a.QQApprovers) + len(a.FeishuApprovers) + len(a.WeixinApprovers) +
-		len(a.QQAdmins) + len(a.FeishuAdmins) + len(a.WeixinAdmins)
+	return len(a.QQUsers) + len(a.FeishuUsers) + len(a.WeixinUsers) + len(a.DingtalkUsers) +
+		len(a.QQApprovers) + len(a.FeishuApprovers) + len(a.WeixinApprovers) + len(a.DingtalkApprovers) +
+		len(a.QQAdmins) + len(a.FeishuAdmins) + len(a.WeixinAdmins) + len(a.DingtalkAdmins)
 }
 
 func BotAccessUserCount(access config.BotAccessConfig) int {
@@ -452,7 +472,7 @@ func BotConfigHasAccessControl(bc config.BotConfig) bool {
 	if bc.Allowlist.AllowAll || bc.Pairing.Enabled || (bc.Allowlist.Enabled && AllowlistUserCount(bc.Allowlist) > 0) {
 		return true
 	}
-	if BotAccessActive(bc.QQ.Access) {
+	if BotAccessActive(bc.QQ.Access) || BotAccessActive(bc.Dingtalk.Access) {
 		return true
 	}
 	for _, conn := range bc.Connections {
@@ -554,6 +574,21 @@ func ForgetAutoSessionMappingsForPath(sessionPath string) error {
 		conn.UpdatedAt = now
 		changed = true
 	}
+	// legacy 直配渠道的 auto mapping 同样清理，避免残留旧会话绑定。
+	ding := &cfg.Bot.Dingtalk
+	dingNext := ding.SessionMappings[:0]
+	dingRemoved := false
+	for _, mapping := range ding.SessionMappings {
+		if strings.TrimSpace(mapping.SessionSource) == "auto" && normalizedBotSessionPath(mapping.SessionID) == target {
+			dingRemoved = true
+			continue
+		}
+		dingNext = append(dingNext, mapping)
+	}
+	if dingRemoved {
+		ding.SessionMappings = dingNext
+		changed = true
+	}
 	if !changed {
 		return nil
 	}
@@ -578,52 +613,17 @@ func rememberInbound(msg bot.InboundMessage, sessionID string, actualWorkspaceRo
 		if strings.TrimSpace(conn.Provider) != string(platform) || !conn.Enabled || !connectionMatchesInbound(*conn, msg) {
 			continue
 		}
-		mappingIndex := -1
-		for j := range conn.SessionMappings {
-			if botSessionMappingMatches(conn.SessionMappings[j], msg) {
-				mappingIndex = j
-				break
-			}
-		}
-		if mappingIndex >= 0 {
-			if sessionID == "" {
-				continue
-			}
-			mapping := &conn.SessionMappings[mappingIndex]
-			current := strings.TrimSpace(mapping.SessionID)
-			if current == sessionID || botSessionMappingHasExplicitTarget(*mapping) {
-				continue
-			}
-			mapping.SessionID = sessionID
-			mapping.SessionSource = "auto"
-			mapping.UpdatedAt = now
+		if rememberConnMappings(&conn.SessionMappings, conn.WorkspaceRoot, msg, remoteID, sessionID, actualWorkspaceRoot, now) {
 			conn.UpdatedAt = now
 			changed = true
-			continue
 		}
-		scope := "global"
-		workspaceRoot := ""
-		if strings.TrimSpace(conn.WorkspaceRoot) != "" {
-			scope = "project"
-			workspaceRoot = strings.TrimSpace(conn.WorkspaceRoot)
-		} else if actualWorkspaceRoot != "" {
-			scope = "project"
-			workspaceRoot = actualWorkspaceRoot
+	}
+	// legacy 直配 [bot.dingtalk] 没有 connection 记录：/new 旋转后的会话
+	// 路径持久化到 Dingtalk.SessionMappings，重启后仍能恢复（#9116 review）。
+	if platform == bot.PlatformDingtalk && cfg.Bot.Dingtalk.Enabled && !botHasDingtalkConnection(cfg.Bot.Connections) {
+		if rememberConnMappings(&cfg.Bot.Dingtalk.SessionMappings, cfg.Bot.Dingtalk.WorkspaceRoot, msg, remoteID, sessionID, actualWorkspaceRoot, now) {
+			changed = true
 		}
-		chatType, userID, threadID := botSessionMappingIdentity(msg)
-		conn.SessionMappings = append(conn.SessionMappings, config.BotConnectionSessionMapping{
-			RemoteID:      remoteID,
-			SessionID:     sessionID,
-			SessionSource: botSessionSource(sessionID),
-			ChatType:      chatType,
-			UserID:        userID,
-			ThreadID:      threadID,
-			Scope:         scope,
-			WorkspaceRoot: workspaceRoot,
-			UpdatedAt:     now,
-		})
-		conn.UpdatedAt = now
-		changed = true
 	}
 	if rememberAllowlist(&cfg.Bot.Allowlist, platform, msg.UserID, remoteID, msg.ChatType) {
 		changed = true
@@ -632,6 +632,64 @@ func rememberInbound(msg bot.InboundMessage, sessionID string, actualWorkspaceRo
 		return nil
 	}
 	return cfg.SaveTo(userPath)
+}
+
+// botHasDingtalkConnection 判断是否存在匹配的钉钉 connection 记录。
+func botHasDingtalkConnection(conns []config.BotConnectionConfig) bool {
+	for _, conn := range conns {
+		if strings.TrimSpace(conn.Provider) == string(bot.PlatformDingtalk) {
+			return true
+		}
+	}
+	return false
+}
+
+// rememberConnMappings 把会话绑定写入 mappings 切片（connection 与 legacy
+// 直配渠道共用）。返回是否有变更。
+func rememberConnMappings(mappings *[]config.BotConnectionSessionMapping, channelWorkspaceRoot string, msg bot.InboundMessage, remoteID, sessionID, actualWorkspaceRoot, now string) bool {
+	mappingIndex := -1
+	for j := range *mappings {
+		if botSessionMappingMatches((*mappings)[j], msg) {
+			mappingIndex = j
+			break
+		}
+	}
+	if mappingIndex >= 0 {
+		if sessionID == "" {
+			return false
+		}
+		mapping := &(*mappings)[mappingIndex]
+		current := strings.TrimSpace(mapping.SessionID)
+		if current == sessionID || botSessionMappingHasExplicitTarget(*mapping) {
+			return false
+		}
+		mapping.SessionID = sessionID
+		mapping.SessionSource = "auto"
+		mapping.UpdatedAt = now
+		return true
+	}
+	scope := "global"
+	workspaceRoot := ""
+	if strings.TrimSpace(channelWorkspaceRoot) != "" {
+		scope = "project"
+		workspaceRoot = strings.TrimSpace(channelWorkspaceRoot)
+	} else if actualWorkspaceRoot != "" {
+		scope = "project"
+		workspaceRoot = actualWorkspaceRoot
+	}
+	chatType, userID, threadID := botSessionMappingIdentity(msg)
+	*mappings = append(*mappings, config.BotConnectionSessionMapping{
+		RemoteID:      remoteID,
+		SessionID:     sessionID,
+		SessionSource: botSessionSource(sessionID),
+		ChatType:      chatType,
+		UserID:        userID,
+		ThreadID:      threadID,
+		Scope:         scope,
+		WorkspaceRoot: workspaceRoot,
+		UpdatedAt:     now,
+	})
+	return true
 }
 
 func botSessionMappingMatches(mapping config.BotConnectionSessionMapping, msg bot.InboundMessage) bool {

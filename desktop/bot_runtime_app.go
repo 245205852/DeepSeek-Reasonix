@@ -71,8 +71,9 @@ func desktopBotChannelsWithLegacyDingtalk(dt config.DingtalkBotConfig, channels 
 		Model:            strings.TrimSpace(dt.Model),
 		ToolApprovalMode: normalizeBotConnectionToolApprovalMode(dt.ToolApprovalMode),
 		WorkspaceRoot:    strings.TrimSpace(dt.WorkspaceRoot),
+		SessionMappings:  botruntime.SessionMappings(dt.SessionMappings),
 	}
-	if channel.Model == "" && channel.ToolApprovalMode == "" && channel.WorkspaceRoot == "" {
+	if channel.Model == "" && channel.ToolApprovalMode == "" && channel.WorkspaceRoot == "" && len(channel.SessionMappings) == 0 {
 		return channels, connectionChannels
 	}
 	if channels == nil {
@@ -228,6 +229,7 @@ func (r *desktopBotRuntime) apply(parent context.Context, cfg *config.Config, wo
 			},
 		},
 		Debounce:                 time.Duration(cfg.Bot.DebounceMs) * time.Millisecond,
+		ModelResolver:            botruntime.ModelResolver(cfg),
 		OnInbound:                botruntime.NewRemoteRememberer(logger),
 		OnSessionReady:           botruntime.NewSessionRemembererWithWorkspace(logger, workspaceRoot),
 		OnToolApprovalModeChange: onToolApprovalModeChange,

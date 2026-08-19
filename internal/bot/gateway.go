@@ -33,6 +33,10 @@ type GatewayConfig struct {
 	PairingEnabled    bool
 	PairingTTL        time.Duration
 	PairingMaxPending int
+	// ModelResolver 校验模型引用是否可解析且已配置（provider 存在、模型
+	// 存在、API key 已配）。/model 切换前调用：校验失败则不写入覆盖，
+	// 保留当前 controller 可继续聊天（失败原子性）。nil 时跳过预校验。
+	ModelResolver func(ref string) error
 	// IgnoreSelfMessages drops messages that are clearly sent by this bot. It
 	// uses configured SelfUserIDs plus recently returned outbound message IDs.
 	IgnoreSelfMessages bool
@@ -1776,6 +1780,13 @@ func (gw *BotGateway) handleModelCommand(msg InboundMessage, text string) string
 	ref := strings.TrimSpace(model)
 	if provider != "" {
 		ref = strings.TrimSpace(provider) + "/" + ref
+	}
+	// 失败原子性：先校验模型可解析且已配置，无效则直接拒绝并保留当前
+	// controller，不写入覆盖、不销毁旧会话（否则下一条消息构建失败）。
+	if gw.cfg.ModelResolver != nil {
+		if err := gw.cfg.ModelResolver(ref); err != nil {
+			return fmt.Sprintf("模型 %s 不可用：%v", ref, err)
+		}
 	}
 	// 复用 /use 的会话覆盖机制：只改 model，保留现有 workspace/tool 覆盖。
 	var existing sessionRuntimeOverride

@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -54,6 +55,41 @@ const (
 // emotionURL 贴/撤机器人消息表情的基址（reply=贴，recall=撤）。包级变量
 // 以便测试覆盖为 httptest 桩地址。
 var emotionURL = "https://api.dingtalk.com/v1.0/robot/emotion"
+
+// dingtalkWebhookHosts 会话回复 webhook 允许的主机名白名单。sessionWebhook
+// 由钉钉官方回调携带，只应指向钉钉域名；回复 POST 不携带 access token
+// （官方文档：会话 webhook 无需额外认证），故更不允许向任意主机发送请求。
+// 测试通过 webhookHosts 覆盖为 httptest 桩地址。
+var dingtalkWebhookHosts = []string{"api.dingtalk.com", "oapi.dingtalk.com"}
+
+// webhookHosts 当前允许的 webhook 主机；生产为 dingtalkWebhookHosts，
+// 测试可覆盖为 httptest 桩 host。
+var webhookHosts = dingtalkWebhookHosts
+
+// validDingtalkWebhook 校验回复 webhook：仅接受 https（或 http，仅测试桩
+// 场景）且主机在允许名单内，防止把钉钉会话 webhook 能力外泄到任意 URL。
+func validDingtalkWebhook(raw string) bool {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return false
+	}
+	if u.Scheme != "https" && u.Scheme != "http" {
+		return false
+	}
+	if u.Host == "" {
+		return false
+	}
+	host := u.Host
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	for _, allowed := range webhookHosts {
+		if strings.EqualFold(host, allowed) {
+			return true
+		}
+	}
+	return false
+}
 
 // adapter 钉钉适配器实现。
 type adapter struct {
@@ -100,6 +136,9 @@ type robotMessage struct {
 	MsgType          string            `json:"msgtype"`
 	Text             *robotTextContent `json:"text"`
 	SessionWebhook   string            `json:"sessionWebhook"`
+	// IsInAtList 官方回调的结构化 @ 标记：true 表示本消息 @ 了机器人。
+	// 正文示例不保留前导 @token，须以该字段为准（见 dingtalk 开放平台文档）。
+	IsInAtList bool `json:"isInAtList"`
 }
 
 // robotTextContent 钉钉文本消息内容。
@@ -441,15 +480,21 @@ func (a *adapter) normalizeMessage(raw robotMessage) *bot.InboundMessage {
 	if raw.Text != nil {
 		text = strings.TrimSpace(raw.Text.Content)
 	}
-	// 群聊剥离开头的 @机器人 前缀。
+	// 群聊 @ 判断：以官方回调的结构化 isInAtList 为准（正文示例不保留
+	// 前导 @token）；仅当回调未标记被 @ 时，才回退到文本前导 @ 解析。
 	if isGroup {
 		if a.cfg.RequireMention {
-			mentionsBot, rest := a.splitMention(text)
-			if !mentionsBot {
+			mentioned := raw.IsInAtList
+			if !mentioned {
+				mentioned, text = a.splitMention(text)
+			} else {
+				// 结构化标记已确认被 @，仅剥离可能残留的前导 @token。
+				text = a.stripGroupMention(text)
+			}
+			if !mentioned {
 				a.logger.Info("dingtalk message ignored", "reason", "missing_mention", "chat", logHash(chatID), "message", logHash(messageID))
 				return nil
 			}
-			text = rest
 		} else {
 			text = a.stripGroupMention(text)
 		}
@@ -459,12 +504,17 @@ func (a *adapter) normalizeMessage(raw robotMessage) *bot.InboundMessage {
 		chatType = bot.ChatGroup
 	}
 	webhook := strings.TrimSpace(raw.SessionWebhook)
-	if webhook != "" {
+	if webhook != "" && validDingtalkWebhook(webhook) {
 		// 记录会话 webhook，供后续回复查表使用；同时记录最近会话供测试发送。
+		// 仅记录钉钉官方域名的 webhook，恶意/伪造回调无法注入任意回复目标。
 		a.webhookMu.Lock()
 		a.webhooks[chatID] = webhook
 		a.lastChatID = chatID
 		a.webhookMu.Unlock()
+	} else if webhook != "" {
+		// 非白名单 webhook 不记录、不透传，防止伪造回调注入任意回复目标。
+		a.logger.Warn("dingtalk ignored non-dingtalk session webhook", "chat", logHash(chatID))
+		webhook = ""
 	}
 	// 记录 messageID→chatID，供 AddPendingReaction 贴/撤表情时还原会话。
 	a.msgChatsMu.Lock()
@@ -631,23 +681,19 @@ func (a *adapter) markSeen(messageID string) bool {
 }
 
 // sendMessage 发送出站消息（文本或 markdown）。
-// 钉钉无全局发送 API：回复必须 POST 到会话 webhook。webhook 优先级：
+// 钉钉无全局发送 API：回复必须 POST 到会话 webhook。webhook 来源：
 // 1) msg.SessionWebhook（入站消息透传，含持久化恢复场景）
-// 2) msg.ReplyToMsgID 中显式的 http(s) URL（桌面端测试发送等场景）
-// 3) chatID→webhook 映射表（入站消息学习而来）
-// 三者皆无时拒绝并给出可读错误。
+// 2) chatID→webhook 映射表（入站消息学习而来）
+// 两者皆无时拒绝并给出可读错误。
 // 注意：gateway 的 sendText 会把 ReplyToMsgID 填成入站消息 ID（非 URL），
-// 这里必须忽略它，否则会把消息 ID 当 URL 请求。
+// 这里完全不把 ReplyToMsgID 当 URL 使用——回复目标只来自钉钉官方回调携带
+// 的 sessionWebhook。所有 webhook 必须通过 validDingtalkWebhook 校验
+// （仅钉钉域名），且回复 POST 不携带 access token（官方文档：会话 webhook
+// 无需额外认证），避免向任意 URL 泄漏 token 或形成 SSRF。
 func (a *adapter) sendMessage(ctx context.Context, msg bot.OutboundMessage) (bot.SendResult, error) {
 	webhook := strings.TrimSpace(msg.SessionWebhook)
-	if !strings.HasPrefix(strings.ToLower(webhook), "http://") && !strings.HasPrefix(strings.ToLower(webhook), "https://") {
-		webhook = ""
-	}
-	if webhook == "" {
-		webhook = strings.TrimSpace(msg.ReplyToMsgID)
-	}
-	if !strings.HasPrefix(strings.ToLower(webhook), "http://") && !strings.HasPrefix(strings.ToLower(webhook), "https://") {
-		webhook = ""
+	if webhook != "" && !validDingtalkWebhook(webhook) {
+		return bot.SendResult{}, fmt.Errorf("dingtalk send rejected: session webhook %q is not a dingtalk endpoint", truncate(webhook, 64))
 	}
 	if webhook == "" {
 		webhook = a.webhookFor(msg.ChatID)
@@ -655,9 +701,8 @@ func (a *adapter) sendMessage(ctx context.Context, msg bot.OutboundMessage) (bot
 	if webhook == "" {
 		return bot.SendResult{}, fmt.Errorf("dingtalk send requires a session webhook: no webhook known for chat %s (bot must receive a message in this chat first)", logHash(msg.ChatID))
 	}
-	token, err := a.accessToken(ctx)
-	if err != nil {
-		return bot.SendResult{}, err
+	if !validDingtalkWebhook(webhook) {
+		return bot.SendResult{}, fmt.Errorf("dingtalk send rejected: webhook %q is not a dingtalk endpoint", truncate(webhook, 64))
 	}
 	// 一律以 markdown 类型发送：Reasonix bot 回复是 markdown 文本，钉钉
 	// text 类型按纯文本显示、不渲染语法（与飞书 buildMarkdownCard 一致）。
@@ -680,7 +725,6 @@ func (a *adapter) sendMessage(ctx context.Context, msg bot.OutboundMessage) (bot
 		return bot.SendResult{}, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("x-acs-dingtalk-access-token", token)
 	resp, err := a.httpClient.Do(req)
 	if err != nil {
 		return bot.SendResult{}, err
