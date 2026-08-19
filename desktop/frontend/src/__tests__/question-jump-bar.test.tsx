@@ -3,7 +3,7 @@
 import { JSDOM } from "jsdom";
 import React, { act } from "react";
 import { createRoot } from "react-dom/client";
-import { QuestionJumpBar } from "../components/QuestionJumpBar";
+import { QUESTION_JUMP_MAX_MARKERS, QuestionJumpBar, questionTurnFromRailY, sampledQuestionTurns } from "../components/QuestionJumpBar";
 import { LocaleProvider } from "../lib/i18n";
 import type { QuestionAnchor } from "../lib/transcriptGrouping";
 
@@ -24,6 +24,10 @@ function flushTimers(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0));
 }
 
+function rect(top: number, height: number, width: number): DOMRect {
+  return { top, bottom: top + height, left: 0, right: width, height, width } as DOMRect;
+}
+
 const dom = new JSDOM("<!doctype html><html><body><div id=\"root\"></div></body></html>", {
   pretendToBeVisual: true,
   url: "http://localhost/",
@@ -37,49 +41,106 @@ globalThis.Element = dom.window.Element;
 globalThis.HTMLElement = dom.window.HTMLElement;
 globalThis.Event = dom.window.Event;
 globalThis.MouseEvent = dom.window.MouseEvent;
+globalThis.KeyboardEvent = dom.window.KeyboardEvent;
 globalThis.localStorage = dom.window.localStorage;
-Object.defineProperty(dom.window.HTMLElement.prototype, "scrollIntoView", {
-  configurable: true,
-  value() {},
-});
 
 const questions: QuestionAnchor[] = [
-  { id: "u1", text: "first question", turn: 0 },
-  { id: "u2", text: "second question", turn: 1 },
-  { id: "u3", text: "third question", turn: 2 },
+  { id: "u1", text: "first question", turn: 0, loaded: true },
+  { id: "u2", text: "second question", turn: 1, loaded: true },
+  { id: "u3", text: "third question", turn: 2, loaded: true },
 ];
 const jumps: QuestionAnchor[] = [];
 const root = createRoot(document.getElementById("root")!);
+
+function ControlledJumpBar({
+  loadedQuestions,
+  totalQuestions,
+}: {
+  loadedQuestions: QuestionAnchor[];
+  totalQuestions: number;
+}) {
+  const [activeTurn, setActiveTurn] = React.useState<number | null>(totalQuestions - 1);
+  return (
+    <QuestionJumpBar
+      loadedQuestions={loadedQuestions}
+      totalQuestions={totalQuestions}
+      activeTurn={activeTurn}
+      onJump={(question) => {
+        jumps.push(question);
+        setActiveTurn(question.turn);
+      }}
+    />
+  );
+}
 
 console.log("\nquestion jump bar");
 
 await act(async () => {
   root.render(
     <LocaleProvider>
-      <QuestionJumpBar questions={questions} onJump={(question) => jumps.push(question)} />
+      <ControlledJumpBar key="short" loadedQuestions={questions} totalQuestions={3} />
     </LocaleProvider>,
   );
   await flushTimers();
 });
 
-const rail = document.querySelector(".jump-scroll") as HTMLElement;
+let bar = document.querySelector(".jump-bar") as HTMLElement;
+let rail = document.querySelector(".jump-scroll") as HTMLElement;
+bar.getBoundingClientRect = () => rect(0, 240, 56);
+rail.getBoundingClientRect = () => rect(0, 240, 32);
+
 await act(async () => {
-  // A real mouse activation emits both events. The rail must claim the
-  // gesture only once or the second navigation can overwrite the first.
-  rail.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, clientY: 0 }));
-  rail.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, clientY: 0, detail: 1 }));
+  // A real mouse activation emits both events. Only mousedown owns the jump.
+  rail.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0, clientY: 1 }));
+  rail.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, button: 0, clientY: 1, detail: 1 }));
   await flushTimers();
 });
 eq(jumps.length, 1, "one physical rail click emits one question jump");
-eq(jumps[0]?.id, "u1", "the rail keeps the question selected on pointer down");
+eq(jumps[0]?.id, "u1", "the rail maps its top directly to the first question");
 
-const second = document.querySelector('[data-turn="1"]') as HTMLButtonElement;
 await act(async () => {
-  second.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, detail: 0 }));
+  rail.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "ArrowDown" }));
   await flushTimers();
 });
-eq(jumps.length, 2, "keyboard activation still emits one question jump");
-eq(jumps[1]?.id, "u2", "keyboard activation jumps to the focused question");
+eq(jumps.length, 2, "one slider keypress emits one question jump");
+eq(jumps[1]?.id, "u2", "slider keyboard navigation advances by one exact question");
+eq(rail.getAttribute("aria-valuenow"), "2", "the slider exposes its active absolute question");
+
+const sampled = sampledQuestionTurns(10_000, 6_789);
+eq(sampled.length, QUESTION_JUMP_MAX_MARKERS, "very long sessions keep a fixed marker count");
+eq(sampled[0], 0, "aggregated markers retain the first question");
+eq(sampled.at(-1), 9_999, "aggregated markers retain the last question");
+eq(sampled.includes(6_789), true, "aggregated markers retain the exact active question");
+eq(questionTurnFromRailY(120, 0, 240, 10_000), 5_000, "rail geometry maps to an absolute turn without reading marker layout");
+
+const longQuestions: QuestionAnchor[] = [questions[0], { id: "u10000", text: "last loaded question", turn: 9_999, loaded: true }];
+await act(async () => {
+  root.render(
+    <LocaleProvider>
+      <ControlledJumpBar key="long" loadedQuestions={longQuestions} totalQuestions={10_000} />
+    </LocaleProvider>,
+  );
+  await flushTimers();
+});
+bar = document.querySelector(".jump-bar") as HTMLElement;
+rail = document.querySelector(".jump-scroll") as HTMLElement;
+bar.getBoundingClientRect = () => rect(0, 240, 56);
+rail.getBoundingClientRect = () => rect(0, 240, 32);
+const markers = Array.from(document.querySelectorAll<HTMLElement>(".jump-item"));
+eq(markers.length, QUESTION_JUMP_MAX_MARKERS, "10,000 questions render only the bounded marker set");
+for (const marker of markers) {
+  marker.getBoundingClientRect = () => { throw new Error("marker geometry must not be read"); };
+}
+
+const unloadedTurn = 6_789;
+await act(async () => {
+  const clientY = ((unloadedTurn + 0.5) / 10_000) * 240;
+  rail.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, clientY }));
+  rail.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0, clientY }));
+  await flushTimers();
+});
+eq(jumps.at(-1)?.turn, unloadedTurn, "a long aggregated rail still targets the exact unloaded question");
+eq(jumps.at(-1)?.loaded, false, "an unloaded aggregate target keeps the lazy-load contract");
 
 await act(async () => root.unmount());
 dom.window.close();

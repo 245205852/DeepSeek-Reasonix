@@ -25,6 +25,7 @@ import { applyHydrateErrorState, hydratePlaceholderItems as resolveHydratePlaceh
 import { isHostRecoveryGuidance } from "./hostRecoverySteer";
 import { activeTabHydrationPlan, canAdoptUnboundLiveSurface, duplicateLiveItemIds, hasCachedLiveTurn, hasReusableCachedTranscript, hydratedHistoryApplyMode, sameSessionHydrateIdentity, sameSessionPlaceholderItems, shouldPreferResidentHistory, type HydrateSurfacePolicy } from "./hydrateHistoryApply";
 import { hydrateIdentityCurrent } from "./sessionIdentity";
+import { historyPageRequestBudget } from "./historyPaging";
 import { sameStringList, sameTodoList } from "./todoVisibility";
 import { resolveSnapshotTurnStartedAt, resolveTurnStartedAt, snapshotPredatesTurnLifecycle } from "./turnTiming";
 import { useStaleTurnWatchdog } from "./useStaleTurnWatchdog";
@@ -235,7 +236,7 @@ const HISTORY_PAGE_TURNS = 60;
 
 export type TurnPhaseName = "working" | "checking" | "verifying" | "reviewing" | string;
 export type Item =
-  | { kind: "user"; id: string; submissionId?: string; text: string; submitText?: string; failed?: boolean; createdAt?: number; checkpointTurn?: number }
+  | { kind: "user"; id: string; submissionId?: string; text: string; submitText?: string; failed?: boolean; createdAt?: number; checkpointTurn?: number; historyTurn?: number }
   | { kind: "assistant"; id: string; text: string; reasoning: string; streaming: boolean; reasoningComplete?: boolean; reasoningDurationMs?: number; workDurationMs?: number; memoryCitations?: MemoryCitation[]; searchSources?: SearchSource[] }
   | { kind: "phase"; id: string; text: string }
   | { kind: "notice"; id: string; level: "info" | "warn"; text: string; detail?: string; title?: string; variant?: "delivery" | "completion"; action?: "continue_delivery" | "open_changes"; completionSummary?: WireCompletionSummary; decisionReceipt?: WireDecisionReceipt; missing?: string[]; inboxItemId?: string }
@@ -363,6 +364,7 @@ interface State {
   historyTotalTurns: number;
   historyHasOlder: boolean;
   historyOlderLoading: boolean;
+  historyOlderError?: string;
   historyRevision?: number;
   historyDigest?: string;
   /** Bumped when lazy history content can change already-estimated row sizes. */
@@ -789,7 +791,7 @@ type Action =
   | { type: "history_prepend"; items: Item[]; removeIds: string[]; startTurn: number; totalTurns: number; hasOlder: boolean; revision?: number; digest?: string }
   | { type: "history_items_patch"; patches: Record<string, Item> }
   | { type: "history_older_start" }
-  | { type: "history_older_error" }
+  | { type: "history_older_error"; error?: string }
   | { type: "local_notice"; level: "info" | "warn"; text: string; preserveRuntime?: boolean }
   | { type: "clearApproval" }
   | { type: "clearAsk" }
@@ -963,8 +965,22 @@ function applyTurnCheckpoint(items: Item[], submissionId: string | undefined, tu
   return changed ? next : items;
 }
 
-function historyPageItems(page: HistoryPage): { items: Item[]; seq: number } {
-  return historyMessagesToItems(asArray(page.messages), `h${page.startTurn}-`, 0);
+function historyPageItems(page: HistoryPage): { items: Item[]; seq: number; firstTurn: number } {
+  const converted = historyMessagesToItems(asArray(page.messages), `h${page.startTurn}-`, 0);
+  let historyTurn = page.startTurn + 1;
+  const items = converted.items.map((item) => {
+    if (item.kind !== "user") return item;
+    const user = { ...item, historyTurn };
+    historyTurn += 1;
+    return user;
+  });
+  return {
+    items,
+    seq: converted.seq,
+    // Legacy HistoryPage is 0-based while HistorySlice is 1-based. State uses
+    // the HistorySlice coordinate so every transcript consumer sees one model.
+    firstTurn: page.totalTurns > 0 ? page.startTurn + 1 : 0,
+  };
 }
 
 function positionalToolResults(messages: HistoryMessage[]): Map<string, { message: HistoryMessage; index: number }> {
@@ -2044,10 +2060,10 @@ export function reducer(s: State, a: Action): State {
     case "message_action_done": return { ...s, messageAction: undefined };
     case "history": {
       const { items, seq } = historyMessagesToItems(a.messages, "h", s.seq);
-      return { ...s, items: compactArchivedToolItems(items), pendingSubmissionId: undefined, seq, hydrateHistoryLoaded: true, hydratePlaceholderItems: undefined, historyStartTurn: 0, historyTotalTurns: 0, historyHasOlder: false, historyOlderLoading: false, historyRevision: undefined, historyDigest: undefined };
+      return { ...s, items: compactArchivedToolItems(items), pendingSubmissionId: undefined, seq, hydrateHistoryLoaded: true, hydratePlaceholderItems: undefined, historyStartTurn: 0, historyTotalTurns: 0, historyHasOlder: false, historyOlderLoading: false, historyOlderError: undefined, historyRevision: undefined, historyDigest: undefined };
     }
     case "history_page": {
-      const { items, seq } = historyPageItems(a.page);
+      const { items, seq, firstTurn } = historyPageItems(a.page);
       const nextItems = a.mode === "prepend" ? [...items, ...s.items] : items;
       return {
         ...s,
@@ -2056,16 +2072,17 @@ export function reducer(s: State, a: Action): State {
         seq: Math.max(s.seq, seq),
         hydrateHistoryLoaded: true,
         hydratePlaceholderItems: undefined,
-        historyStartTurn: a.page.startTurn,
+        historyStartTurn: firstTurn,
         historyTotalTurns: a.page.totalTurns,
         historyHasOlder: a.page.hasOlder,
         historyOlderLoading: false,
+        historyOlderError: undefined,
         historyRevision: a.page.revision,
         historyDigest: a.page.digest,
       };
     }
-    case "history_older_start": return s.historyOlderLoading ? s : { ...s, historyOlderLoading: true };
-    case "history_older_error": return s.historyOlderLoading ? { ...s, historyOlderLoading: false } : s;
+    case "history_older_start": return s.historyOlderLoading && !s.historyOlderError ? s : { ...s, historyOlderLoading: true, historyOlderError: undefined };
+    case "history_older_error": return { ...s, historyOlderLoading: false, historyOlderError: a.error };
     case "history_replace":
       return {
         ...s,
@@ -2077,6 +2094,7 @@ export function reducer(s: State, a: Action): State {
         historyTotalTurns: a.totalTurns,
         historyHasOlder: a.hasOlder,
         historyOlderLoading: false,
+        historyOlderError: undefined,
         historyRevision: a.revision,
         historyDigest: a.digest,
       };
@@ -2092,6 +2110,7 @@ export function reducer(s: State, a: Action): State {
         historyTotalTurns: a.totalTurns,
         historyHasOlder: a.hasOlder,
         historyOlderLoading: false,
+        historyOlderError: undefined,
         historyRevision: a.revision,
         historyDigest: a.digest,
       };
@@ -2770,6 +2789,7 @@ export function useController() {
   const checkpointRefreshSeq = useRef(new Map<string, number>());
   const metaRefreshSeq = useRef(new Map<string, number>());
   const sessionLoadSeq = useRef(new Map<string, number>());
+  const historyOlderSeq = useRef(new Map<string, number>());
   const cancelHydrateSeq = useRef(new Map<string, number>());
   const sessionLoadInFlight = useRef(new Map<string, { sessionPath: string; revision?: number; digest?: string; promise: Promise<void> }>());
   const transcriptSubscriptions = useRef(new Map<string, () => void>());
@@ -2784,6 +2804,7 @@ export function useController() {
   const bumpSessionLoadSeq = useCallback((tabId: string): number => {
     bumpMetaRefreshSeq(tabId);
     invalidateSharedQuery("MetaForTab", [tabId]);
+    historyOlderSeq.current.set(tabId, (historyOlderSeq.current.get(tabId) ?? 0) + 1);
     const seq = (sessionLoadSeq.current.get(tabId) ?? 0) + 1;
     sessionLoadSeq.current.set(tabId, seq);
     return seq;
@@ -2800,6 +2821,10 @@ export function useController() {
     transcriptSubscriptions.current.set(tabId, unsubscribe);
   }, [dispatchTo]);
   const releaseTranscriptState = useCallback((tabId: string) => {
+    // A released tab can still have an older-page request awaiting Wails. Keep
+    // a tombstone generation so a later tab reusing the same id cannot make
+    // that completion current again.
+    historyOlderSeq.current.set(tabId, (historyOlderSeq.current.get(tabId) ?? 0) + 1);
     transcriptSubscriptions.current.get(tabId)?.();
     transcriptSubscriptions.current.delete(tabId);
     getTranscriptStore().evictTab(tabId);
@@ -3101,20 +3126,25 @@ export function useController() {
     return getTranscriptStore().requestFullContent(tabId, entryId, field);
   }, [ensureTranscriptSubscription]);
 
-  const loadOlderHistory = useCallback(async (tabId?: string): Promise<void> => {
+  const loadOlderHistory = useCallback(async (tabId?: string, targetTurn?: number): Promise<boolean> => {
     const targetTabId = tabId || activeTabIdRef.current;
-    if (!targetTabId) return;
+    if (!targetTabId) return false;
     const state = statesRef.current.get(targetTabId);
-    if (!state?.historyHasOlder || state.historyOlderLoading || state.running) return;
+    if (!state?.historyHasOlder || state.historyOlderLoading || state.running) return false;
     const sessionPath = state.meta?.sessionPath ?? "";
     const sessionRevision = state.meta?.sessionRevision ?? state.historyRevision;
     const sessionDigest = state.meta?.sessionDigest ?? state.historyDigest;
+    const pageBudget = historyPageRequestBudget(state.historyStartTurn, state.historyTotalTurns, targetTurn);
+    const requestSeq = (historyOlderSeq.current.get(targetTabId) ?? 0) + 1;
+    historyOlderSeq.current.set(targetTabId, requestSeq);
     ensureTranscriptSubscription(targetTabId);
     dispatchTo(targetTabId, { type: "history_older_start" });
     const startedAt = Date.now();
     try {
-      const result = await getTranscriptStore().loadOlder(targetTabId, sessionPath, { turns: HISTORY_PAGE_TURNS });
+      const result = await getTranscriptStore().loadOlder(targetTabId, sessionPath, pageBudget);
+      if (historyOlderSeq.current.get(targetTabId) !== requestSeq) return false;
       const current = statesRef.current.get(targetTabId);
+      if (!current) return false;
       const currentRevision = current?.meta?.sessionRevision ?? current?.historyRevision;
       const currentDigest = current?.meta?.sessionDigest ?? current?.historyDigest;
       const fingerprintMatches = (expected: number | undefined, actual: number | undefined) =>
@@ -3124,17 +3154,17 @@ export function useController() {
       // A replace-level hydrate while the page was in flight clears
       // historyOlderLoading; a metadata or canonical-identity change also
       // makes the page belong to a different transcript generation.
-      if (!current || !current.historyOlderLoading || (current.meta?.sessionPath ?? "") !== sessionPath ||
+      if (!current.historyOlderLoading || (current.meta?.sessionPath ?? "") !== sessionPath ||
         !fingerprintMatches(sessionRevision, currentRevision) || !digestMatches(sessionDigest, currentDigest) ||
         (result !== undefined && (!fingerprintMatches(sessionRevision, result.revisionKnown ? result.revision : undefined) ||
           !digestMatches(sessionDigest, result.digest)))) {
-        dispatchTo(targetTabId, { type: "history_older_error" });
-        return;
+        dispatchTo(targetTabId, { type: "history_older_error", error: "history identity changed" });
+        return false;
       }
       if (!result) {
         // Superseded (generation moved) or nothing older left.
-        dispatchTo(targetTabId, { type: "history_older_error" });
-        return;
+        dispatchTo(targetTabId, { type: "history_older_error", error: "history page unavailable" });
+        return false;
       }
       if (result.kind === "reload") {
         // The cursor went stale (session rewritten): the store reloaded the
@@ -3164,9 +3194,13 @@ export function useController() {
         "tab.hydrate",
         `history older ${targetTabId} kind=${result.kind} items=${result.kind === "prepend" ? result.prependItems.length : result.items.length} turns=${result.startTurn}-${result.endTurn}/${result.totalTurns} ms=${Date.now() - startedAt}`,
       );
+      return true;
     } catch (err) {
-      dispatchTo(targetTabId, { type: "history_older_error" });
+      if (historyOlderSeq.current.get(targetTabId) !== requestSeq) return false;
+      if (!statesRef.current.has(targetTabId)) return false;
+      dispatchTo(targetTabId, { type: "history_older_error", error: errorMessage(err) });
       addBreadcrumb("tab.hydrate", `history older failed ${targetTabId}: ${errorMessage(err)}`);
+      return false;
     }
   }, [dispatchTo, ensureTranscriptSubscription]);
 

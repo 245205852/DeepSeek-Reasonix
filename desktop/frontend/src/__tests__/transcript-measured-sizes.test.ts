@@ -163,7 +163,7 @@ function estimateFor(store: ReturnType<typeof createTranscriptMeasuredSizes>, ro
   ]]);
   const options = {
     folds,
-    foldPreference: "collapsed" as const,
+    foldPreference: "auto" as const,
     hasOlderHistory: false,
     turnForUser: () => 0,
   };
@@ -185,7 +185,7 @@ function estimateFor(store: ReturnType<typeof createTranscriptMeasuredSizes>, ro
   const before = { ...initialState, items: [preview] };
   const beforeRows = buildTranscriptRows(buildTurnModels(before.items), {
     folds: EMPTY_FOLDS,
-    foldPreference: "collapsed",
+    foldPreference: "auto",
     hasOlderHistory: false,
     creationMode: false,
     turnForUser: () => undefined,
@@ -200,7 +200,7 @@ function estimateFor(store: ReturnType<typeof createTranscriptMeasuredSizes>, ro
   });
   const afterRows = buildTranscriptRows(buildTurnModels(after.items), {
     folds: EMPTY_FOLDS,
-    foldPreference: "collapsed",
+    foldPreference: "auto",
     hasOlderHistory: false,
     creationMode: false,
     turnForUser: () => undefined,
