@@ -260,6 +260,16 @@ export function useTranscriptLayoutIntegrity({
           }
           return;
         }
+        // This check is the probe's own post-render verdict. The generation
+        // already spent its two-sighting mount-lag guard before entering safe
+        // mode, so one still-blank result is enough to end the bounded probe.
+        // Do not depend on Virtuoso emitting another itemsRendered/scroll
+        // callback when the expanded range fails to mount useful coverage.
+        if (safeMode) {
+          consecutiveBlankRef.current = 0;
+          setResetEpoch((epoch) => Math.abs(epoch));
+          return;
+        }
         consecutiveBlankRef.current += 1;
         if (consecutiveBlankRef.current < 2) return;
         consecutiveBlankRef.current = 0;
@@ -285,6 +295,15 @@ export function useTranscriptLayoutIntegrity({
       });
     });
   }, [layoutGeneration, layoutTransientRef, requestReset, safeMode, scrollRef, surfaceKey]);
+
+  // A probe is a one-shot transaction. Schedule its verdict from the hook so
+  // both success and failure leave the larger (but bounded) overscan even if
+  // Virtuoso emits no follow-up range or scroll event.
+  useEffect(() => {
+    if (!safeMode) return;
+    const frame = requestAnimationFrame(() => scheduleBlankViewportCheck());
+    return () => cancelAnimationFrame(frame);
+  }, [safeMode, scheduleBlankViewportCheck]);
 
   // Runs when user-driven scrolling has been quiet for USER_SCROLL_IDLE_MS.
   // Suspended recoveries own a separate bounded retry timer so they cannot

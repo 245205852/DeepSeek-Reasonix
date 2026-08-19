@@ -772,8 +772,9 @@ await act(async () => integrity?.invalidateAnchors());
 await act(async () => integrity?.handleItemsRendered(1));
 await triggerWatchdogRebuild();
 check(integrity?.safeMode === true, "long-history recovery keeps the probe independent of total row count");
-await triggerWatchdogRebuild();
-check(integrity?.safeMode === false, "an unsuccessful long-history probe exits after its bounded attempt");
+for (let frame = 0; frame < 3; frame += 1) await flushFrames();
+check(integrity?.safeMode === false,
+  "an unsuccessful long-history probe exits without another range or scroll event");
 for (let cycle = 0; cycle < 3; cycle += 1) await triggerWatchdogRebuild();
 check(integrity?.resetKey === longResetAfter && integrity?.safeMode === false,
   "repeated blank cycles cannot remount or re-enter the probe after the generation budget is exhausted");
