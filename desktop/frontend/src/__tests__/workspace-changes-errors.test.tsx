@@ -10,7 +10,7 @@ import { WorkspacePanel } from "../components/WorkspacePanel";
 import { LocaleProvider } from "../lib/i18n";
 import { resetWorkspaceTreeMemoryForTests } from "../lib/workspaceTreeMemory";
 import type { AppBindings } from "../lib/bridge";
-import type { DirEntry, GitCommitView, WireCompletionSummary, WorkspaceChangeDetailView, WorkspaceChangesView } from "../lib/types";
+import type { DirEntry, FilePreview, GitCommitView, WireCompletionSummary, WorkspaceChangeDetailView, WorkspaceChangesView } from "../lib/types";
 
 // Markdown previews lazy-load MarkdownRenderer, whose KaTeX stylesheet belongs
 // to the same production chunk. Node's tsx loader has no CSS module support,
@@ -833,6 +833,8 @@ console.log("\nworkspace changes git errors");
 }
 
 {
+  let resolveCodePreview!: (preview: FilePreview) => void;
+  const codePreview = new Promise<FilePreview>((resolve) => { resolveCodePreview = resolve; });
   const { dom, root } = await renderFilesWorkspace({
     ListDirForTab: async (_tabId, dir) => dir === ""
       ? [
@@ -840,13 +842,9 @@ console.log("\nworkspace changes git errors");
           { name: "README.md", isDir: false },
         ]
       : [],
-    ReadFileForTab: async (_tabId, path) => ({
-      path,
-      body: path === "README.md" ? "# Documentation" : "const value = 42;",
-      size: 17,
-      truncated: false,
-      binary: false,
-    }),
+    ReadFileForTab: async (_tabId, path) => path === "README.md"
+      ? { path, body: "# Documentation", size: 15, truncated: false, binary: false }
+      : codePreview,
   });
 
   await waitFor("searchable code file", () => document.querySelector('[data-workspace-path="code.ts"]') != null);
@@ -856,11 +854,15 @@ console.log("\nworkspace changes git errors");
       ?.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
     await flushPromises();
   });
+  await waitFor("pending code preview layout", () => document.querySelector(".workspace-preview__body--code") != null);
+  ok(document.querySelector(".workspace-preview__body--code") != null, "code preview uses its final layout while loading");
+  await act(async () => {
+    resolveCodePreview({ path: "code.ts", body: "const value = 42;", size: 17, truncated: false, binary: false });
+    await flushPromises();
+  });
   await waitFor("code preview search action", () => document.querySelector('button[aria-label="Find"]') != null);
-  ok(
-    document.querySelector('button[aria-label="Find"]') != null,
-    "searchable code previews expose a visible search action",
-  );
+  ok(document.querySelector(".workspace-preview__body--code") != null, "resolved code preview keeps the loading layout");
+  ok(document.querySelector('button[aria-label="Find"]') != null, "searchable code previews expose a visible search action");
 
   const filterInput = document.querySelector<HTMLInputElement>('input[placeholder="Filter files…"]');
   await act(async () => {
@@ -874,10 +876,7 @@ console.log("\nworkspace changes git errors");
     await flushPromises();
   });
   await waitFor("panel-scoped code search", () => document.querySelector(".code-search__input") != null);
-  ok(
-    document.activeElement === document.querySelector(".code-search__input"),
-    "workspace find shortcut opens and focuses code search from the file filter",
-  );
+  ok(document.activeElement === document.querySelector(".code-search__input"), "workspace find shortcut opens and focuses code search from the file filter");
 
   await act(async () => {
     document
@@ -893,10 +892,7 @@ console.log("\nworkspace changes git errors");
     await flushPromises();
   });
   await waitFor("button-opened code search", () => document.querySelector(".code-search__input") != null);
-  ok(
-    document.activeElement === document.querySelector(".code-search__input"),
-    "visible search action opens and focuses the same search UI",
-  );
+  ok(document.activeElement === document.querySelector(".code-search__input"), "visible search action opens and focuses the same search UI");
 
   await act(async () => {
     document
@@ -905,10 +901,7 @@ console.log("\nworkspace changes git errors");
     await flushPromises();
   });
   await waitFor("markdown preview", () => document.body.textContent?.includes("Documentation") === true);
-  ok(
-    document.querySelector('button[aria-label="Find"]') == null,
-    "Markdown previews do not expose the code-search action",
-  );
+  ok(document.querySelector('button[aria-label="Find"]') == null, "Markdown previews do not expose the code-search action");
   const markdownFindEvent = new window.KeyboardEvent("keydown", {
     key: "f",
     ctrlKey: true,
