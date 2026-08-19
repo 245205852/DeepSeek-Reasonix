@@ -12,6 +12,7 @@ import (
 	"math"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -299,12 +300,7 @@ func validateScrollDiagnosticEventLabels(event scrollDiagnosticEvent) error {
 }
 
 func oneOf(value string, candidates ...string) bool {
-	for _, candidate := range candidates {
-		if value == candidate {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(candidates, value)
 }
 
 func buildScrollDiagnosticsZip(payload string) ([]byte, error) {
@@ -334,7 +330,7 @@ func buildScrollDiagnosticsArchive(payload string) ([]byte, string, error) {
 		}
 	}
 	digest := sha256.Sum256(eventLines.Bytes())
-	checksum := []byte(fmt.Sprintf("%s  scroll-events.jsonl\n", hex.EncodeToString(digest[:])))
+	checksum := fmt.Appendf(nil, "%s  scroll-events.jsonl\n", hex.EncodeToString(digest[:]))
 
 	var archive bytes.Buffer
 	zw := zip.NewWriter(&archive)
