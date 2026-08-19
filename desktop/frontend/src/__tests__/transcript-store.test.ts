@@ -6,7 +6,7 @@
 // refs, and the markdown cache budget.
 
 import { TranscriptStore } from "../lib/transcriptStore";
-import { historyMessagesToItems, type Item } from "../lib/useController";
+import { historyMessagesToItems, historyTurnsToLoad, type Item } from "../lib/useController";
 import type {
   HistoryContentChunk,
   HistoryContentRef,
@@ -181,6 +181,34 @@ function bigTranscript(turns: number): HistoryMessage[] {
   return messages;
 }
 
+function longArchivedTranscript(turns: number): HistoryMessage[] {
+  const messages: HistoryMessage[] = [];
+  for (let turn = 1; turn <= turns; turn += 1) {
+    const callId = `archived-${turn}`;
+    messages.push({ role: "user", content: `prompt ${turn}` });
+    messages.push({
+      role: "assistant",
+      content: `answer ${turn}`,
+      toolCalls: [{
+        id: callId,
+        name: "bash",
+        arguments: "",
+        argumentsArchived: true,
+        subject: `command ${turn}`,
+        summary: "1 line",
+      }],
+    });
+    messages.push({
+      role: "tool",
+      toolCallId: callId,
+      toolName: "bash",
+      content: "",
+      toolResultArchived: true,
+    });
+  }
+  return messages;
+}
+
 // Canonical shape for cross-scheme equality (ids are scheme-dependent and
 // verified separately).
 function canon(items: Item[]): unknown[] {
@@ -233,6 +261,35 @@ console.log("\ntranscript store");
   eq(JSON.stringify(fullIds.slice(fullIds.length - firstIds.length)), JSON.stringify(firstIds), "newest page item ids are stable across prepends");
   const unique = new Set(fullIds);
   eq(unique.size, fullIds.length, "item ids are unique across the full projection");
+}
+
+// ── 10,000-turn targeted paging stays bounded ──────────────────────────────
+{
+  const messages = longArchivedTranscript(10_000);
+  const backend = new FakeBackend(messages, new Map(), "stress");
+  const store = new TranscriptStore(backend);
+  const startedAt = performance.now();
+  let projection = await store.loadLatest("tab-stress", "/s/stress.jsonl", { turns: 60 });
+  let pages = 1;
+  while (projection?.hasOlder && pages <= 25) {
+    const turns = historyTurnsToLoad(projection.startTurn, projection.totalTurns, 1);
+    const older = await store.loadOlder("tab-stress", "/s/stress.jsonl", { turns });
+    if (!older) break;
+    projection = older;
+    pages += 1;
+  }
+  const elapsedMs = performance.now() - startedAt;
+  const users = (projection?.items ?? []).filter((item): item is Extract<Item, { kind: "user" }> => item.kind === "user");
+  eq(projection?.hasOlder, false, "10,000-turn target paging reaches the first page");
+  eq(pages, 21, "10,000-turn target paging uses one 60-turn page plus twenty bounded pages");
+  eq(backend.sliceCalls.length, 21, "10,000-turn target paging performs the expected bounded backend calls");
+  eq(users.length, 10_000, "10,000-turn target paging preserves every question");
+  eq(users[0]?.historyTurn, 1, "10,000-turn target paging lands on absolute turn one");
+  eq(users[users.length - 1]?.historyTurn, 10_000, "10,000-turn target paging keeps the tail coordinate");
+  ok(new Set(projection?.items.map((item) => item.id)).size === projection?.items.length, "10,000-turn target paging keeps item ids unique");
+  const stats = store.stats();
+  ok(stats.bodyBytes <= stats.bodyBudgetBytes, "10,000-turn transcript stays within the production history body budget");
+  ok(elapsedMs < 10_000, `10,000-turn targeted paging completes within 10s (${elapsedMs.toFixed(1)}ms)`);
 }
 
 // ── cross-page tool call/result merge ───────────────────────────────────────

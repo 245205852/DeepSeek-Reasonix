@@ -724,10 +724,11 @@ eq(sameMeta(meta({ collaborationMode: "normal" }), meta({ collaborationMode: "pl
     },
   });
   eq(s.items.some((item) => item.kind === "user" && item.text === "recent prompt"), true, "history page replace renders the latest window");
-  eq(s.historyStartTurn, 60, "history page stores the older cursor");
+  eq(s.historyStartTurn, 61, "legacy history page converts its zero-based cursor to the first absolute turn");
   eq(s.historyHasOlder, true, "history page records older availability");
   const recentUser = s.items.find((item) => item.kind === "user" && item.text === "recent prompt");
   eq(recentUser?.kind === "user" && recentUser.checkpointTurn, 1060, "paged history hydrates its authoritative checkpoint turn");
+  eq(recentUser?.kind === "user" && recentUser.historyTurn, 61, "legacy history page preserves the absolute question turn");
   s = reducer(s, { type: "history_older_start" });
   eq(s.historyOlderLoading, true, "older history request marks loading");
   s = reducer(s, { type: "history_older_error", error: "read failed" });
@@ -751,6 +752,8 @@ eq(sameMeta(meta({ collaborationMode: "normal" }), meta({ collaborationMode: "pl
   const users = s.items.filter((item) => item.kind === "user");
   eq(users[0]?.kind === "user" && users[0].text, "older prompt", "older history prepends before the current window");
   eq(users[1]?.kind === "user" && users[1].text, "recent prompt", "older history keeps the current window");
+  eq(users[0]?.kind === "user" && users[0].historyTurn, 1, "legacy prepend starts at absolute turn one");
+  eq(users[1]?.kind === "user" && users[1].historyTurn, 61, "legacy prepend keeps the recent page's absolute turn");
   eq(s.historyHasOlder, false, "older history clears hasOlder when all pages are loaded");
   eq(s.historyOlderLoading, false, "older history clears loading");
 }

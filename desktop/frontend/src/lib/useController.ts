@@ -975,8 +975,22 @@ function applyTurnCheckpoint(items: Item[], submissionId: string | undefined, tu
   return changed ? next : items;
 }
 
-function historyPageItems(page: HistoryPage): { items: Item[]; seq: number } {
-  return historyMessagesToItems(asArray(page.messages), `h${page.startTurn}-`, 0);
+function historyPageItems(page: HistoryPage): { items: Item[]; seq: number; firstTurn: number } {
+  const converted = historyMessagesToItems(asArray(page.messages), `h${page.startTurn}-`, 0);
+  let historyTurn = page.startTurn + 1;
+  const items = converted.items.map((item) => {
+    if (item.kind !== "user") return item;
+    const user = { ...item, historyTurn };
+    historyTurn += 1;
+    return user;
+  });
+  return {
+    items,
+    seq: converted.seq,
+    // Legacy HistoryPage is 0-based while HistorySlice is 1-based. State uses
+    // the HistorySlice coordinate so every transcript consumer sees one model.
+    firstTurn: page.totalTurns > 0 ? page.startTurn + 1 : 0,
+  };
 }
 
 function positionalToolResults(messages: HistoryMessage[]): Map<string, { message: HistoryMessage; index: number }> {
@@ -2059,7 +2073,7 @@ export function reducer(s: State, a: Action): State {
       return { ...s, items: compactArchivedToolItems(items), pendingSubmissionId: undefined, seq, hydrateHistoryLoaded: true, hydratePlaceholderItems: undefined, historyStartTurn: 0, historyTotalTurns: 0, historyHasOlder: false, historyOlderLoading: false, historyOlderError: undefined, historyRevision: undefined, historyDigest: undefined };
     }
     case "history_page": {
-      const { items, seq } = historyPageItems(a.page);
+      const { items, seq, firstTurn } = historyPageItems(a.page);
       const nextItems = a.mode === "prepend" ? [...items, ...s.items] : items;
       return {
         ...s,
@@ -2068,7 +2082,7 @@ export function reducer(s: State, a: Action): State {
         seq: Math.max(s.seq, seq),
         hydrateHistoryLoaded: true,
         hydratePlaceholderItems: undefined,
-        historyStartTurn: a.page.startTurn,
+        historyStartTurn: firstTurn,
         historyTotalTurns: a.page.totalTurns,
         historyHasOlder: a.page.hasOlder,
         historyOlderLoading: false,
@@ -2817,6 +2831,10 @@ export function useController() {
     transcriptSubscriptions.current.set(tabId, unsubscribe);
   }, [dispatchTo]);
   const releaseTranscriptState = useCallback((tabId: string) => {
+    // A released tab can still have an older-page request awaiting Wails. Keep
+    // a tombstone generation so a later tab reusing the same id cannot make
+    // that completion current again.
+    historyOlderSeq.current.set(tabId, (historyOlderSeq.current.get(tabId) ?? 0) + 1);
     transcriptSubscriptions.current.get(tabId)?.();
     transcriptSubscriptions.current.delete(tabId);
     getTranscriptStore().evictTab(tabId);
@@ -3136,6 +3154,7 @@ export function useController() {
       const result = await getTranscriptStore().loadOlder(targetTabId, sessionPath, { turns: pageTurns });
       if (historyOlderSeq.current.get(targetTabId) !== requestSeq) return false;
       const current = statesRef.current.get(targetTabId);
+      if (!current) return false;
       const currentRevision = current?.meta?.sessionRevision ?? current?.historyRevision;
       const currentDigest = current?.meta?.sessionDigest ?? current?.historyDigest;
       const fingerprintMatches = (expected: number | undefined, actual: number | undefined) =>
@@ -3145,7 +3164,7 @@ export function useController() {
       // A replace-level hydrate while the page was in flight clears
       // historyOlderLoading; a metadata or canonical-identity change also
       // makes the page belong to a different transcript generation.
-      if (!current || !current.historyOlderLoading || (current.meta?.sessionPath ?? "") !== sessionPath ||
+      if (!current.historyOlderLoading || (current.meta?.sessionPath ?? "") !== sessionPath ||
         !fingerprintMatches(sessionRevision, currentRevision) || !digestMatches(sessionDigest, currentDigest) ||
         (result !== undefined && (!fingerprintMatches(sessionRevision, result.revisionKnown ? result.revision : undefined) ||
           !digestMatches(sessionDigest, result.digest)))) {
@@ -3188,6 +3207,7 @@ export function useController() {
       return true;
     } catch (err) {
       if (historyOlderSeq.current.get(targetTabId) !== requestSeq) return false;
+      if (!statesRef.current.has(targetTabId)) return false;
       dispatchTo(targetTabId, { type: "history_older_error", error: errorMessage(err) });
       addBreadcrumb("tab.hydrate", `history older failed ${targetTabId}: ${errorMessage(err)}`);
       return false;
