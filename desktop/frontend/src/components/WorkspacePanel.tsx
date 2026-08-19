@@ -163,6 +163,7 @@ export function WorkspacePanel({
   creationMode = false,
   completionSummary,
   turnStartAt = 0,
+  qualityFloor,
 }: {
   open: boolean;
   tabId?: string;
@@ -194,14 +195,13 @@ export function WorkspacePanel({
   creationMode?: boolean;
   completionSummary?: WireCompletionSummary;
   turnStartAt?: number;
+  qualityFloor?: "standard" | "delivery";
 }) {
   const t = useT();
   const workspaceTabId = tabId ?? "";
   const activeVerificationRevealRequest = verificationRevealRequest?.tabId === workspaceTabId
     && verificationRevealRequest.turnStartAt === turnStartAt
-    && verificationRevealRequest.currentSummary === completionSummary
-    ? verificationRevealRequest
-    : null;
+    && verificationRevealRequest.currentSummary === completionSummary ? verificationRevealRequest : null;
   const visibleCompletionSummary = activeVerificationRevealRequest?.summary ?? completionSummary;
   const workspaceScopeKey = workspaceScopeKeyProp ?? `${workspaceTabId}\u0000${cwd ?? ""}`;
   const workspaceMemoryKey = workspaceMemoryKeyProp ?? workspaceScopeKey;
@@ -1729,7 +1729,7 @@ export function WorkspacePanel({
             </div>
           ) : viewMode === "changed" && !selectedPath ? (
             <div className="workspace-git-history">
-              {visibleCompletionSummary && <WorkspaceTurnVerification ref={verificationSummaryRef} summary={visibleCompletionSummary} />}
+              {visibleCompletionSummary && <WorkspaceTurnVerification ref={verificationSummaryRef} summary={visibleCompletionSummary} qualityFloor={qualityFloor} />}
               {workspaceGitWarning && (
                 <div className="workspace-note workspace-note--warning" role="status">
                   {workspaceGitWarning}

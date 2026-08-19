@@ -2949,9 +2949,7 @@ export default function App() {
     });
   }, [activeTabId, openRightDockMode, state.completionSummary, state.turnStartAt]);
 
-  useEffect(() => {
-    setVerificationRevealRequest(null);
-  }, [activeTabId, state.completionSummary, state.turnStartAt]);
+  useEffect(() => { setVerificationRevealRequest(null); }, [activeTabId, state.completionSummary, state.turnStartAt]);
 
   const toggleTerminalPanel = useCallback(() => {
     setTerminalPanelOpen((prev) => {
@@ -5276,6 +5274,7 @@ export default function App() {
                     completionSummary={state.completionSummary}
                     turnStartAt={state.turnStartAt}
                     verificationRevealRequest={verificationRevealRequest}
+                    qualityFloor={composerProfile.qualityFloor}
                     showViewTabs={false}
                     creationMode={sidebarCreation}
                   />

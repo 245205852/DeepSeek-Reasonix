@@ -10,14 +10,17 @@ import type { WireCompletionSummary } from "../lib/types";
 
 export const WORKSPACE_TURN_VERIFICATION_ID = "workspace-turn-verification";
 
-export const WorkspaceTurnVerification = forwardRef<HTMLElement, { summary: WireCompletionSummary }>(
-  function WorkspaceTurnVerification({ summary }, ref) {
+export const WorkspaceTurnVerification = forwardRef<HTMLElement, {
+  summary: WireCompletionSummary;
+  qualityFloor?: "standard" | "delivery";
+}>(
+  function WorkspaceTurnVerification({ summary, qualityFloor = "standard" }, ref) {
     const t = useT();
     return (
       <section
         ref={ref}
         id={WORKSPACE_TURN_VERIFICATION_ID}
-        className={`workspace-note workspace-completion-summary${completionSummaryNeedsAttention(summary) ? " workspace-completion-summary--attention" : ""}`}
+        className={`workspace-note workspace-completion-summary${completionSummaryNeedsAttention(summary, qualityFloor) ? " workspace-completion-summary--attention" : ""}`}
         aria-labelledby={`${WORKSPACE_TURN_VERIFICATION_ID}-title`}
       >
         <div className="workspace-completion-summary__head">

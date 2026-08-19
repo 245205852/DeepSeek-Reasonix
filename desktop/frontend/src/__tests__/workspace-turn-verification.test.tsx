@@ -158,6 +158,30 @@ console.log("\nworkspace turn verification");
 }
 
 {
+  const legacyDeliverySummary: WireCompletionSummary = {
+    preset: "balanced",
+    verdict: "partial",
+    mutations: 1,
+    checks_passed: 0,
+    checks_failed: 0,
+    checks_suppressed: 0,
+    review: "passed",
+    gap_kinds: ["unverified_change"],
+    constraint_degraded: false,
+  };
+  const { dom, root, rerender } = await createHarness({
+    initialViewMode: "changed",
+    completionSummary: legacyDeliverySummary,
+    qualityFloor: "delivery",
+  });
+  await waitFor("delivery attention styling", () => document.querySelector(".workspace-completion-summary") !== null);
+  ok(document.querySelector(".workspace-completion-summary")?.classList.contains("workspace-completion-summary--attention"), "legacy delivery summary uses delivery-floor attention styling");
+  await rerender({ qualityFloor: "standard" });
+  ok(!document.querySelector(".workspace-completion-summary")?.classList.contains("workspace-completion-summary--attention"), "legacy standard summary remains neutral");
+  await closeHarness(dom, root);
+}
+
+{
   const current = summary(2);
   const historical = summary(7);
   const { dom, root, rerender } = await createHarness({ initialViewMode: "changed", completionSummary: current });

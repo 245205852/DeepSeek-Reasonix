@@ -22217,6 +22217,15 @@ body > .mermaid-diagram--fullscreen {
   transition: opacity var(--dur-base) ease;
 }
 
+/* The image viewer is an app-level fullscreen surface. Hide the custom
+   Windows caption controls while it is open so the preview owns the only
+   visible close affordance; native shortcuts such as Alt+F4 remain intact. */
+.app--windows-frameless:has(.image-viewer-backdrop) > .windows-window-controls {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
 /* When the workspace panel is closed (no layout--workspace-open or
    layout--workspace-maximized), make the window controls box transparent so it
    blends into the title bar / background instead of showing a distinct box. */
