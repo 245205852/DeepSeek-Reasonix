@@ -11,7 +11,7 @@ import { mergeRateBand, type AggregatedRateBand } from "./costRateBand";
 import { requestInboxCancel, type CancelOutcome } from "./inboxCancel";
 import { formatContextMaintenanceNotice, isNewMaintenanceOperation, rememberMaintenanceOperation } from "./contextMaintenanceTypes";
 import { formatGuardianAssessmentNotice } from "./guardianEvents";
-import { completionSummaryNeedsAttention, completionSummaryNotice, normalizeCompletionSummary } from "./completionSummary";
+import { completionSummaryPresentation, normalizeCompletionSummary, sessionQualityFloor } from "./completionSummary";
 import { invalidateSharedQuery } from "./queryCoalesce";
 import { replayPendingPromptsForActiveTab } from "./promptReplay";
 import { createRafBatch } from "./rafBatch";
@@ -238,7 +238,7 @@ export type Item =
   | { kind: "user"; id: string; submissionId?: string; text: string; submitText?: string; failed?: boolean; createdAt?: number; checkpointTurn?: number }
   | { kind: "assistant"; id: string; text: string; reasoning: string; streaming: boolean; reasoningComplete?: boolean; reasoningDurationMs?: number; workDurationMs?: number; memoryCitations?: MemoryCitation[]; searchSources?: SearchSource[] }
   | { kind: "phase"; id: string; text: string }
-  | { kind: "notice"; id: string; level: "info" | "warn"; text: string; detail?: string; title?: string; variant?: "delivery" | "completion"; action?: "continue_delivery" | "open_changes"; decisionReceipt?: WireDecisionReceipt; missing?: string[]; inboxItemId?: string }
+  | { kind: "notice"; id: string; level: "info" | "warn"; text: string; detail?: string; title?: string; variant?: "delivery" | "completion"; action?: "continue_delivery" | "open_changes"; completionSummary?: WireCompletionSummary; decisionReceipt?: WireDecisionReceipt; missing?: string[]; inboxItemId?: string }
   | {
       kind: "compaction";
       id: string;
@@ -588,6 +588,9 @@ export function metaFromTab(tab: TabMeta, existing?: Meta): Meta {
     collaborationMode: tab.collaborationMode ?? existing?.collaborationMode ?? "normal",
     toolApprovalMode,
     tokenMode: tab.tokenMode ?? existing?.tokenMode ?? "full",
+    agentPreset: tab.agentPreset ?? existing?.agentPreset,
+    qualityFloor: tab.qualityFloor ?? existing?.qualityFloor,
+    floorInferred: tab.floorInferred ?? existing?.floorInferred,
     goal: tab.goal ?? existing?.goal,
     goalStatus: tab.goalStatus ?? existing?.goalStatus,
     canonicalTodos: existing?.canonicalTodos, dismissedTodoBatches: (tab.sessionPath !== undefined ? tab.sessionPath : existing?.sessionPath) === existing?.sessionPath ? existing?.dismissedTodoBatches : undefined,
@@ -628,6 +631,9 @@ export function sameMeta(a?: Meta, b?: Meta): boolean {
     a.toolApprovalMode === b.toolApprovalMode &&
 
     a.tokenMode === b.tokenMode &&
+    a.agentPreset === b.agentPreset &&
+    a.qualityFloor === b.qualityFloor &&
+    a.floorInferred === b.floorInferred &&
     a.goal === b.goal &&
     a.goalStatus === b.goalStatus &&
     sameTodoList(a.canonicalTodos, b.canonicalTodos) && sameStringList(a.dismissedTodoBatches, b.dismissedTodoBatches)
@@ -1441,22 +1447,13 @@ function applyEvent(s: State, e: WireEvent): State {
     case "completion_summary": {
       if (!e.completion) return s;
       const completionSummary = normalizeCompletionSummary(e.completion);
-      if (!completionSummaryNeedsAttention(completionSummary)) {
-        return { ...s, completionSummary };
-      }
-      const notice = completionSummaryNotice(completionSummary, t);
+      const presentation = completionSummaryPresentation(completionSummary, sessionQualityFloor(s.meta), t);
+      if (!presentation) return { ...s, completionSummary };
       return {
-        ...s,
-        completionSummary,
-        seq: s.seq + 1,
+        ...s, completionSummary, seq: s.seq + 1,
         items: [...s.items, {
-          kind: "notice",
-          id: `q${s.seq}`,
-          level: "warn",
-          variant: "completion",
-          title: notice.title,
-          text: notice.body,
-          action: "open_changes",
+          kind: "notice", id: `q${s.seq}`, level: presentation.level, variant: "completion",
+          title: presentation.title, text: presentation.body, action: "open_changes", completionSummary,
         }],
       };
     }

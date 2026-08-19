@@ -374,6 +374,10 @@ export interface WireCompletionSummary {
   review: string;
   gap_kinds?: string[];
   constraint_degraded: boolean;
+  /** Turn-time policy floor. Missing on historical events. */
+  floor?: "standard" | "delivery" | string;
+  /** Backend decision; authoritative when floor is present. */
+  attention?: boolean;
 }
 
 export type WorkspaceWatchState = "active" | "degraded" | "unavailable";

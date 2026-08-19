@@ -42,6 +42,17 @@ func TestDeliveryFloorWriteAddsStrictFullVerify(t *testing.T) {
 	}
 }
 
+func TestDeliveryScratchWriteAddsNoFloorObligation(t *testing.T) {
+	c := New("")
+	c.AbsorbReceipt(1, deliveryWriteReceipt(t, "/tmp/btc_klines.py", PolicyFloorDelivery), "", false, false)
+	if hasObligationKind(c, ObligationFullVerify, 0, ReasonPolicyFloor) {
+		t.Fatalf("delivery scratch write must not create a floor obligation: %+v", c.Obligations)
+	}
+	if hasObligationKind(c, ObligationDiffReview, 0, "") {
+		t.Fatalf("delivery scratch write must not create a diff review: %+v", c.Obligations)
+	}
+}
+
 func TestStandardWriteAddsNoFloorObligation(t *testing.T) {
 	c := New("")
 	c.AbsorbReceipt(1, deliveryWriteReceipt(t, "internal/agent/agent.go", PolicyFloorNone), "", false, false)

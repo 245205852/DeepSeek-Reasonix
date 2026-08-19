@@ -109,8 +109,10 @@ import {
   type QualityFloor,
   type TabMeta,
   type ToolApprovalMode,
+  type WireCompletionSummary,
   type WorkspaceConflictView,
 } from "./lib/types";
+import type { WorkspaceVerificationRevealRequest } from "./components/WorkspacePanel";
 import type { InvocationMetadataMap, StructuredInvocationSubmit } from "./lib/invocationDisplay";
 import type { RewindUndoState } from "./lib/rewindTypes";
 import { formatSelectionReference, type SelectedTextInsertRequest } from "./lib/selectedTextContext";
@@ -2933,6 +2935,22 @@ export default function App() {
     [openWorkspacePanel],
   );
 
+  const verificationRevealSequenceRef = useRef(0);
+  const [verificationRevealRequest, setVerificationRevealRequest] = useState<WorkspaceVerificationRevealRequest | null>(null);
+  const openTurnVerification = useCallback((summary: WireCompletionSummary) => {
+    openRightDockMode("changed");
+    verificationRevealSequenceRef.current += 1;
+    setVerificationRevealRequest({
+      id: verificationRevealSequenceRef.current,
+      summary,
+      tabId: activeTabId ?? "",
+      turnStartAt: state.turnStartAt,
+      currentSummary: state.completionSummary,
+    });
+  }, [activeTabId, openRightDockMode, state.completionSummary, state.turnStartAt]);
+
+  useEffect(() => { setVerificationRevealRequest(null); }, [activeTabId, state.completionSummary, state.turnStartAt]);
+
   const toggleTerminalPanel = useCallback(() => {
     setTerminalPanelOpen((prev) => {
       const next = !prev;
@@ -4853,6 +4871,7 @@ export default function App() {
                   onDeliveryContinue={() => void handleDeliveryContinue()}
                   onAcceptDelivery={() => void app.AcceptDeliveryToTab(activeTabIdRef.current ?? "")}
                   onOpenChanges={() => openRightDockMode("changed")}
+                  onOpenVerification={openTurnVerification}
                   onEditPrompt={handleEditPrompt}
                   onRewind={handleMessageAction}
                   checkpoints={state.checkpoints}
@@ -5253,6 +5272,9 @@ export default function App() {
                     onOpenInTerminal={openTerminalForPath}
                     initialViewMode={rightDockMode === "changed" ? "changed" : "files"}
                     completionSummary={state.completionSummary}
+                    turnStartAt={state.turnStartAt}
+                    verificationRevealRequest={verificationRevealRequest}
+                    qualityFloor={composerProfile.qualityFloor}
                     showViewTabs={false}
                     creationMode={sidebarCreation}
                   />

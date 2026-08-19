@@ -23,7 +23,10 @@ type Receipt struct {
 	Read      bool            `json:"read,omitempty"`
 	Write     bool            `json:"write,omitempty"`
 	Mutation  bool            `json:"mutation,omitempty"`
-	Todos     []TodoItem      `json:"todos,omitempty"`
+	// DeliveryScope separates scratch-only execution from project delivery debt.
+	// It is turn-local evidence and is never persisted or provider-visible.
+	DeliveryScope WriteScope `json:"-"`
+	Todos         []TodoItem `json:"todos,omitempty"`
 	// OutputBytes is the host-observed length of the tool's (redacted, trimmed)
 	// output. Content-evidence checks require it to be non-zero so a command
 	// that printed nothing (head -n 0, >/dev/null) can never count as reading.

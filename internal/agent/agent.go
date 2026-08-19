@@ -30,6 +30,7 @@ import (
 	"reasonix/internal/provider"
 	"reasonix/internal/runtimepolicy"
 	"reasonix/internal/sandbox"
+	"reasonix/internal/sessiontemp"
 	"reasonix/internal/shellparse"
 	"reasonix/internal/taskcontract"
 	"reasonix/internal/tool"
@@ -953,6 +954,8 @@ type Options struct {
 	WriteScheduler *SubagentScheduler
 	// WriteWorkspaceRoot normalizes parent write reservations.
 	WriteWorkspaceRoot string
+	// SessionTemp owns the exact private scratch root for delivery accounting.
+	SessionTemp *sessiontemp.Manager
 	// WriteRoots is the session-scoped writable directory manager.
 	WriteRoots *sandbox.WritableRootSet
 	// WriteAccessGate authorizes extra writable directories. nil is fail-closed
