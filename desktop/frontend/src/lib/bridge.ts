@@ -528,6 +528,7 @@ export interface AppBindings extends SessionCatalogBindings, ProjectTreeOrganiza
   SetNetwork(n: NetworkView): Promise<void>;
   SetBotSettings(b: BotSettingsView): Promise<void>;
   SetBotConnectionToolApprovalMode(connID: string, mode: string): Promise<void>;
+  SetBotDingtalkToolApprovalMode(mode: string): Promise<void>;
   SetBotSecret(envName: string, value: string): Promise<void>;
   ClearBotSecret(envName: string): Promise<void>;
   StartBotConnectionInstall(provider: string, domain: string): Promise<BotInstallStartResult>;
@@ -535,6 +536,7 @@ export interface AppBindings extends SessionCatalogBindings, ProjectTreeOrganiza
   BotRuntimeStatus(): Promise<BotRuntimeStatusView>;
   DiagnoseBotConnection(id: string): Promise<BotConnectionDiagnostic>;
   TestBotConnection(id: string, target?: string): Promise<BotConnectionDiagnostic>;
+  TestDingtalkBot(): Promise<BotConnectionDiagnostic>;
   SetCloseBehavior(mode: string): Promise<void>;
   SetDisplayMode(mode: string): Promise<void>;
   SetStatusBarStyle(style: string): Promise<void>;
@@ -1655,6 +1657,7 @@ function makeMockApp(): AppBindings {
         qq: [],
         feishu: [],
         weixin: [],
+        dingtalk: [],
       },
       control: {
         enabled: false,
@@ -1682,6 +1685,10 @@ function makeMockApp(): AppBindings {
         qqGroups: [],
         feishuGroups: [],
         weixinGroups: [],
+        dingtalkUsers: [],
+        dingtalkApprovers: [],
+        dingtalkAdmins: [],
+        dingtalkGroups: [],
       },
       qq: { enabled: false, appId: "", appSecretEnv: "QQ_BOT_APP_SECRET", secretSet: false, sandbox: false, model: "", toolApprovalMode: "ask", workspaceRoot: "", access: { enabled: true, allowAll: false, pairingEnabled: true, users: [], groups: [], approvers: [], admins: [] } },
       feishu: {
@@ -1701,6 +1708,18 @@ function makeMockApp(): AppBindings {
         tokenEnv: "WEIXIN_BOT_TOKEN",
         tokenSet: false,
         apiBase: "https://ilinkai.weixin.qq.com",
+      },
+      dingtalk: {
+        enabled: false,
+        clientId: "",
+        clientSecretEnv: "DINGTALK_CLIENT_SECRET",
+        secretSet: false,
+        botName: "",
+        requireMention: true,
+        model: "",
+        toolApprovalMode: "",
+        workspaceRoot: "",
+        access: { enabled: true, allowAll: false, pairingEnabled: true, users: [], groups: [], approvers: [], admins: [] },
       },
       connections: freshMock ? [] : [
         {
@@ -4607,6 +4626,9 @@ function makeMockApp(): AppBindings {
           const conn = settings.bot.connections.find((c) => c.id === connID);
           if (conn) conn.toolApprovalMode = mode as any;
         },
+        async SetBotDingtalkToolApprovalMode(mode) {
+          settings.bot.dingtalk.toolApprovalMode = mode as any;
+        },
         async SetBotSecret(envName: string, _value: string) {
           const name = envName.trim();
           if (settings.bot.qq.appSecretEnv === name) settings.bot.qq.secretSet = true;
@@ -4634,12 +4656,21 @@ function makeMockApp(): AppBindings {
         async BotRuntimeStatus() {
           const qqRunning = settings.bot.qq.enabled && settings.bot.qq.appId.trim() && settings.bot.qq.secretSet;
           const runningConnections = (qqRunning ? 1 : 0) + settings.bot.connections.filter((connection) => connection.enabled && connection.status === "connected").length;
+          const dingtalkRunning = Boolean(settings.bot.dingtalk.enabled && settings.bot.dingtalk.clientId.trim() && settings.bot.dingtalk.secretSet);
+          const running = settings.bot.enabled && runningConnections > 0;
           return {
-            running: settings.bot.enabled && runningConnections > 0,
-            status: settings.bot.enabled && runningConnections > 0 ? "running" : "stopped",
-            message: settings.bot.enabled && runningConnections > 0 ? `${runningConnections} bot connection(s) running` : "bot runtime is not started",
+            running,
+            status: running ? "running" : "stopped",
+            message: running ? `${runningConnections} bot connection(s) running` : "bot runtime is not started",
             connections: runningConnections,
-            startedAt: settings.bot.enabled && runningConnections > 0 ? new Date(t0).toISOString() : "",
+            startedAt: running ? new Date(t0).toISOString() : "",
+            platforms: {
+              dingtalk: dingtalkRunning ? "running" : settings.bot.dingtalk.clientId.trim() ? "configured" : "",
+              qq: qqRunning ? "running" : settings.bot.qq.appId.trim() ? "configured" : "",
+              ...Object.fromEntries(settings.bot.connections
+                .filter((connection) => connection.provider !== "qq")
+                .map((connection) => [connection.provider, connection.enabled && connection.status === "connected" ? "running" : connection.credential.secretSet ? "configured" : ""])),
+            },
           };
         },
         async StartBotConnectionInstall(provider: string, domain: string) {
@@ -4699,6 +4730,10 @@ function makeMockApp(): AppBindings {
           const diag = await this.DiagnoseBotConnection(id);
           if (target?.trim()) return { ...diag, message: `Mock test sent to ${target.trim()}`, messageId: "mock-message-id" };
           return diag;
+        },
+        async TestDingtalkBot() {
+          const occurredAt = new Date().toISOString();
+          return { id: "dingtalk", label: "DingTalk", status: "ok", message: "Mock dingtalk test sent", messageId: "mock-dingtalk-id", phase: "send", code: "dingtalk_test_send_ok", reportKind: "", reportDetail: "", occurredAt };
         },
         async SetCloseBehavior(mode: string) {
           settings.closeBehavior = mode === "quit" ? "quit" : "background";

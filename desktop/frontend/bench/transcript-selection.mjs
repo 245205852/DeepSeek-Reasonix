@@ -19,6 +19,17 @@ function assert(condition, message) {
   process.stdout.write(`  PASS  ${message}\n`);
 }
 
+async function clickIfPresent(page, selector) {
+  // Keep optional-control discovery and activation in one browser task so a
+  // state update cannot unmount the element between separate Playwright calls.
+  return page.evaluate((target) => {
+    const element = document.querySelector(target);
+    if (!(element instanceof HTMLElement)) return false;
+    element.click();
+    return true;
+  }, selector);
+}
+
 async function waitForVisibleSelectionStart(page, { preferHighest, wheelDelta, timeout = 15_000 } = {}) {
   const box = await page.locator(".transcript").boundingBox();
   if (box) await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
@@ -161,13 +172,10 @@ try {
       if (transcript) transcript.scrollTop = 0;
     });
     await page.waitForTimeout(100);
-    const older = page.locator(".transcript__older");
-    if (await older.count() === 0) break;
-    await older.click();
+    if (!(await clickIfPresent(page, ".transcript__older"))) break;
     await page.waitForTimeout(350);
   }
-  const jumpBottom = page.locator(".transcript__jump-bottom");
-  if (await jumpBottom.count()) await jumpBottom.click();
+  await clickIfPresent(page, ".transcript__jump-bottom");
   try {
     await page.waitForFunction(() => {
       const transcript = document.querySelector(".transcript");
@@ -409,8 +417,7 @@ try {
   const topDeadline = Date.now() + 15_000;
   let forwardPoints = null;
   while (Date.now() < topDeadline && (!forwardPoints || forwardPoints.anchorTurn > 17)) {
-    const older = page.locator(".transcript__older");
-    if (await older.count()) await older.click();
+    await clickIfPresent(page, ".transcript__older");
     await page.mouse.wheel(0, -700);
     await page.waitForTimeout(80);
     try {

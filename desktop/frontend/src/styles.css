@@ -18364,8 +18364,7 @@ body > .mermaid-diagram--fullscreen {
   min-width: 0;
 }
 .bot-channel-entry__icon,
-.bot-channel-entry-card__icon,
-.bot-channel-tab__icon {
+.bot-channel-entry-card__icon {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -18555,8 +18554,20 @@ body > .mermaid-diagram--fullscreen {
   box-shadow: inset 3px 0 0 var(--accent);
 }
 .bot-channel-tab__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
   width: 44px;
   height: 44px;
+  color: var(--fg-muted);
+}
+.bot-channel-tab__icon .bot-channel-tab__brand {
+  width: 24px;
+  height: 24px;
+}
+.bot-channel-tab--active .bot-channel-tab__icon {
+  color: var(--accent);
 }
 .bot-channel-tab__text {
   display: grid;
@@ -18587,7 +18598,7 @@ body > .mermaid-diagram--fullscreen {
   background: var(--fg-muted);
 }
 .bot-channel-tab__dot--configured {
-  background: var(--warn);
+  background: var(--ok);
 }
 .bot-channel-tab__dot--online {
   background: var(--ok);
@@ -18988,6 +18999,7 @@ body > .mermaid-diagram--fullscreen {
   line-height: 1.45;
 }
 .bot-pairing-row .set-seg {
+  display: inline-flex;
   flex: 0 0 auto;
 }
 .bot-simple-roles {
@@ -20044,15 +20056,15 @@ body > .mermaid-diagram--fullscreen {
 .bot-detail-card .bot-secret-row .btn {
   justify-self: flex-end;
 }
-.bot-detail-section--danger {
+/* 凭据操作按钮（保存/清除）横向排列在同一行。 */
+.bot-secret-row__actions {
+  display: flex;
   align-items: center;
+  gap: 6px;
+  justify-content: flex-end;
+}
+.bot-detail-section--danger {
   grid-template-columns: minmax(0, 1fr) auto;
-  gap: 12px;
-  border: 1px solid color-mix(in srgb, var(--danger) 20%, var(--border-soft));
-  border-left: 3px solid color-mix(in srgb, var(--danger) 70%, var(--border));
-  border-radius: 8px;
-  background: color-mix(in srgb, var(--danger) 3%, var(--bg-elev-2));
-  padding: 11px 12px 11px 10px;
 }
 .bot-detail-section--danger .bot-detail-section__head {
   color: var(--fg);
@@ -20062,6 +20074,15 @@ body > .mermaid-diagram--fullscreen {
   color: var(--fg-dim);
   font-size: var(--text-2xs);
   line-height: 1.45;
+}
+/* 危险操作按钮文字始终红色（含未 armed 的「删除」按钮）。 */
+.bot-detail-section--danger .inline-confirm .btn {
+  color: var(--button-danger-fg);
+}
+.bot-detail-section--danger .inline-confirm .btn--danger {
+  background: var(--button-danger-bg);
+  border-color: var(--button-danger-border);
+  color: var(--button-danger-fg);
 }
 .bot-legacy-grid {
   display: grid;
@@ -20531,6 +20552,16 @@ body > .mermaid-diagram--fullscreen {
     align-items: start;
   }
 
+  /* 危险操作区块在中等宽度下改为纵向堆叠，避免两列 grid 压缩导致
+     右侧按钮被 .settings-center__content 的 overflow-x: hidden 裁切。 */
+  .bot-detail-section--danger {
+    grid-template-columns: minmax(0, 1fr);
+    align-items: start;
+  }
+  .bot-detail-section--danger .inline-confirm {
+    justify-content: flex-start;
+  }
+
   .settings-field__control,
   .settings-inline-controls {
     justify-content: flex-start;
@@ -20600,7 +20631,6 @@ body > .mermaid-diagram--fullscreen {
 
   .bot-pairing-row {
     align-items: flex-start;
-    flex-direction: column;
   }
 
   .bot-simple-advanced__summary {
@@ -38226,3 +38256,27 @@ body > .mermaid-diagram--fullscreen {
     gap: 4px;
   }
 }
+
+/* DingTalk bot channel: the credential row and manual setup form need
+   their own multi-column layout; the shared .bot-secret-row is forced to a
+   single column inside .bot-detail-card, which stacks five elements. */
+.bot-connect-panel--dingtalk {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
+  padding: 14px;
+}
+.bot-connect-panel--dingtalk .bot-connect-panel__body {
+  gap: 12px;
+}
+.bot-manual-form.bot-manual-form--dingtalk {
+  gap: 10px;
+  max-width: none;
+}
+.bot-manual-form.bot-manual-form--dingtalk .bot-card-field {
+  grid-template-columns: minmax(92px, 128px) minmax(0, 1fr);
+}
+.bot-manual-form.bot-manual-form--dingtalk .bot-card-field > div {
+  justify-content: flex-start;
+}
+/* 钉钉凭据区与飞书一致：单列竖排（通用 .bot-detail-card .bot-secret-row
+   已强制为 1fr；这里不再覆盖为多列横排，避免 5 个元素挤一行放不下）。 */
