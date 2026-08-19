@@ -10256,6 +10256,7 @@ body > .mermaid-diagram--fullscreen {
   min-width: 0;
   min-height: 0;
   max-width: none;
+  max-height: none;
   margin: 0;
   border: 0;
   border-radius: 0;
@@ -11903,6 +11904,13 @@ body > .mermaid-diagram--fullscreen {
   border-color: var(--accent);
   outline: none;
   box-shadow: 0 0 0 2px var(--accent-soft);
+}
+.provider-name-input:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+.mem-hint.provider-name-readonly-hint {
+  color: var(--fg-dim);
 }
 .mem-input {
   flex: 1;
@@ -30413,13 +30421,12 @@ body > .mermaid-diagram--fullscreen {
   align-items: center;
   gap: 6px;
   width: 100%;
-  padding: 3px 6px;
+  padding: 5px 6px;
   border-radius: 6px;
   color: var(--color-text-muted, inherit);
-  font-size: 11px;
+  font-size: var(--text-md);
   font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0;
   cursor: pointer;
   background: transparent;
   border: 1px dashed transparent;
@@ -30452,7 +30459,7 @@ body > .mermaid-diagram--fullscreen {
 .project-tree__group-input {
   flex: 1 1 auto;
   min-width: 0;
-  font-size: 11px;
+  font-size: inherit;
   font-weight: 600;
   padding: 1px 4px;
   border-radius: 4px;

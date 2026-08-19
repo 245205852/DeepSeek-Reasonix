@@ -6225,6 +6225,8 @@ export function ProviderEditor({
     initial?.requestUrl ?? "",
     initial?.chatUrl ?? "",
   ));
+  const providerNameInputId = useId();
+  const providerNameHelpId = useId();
   const providerUrlInputId = useId();
   const providerUrlHelpId = useId();
   const [models, setModels] = useState((initial?.models ?? []).join(", "));
@@ -6611,8 +6613,21 @@ export function ProviderEditor({
 
   return (
     <div className={`provider-editor${isNewCustomProvider ? " provider-editor--wizard" : ""}`}>
-      <label className="set-label">{t("settings.customProviderName")}</label>
-      <input className="mem-input" placeholder={t("settings.customProviderNamePlaceholder")} value={name} onChange={(e) => setName(e.target.value)} disabled={!!initial} />
+      <label className="set-label" htmlFor={providerNameInputId}>{t("settings.customProviderName")}</label>
+      <input
+        id={providerNameInputId}
+        className="mem-input provider-name-input"
+        aria-describedby={initial ? providerNameHelpId : undefined}
+        placeholder={t("settings.customProviderNamePlaceholder")}
+        value={name}
+        onChange={(e) => setName(e.target.value)}
+        disabled={!!initial}
+      />
+      {initial && (
+        <div id={providerNameHelpId} className="mem-hint provider-name-readonly-hint">
+          {t("settings.customProviderNameReadonlyHint")}
+        </div>
+      )}
       <label className="set-label">{t("settings.providerProtocol")}</label>
       <select className="mem-select" value={kind} onChange={(e) => setKind(e.target.value)}>
         {providerKindChoices.map((choice) => (
