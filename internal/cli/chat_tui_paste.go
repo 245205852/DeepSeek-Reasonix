@@ -310,6 +310,55 @@ func (m *chatTUI) clearSubmittedPastes() {
 	m.pendingPastes = nil
 }
 
+// applyComposerPaste owns both terminal bracketed pastes and text read from the
+// native clipboard. Only terminal events advance terminalPasteSeq: replaying an
+// internal clipboard result must not make another in-flight Ctrl+V look as if
+// the terminal already handled it.
+func (m chatTUI) applyComposerPaste(msg tea.PasteMsg, terminal bool) (tea.Model, tea.Cmd) {
+	if terminal {
+		m.terminalPasteSeq++
+	}
+	m.followComposerCursor()
+	pasteBefore := m.input.Value()
+	var cmds []tea.Cmd
+	if m.state != tuiRunning && m.attachPastedImages(msg.Content) {
+		if shouldClearWideInputChange(pasteBefore, m.input.Value()) {
+			cmds = append(cmds, tea.ClearScreen)
+		}
+		return m, finalize(m, cmds)
+	}
+	if m.validComposerSelection() && !m.composerSel.empty() {
+		m.deleteComposerSelection()
+	}
+	if ref, ok := pastedFileRef(msg.Content); ok {
+		m.input.InsertString(ref + " ")
+		m.growInputToFit()
+		m.updateCompletion()
+		if shouldClearWideInputChange(pasteBefore, m.input.Value()) {
+			cmds = append(cmds, tea.ClearScreen)
+		}
+		return m, finalize(m, cmds)
+	}
+	if !m.chooserTyping() && m.pendingApproval == nil && m.rewind == nil && m.resumePick == nil && m.mcp == nil && m.clearConfirm == nil && m.mcpImport == nil && m.skillPick == nil && m.shouldFoldPaste(msg.Content) {
+		m.insertFoldedPaste(msg.Content)
+		m.growInputToFit()
+		m.updateCompletion()
+		if shouldClearWideInputChange(pasteBefore, m.input.Value()) {
+			cmds = append(cmds, tea.ClearScreen)
+		}
+		return m, finalize(m, cmds)
+	}
+
+	var inputCmd tea.Cmd
+	m.input, inputCmd = m.input.Update(msg)
+	cmds = append(cmds, inputCmd)
+	m.growInputToFit()
+	if shouldClearWideInputChange(pasteBefore, m.input.Value()) {
+		cmds = append(cmds, tea.ClearScreen)
+	}
+	return m, finalize(m, cmds)
+}
+
 var readClipboardImage = control.SaveClipboardImage
 
 func pasteClipboardImage() tea.Cmd {
@@ -352,7 +401,7 @@ func (m *chatTUI) beginClipboardImagePaste() tea.Cmd {
 		return nil
 	}
 	m.clipboardImagePending = true
-	m.clipboardImagePasteSeq = m.pasteSeq
+	m.clipboardImageTerminalPasteSeq = m.terminalPasteSeq
 	return pasteClipboardImage()
 }
 

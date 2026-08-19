@@ -279,11 +279,11 @@ type chatTUI struct {
 	// same image multiple times before the first read completes.
 	clipboardImagePending bool
 
-	// pasteSeq counts bracketed pastes delivered by the terminal.
-	// clipboardImagePasteSeq snapshots it when an image probe starts, so a
+	// terminalPasteSeq counts bracketed pastes delivered by the terminal.
+	// clipboardImageTerminalPasteSeq snapshots it when an image probe starts, so a
 	// terminal that pastes text itself is never pasted into twice.
-	pasteSeq               int
-	clipboardImagePasteSeq int
+	terminalPasteSeq               int
+	clipboardImageTerminalPasteSeq int
 
 	// The user bubble is echoed to scrollback immediately on Enter (bubbleStartIdx
 	// marks where in the transcript it landed). It stays "un-sendable" until the
@@ -1262,37 +1262,7 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, finalize(m, cmds)
 
 	case tea.PasteMsg:
-		m.pasteSeq++
-		m.followComposerCursor()
-		pasteBefore := m.input.Value()
-		if m.state != tuiRunning && m.attachPastedImages(msg.Content) {
-			if shouldClearWideInputChange(pasteBefore, m.input.Value()) {
-				cmds = append(cmds, tea.ClearScreen)
-			}
-			return m, finalize(m, cmds)
-		}
-		if m.validComposerSelection() && !m.composerSel.empty() {
-			inputBeforeSelection = pasteBefore
-			m.deleteComposerSelection()
-		}
-		if ref, ok := pastedFileRef(msg.Content); ok {
-			m.input.InsertString(ref + " ")
-			m.growInputToFit()
-			m.updateCompletion()
-			if shouldClearWideInputChange(pasteBefore, m.input.Value()) {
-				cmds = append(cmds, tea.ClearScreen)
-			}
-			return m, finalize(m, cmds)
-		}
-		if !m.chooserTyping() && m.pendingApproval == nil && m.rewind == nil && m.resumePick == nil && m.mcp == nil && m.clearConfirm == nil && m.mcpImport == nil && m.skillPick == nil && m.shouldFoldPaste(msg.Content) {
-			m.insertFoldedPaste(msg.Content)
-			m.growInputToFit()
-			m.updateCompletion()
-			if shouldClearWideInputChange(pasteBefore, m.input.Value()) {
-				cmds = append(cmds, tea.ClearScreen)
-			}
-			return m, finalize(m, cmds)
-		}
+		return m.applyComposerPaste(msg, true)
 
 	case tea.KeyPressMsg:
 		// Any keystroke dismisses a finished selection (copy is a right-click),
@@ -2055,7 +2025,7 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// Skip the fallback when the terminal already delivered a
 				// bracketed paste for this key press; it owns the paste and
 				// pasting again would duplicate the text.
-				if m.pasteSeq == m.clipboardImagePasteSeq {
+				if m.terminalPasteSeq == m.clipboardImageTerminalPasteSeq {
 					cmds = append(cmds, pasteClipboardText())
 				}
 				break
@@ -2081,10 +2051,7 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.text == "" {
 			break
 		}
-		// Re-enter through the canonical paste path so selection replacement,
-		// folded blocks, file references, completion, and wide-cell repainting
-		// behave exactly like the terminal's bracketed-paste event.
-		return m.update(tea.PasteMsg{Content: msg.text})
+		return m.applyComposerPaste(tea.PasteMsg{Content: msg.text}, false)
 
 	case clipboardCopyMsg:
 		if msg.statusHint && msg.seq != m.copyNoticeSeq {
