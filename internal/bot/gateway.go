@@ -349,7 +349,7 @@ func normalizeAdapterBindings(adapters []AdapterBinding) []AdapterBinding {
 }
 
 func (gw *BotGateway) buildAllowlist() {
-	for _, plat := range []Platform{PlatformQQ, PlatformFeishu, PlatformWeixin} {
+	for _, plat := range []Platform{PlatformQQ, PlatformFeishu, PlatformWeixin, PlatformDingtalk} {
 		gw.allowlist[plat] = make(map[string]bool)
 		if !gw.cfg.Allowlist.Enabled {
 			continue
@@ -374,7 +374,7 @@ func addAllowlistUsers(dst map[string]bool, users []string) {
 }
 
 func (gw *BotGateway) buildSelfUserIDs() {
-	for _, plat := range []Platform{PlatformQQ, PlatformFeishu, PlatformWeixin} {
+	for _, plat := range []Platform{PlatformQQ, PlatformFeishu, PlatformWeixin, PlatformDingtalk} {
 		gw.selfUserIDs[plat] = stringSet(gw.cfg.SelfUserIDs[plat])
 	}
 }
@@ -1651,6 +1651,12 @@ func (gw *BotGateway) handleSlashCommandCore(ctx context.Context, adapter Adapte
 		}
 		_ = gw.sendText(ctx, adapter, msg, gw.handleUseProjectCommand(key, msg.Text))
 
+	case slashCommandVerb(msg.Text) == "/model":
+		if !gw.requireCommandRole(ctx, adapter, msg, "admin") {
+			return
+		}
+		_ = gw.sendText(ctx, adapter, msg, gw.handleModelCommand(key, msg.Text))
+
 	case slashCommandVerb(msg.Text) == "/sessions":
 		if !gw.requireCommandRole(ctx, adapter, msg, "admin") {
 			return
@@ -1742,6 +1748,78 @@ func (gw *BotGateway) handleUseProjectCommand(key, text string) string {
 		return botRuntimeSwitchBusyText()
 	}
 	return fmt.Sprintf("已将当前远端会话切到项目 %s %s。\n下一条消息将在 %s 中运行。", project.ID, project.Name, displayBotPath(project.Root))
+}
+
+// handleModelCommand 处理 /model：无参查询当前模型，带参切换当前远端会话的
+// 模型（可选 --provider <name> 一并切换供应商）。模型以 provider/model 形式
+// 写入会话运行时覆盖，仅影响当前会话，不持久化到 bot 配置。
+func (gw *BotGateway) handleModelCommand(key, text string) string {
+	model, provider, statusOnly, ok := parseModelSelector(text)
+	if !ok {
+		return "用法: /model <模型名> [--provider <供应商>]，或 /model 查看当前模型。"
+	}
+	if statusOnly {
+		// 查询当前会话生效模型：优先看会话覆盖，其次全局 bot 默认。
+		var override sessionRuntimeOverride
+		gw.mu.Lock()
+		override = gw.sessionOverrides[key]
+		gw.mu.Unlock()
+		model := strings.TrimSpace(override.channel.Model)
+		if model == "" {
+			model = strings.TrimSpace(gw.cfg.Model)
+		}
+		if model == "" {
+			return "当前会话未指定模型，使用 bot 默认模型。"
+		}
+		return fmt.Sprintf("当前会话模型：%s", model)
+	}
+	ref := strings.TrimSpace(model)
+	if provider != "" {
+		ref = strings.TrimSpace(provider) + "/" + ref
+	}
+	// 复用 /use 的会话覆盖机制：只改 model，保留现有 workspace/tool 覆盖。
+	var existing sessionRuntimeOverride
+	gw.mu.Lock()
+	existing = gw.sessionOverrides[key]
+	gw.mu.Unlock()
+	existing.channel.Model = ref
+	if !gw.setSessionRuntimeOverride(key, existing, true) {
+		return botRuntimeSwitchBusyText()
+	}
+	if provider != "" {
+		return fmt.Sprintf("已将当前会话模型切换到 %s（供应商 %s）。", model, provider)
+	}
+	return fmt.Sprintf("已将当前会话模型切换到 %s。", ref)
+}
+
+func parseModelSelector(text string) (model, provider string, statusOnly, ok bool) {
+	parts := strings.Fields(text)
+	if len(parts) == 0 || strings.ToLower(strings.TrimSpace(parts[0])) != "/model" {
+		return "", "", false, false
+	}
+	if len(parts) == 1 {
+		return "", "", true, true
+	}
+	rest := parts[1:]
+	var models, providers []string
+	for i := 0; i < len(rest); i++ {
+		tok := rest[i]
+		if strings.EqualFold(tok, "--provider") || strings.EqualFold(tok, "-p") {
+			if i+1 < len(rest) {
+				providers = append(providers, rest[i+1])
+				i++
+			}
+			continue
+		}
+		if strings.HasPrefix(tok, "-") {
+			continue
+		}
+		models = append(models, tok)
+	}
+	if len(models) == 0 {
+		return "", strings.Join(providers, " "), false, true
+	}
+	return strings.Join(models, " "), strings.Join(providers, " "), false, true
 }
 
 func parseUseProjectSelector(text string) string {
@@ -2791,12 +2869,13 @@ func normalizeOptionalBotToolApprovalMode(mode string) string {
 
 func (gw *BotGateway) sendText(ctx context.Context, adapter Adapter, msg InboundMessage, text string) error {
 	out := OutboundMessage{
-		ConnectionID: msg.ConnectionID,
-		Domain:       msg.Domain,
-		ChatID:       msg.ChatID,
-		ChatType:     msg.ChatType,
-		Text:         text,
-		ReplyToMsgID: msg.MessageID,
+		ConnectionID:   msg.ConnectionID,
+		Domain:         msg.Domain,
+		ChatID:         msg.ChatID,
+		ChatType:       msg.ChatType,
+		Text:           text,
+		ReplyToMsgID:   msg.MessageID,
+		SessionWebhook: msg.SessionWebhook,
 	}
 	binding := AdapterBinding{
 		ID:       strings.TrimSpace(msg.ConnectionID),
@@ -2959,4 +3038,31 @@ func (gw *BotGateway) SendTextToAdapter(ctx context.Context, connID, domain, cha
 		ChatType: chatType,
 		Text:     text,
 	})
+}
+
+// TestSendToAdapter sends a test message through the adapter identified by
+// connID. The adapter must implement TestSender (currently dingtalk, which
+// replies to the most recent chat it learned a session webhook for). Returns
+// a readable error when the adapter is missing or does not support test sends.
+func (gw *BotGateway) TestSendToAdapter(ctx context.Context, connID, domain, text string) (SendResult, error) {
+	connID = strings.TrimSpace(connID)
+	domain = strings.TrimSpace(domain)
+	var target AdapterBinding
+	gw.mu.Lock()
+	for _, binding := range gw.adapters {
+		if strings.TrimSpace(binding.ID) == connID &&
+			(domain == "" || strings.EqualFold(strings.TrimSpace(binding.Domain), domain)) {
+			target = binding
+			break
+		}
+	}
+	gw.mu.Unlock()
+	if target.Adapter == nil {
+		return SendResult{}, fmt.Errorf("no bot adapter found for %q (domain %q)", connID, domain)
+	}
+	ts, ok := target.Adapter.(TestSender)
+	if !ok {
+		return SendResult{}, fmt.Errorf("bot adapter %q does not support test sends", connID)
+	}
+	return ts.TestSend(ctx, text)
 }

@@ -2572,3 +2572,115 @@ type stubPathController struct{ botController }
 
 func (stubPathController) SessionPath() string   { return "" }
 func (stubPathController) WorkspaceRoot() string { return "" }
+
+// testSenderAdapter 是实现了 TestSender 的假适配器，用于 TestSendToAdapter 测试。
+type testSenderAdapter struct {
+	*fakeAdapter
+	gotText string
+}
+
+func (a *testSenderAdapter) TestSend(_ context.Context, text string) (SendResult, error) {
+	a.gotText = text
+	return SendResult{MessageID: "test-1"}, nil
+}
+
+func TestGatewayTestSendToAdapter(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	ts := &testSenderAdapter{fakeAdapter: newFakeAdapter(PlatformDingtalk, "dingtalk")}
+	gw := NewGatewayWithAdapterBindings(GatewayConfig{}, []AdapterBinding{{
+		ID:       "dingtalk",
+		Domain:   "dingtalk",
+		Platform: PlatformDingtalk,
+		Adapter:  ts,
+	}}, logger)
+
+	result, err := gw.TestSendToAdapter(context.Background(), "dingtalk", "dingtalk", "hello")
+	if err != nil {
+		t.Fatalf("TestSendToAdapter: %v", err)
+	}
+	if result.MessageID != "test-1" {
+		t.Fatalf("message id = %q, want test-1", result.MessageID)
+	}
+	if ts.gotText != "hello" {
+		t.Fatalf("test text = %q, want hello", ts.gotText)
+	}
+
+	if _, err := gw.TestSendToAdapter(context.Background(), "missing", "", "hi"); err == nil {
+		t.Fatal("TestSendToAdapter for unknown conn should fail")
+	}
+}
+
+func TestGatewayTestSendToAdapterUnsupported(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	gw := NewGatewayWithAdapterBindings(GatewayConfig{}, []AdapterBinding{{
+		ID:       "feishu-lark",
+		Domain:   "lark",
+		Platform: PlatformFeishu,
+		Adapter:  newFakeAdapter(PlatformFeishu, "feishu"),
+	}}, logger)
+	if _, err := gw.TestSendToAdapter(context.Background(), "feishu-lark", "lark", "hi"); err == nil {
+		t.Fatal("TestSendToAdapter on non-TestSender adapter should fail")
+	}
+}
+
+func TestParseModelSelector(t *testing.T) {
+	cases := []struct {
+		text       string
+		model      string
+		provider   string
+		statusOnly bool
+		ok         bool
+	}{
+		{"/model", "", "", true, true},
+		{"/model deepseek-v4-flash", "deepseek-v4-flash", "", false, true},
+		{"/model deepseek-v4-flash --provider deepseek", "deepseek-v4-flash", "deepseek", false, true},
+		{"/model deepseek-v4-flash -p deepseek", "deepseek-v4-flash", "deepseek", false, true},
+		{"/model --provider deepseek deepseek-v4-flash", "deepseek-v4-flash", "deepseek", false, true},
+		{"/model deepseek-v4-flash --provider 17an", "deepseek-v4-flash", "17an", false, true},
+		{"not a model command", "", "", false, false},
+		{"/model --provider deepseek", "", "deepseek", false, true},
+	}
+	for _, c := range cases {
+		model, provider, statusOnly, ok := parseModelSelector(c.text)
+		if model != c.model || provider != c.provider || statusOnly != c.statusOnly || ok != c.ok {
+			t.Errorf("parseModelSelector(%q) = (%q, %q, %v, %v), want (%q, %q, %v, %v)",
+				c.text, model, provider, statusOnly, ok, c.model, c.provider, c.statusOnly, c.ok)
+		}
+	}
+}
+
+func TestHandleModelCommand(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	gw := NewGatewayWithAdapterBindings(GatewayConfig{Model: "deepseek/deepseek-v4-flash"}, []AdapterBinding{}, logger)
+	key := "test-model-key"
+
+	// 无参查询：回退全局默认。
+	got := gw.handleModelCommand(key, "/model")
+	if !strings.Contains(got, "deepseek-v4-flash") {
+		t.Fatalf("/model status = %q, want global default", got)
+	}
+
+	// 切换模型（不带 provider）。
+	got = gw.handleModelCommand(key, "/model deepseek-v4-pro")
+	if !strings.Contains(got, "deepseek-v4-pro") {
+		t.Fatalf("/model switch = %q", got)
+	}
+	gw.mu.Lock()
+	override := gw.sessionOverrides[key]
+	gw.mu.Unlock()
+	if override.channel.Model != "deepseek-v4-pro" {
+		t.Fatalf("override model = %q, want deepseek-v4-pro", override.channel.Model)
+	}
+
+	// 带 provider 切换：拼成 provider/model。
+	got = gw.handleModelCommand(key, "/model deepseek-v4-flash --provider 17an")
+	if !strings.Contains(got, "17an") || !strings.Contains(got, "deepseek-v4-flash") {
+		t.Fatalf("/model with provider = %q", got)
+	}
+	gw.mu.Lock()
+	override = gw.sessionOverrides[key]
+	gw.mu.Unlock()
+	if override.channel.Model != "17an/deepseek-v4-flash" {
+		t.Fatalf("override model = %q, want 17an/deepseek-v4-flash", override.channel.Model)
+	}
+}

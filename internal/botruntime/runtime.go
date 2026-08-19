@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"reasonix/internal/bot"
+	"reasonix/internal/bot/dingtalk"
 	"reasonix/internal/bot/feishu"
 	"reasonix/internal/bot/qq"
 	"reasonix/internal/bot/weixin"
@@ -29,6 +30,8 @@ func EnabledPlatforms(cfg *config.Config, channels []string) (map[bot.Platform]b
 				enabled[bot.PlatformFeishu] = PlatformConfigured(cfg, bot.PlatformFeishu)
 			case bot.PlatformWeixin:
 				enabled[bot.PlatformWeixin] = PlatformConfigured(cfg, bot.PlatformWeixin)
+			case bot.PlatformDingtalk:
+				enabled[bot.PlatformDingtalk] = PlatformConfigured(cfg, bot.PlatformDingtalk)
 			default:
 				if strings.EqualFold(ch, "lark") {
 					enabled[bot.PlatformFeishu] = PlatformConfigured(cfg, bot.PlatformFeishu)
@@ -42,6 +45,7 @@ func EnabledPlatforms(cfg *config.Config, channels []string) (map[bot.Platform]b
 	enabled[bot.PlatformQQ] = PlatformConfigured(cfg, bot.PlatformQQ)
 	enabled[bot.PlatformFeishu] = PlatformConfigured(cfg, bot.PlatformFeishu)
 	enabled[bot.PlatformWeixin] = PlatformConfigured(cfg, bot.PlatformWeixin)
+	enabled[bot.PlatformDingtalk] = PlatformConfigured(cfg, bot.PlatformDingtalk)
 	return enabled, warnings
 }
 
@@ -96,6 +100,10 @@ func PlatformConfigured(cfg *config.Config, platform bot.Platform) bool {
 		if cfg.Bot.Weixin.Enabled {
 			return true
 		}
+	case bot.PlatformDingtalk:
+		if cfg.Bot.Dingtalk.Enabled {
+			return true
+		}
 	}
 	for _, conn := range cfg.Bot.Connections {
 		if conn.Enabled && bot.Platform(strings.TrimSpace(conn.Provider)) == platform {
@@ -116,7 +124,7 @@ func ChannelConfigs(connections []config.BotConnectionConfig, includeModel bool,
 		}
 		plat := bot.Platform(strings.TrimSpace(conn.Provider))
 		switch plat {
-		case bot.PlatformQQ, bot.PlatformFeishu, bot.PlatformWeixin:
+		case bot.PlatformQQ, bot.PlatformFeishu, bot.PlatformWeixin, bot.PlatformDingtalk:
 		default:
 			continue
 		}
@@ -181,6 +189,9 @@ func ConnectionAccessConfigs(cfg *config.Config) map[string]bot.AccessConfig {
 	out := make(map[string]bot.AccessConfig)
 	if BotAccessActive(cfg.Bot.QQ.Access) {
 		out[string(bot.PlatformQQ)] = botAccessConfig(cfg.Bot.QQ.Access)
+	}
+	if BotAccessActive(cfg.Bot.Dingtalk.Access) {
+		out[string(bot.PlatformDingtalk)] = botAccessConfig(cfg.Bot.Dingtalk.Access)
 	}
 	for _, conn := range cfg.Bot.Connections {
 		if !conn.Enabled {
@@ -344,6 +355,13 @@ func AdapterBindings(cfg *config.Config, enabled map[bot.Platform]bool, feishuDo
 			weixinCfg.TokenEnv = firstNonEmptyString(strings.TrimSpace(conn.Credential.TokenEnv), weixinCfg.TokenEnv)
 			bindings = append(bindings, bot.AdapterBinding{ID: id, Domain: strings.TrimSpace(conn.Domain), Platform: platform, Adapter: weixin.New(weixinCfg, logger)})
 			hasConnection[platform] = true
+		case bot.PlatformDingtalk:
+			dingtalkCfg := cfg.Bot.Dingtalk
+			dingtalkCfg.Enabled = true
+			dingtalkCfg.ClientID = firstNonEmptyString(strings.TrimSpace(conn.Credential.AppID), dingtalkCfg.ClientID)
+			dingtalkCfg.SecretEnv = firstNonEmptyString(strings.TrimSpace(conn.Credential.AppSecretEnv), dingtalkCfg.SecretEnv)
+			bindings = append(bindings, bot.AdapterBinding{ID: id, Domain: strings.TrimSpace(conn.Domain), Platform: platform, Adapter: dingtalk.New(dingtalkCfg, logger)})
+			hasConnection[platform] = true
 		}
 	}
 	if enabled[bot.PlatformQQ] && !hasConnection[bot.PlatformQQ] {
@@ -356,6 +374,9 @@ func AdapterBindings(cfg *config.Config, enabled map[bot.Platform]bool, feishuDo
 	}
 	if enabled[bot.PlatformWeixin] && !hasConnection[bot.PlatformWeixin] {
 		bindings = append(bindings, bot.AdapterBinding{ID: string(bot.PlatformWeixin), Domain: "weixin", Platform: bot.PlatformWeixin, Adapter: weixin.New(cfg.Bot.Weixin, logger)})
+	}
+	if enabled[bot.PlatformDingtalk] && !hasConnection[bot.PlatformDingtalk] {
+		bindings = append(bindings, bot.AdapterBinding{ID: string(bot.PlatformDingtalk), Domain: "dingtalk", Platform: bot.PlatformDingtalk, Adapter: dingtalk.New(cfg.Bot.Dingtalk, logger)})
 	}
 	return bindings
 }
@@ -673,6 +694,8 @@ func rememberAllowlist(allowlist *config.BotAllowlist, platform bot.Platform, us
 			allowlist.FeishuUsers, changed = appendUniqueString(allowlist.FeishuUsers, userID)
 		case bot.PlatformWeixin:
 			allowlist.WeixinUsers, changed = appendUniqueString(allowlist.WeixinUsers, userID)
+		case bot.PlatformDingtalk:
+			allowlist.DingtalkUsers, changed = appendUniqueString(allowlist.DingtalkUsers, userID)
 		}
 	}
 	if !chatUsesGroupAllowlist(chatType) {
@@ -690,6 +713,8 @@ func rememberAllowlist(allowlist *config.BotAllowlist, platform bot.Platform, us
 		allowlist.FeishuGroups, groupChanged = appendUniqueString(allowlist.FeishuGroups, groupID)
 	case bot.PlatformWeixin:
 		allowlist.WeixinGroups, groupChanged = appendUniqueString(allowlist.WeixinGroups, groupID)
+	case bot.PlatformDingtalk:
+		allowlist.DingtalkGroups, groupChanged = appendUniqueString(allowlist.DingtalkGroups, groupID)
 	}
 	return changed || groupChanged
 }

@@ -294,6 +294,63 @@ func (a *App) TestBotConnection(id, target string) (BotConnectionDiagnostic, err
 	return diag, nil
 }
 
+// TestDingtalkBot 向最近交互过的钉钉会话发送一条测试消息，验证凭据与
+// 发送链路。钉钉无全局发送 API，机器人必须先收到过该会话的消息。
+func (a *App) TestDingtalkBot() (BotConnectionDiagnostic, error) {
+	cfg, err := a.loadDesktopBotConfig()
+	if err != nil {
+		return botConnectionDiagnostic(nil, "dingtalk", "error", "config", "config_load_failed", err.Error(), true), nil
+	}
+	// 解析实际运行的钉钉 connection id：优先取启用的 connections 中
+	// provider=dingtalk 的 id，否则退回 "dingtalk"（[bot.dingtalk] 直配的旧路径）。
+	connID := dingtalkRuntimeConnectionID(cfg.Bot.Connections)
+	dt := cfg.Bot.Dingtalk
+	clientID := strings.TrimSpace(dt.ClientID)
+	if clientID == "" {
+		clientID = os.Getenv(strings.TrimSpace(dt.ClientIDEnv))
+	}
+	secret := strings.TrimSpace(dt.ClientSecret)
+	if secret == "" {
+		secret = os.Getenv(strings.TrimSpace(dt.SecretEnv))
+	}
+	if clientID == "" || secret == "" {
+		return botConnectionDiagnostic(nil, "dingtalk", "warning", "credential", "dingtalk_secret_missing", "钉钉凭据未配置完整（AppKey / AppSecret）。", false), nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	// domain 传空：匹配任意 domain 的钉钉 adapter（手工配置的 connection 可能
+	// 有自定义 domain；空 domain 在 TestSendToAdapter 中视为匹配任意）。
+	result, err := a.botRuntime.TestSendToAdapter(ctx, connID, "", "Reasonix bot 测试消息：钉钉配置与发送链路可用。")
+	if err != nil {
+		if strings.Contains(err.Error(), "requires a known chat") {
+			return botConnectionDiagnostic(nil, "dingtalk", "warning", "send", "dingtalk_test_send_no_chat", "还没有可发送的钉钉会话：请先在钉钉中给机器人发一条消息，之后即可发送测试消息。", false), nil
+		}
+		return botConnectionDiagnostic(nil, "dingtalk", "error", "send", "dingtalk_test_send_failed", err.Error(), true), nil
+	}
+	diag := botConnectionDiagnostic(nil, "dingtalk", "ok", "send", "dingtalk_test_send_ok", "测试消息已发送，请检查钉钉会话。", false)
+	diag.MessageID = result.MessageID
+	return diag, nil
+}
+
+// dingtalkRuntimeConnectionID 解析 config 中实际运行的钉钉 connection id：
+// 取第一个启用的 provider=dingtalk 连接的 ConnectionRuntimeID；无匹配时退回
+// "dingtalk"（[bot.dingtalk] 直配的旧路径）。桌面端测试发送用它定位 adapter，
+// 避免硬编码 id 在自定义 id（如 dingtalk-test）下找不到。
+func dingtalkRuntimeConnectionID(connections []config.BotConnectionConfig) string {
+	for _, conn := range connections {
+		if !conn.Enabled {
+			continue
+		}
+		if strings.TrimSpace(conn.Provider) != string(bot.PlatformDingtalk) {
+			continue
+		}
+		if id := botruntime.ConnectionRuntimeID(conn); id != "" {
+			return id
+		}
+	}
+	return string(bot.PlatformDingtalk)
+}
+
 func botConnectionDiagnostic(conn *config.BotConnectionConfig, id, status, phase, code, message string, reportable bool) BotConnectionDiagnostic {
 	id = strings.TrimSpace(id)
 	label := ""

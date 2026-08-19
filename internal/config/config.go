@@ -771,6 +771,7 @@ type BotConfig struct {
 	QQ                 QQBotConfig           `toml:"qq"`
 	Feishu             FeishuBotConfig       `toml:"feishu"`
 	Weixin             WeixinBotConfig       `toml:"weixin"`
+	Dingtalk           DingtalkBotConfig     `toml:"dingtalk"`
 	Routes             []BotRouteConfig      `toml:"routes"`
 	Connections        []BotConnectionConfig `toml:"connections"`
 	// DesktopWatchers persists /desktop watch subscriptions so god-view
@@ -790,9 +791,10 @@ type BotDesktopWatcherConfig struct {
 }
 
 type BotSelfUserIDs struct {
-	QQ     []string `toml:"qq"`
-	Feishu []string `toml:"feishu"`
-	Weixin []string `toml:"weixin"`
+	QQ       []string `toml:"qq"`
+	Feishu   []string `toml:"feishu"`
+	Weixin   []string `toml:"weixin"`
+	Dingtalk []string `toml:"dingtalk"`
 }
 
 type BotControlConfig struct {
@@ -815,20 +817,24 @@ type BotRouteConfig struct {
 
 // BotAllowlist 控制哪些用户可以使用 bot。
 type BotAllowlist struct {
-	Enabled         bool     `toml:"enabled"`
-	AllowAll        bool     `toml:"allow_all"`
-	QQUsers         []string `toml:"qq_users"`
-	FeishuUsers     []string `toml:"feishu_users"`
-	WeixinUsers     []string `toml:"weixin_users"`
-	QQApprovers     []string `toml:"qq_approvers"`
-	FeishuApprovers []string `toml:"feishu_approvers"`
-	WeixinApprovers []string `toml:"weixin_approvers"`
-	QQAdmins        []string `toml:"qq_admins"`
-	FeishuAdmins    []string `toml:"feishu_admins"`
-	WeixinAdmins    []string `toml:"weixin_admins"`
-	QQGroups        []string `toml:"qq_groups"`
-	FeishuGroups    []string `toml:"feishu_groups"`
-	WeixinGroups    []string `toml:"weixin_groups"`
+	Enabled           bool     `toml:"enabled"`
+	AllowAll          bool     `toml:"allow_all"`
+	QQUsers           []string `toml:"qq_users"`
+	FeishuUsers       []string `toml:"feishu_users"`
+	WeixinUsers       []string `toml:"weixin_users"`
+	QQApprovers       []string `toml:"qq_approvers"`
+	FeishuApprovers   []string `toml:"feishu_approvers"`
+	WeixinApprovers   []string `toml:"weixin_approvers"`
+	QQAdmins          []string `toml:"qq_admins"`
+	FeishuAdmins      []string `toml:"feishu_admins"`
+	WeixinAdmins      []string `toml:"weixin_admins"`
+	QQGroups          []string `toml:"qq_groups"`
+	FeishuGroups      []string `toml:"feishu_groups"`
+	WeixinGroups      []string `toml:"weixin_groups"`
+	DingtalkUsers     []string `toml:"dingtalk_users"`
+	DingtalkApprovers []string `toml:"dingtalk_approvers"`
+	DingtalkAdmins    []string `toml:"dingtalk_admins"`
+	DingtalkGroups    []string `toml:"dingtalk_groups"`
 }
 
 type BotPairingConfig struct {
@@ -883,6 +889,21 @@ type WeixinBotConfig struct {
 	AccountID string `toml:"account_id"`
 	TokenEnv  string `toml:"token_env"` // 环境变量名，如 WEIXIN_BOT_TOKEN
 	APIBase   string `toml:"api_base"`  // iLink API base URL
+}
+
+// DingtalkBotConfig 钉钉企业内部应用机器人（Stream 模式）配置。
+type DingtalkBotConfig struct {
+	Enabled          bool            `toml:"enabled"`
+	ClientID         string          `toml:"client_id"`          // 钉钉应用 AppKey（ClientID）
+	ClientSecret     string          `toml:"client_secret"`      // 钉钉应用 AppSecret（ClientSecret）
+	ClientIDEnv      string          `toml:"client_id_env"`      // 环境变量名，如 DINGTALK_CLIENT_ID
+	SecretEnv        string          `toml:"secret_env"`         // 环境变量名，如 DINGTALK_CLIENT_SECRET
+	BotName          string          `toml:"bot_name"`           // 机器人昵称；群聊 @ 剥离时匹配
+	RequireMention   bool            `toml:"require_mention"`    // 群聊是否必须 @ 机器人
+	Model            string          `toml:"model"`              // 会话模型；空 = 全局默认
+	ToolApprovalMode string          `toml:"tool_approval_mode"` // ask|auto|yolo；空 = 全局默认
+	WorkspaceRoot    string          `toml:"workspace_root"`     // 会话工作目录；空 = 启动 Bot 时的 cwd
+	Access           BotAccessConfig `toml:"access"`             // 该渠道访问控制（allowlist）
 }
 
 // BotConnectionConfig is the desktop-friendly connection record for IM bot

@@ -1,6 +1,7 @@
 import { lazy, memo, Suspense, startTransition, useCallback, useDeferredValue, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
-import { ArrowRight, Bot as BotIcon, BrainCircuit, Check, CheckCircle2, ChevronDown, ChevronUp, CircleDollarSign, Clipboard, ExternalLink, KeyRound, Languages, ListChecks, Loader2, MessageCircle, Monitor, MoreHorizontal, PanelBottom, Play, Power, QrCode, RefreshCw, Send, ShieldCheck, SlidersHorizontal, Trash2, Volume2 } from "lucide-react";
+import { ArrowRight, BrainCircuit, Check, CheckCircle2, ChevronDown, ChevronUp, CircleDollarSign, Clipboard, ExternalLink, KeyRound, Languages, ListChecks, Loader2, Monitor, MoreHorizontal, PanelBottom, Play, Power, QrCode, RefreshCw, Send, ShieldCheck, SlidersHorizontal, Trash2, Volume2 } from "lucide-react";
 import { asArray } from "../lib/array";
+import { CHANNEL_ICONS } from "./channelIcons";
 import { useDeferredClose } from "../lib/useMountTransition";
 import { app, openExternal } from "../lib/bridge";
 import { normalizeLangPref, useI18n, useT, type DictKey, type LangPref } from "../lib/i18n";
@@ -1113,6 +1114,7 @@ function defaultBotSettings(): BotSettingsView {
       qq: [],
       feishu: [],
       weixin: [],
+      dingtalk: [],
     },
     control: {
       enabled: false,
@@ -1140,6 +1142,10 @@ function defaultBotSettings(): BotSettingsView {
       qqGroups: [],
       feishuGroups: [],
       weixinGroups: [],
+      dingtalkUsers: [],
+      dingtalkApprovers: [],
+      dingtalkAdmins: [],
+      dingtalkGroups: [],
     },
     qq: { enabled: false, appId: "", appSecretEnv: "QQ_BOT_APP_SECRET", secretSet: false, sandbox: false, model: "", toolApprovalMode: "ask", workspaceRoot: "", access: defaultBotAccess() },
     feishu: {
@@ -1159,6 +1165,18 @@ function defaultBotSettings(): BotSettingsView {
       tokenEnv: "WEIXIN_BOT_TOKEN",
       tokenSet: false,
       apiBase: "https://ilinkai.weixin.qq.com",
+    },
+    dingtalk: {
+      enabled: false,
+      clientId: "",
+      clientSecretEnv: "DINGTALK_CLIENT_SECRET",
+      secretSet: false,
+      botName: "",
+      requireMention: true,
+      model: "",
+      toolApprovalMode: "",
+      workspaceRoot: "",
+      access: defaultBotAccess(),
     },
     connections: [],
   };
@@ -1210,6 +1228,7 @@ function normalizeBotSettings(bot: BotSettingsView | null | undefined): BotSetti
       qq: asArray(selfUserIds.qq),
       feishu: asArray(selfUserIds.feishu),
       weixin: asArray(selfUserIds.weixin),
+      dingtalk: asArray(selfUserIds.dingtalk),
     },
     control: {
       enabled: Boolean(control.enabled),
@@ -1237,6 +1256,10 @@ function normalizeBotSettings(bot: BotSettingsView | null | undefined): BotSetti
       qqGroups: asArray(allowlist.qqGroups),
       feishuGroups: asArray(allowlist.feishuGroups),
       weixinGroups: asArray(allowlist.weixinGroups),
+      dingtalkUsers: asArray(allowlist.dingtalkUsers),
+      dingtalkApprovers: asArray(allowlist.dingtalkApprovers),
+      dingtalkAdmins: asArray(allowlist.dingtalkAdmins),
+      dingtalkGroups: asArray(allowlist.dingtalkGroups),
     },
     qq: {
       ...fallback.qq,
@@ -1248,6 +1271,12 @@ function normalizeBotSettings(bot: BotSettingsView | null | undefined): BotSetti
     },
     feishu: { ...fallback.feishu, ...bot?.feishu, domain: bot?.feishu?.domain === "lark" ? "lark" : "feishu", mode },
     weixin: { ...fallback.weixin, ...bot?.weixin },
+    dingtalk: {
+      ...fallback.dingtalk,
+      ...bot?.dingtalk,
+      toolApprovalMode: normalizeBotToolApprovalMode(bot?.dingtalk?.toolApprovalMode),
+      access: normalizeBotAccess(bot?.dingtalk?.access, fallback.dingtalk.access),
+    },
     connections: asArray(bot?.connections).map(normalizeBotConnection),
   };
 }
@@ -2067,7 +2096,7 @@ function NetworkSection({ s, busy, apply }: SectionProps) {
   );
 }
 
-type BotInstallTarget = "qq" | "feishu" | "lark" | "weixin";
+type BotInstallTarget = "qq" | "feishu" | "lark" | "weixin" | "dingtalk";
 type BotOfficialInstallTarget = Exclude<BotInstallTarget, "qq">;
 const BOT_ALLOWLIST_TEXT_KEYS = [
   "qqUsers",
@@ -2082,6 +2111,10 @@ const BOT_ALLOWLIST_TEXT_KEYS = [
   "qqGroups",
   "feishuGroups",
   "weixinGroups",
+  "dingtalkUsers",
+  "dingtalkApprovers",
+  "dingtalkAdmins",
+  "dingtalkGroups",
 ] as const;
 type BotAllowlistTextKey = typeof BOT_ALLOWLIST_TEXT_KEYS[number];
 type BotSelfUserTextKey = keyof BotSettingsView["selfUserIds"];
@@ -2092,12 +2125,13 @@ type BotInstallState = {
   timeLeft: number;
   message: string;
 };
-const BOT_INSTALL_TARGETS: BotInstallTarget[] = ["qq", "feishu", "lark", "weixin"];
+const BOT_INSTALL_TARGETS: BotInstallTarget[] = ["qq", "feishu", "lark", "weixin", "dingtalk"];
 const BOT_INSTALL_DEFAULT_TIMEOUT_SECONDS = 300;
 const BOT_INSTALL_MIN_POLL_SECONDS = 3;
 const DEFAULT_QQ_SECRET_ENV = "QQ_BOT_APP_SECRET";
 const QQ_CONNECTION_ID = "__qq_bot__";
-const BOT_PLATFORM_KEYS = ["qq", "feishu", "weixin"] as const;
+const DINGTALK_CONNECTION_ID = "__dingtalk_bot__";
+const BOT_PLATFORM_KEYS = ["qq", "feishu", "weixin", "dingtalk"] as const;
 type BotPlatformKey = typeof BOT_PLATFORM_KEYS[number];
 const BOT_ALLOWLIST_ROLES = ["Users", "Groups", "Approvers", "Admins"] as const;
 type BotAllowlistRole = typeof BOT_ALLOWLIST_ROLES[number];
@@ -2110,12 +2144,14 @@ function botAllowlistKey(platform: BotPlatformKey, role: BotAllowlistRole): BotA
 function botConnectionPlatform(connection: BotConnectionView): BotPlatformKey {
   if (connection.provider === "weixin") return "weixin";
   if (connection.provider === "qq") return "qq";
+  if (connection.provider === "dingtalk") return "dingtalk";
   return "feishu";
 }
 
 function botPlatformLabel(platform: BotPlatformKey, t: ReturnType<typeof useT>): string {
   if (platform === "qq") return "QQ";
   if (platform === "weixin") return t("settings.botWeixin");
+  if (platform === "dingtalk") return t("settings.botDingtalk");
   return t("settings.botPlatformFeishuLark");
 }
 
@@ -2139,6 +2175,9 @@ function BotsSection({ s, busy, apply, initialFocus }: BotsSectionProps) {
   const [connectionSecrets, setConnectionSecrets] = useState<Record<string, string>>({});
   const [accessText, setAccessText] = useState<Record<string, string>>({});
   const [qqSecretValue, setQQSecretValue] = useState("");
+  const [dingtalkSecretValue, setDingtalkSecretValue] = useState("");
+  const [dingtalkTesting, setDingtalkTesting] = useState(false);
+  const [runtimePlatforms, setRuntimePlatforms] = useState<Record<string, string>>({});
   const [expandedConnectionId, setExpandedConnectionId] = useState("");
   const [advancedMode, setAdvancedMode] = useState(false);
   const installRef = useRef(install);
@@ -2160,6 +2199,24 @@ function BotsSection({ s, busy, apply, initialFocus }: BotsSectionProps) {
     setQQSecretValue("");
     setTestTargets({});
   }, [s.bot]);
+  // 轮询 bot runtime 的真实平台连接状态，用于 channel 在线徽章（如钉钉黄/绿点）。
+  useEffect(() => {
+    let cancelled = false;
+    const refresh = () => {
+      if (typeof app.BotRuntimeStatus !== "function") return;
+      void app.BotRuntimeStatus()
+        .then((status) => {
+          if (!cancelled) setRuntimePlatforms(status.platforms ?? {});
+        })
+        .catch(() => {});
+    };
+    refresh();
+    const id = window.setInterval(refresh, 5000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, []);
   const focusAccessStep = () => {
     if (!expandedConnectionId && connectionItems.length > 0) {
       const first = connectionItems[0];
@@ -2262,6 +2319,14 @@ function BotsSection({ s, busy, apply, initialFocus }: BotsSectionProps) {
     updateQQ({ access: normalizeBotAccess({ ...draft.qq.access, ...patch }) });
   const persistQQAccess = (patch: Partial<BotAccessView>) =>
     persistQQ({ access: normalizeBotAccess({ ...draft.qq.access, ...patch }) });
+  const updateDingtalk = (patch: Partial<BotSettingsView["dingtalk"]>) =>
+    setDraft((prev) => ({ ...prev, dingtalk: { ...prev.dingtalk, ...patch } }));
+  const persistDingtalk = (patch: Partial<BotSettingsView["dingtalk"]>) =>
+    persistBotDraft({ ...draft, dingtalk: { ...draft.dingtalk, ...patch } });
+  const updateDingtalkAccess = (patch: Partial<BotAccessView>) =>
+    updateDingtalk({ access: normalizeBotAccess({ ...draft.dingtalk.access, ...patch }) });
+  const persistDingtalkAccess = (patch: Partial<BotAccessView>) =>
+    persistDingtalk({ access: normalizeBotAccess({ ...draft.dingtalk.access, ...patch }) });
   const updateConnectionAccess = (id: string, patch: Partial<BotAccessView>) =>
     setConnections((items) => items.map((item) => item.id === id ? { ...item, access: normalizeBotAccess({ ...item.access, ...patch }) } : item));
   const persistConnectionAccess = (connection: BotConnectionView, patch: Partial<BotAccessView>) =>
@@ -2294,6 +2359,7 @@ function BotsSection({ s, busy, apply, initialFocus }: BotsSectionProps) {
   const installQrURL = install.result?.url ?? "";
   const installQrIsImage = installQrURL.startsWith("data:image/");
   const isQQInstallTarget = installTarget === "qq";
+  const isDingtalkInstallTarget = installTarget === "dingtalk";
   const selectedInstallLabel = botTargetLabel(installTarget, t);
   const installUserCode = install.result?.userCode && installTarget !== "weixin" ? formatInstallUserCode(install.result.userCode) : "";
   const qqSecretEnv = draft.qq.appSecretEnv.trim() || DEFAULT_QQ_SECRET_ENV;
@@ -2304,12 +2370,17 @@ function BotsSection({ s, busy, apply, initialFocus }: BotsSectionProps) {
   const nativeRuntimeAvailable = typeof window !== "undefined" && Boolean(window.runtime);
   const browserPreviewBotConfigured = !nativeRuntimeAvailable && (qqAdded || draft.connections.length > 0);
   const qqOnline = qqConfigured && nativeRuntimeAvailable;
+  const dingtalkSecretEnv = draft.dingtalk.clientSecretEnv.trim() || "DINGTALK_CLIENT_SECRET";
+  const dingtalkConfigured = Boolean(draft.dingtalk.enabled && draft.dingtalk.clientId.trim() && dingtalkSecretEnv && draft.dingtalk.secretSet);
+  // 保存按钮仅在用户输入了新的密钥后才可点；已保存过密钥但没有新输入时置灰。
+  const dingtalkCanSaveAndEnable = Boolean(draft.dingtalk.clientId.trim() && dingtalkSecretEnv && dingtalkSecretValue.trim());
+  const dingtalkOnline = runtimePlatforms["dingtalk"] === "running" || runtimePlatforms["dingtalk"] === "degraded";
   const connectionItems: BotConnectionListItem[] = [
     ...(qqAdded ? [{ kind: "qq" as const }] : []),
     ...draft.connections.map((connection) => ({ kind: "connection" as const, connection })),
   ];
-  const selectedInstallConnection = isQQInstallTarget ? undefined : draft.connections.find((connection) => botInstallTargetMatchesConnection(installTarget, connection));
-  const selectedChannelConfigured = isQQInstallTarget ? qqAdded : Boolean(selectedInstallConnection);
+  const selectedInstallConnection = isQQInstallTarget || isDingtalkInstallTarget ? undefined : draft.connections.find((connection) => botInstallTargetMatchesConnection(installTarget, connection));
+  const selectedChannelConfigured = isQQInstallTarget ? qqAdded : isDingtalkInstallTarget ? dingtalkConfigured : Boolean(selectedInstallConnection);
   const routeConnectionOptions = [
     ...(qqAdded ? [{ id: "qq", label: "QQ" }] : []),
     ...draft.connections.map((connection) => ({
@@ -2439,6 +2510,15 @@ function BotsSection({ s, busy, apply, initialFocus }: BotsSectionProps) {
       }));
     }
   };
+  const testDingtalkBot = async () => {
+    setDingtalkTesting(true);
+    try {
+      const diag = await app.TestDingtalkBot();
+      setDiagnostics((prev) => ({ ...prev, dingtalk: diag }));
+    } finally {
+      setDingtalkTesting(false);
+    }
+  };
   const ensureReportableDiagnostic = async (connection: BotConnectionView) => {
     return diagnoseConnection(connection.id);
   };
@@ -2495,6 +2575,15 @@ function BotsSection({ s, busy, apply, initialFocus }: BotsSectionProps) {
     });
     setQQSecretValue("");
   };
+  const clearDingtalkSecret = async () => {
+    const env = draft.dingtalk.clientSecretEnv.trim() || "DINGTALK_CLIENT_SECRET";
+    if (!env) return;
+    await apply(async () => {
+      await saveBot();
+      await app.ClearBotSecret(env);
+    });
+    setDingtalkSecretValue("");
+  };
   const focusQQAccessSettings = () => {
     setDiagnostics((prev) => ({ ...prev, [QQ_CONNECTION_ID]: t("settings.botQQAccessRequired") }));
     setExpandedConnectionId(QQ_CONNECTION_ID);
@@ -2524,6 +2613,38 @@ function BotsSection({ s, busy, apply, initialFocus }: BotsSectionProps) {
     setDraft(nextDraft);
     setQQSecretValue("");
   };
+  const saveDingtalkAndEnable = async () => {
+    const env = draft.dingtalk.clientSecretEnv.trim() || "DINGTALK_CLIENT_SECRET";
+    const secret = dingtalkSecretValue.trim();
+    const nextDraft = botDraftWithDerivedGatewayState({
+      ...draft,
+      dingtalk: {
+        ...draft.dingtalk,
+        enabled: true,
+        clientId: draft.dingtalk.clientId.trim(),
+        clientSecretEnv: env,
+        secretSet: draft.dingtalk.secretSet || Boolean(secret),
+      },
+    });
+    await apply(async () => {
+      await app.SetBotSettings(nextDraft);
+      if (secret) await app.SetBotSecret(env, secret);
+    });
+    setDraft(nextDraft);
+    setDingtalkSecretValue("");
+  };
+  const removeDingtalkBot = async () => {
+    const env = draft.dingtalk.clientSecretEnv.trim() || "DINGTALK_CLIENT_SECRET";
+    const nextDraft = botDraftWithDerivedGatewayState({
+      ...draft,
+      dingtalk: { enabled: false, clientId: "", clientSecretEnv: "DINGTALK_CLIENT_SECRET", secretSet: false, botName: "", requireMention: true, model: "", toolApprovalMode: "", workspaceRoot: "", access: defaultBotAccess() },
+    });
+    await apply(async () => {
+      await app.SetBotSettings(nextDraft);
+      if (draft.dingtalk.secretSet) await app.ClearBotSecret(env);
+    });
+    setDraft(nextDraft);
+  };
   const removeQQBot = async () => {
     const env = draft.qq.appSecretEnv.trim() || DEFAULT_QQ_SECRET_ENV;
     const nextDraft = botDraftWithDerivedGatewayState({
@@ -2539,7 +2660,8 @@ function BotsSection({ s, busy, apply, initialFocus }: BotsSectionProps) {
     setExpandedConnectionId("");
   };
   const selectedQQ = isQQInstallTarget && qqAdded;
-  const selectedConnection = isQQInstallTarget ? null : selectedInstallConnection ?? null;
+  const selectedConnection = isQQInstallTarget || isDingtalkInstallTarget ? null : selectedInstallConnection ?? null;
+  const selectedDingtalk = isDingtalkInstallTarget && dingtalkConfigured;
   const selectedDiagnostic = selectedConnection ? diagnostics[selectedConnection.id] : undefined;
   const selectedDiagnosticDetail = diagnosticReportDetail(selectedDiagnostic);
   const selectedConnectionRemote = selectedConnection ? firstConnectionRemote(selectedConnection) : "";
@@ -2555,9 +2677,9 @@ function BotsSection({ s, busy, apply, initialFocus }: BotsSectionProps) {
   const platformFilterAvailable = connectedPlatforms.size > 0 &&
     BOT_PLATFORM_KEYS.some((platform) => !connectedPlatforms.has(platform) && !platformHasAllowlistText(platform));
   const botChannelConnectionForTarget = (target: BotInstallTarget) =>
-    target === "qq" ? null : draft.connections.find((connection) => botInstallTargetMatchesConnection(target, connection));
+    target === "qq" || target === "dingtalk" ? null : draft.connections.find((connection) => botInstallTargetMatchesConnection(target, connection));
   const botChannelIsConfigured = (target: BotInstallTarget) =>
-    target === "qq" ? qqAdded : Boolean(botChannelConnectionForTarget(target));
+    target === "qq" ? qqAdded : target === "dingtalk" ? dingtalkConfigured : Boolean(botChannelConnectionForTarget(target));
   const openBotChannel = (target: BotInstallTarget) => {
     setInstallTarget(target);
     const connection = botChannelConnectionForTarget(target);
@@ -2856,6 +2978,208 @@ function BotsSection({ s, busy, apply, initialFocus }: BotsSectionProps) {
     </article>
   );
 
+  const dingtalkDetailCard = (
+    <article className="bot-detail-card" aria-labelledby="bot-detail-title">
+      <div className="bot-detail-card__head">
+        <div className="bot-detail-card__identity">
+          <div className="bot-detail-card__title" id="bot-detail-title">
+            DingTalk Bot
+            <span className="badge badge--neutral">DingTalk</span>
+            <span className={`badge ${dingtalkOnline ? "badge--project" : dingtalkConfigured ? "badge--feedback" : "badge--feedback"}`}>
+              {dingtalkOnline ? t("settings.botConnectionConnected") : dingtalkConfigured ? t("settings.botConnectionConfigured") : t("settings.botConnectionDisconnected")}
+            </span>
+          </div>
+          <div className="bot-detail-card__desc">{t("settings.botAutoSaveHint")}</div>
+        </div>
+        <div className="bot-detail-card__actions">
+          <button type="button" className="btn btn--small" disabled={busy || !dingtalkConfigured || dingtalkTesting} onClick={() => void testDingtalkBot()}>
+            {dingtalkTesting ? t("settings.botTesting") : t("settings.botTest")}
+          </button>
+        </div>
+      </div>
+
+      <section className="bot-detail-section">
+        <div className="bot-detail-section__head">{t("settings.botConnectionSummary")}</div>
+        <div className="bot-detail-summary">
+          <div>
+            <span>{t("settings.botConnectionColumnChannel")}</span>
+            <strong>DingTalk</strong>
+          </div>
+          <div>
+            <span>{t("settings.botDingtalkClientId")}</span>
+            <code title={draft.dingtalk.clientId.trim() || undefined}>{draft.dingtalk.clientId.trim() || "—"}</code>
+          </div>
+          <div>
+            <span>{t("settings.botConnectionColumnScope")}</span>
+            <strong>{t("settings.botScopeGlobal")}</strong>
+          </div>
+          <div>
+            <span>{t("settings.botConnectionColumnStatus")}</span>
+            <strong>{dingtalkOnline ? t("settings.botConnectionConnected") : dingtalkConfigured ? t("settings.botConnectionConfigured") : t("settings.botConnectionDisconnected")}</strong>
+          </div>
+        </div>
+      </section>
+
+      <section className="bot-detail-section bot-detail-section--runtime-primary">
+        <SettingsField label={t("settings.botEnableBot")} hint={t("settings.botGatewayEnabled")}>
+          <ToggleSegment
+            value={draft.dingtalk.enabled}
+            disabled={busy}
+            onChange={(enabled) => {
+              updateDingtalk({ enabled });
+              void persistDingtalk({ enabled });
+            }}
+          />
+        </SettingsField>
+        <SettingsField label={t("settings.botToolApprovalMode")} hint={t("settings.botToolApprovalModeHint")}>
+          <div className="provider-add-segmented" role="group" aria-label={t("settings.botToolApprovalMode")}>
+            {TOOL_APPROVAL_MODES.map((mode) => (
+              <button
+                key={mode}
+                type="button"
+                className={normalizeBotToolApprovalMode(draft.dingtalk.toolApprovalMode, true) === mode ? "provider-add-segmented__item provider-add-segmented__item--active" : "provider-add-segmented__item"}
+                disabled={busy}
+                onClick={() => {
+                  updateDingtalk({ toolApprovalMode: mode });
+                  // 热更新运行中 gateway，不重启 bot runtime（避免面板跳变）。
+                  void app.SetBotDingtalkToolApprovalMode(mode).catch((e) => {
+                    console.warn("set dingtalk approval mode failed", e);
+                  });
+                }}
+              >
+                {t(`settings.botToolApprovalMode.${mode}` as DictKey)}
+              </button>
+            ))}
+          </div>
+        </SettingsField>
+        <SettingsField label={t("settings.botChannelModel")} hint={t("settings.botChannelModelHint")}>
+          <ModelPicker
+            s={s}
+            refs={refs}
+            value={toRef(draft.dingtalk.model, s)}
+            disabled={busy}
+            emptyOptionLabel={t("settings.botChannelModelAuto")}
+            emptyOptionHint={settingsModelMeta(s, t)}
+            onPick={(model) => {
+              updateDingtalk({ model });
+              void persistDingtalk({ model });
+            }}
+          />
+        </SettingsField>
+      </section>
+
+      {renderBotAccessSection(DINGTALK_CONNECTION_ID, draft.dingtalk.access, updateDingtalkAccess, (patch) => void persistDingtalkAccess(patch))}
+
+      <section className="bot-detail-section">
+        <div className="bot-detail-section__head">{t("settings.botRuntimeSettings")}</div>
+        <SettingsField label={t("settings.botWorkspaceRoot")} hint={t("settings.botWorkspaceRootHint")}>
+          <input
+            className="mem-input"
+            value={draft.dingtalk.workspaceRoot}
+            disabled={busy}
+            placeholder={t("settings.botWorkspaceRootPlaceholder")}
+            spellCheck={false}
+            onChange={(event) => updateDingtalk({ workspaceRoot: event.target.value })}
+            onBlur={(event) => void persistDingtalk({ workspaceRoot: event.currentTarget.value })}
+          />
+        </SettingsField>
+        <SettingsField label={t("settings.botDingtalkBotName")} hint={t("settings.botDingtalkBotNameHint")}>
+          <input
+            className="mem-input"
+            value={draft.dingtalk.botName}
+            disabled={busy}
+            placeholder={t("settings.botDingtalkBotName")}
+            spellCheck={false}
+            onChange={(event) => updateDingtalk({ botName: event.target.value })}
+            onBlur={(event) => void persistDingtalk({ botName: event.currentTarget.value })}
+          />
+        </SettingsField>
+        <SettingsField label={t("settings.botDingtalkRequireMention")} hint={t("settings.botDingtalkRequireMentionHint")}>
+          <ToggleSegment
+            value={draft.dingtalk.requireMention}
+            disabled={busy}
+            onLabel={t("settings.toggleOn")}
+            offLabel={t("settings.toggleOff")}
+            onChange={(requireMention) => {
+              updateDingtalk({ requireMention });
+              void persistDingtalk({ requireMention });
+            }}
+          />
+        </SettingsField>
+      </section>
+
+      <section className="bot-detail-section">
+        <div className="bot-detail-section__head">{t("settings.botCredential")}</div>
+        <div className="bot-credential-stack">
+          <div className="bot-credential-line">
+            <span>{draft.dingtalk.clientId.trim() ? t("settings.botCredentialClientId", { value: draft.dingtalk.clientId.trim() }) : t("settings.botCredentialConfigured")}</span>
+            <strong>{draft.dingtalk.secretSet ? t("settings.botSecretSet") : t("settings.botSecretMissing")}</strong>
+          </div>
+          <div className="bot-secret-row bot-secret-row--dingtalk">
+            <input
+              className="mem-input"
+              value={draft.dingtalk.clientId}
+              disabled={busy}
+              placeholder={t("settings.botDingtalkClientId")}
+              spellCheck={false}
+              aria-label={t("settings.botDingtalkClientId")}
+              onChange={(event) => updateDingtalk({ clientId: event.target.value })}
+              onBlur={(event) => void persistDingtalk({ clientId: event.currentTarget.value })}
+            />
+            <input
+              className="mem-input"
+              value={draft.dingtalk.clientSecretEnv || "DINGTALK_CLIENT_SECRET"}
+              disabled={busy}
+              placeholder="DINGTALK_CLIENT_SECRET"
+              spellCheck={false}
+              aria-label={t("settings.botSecretEnv")}
+              onChange={(event) => updateDingtalk({ clientSecretEnv: event.target.value })}
+              onBlur={(event) => void persistDingtalk({ clientSecretEnv: event.currentTarget.value || "DINGTALK_CLIENT_SECRET" })}
+            />
+            <input
+              className="mem-input"
+              type="password"
+              value={dingtalkSecretValue}
+              disabled={busy}
+              placeholder={draft.dingtalk.secretSet ? t("settings.botSecretReplace") : t("settings.botSecretPaste")}
+              aria-label={t("settings.botDingtalkClientSecret")}
+              onChange={(event) => setDingtalkSecretValue(event.target.value)}
+            />
+            <div className="bot-secret-row__actions">
+              <button type="button" className="btn btn--secondary btn--small" disabled={busy || !dingtalkCanSaveAndEnable} onClick={() => void saveDingtalkAndEnable()}>
+                {draft.dingtalk.secretSet ? t("settings.saveKey") : t("settings.botSaveAndEnable")}
+              </button>
+              <button type="button" className="btn btn--secondary btn--small" disabled={busy || !draft.dingtalk.secretSet} onClick={() => void clearDingtalkSecret()}>
+                {t("settings.clearKey")}
+              </button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {diagnosticMessage(diagnostics.dingtalk) ? (
+        <div className="bot-detail-notice">
+          <span>{diagnosticMessage(diagnostics.dingtalk)}</span>
+        </div>
+      ) : null}
+
+      <section className="bot-detail-section bot-detail-section--danger">
+        <div>
+          <div className="bot-detail-section__head">{t("settings.botDangerZone")}</div>
+          <p>{t("settings.deleteBotHint")}</p>
+        </div>
+        <InlineConfirmButton
+          label={t("settings.deleteBot")}
+          confirmLabel={t("settings.confirmDeleteBot")}
+          cancelLabel={t("common.cancel")}
+          disabled={busy}
+          danger
+          onConfirm={() => void removeDingtalkBot()}
+        />
+      </section>
+    </article>
+  );
+
   const connectionDetailCard = selectedConnection ? (
     <article className="bot-detail-card" aria-labelledby="bot-detail-title">
       <div className="bot-detail-card__head">
@@ -3005,12 +3329,14 @@ function BotsSection({ s, busy, apply, initialFocus }: BotsSectionProps) {
                 placeholder={selectedConnection.credential.secretSet ? t("settings.botSecretReplace") : t("settings.botSecretPaste")}
                 onChange={(event) => setConnectionSecrets((prev) => ({ ...prev, [selectedConnection.id]: event.target.value }))}
               />
-              <button type="button" className="btn btn--secondary btn--small" disabled={busy || !(connectionSecrets[selectedConnection.id] ?? "").trim()} onClick={() => void saveConnectionSecret(selectedConnection)}>
-                {t("settings.saveKey")}
-              </button>
-              <button type="button" className="btn btn--secondary btn--small" disabled={busy || !selectedConnection.credential.secretSet} onClick={() => void clearConnectionSecret(selectedConnection)}>
-                {t("settings.clearKey")}
-              </button>
+              <div className="bot-secret-row__actions">
+                <button type="button" className="btn btn--secondary btn--small" disabled={busy || !(connectionSecrets[selectedConnection.id] ?? "").trim()} onClick={() => void saveConnectionSecret(selectedConnection)}>
+                  {t("settings.saveKey")}
+                </button>
+                <button type="button" className="btn btn--secondary btn--small" disabled={busy || !selectedConnection.credential.secretSet} onClick={() => void clearConnectionSecret(selectedConnection)}>
+                  {t("settings.clearKey")}
+                </button>
+              </div>
             </div>
           ) : null}
         </div>
@@ -3084,6 +3410,71 @@ function BotsSection({ s, busy, apply, initialFocus }: BotsSectionProps) {
                 </button>
               </div>
               {!qqCanEnableAccess ? <div className="bot-connect-panel__hint bot-connect-panel__hint--warning">{t("settings.botQQAccessRequired")}</div> : null}
+            </div>
+          </div>
+        </div>
+      ) : isDingtalkInstallTarget ? (
+        <div className="bot-connect-panel bot-connect-panel--manual bot-connect-panel--dingtalk">
+          <div className="bot-connect-panel__body">
+            <div className="bot-qq-simple__head">
+              <div>
+                <strong>{selectedInstallLabel}</strong>
+                <p>{t("settings.botInstallManualDingtalk")}</p>
+              </div>
+              <span className={`bot-qq-simple__status${dingtalkConfigured ? " bot-qq-simple__status--ready" : ""}`}>
+                {dingtalkConfigured ? <CheckCircle2 aria-hidden="true" /> : <KeyRound aria-hidden="true" />}
+                {draft.dingtalk.secretSet ? t("settings.botSecretSet") : t("settings.botSecretMissing")}
+              </span>
+            </div>
+            <div className="bot-manual-form bot-manual-form--dingtalk">
+              <div className="bot-card-field">
+                <span>{t("settings.botDingtalkClientId")}</span>
+                <div>
+                  <input
+                    className="mem-input"
+                    aria-label={t("settings.botDingtalkClientId")}
+                    value={draft.dingtalk.clientId}
+                    disabled={busy}
+                    spellCheck={false}
+                    onChange={(event) => updateDingtalk({ clientId: event.target.value })}
+                    onBlur={(event) => void persistDingtalk({ clientId: event.currentTarget.value })}
+                  />
+                </div>
+              </div>
+              <div className="bot-card-field">
+                <span>{t("settings.botDingtalkClientSecret")}</span>
+                <div>
+                  <input
+                    className="mem-input"
+                    type="password"
+                    value={dingtalkSecretValue}
+                    disabled={busy}
+                    placeholder={draft.dingtalk.secretSet ? t("settings.botSecretSavedOptional") : t("settings.botSecretPaste")}
+                    spellCheck={false}
+                    aria-label={t("settings.botDingtalkClientSecret")}
+                    onChange={(event) => setDingtalkSecretValue(event.target.value)}
+                  />
+                </div>
+              </div>
+              <div className="bot-card-field">
+                <span>{t("settings.botDingtalkBotName")}</span>
+                <div>
+                  <input
+                    className="mem-input"
+                    aria-label={t("settings.botDingtalkBotName")}
+                    value={draft.dingtalk.botName}
+                    disabled={busy}
+                    spellCheck={false}
+                    onChange={(event) => updateDingtalk({ botName: event.target.value })}
+                    onBlur={(event) => void persistDingtalk({ botName: event.currentTarget.value })}
+                  />
+                </div>
+              </div>
+              <div className="bot-qq-simple__actions">
+                <button type="button" className="btn btn--primary btn--small" disabled={busy || !dingtalkCanSaveAndEnable} onClick={() => void saveDingtalkAndEnable()}>
+                  {t("settings.botSaveAndEnable")}
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -3179,7 +3570,10 @@ function BotsSection({ s, busy, apply, initialFocus }: BotsSectionProps) {
                 onClick={() => openBotChannel(target)}
               >
                 <span className="bot-channel-tab__icon" aria-hidden="true">
-                  {target === "qq" || target === "weixin" ? <MessageCircle size={24} /> : <BotIcon size={24} />}
+                  {(() => {
+                    const Icon = CHANNEL_ICONS[target];
+                    return <Icon className="bot-channel-tab__brand" />;
+                  })()}
                 </span>
                 <span className="bot-channel-tab__text">
                   <strong>{botTargetLabel(target, t)}</strong>
@@ -3204,6 +3598,8 @@ function BotsSection({ s, busy, apply, initialFocus }: BotsSectionProps) {
             </article>
           ) : selectedQQ ? (
             qqDetailCard
+          ) : selectedDingtalk ? (
+            dingtalkDetailCard
           ) : selectedConnection ? (
             connectionDetailCard
           ) : (
@@ -3665,6 +4061,7 @@ function botTargetLabel(target: BotInstallTarget, t: ReturnType<typeof useT>): s
     case "qq": return "QQ";
     case "lark": return "Lark";
     case "weixin": return t("settings.botWeixin");
+    case "dingtalk": return t("settings.botDingtalk");
     default: return t("settings.botFeishu");
   }
 }
@@ -3674,6 +4071,7 @@ function botTargetHint(target: BotInstallTarget, t: ReturnType<typeof useT>): st
     case "qq": return t("settings.botInstallQQHint");
     case "lark": return t("settings.botInstallLarkHint");
     case "weixin": return t("settings.botInstallWeixinHint");
+    case "dingtalk": return t("settings.botInstallDingtalkHint");
     default: return t("settings.botInstallFeishuHint");
   }
 }
@@ -3699,12 +4097,14 @@ function botAccessReady(access: BotAccessView): boolean {
 
 function botInstallTargetMatchesConnection(target: BotOfficialInstallTarget, connection: BotConnectionView): boolean {
   if (target === "weixin") return connection.provider === "weixin";
+  if (target === "dingtalk") return connection.provider === "dingtalk";
   if (target === "lark") return connection.provider === "feishu" && connection.domain === "lark";
   return connection.provider === "feishu" && connection.domain !== "lark";
 }
 
 function botInstallTargetForConnection(connection: BotConnectionView): BotInstallTarget {
   if (connection.provider === "weixin") return "weixin";
+  if (connection.provider === "dingtalk") return "dingtalk";
   if (connection.provider === "feishu" && connection.domain === "lark") return "lark";
   if (connection.provider === "qq") return "qq";
   return "feishu";
@@ -3753,6 +4153,9 @@ function botConnectionCredentialSummary(connection: BotConnectionView, t: Return
       : t("settings.botCredentialLocalWeixin");
   }
   if (connection.credential.appId) {
+    if (connection.provider === "dingtalk") {
+      return t("settings.botCredentialClientId", { value: connection.credential.appId });
+    }
     return t("settings.botCredentialApp", { value: connection.credential.appId });
   }
   return t("settings.botCredentialConfigured");
@@ -3840,6 +4243,7 @@ function sanitizeBotDraft(draft: BotSettingsView): BotSettingsView {
       qq: uniqueStrings(bot.selfUserIds.qq.map((v) => v.trim())),
       feishu: uniqueStrings(bot.selfUserIds.feishu.map((v) => v.trim())),
       weixin: uniqueStrings(bot.selfUserIds.weixin.map((v) => v.trim())),
+      dingtalk: uniqueStrings(bot.selfUserIds.dingtalk.map((v) => v.trim())),
     },
     control: {
       enabled: bot.control.enabled,
@@ -3866,6 +4270,10 @@ function sanitizeBotDraft(draft: BotSettingsView): BotSettingsView {
       qqGroups: uniqueStrings(bot.allowlist.qqGroups.map((v) => v.trim())),
       feishuGroups: uniqueStrings(bot.allowlist.feishuGroups.map((v) => v.trim())),
       weixinGroups: uniqueStrings(bot.allowlist.weixinGroups.map((v) => v.trim())),
+      dingtalkUsers: uniqueStrings(bot.allowlist.dingtalkUsers.map((v) => v.trim())),
+      dingtalkApprovers: uniqueStrings(bot.allowlist.dingtalkApprovers.map((v) => v.trim())),
+      dingtalkAdmins: uniqueStrings(bot.allowlist.dingtalkAdmins.map((v) => v.trim())),
+      dingtalkGroups: uniqueStrings(bot.allowlist.dingtalkGroups.map((v) => v.trim())),
     },
     qq: {
       ...bot.qq,
@@ -3890,6 +4298,14 @@ function sanitizeBotDraft(draft: BotSettingsView): BotSettingsView {
       accountId: bot.weixin.accountId.trim(),
       tokenEnv: bot.weixin.tokenEnv.trim(),
       apiBase: bot.weixin.apiBase.trim().replace(/\/+$/, ""),
+    },
+    dingtalk: {
+      ...bot.dingtalk,
+      clientId: bot.dingtalk.clientId.trim(),
+      clientSecretEnv: bot.dingtalk.clientSecretEnv.trim(),
+      botName: bot.dingtalk.botName.trim(),
+      toolApprovalMode: normalizeBotToolApprovalMode(bot.dingtalk.toolApprovalMode),
+      access: sanitizeBotAccess(bot.dingtalk.access),
     },
     connections: bot.connections.map((conn) => ({ ...normalizeBotConnection(conn), access: sanitizeBotAccess(conn.access) })).filter((conn) => conn.id && conn.provider),
   };
@@ -6052,6 +6468,10 @@ function botAllowlistTextValues(allowlist: BotAllowlistView): Record<BotAllowlis
     qqGroups: allowlist.qqGroups.join("\n"),
     feishuGroups: allowlist.feishuGroups.join("\n"),
     weixinGroups: allowlist.weixinGroups.join("\n"),
+    dingtalkUsers: allowlist.dingtalkUsers.join("\n"),
+    dingtalkApprovers: allowlist.dingtalkApprovers.join("\n"),
+    dingtalkAdmins: allowlist.dingtalkAdmins.join("\n"),
+    dingtalkGroups: allowlist.dingtalkGroups.join("\n"),
   };
 }
 
@@ -6060,6 +6480,7 @@ function botSelfUserTextValues(selfUserIds: BotSettingsView["selfUserIds"]): Rec
     qq: selfUserIds.qq.join("\n"),
     feishu: selfUserIds.feishu.join("\n"),
     weixin: selfUserIds.weixin.join("\n"),
+    dingtalk: selfUserIds.dingtalk.join("\n"),
   };
 }
 

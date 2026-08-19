@@ -2982,6 +2982,8 @@ func channelDisplayName(provider, domain string) string {
 		return "WeChat"
 	case "qq":
 		return "QQ"
+	case "dingtalk":
+		return "DingTalk"
 	default:
 		return provider
 	}
@@ -3640,12 +3642,27 @@ func (a *App) ResumeSessionForTab(tabID, path string) ([]HistoryMessage, error) 
 	return a.HistoryForTab(tab.ID), nil
 }
 
+// validateChannelSessionPath 校验 bot/channel 会话路径：channel 会话可能位于
+// 当前 controller 的 session dir（project scope）或全局 session dir
+// （global scope），单 tab 无法同时覆盖两者，因此都放行。
+func validateChannelSessionPath(ctrlDir, path string) (string, string, error) {
+	if p, b, err := validateSessionPath(ctrlDir, path); err == nil {
+		return p, b, nil
+	}
+	if globalDir := config.SessionDir(); globalDir != "" && globalDir != ctrlDir {
+		if p, b, err := validateSessionPath(globalDir, path); err == nil {
+			return p, b, nil
+		}
+	}
+	return validateSessionPath(ctrlDir, path)
+}
+
 func (a *App) OpenChannelSessionForTab(tabID, path string) ([]HistoryMessage, error) {
 	tab, ctrl := a.tabAndCtrlByID(tabID)
 	if tab == nil || ctrl == nil {
 		return []HistoryMessage{}, fmt.Errorf("tab is not ready")
 	}
-	sessionPath, _, err := validateSessionPath(controllerSessionDir(ctrl), path)
+	sessionPath, _, err := validateChannelSessionPath(controllerSessionDir(ctrl), path)
 	if err != nil {
 		return nil, err
 	}
@@ -3667,7 +3684,7 @@ func (a *App) OpenChannelSessionPageForTab(tabID, path string, limit int) (Histo
 	if tab == nil || ctrl == nil {
 		return HistoryPage{}, fmt.Errorf("tab is not ready")
 	}
-	sessionPath, _, err := validateSessionPath(controllerSessionDir(ctrl), path)
+	sessionPath, _, err := validateChannelSessionPath(controllerSessionDir(ctrl), path)
 	if err != nil {
 		return HistoryPage{}, err
 	}
