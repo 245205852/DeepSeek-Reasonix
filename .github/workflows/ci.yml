@@ -364,6 +364,7 @@ jobs:
           pnpm --dir frontend test:terminal
           pnpm --dir frontend test:task-monitor
           pnpm --dir frontend test:workspace
+          pnpm --dir frontend test:stream
           pnpm --dir frontend test:motion
           pnpm --dir frontend test:motion-browser
           pnpm --dir frontend test:transcript

@@ -1,11 +1,9 @@
 // Run: tsx src/__tests__/raf-batch.test.ts
 //
-// rafBatch must flush coalesced deltas once per animation frame in the
-// visible path, and must NOT stall forever when requestAnimationFrame stops
-// firing (backgrounded/minimized window, saturated main thread): the stall
-// timer flushes after 200ms, so the transcript never freezes on "thinking…"
-// until the user hits Stop. rAF must win the race whenever frames are
-// produced, so the visible path keeps its one-flush-per-frame behavior.
+// rafBatch must flush coalesced deltas once per animation frame in the visible
+// path and request a best-effort timer flush when rAF stops while the JS task
+// queue still runs. The fake scheduler verifies the requested 200ms ordering;
+// browser throttling or a blocked main thread may deliver either callback later.
 
 import { createRafBatch } from "../lib/rafBatch";
 

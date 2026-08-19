@@ -1,13 +1,11 @@
 // Coalesces text/reasoning stream deltas into one flush per animation frame.
 // Non-text events must drain() first so causal ordering is preserved.
 //
-// The rAF flush is backed by a stall timer: when requestAnimationFrame stops
-// firing (WebView2 window minimized/occluded, saturated main thread), deltas
-// would otherwise pile up in the buffer until a non-stream event calls drain()
-// — the transcript freezes on "thinking…" and the whole reply appears only
-// after the user hits Stop. With the timer, the flush still happens while
-// stalled; rAF simply wins the race whenever frames are being produced, so
-// the visible path keeps its one-flush-per-frame behavior.
+// A best-effort timer backs up rAF when frame callbacks pause but the JS task
+// queue still runs, as can happen in a throttled or occluded WebView. It is not
+// a main-thread watchdog: browser timer throttling and long tasks can delay
+// both callbacks. Whichever callback runs first flushes and cancels the other,
+// preserving one-flush-per-frame behavior while frames are being produced.
 
 type Flush<T> = (batch: T[]) => void;
 
@@ -17,9 +15,8 @@ interface BatchHandle<T> {
   size: () => number;
 }
 
-// Fallback flush interval used only while rAF is not firing. 200ms is far
-// longer than any healthy frame interval, so the timer never fires in the
-// common visible path where rAF is cancelled first.
+// Request the fallback after 200ms. Timers are minimum-delay only, so a
+// throttled WebView or blocked task queue can deliver it later.
 const STALL_TIMEOUT_MS = 200;
 
 export function createRafBatch<T>(flush: Flush<T>): BatchHandle<T> {
