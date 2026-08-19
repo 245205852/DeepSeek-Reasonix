@@ -21,6 +21,48 @@ func TestAllowlistUserCountIncludesRoles(t *testing.T) {
 	}
 }
 
+// TestMergeLegacyDingtalkChannel: 直配 [bot.dingtalk]（无 [[bot.connections]]）
+// 时，模型/权限/工作目录必须合成进 Channels 与 ConnectionChannels，否则 CLI
+// bot 模式忽略这些运行选项（与桌面端 legacy 钉钉通道同路径）。
+func TestMergeLegacyDingtalkChannel(t *testing.T) {
+	channels, connectionChannels := MergeLegacyDingtalkChannel(config.DingtalkBotConfig{
+		Model:            "deepseek/deepseek-v4-flash",
+		ToolApprovalMode: "yolo",
+		WorkspaceRoot:    "/tmp/work",
+	}, nil, nil)
+
+	plat := channels[bot.PlatformDingtalk]
+	if plat.Model != "deepseek/deepseek-v4-flash" {
+		t.Fatalf("channel model = %q, want deepseek/deepseek-v4-flash", plat.Model)
+	}
+	if plat.ToolApprovalMode != "yolo" {
+		t.Fatalf("channel tool_approval_mode = %q, want yolo", plat.ToolApprovalMode)
+	}
+	if plat.WorkspaceRoot != "/tmp/work" {
+		t.Fatalf("channel workspace_root = %q, want /tmp/work", plat.WorkspaceRoot)
+	}
+	conn := connectionChannels[string(bot.PlatformDingtalk)]
+	if conn.Model != "deepseek/deepseek-v4-flash" {
+		t.Fatalf("connection channel model = %q, want deepseek/deepseek-v4-flash", conn.Model)
+	}
+}
+
+func TestMergeLegacyDingtalkChannelEmptyIsNoop(t *testing.T) {
+	channels := map[bot.Platform]bot.ChannelConfig{
+		bot.PlatformFeishu: {Model: "keep"},
+	}
+	out, conn := MergeLegacyDingtalkChannel(config.DingtalkBotConfig{}, channels, nil)
+	if _, ok := out[bot.PlatformDingtalk]; ok {
+		t.Fatalf("empty legacy dingtalk config should not create a dingtalk channel")
+	}
+	if out[bot.PlatformFeishu].Model != "keep" {
+		t.Fatalf("existing channels were mutated")
+	}
+	if conn != nil {
+		t.Fatalf("connection channels should stay nil for empty config")
+	}
+}
+
 func TestRemoteRemembererKeepsDistinctGroupUsers(t *testing.T) {
 	isolateUserConfig(t)
 	cfg := config.Default()

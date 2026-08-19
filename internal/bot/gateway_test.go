@@ -2652,35 +2652,34 @@ func TestParseModelSelector(t *testing.T) {
 func TestHandleModelCommand(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	gw := NewGatewayWithAdapterBindings(GatewayConfig{Model: "deepseek/deepseek-v4-flash"}, []AdapterBinding{}, logger)
-	key := "test-model-key"
-
-	// 无参查询：回退全局默认。
-	got := gw.handleModelCommand(key, "/model")
-	if !strings.Contains(got, "deepseek-v4-flash") {
+	msg := InboundMessage{Platform: PlatformWeixin, ConnectionID: "weixin-weixin", Domain: "weixin", ChatType: ChatDM, ChatID: "chat", UserID: "user"}
+	key := BuildSessionKey(msg.Session())
+	overrideModel := func() string { gw.mu.Lock(); defer gw.mu.Unlock(); return gw.sessionOverrides[key].channel.Model }
+	if got := gw.handleModelCommand(msg, "/model"); !strings.Contains(got, "deepseek-v4-flash") {
 		t.Fatalf("/model status = %q, want global default", got)
 	}
-
-	// 切换模型（不带 provider）。
-	got = gw.handleModelCommand(key, "/model deepseek-v4-pro")
-	if !strings.Contains(got, "deepseek-v4-pro") {
+	gw.mu.Lock()
+	gw.cfg.Channels = map[Platform]ChannelConfig{PlatformWeixin: {Model: "17an/deepseek-v4-flash"}}
+	gw.mu.Unlock()
+	if got := gw.handleModelCommand(msg, "/model"); !strings.Contains(got, "17an/deepseek-v4-flash") {
+		t.Fatalf("/model status with channel model = %q, want channel model", got)
+	}
+	if got := gw.handleModelCommand(msg, "/model deepseek-v4-pro"); !strings.Contains(got, "deepseek-v4-pro") {
 		t.Fatalf("/model switch = %q", got)
 	}
-	gw.mu.Lock()
-	override := gw.sessionOverrides[key]
-	gw.mu.Unlock()
-	if override.channel.Model != "deepseek-v4-pro" {
-		t.Fatalf("override model = %q, want deepseek-v4-pro", override.channel.Model)
+	if m := overrideModel(); m != "deepseek-v4-pro" {
+		t.Fatalf("override model = %q, want deepseek-v4-pro", m)
 	}
-
-	// 带 provider 切换：拼成 provider/model。
-	got = gw.handleModelCommand(key, "/model deepseek-v4-flash --provider 17an")
-	if !strings.Contains(got, "17an") || !strings.Contains(got, "deepseek-v4-flash") {
+	if got := gw.handleModelCommand(msg, "/model deepseek-v4-flash --provider 17an"); !strings.Contains(got, "17an") || !strings.Contains(got, "deepseek-v4-flash") {
 		t.Fatalf("/model with provider = %q", got)
 	}
-	gw.mu.Lock()
-	override = gw.sessionOverrides[key]
-	gw.mu.Unlock()
-	if override.channel.Model != "17an/deepseek-v4-flash" {
-		t.Fatalf("override model = %q, want 17an/deepseek-v4-flash", override.channel.Model)
+	if m := overrideModel(); m != "17an/deepseek-v4-flash" {
+		t.Fatalf("override model = %q, want 17an/deepseek-v4-flash", m)
+	}
+	if got := gw.handleModelCommand(msg, "/model --provider deepseek"); !strings.Contains(got, "用法") {
+		t.Fatalf("provider-only /model = %q, want usage message", got)
+	}
+	if m := overrideModel(); m != "17an/deepseek-v4-flash" {
+		t.Fatalf("provider-only /model mutated override to %q, want unchanged", m)
 	}
 }

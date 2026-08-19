@@ -396,6 +396,31 @@ func TestClientCredentialsFromEnv(t *testing.T) {
 	}
 }
 
+// TestStartRejectsMissingCredentials: Start 必须同步校验凭据并返回错误，而不是
+// 标记 running 后由 runWithRetry 在后台静默失败（否则桌面端会显示绿色的
+// "已连接" 状态，实际从未连上）。
+func TestStartRejectsMissingCredentials(t *testing.T) {
+	a := testAdapter(config.DingtalkBotConfig{})
+	err := a.Start(context.Background())
+	if err == nil {
+		t.Fatal("Start with no credentials should fail")
+	}
+	if !strings.Contains(err.Error(), "client_id") {
+		t.Fatalf("Start error = %q, want client_id message", err)
+	}
+}
+
+func TestStartRejectsEmptySecret(t *testing.T) {
+	a := testAdapter(config.DingtalkBotConfig{ClientID: "app-key"})
+	err := a.Start(context.Background())
+	if err == nil {
+		t.Fatal("Start with no secret should fail")
+	}
+	if !strings.Contains(err.Error(), "client_secret") {
+		t.Fatalf("Start error = %q, want client_secret message", err)
+	}
+}
+
 // TestTestSendWithoutKnownChat: 还没有任何交互过的会话时，测试发送返回
 // 可读错误，而不是发起真实请求。
 func TestTestSendWithoutKnownChat(t *testing.T) {

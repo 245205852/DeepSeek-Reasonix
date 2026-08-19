@@ -1399,17 +1399,17 @@ func (gw *BotGateway) handleSlashCommandCore(ctx context.Context, adapter Adapte
 					return
 				}
 			}
-			// /new leaves an attached transcript and continues in the freshly
-			// rotated path. Clear only the path pin while preserving any project
-			// override, otherwise the next message would rebuild the old attached
-			// transcript and silently undo the rotation.
+			// /new 后把旋转出的新路径钉为会话覆盖，避免下一条消息重新解析回旧路径。
 			gw.mu.Lock()
 			if gw.controllers[key] == state {
-				state.sessionPath = ""
-				if override, exists := gw.sessionOverrides[key]; exists && override.sessionPath != "" {
-					override.sessionPath = ""
-					gw.sessionOverrides[key] = override
+				rotated := state.ctrl.SessionPath()
+				state.sessionPath = rotated
+				override, exists := gw.sessionOverrides[key]
+				if !exists {
+					override = sessionRuntimeOverride{}
 				}
+				override.sessionPath = rotated
+				gw.sessionOverrides[key] = override
 			}
 			gw.mu.Unlock()
 			gw.rememberSessionReady(msg, state.ctrl)
@@ -1655,7 +1655,7 @@ func (gw *BotGateway) handleSlashCommandCore(ctx context.Context, adapter Adapte
 		if !gw.requireCommandRole(ctx, adapter, msg, "admin") {
 			return
 		}
-		_ = gw.sendText(ctx, adapter, msg, gw.handleModelCommand(key, msg.Text))
+		_ = gw.sendText(ctx, adapter, msg, gw.handleModelCommand(msg, msg.Text))
 
 	case slashCommandVerb(msg.Text) == "/sessions":
 		if !gw.requireCommandRole(ctx, adapter, msg, "admin") {
@@ -1750,29 +1750,29 @@ func (gw *BotGateway) handleUseProjectCommand(key, text string) string {
 	return fmt.Sprintf("已将当前远端会话切到项目 %s %s。\n下一条消息将在 %s 中运行。", project.ID, project.Name, displayBotPath(project.Root))
 }
 
-// handleModelCommand 处理 /model：无参查询当前模型，带参切换当前远端会话的
-// 模型（可选 --provider <name> 一并切换供应商）。模型以 provider/model 形式
-// 写入会话运行时覆盖，仅影响当前会话，不持久化到 bot 配置。
-func (gw *BotGateway) handleModelCommand(key, text string) string {
+// handleModelCommand 处理 /model：无参查询当前会话生效模型，带参切换当前
+// 远端会话的模型（可选 --provider <name> 一并切换供应商）。模型以
+// provider/model 写入会话运行时覆盖，仅影响当前会话。
+func (gw *BotGateway) handleModelCommand(msg InboundMessage, text string) string {
 	model, provider, statusOnly, ok := parseModelSelector(text)
 	if !ok {
 		return "用法: /model <模型名> [--provider <供应商>]，或 /model 查看当前模型。"
 	}
 	if statusOnly {
-		// 查询当前会话生效模型：优先看会话覆盖，其次全局 bot 默认。
-		var override sessionRuntimeOverride
-		gw.mu.Lock()
-		override = gw.sessionOverrides[key]
-		gw.mu.Unlock()
-		model := strings.TrimSpace(override.channel.Model)
-		if model == "" {
-			model = strings.TrimSpace(gw.cfg.Model)
-		}
-		if model == "" {
+		// 查询会话生效模型：走完整解析（覆盖 → 通道/路由 → 全局默认），否则
+		// per-channel/per-connection 的模型设置（如钉钉直配 model）会被漏报。
+		effective, _, _ := gw.sessionOptionsForMessage(msg)
+		if strings.TrimSpace(effective) == "" {
 			return "当前会话未指定模型，使用 bot 默认模型。"
 		}
-		return fmt.Sprintf("当前会话模型：%s", model)
+		return fmt.Sprintf("当前会话模型：%s", effective)
 	}
+	if strings.TrimSpace(model) == "" && strings.TrimSpace(provider) != "" {
+		// 仅 provider 无模型名会存成无法解析的 "provider/" 空模型，下一条消息
+		// 构建会话失败；要求显式模型名。
+		return "用法: /model <模型名> [--provider <供应商>]，或 /model 查看当前模型。"
+	}
+	key := BuildSessionKey(msg.Session())
 	ref := strings.TrimSpace(model)
 	if provider != "" {
 		ref = strings.TrimSpace(provider) + "/" + ref

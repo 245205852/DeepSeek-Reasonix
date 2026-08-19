@@ -314,6 +314,35 @@ func normalizeToolApprovalMode(mode string) string {
 	}
 }
 
+// MergeLegacyDingtalkChannel merges the legacy [bot.dingtalk] runtime options
+// (model / tool_approval_mode / workspace_root) into the per-platform and
+// per-connection channel maps so a directly-configured DingTalk bot (no
+// [[bot.connections]] record) honors them. The desktop does the same via
+// desktopBotChannelsWithLegacyDingtalk; the CLI bot mode needs the equivalent.
+func MergeLegacyDingtalkChannel(dt config.DingtalkBotConfig, channels map[bot.Platform]bot.ChannelConfig, connectionChannels map[string]bot.ChannelConfig) (map[bot.Platform]bot.ChannelConfig, map[string]bot.ChannelConfig) {
+	channel := bot.ChannelConfig{
+		Model:            strings.TrimSpace(dt.Model),
+		ToolApprovalMode: normalizeToolApprovalMode(dt.ToolApprovalMode),
+		WorkspaceRoot:    strings.TrimSpace(dt.WorkspaceRoot),
+	}
+	if channel.Model == "" && channel.ToolApprovalMode == "" && channel.WorkspaceRoot == "" {
+		return channels, connectionChannels
+	}
+	if channels == nil {
+		channels = make(map[bot.Platform]bot.ChannelConfig)
+	}
+	if _, ok := channels[bot.PlatformDingtalk]; !ok {
+		channels[bot.PlatformDingtalk] = channel
+	}
+	if connectionChannels == nil {
+		connectionChannels = make(map[string]bot.ChannelConfig)
+	}
+	if _, ok := connectionChannels[string(bot.PlatformDingtalk)]; !ok {
+		connectionChannels[string(bot.PlatformDingtalk)] = channel
+	}
+	return channels, connectionChannels
+}
+
 func AdapterBindings(cfg *config.Config, enabled map[bot.Platform]bool, feishuDomains map[string]bool, logger *slog.Logger) []bot.AdapterBinding {
 	if cfg == nil {
 		return nil

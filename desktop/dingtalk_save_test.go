@@ -97,6 +97,34 @@ func TestDingtalkRuntimeConnectionID(t *testing.T) {
 	}
 }
 
+// TestDingtalkRuntimeConnectionResolvesCredentials 验证测试发送凭据从所选
+// connection 解析（而不是 legacy [bot.dingtalk] 块）——否则 connection 驱动的
+// 运行时在 legacy 块为空时误报 dingtalk_secret_missing。
+func TestDingtalkRuntimeConnectionResolvesCredentials(t *testing.T) {
+	conns := []config.BotConnectionConfig{
+		{ID: "feishu-feishu", Provider: "feishu", Enabled: true},
+		{ID: "dingtalk-main", Provider: "dingtalk", Enabled: true,
+			Credential: config.BotConnectionCredential{AppID: "app-from-conn", AppSecretEnv: "DINGTALK_CONN_SECRET"}},
+	}
+	conn, id, ok := dingtalkRuntimeConnection(conns)
+	if !ok {
+		t.Fatal("enabled dingtalk connection not found")
+	}
+	if id != "dingtalk-main" {
+		t.Fatalf("runtime id = %q, want dingtalk-main", id)
+	}
+	if conn.Credential.AppID != "app-from-conn" || conn.Credential.AppSecretEnv != "DINGTALK_CONN_SECRET" {
+		t.Fatalf("resolved connection credentials = %q/%q, want app-from-conn/DINGTALK_CONN_SECRET",
+			conn.Credential.AppID, conn.Credential.AppSecretEnv)
+	}
+	// 未启用的钉钉连接不应命中。
+	if _, _, ok := dingtalkRuntimeConnection([]config.BotConnectionConfig{
+		{ID: "dingtalk-off", Provider: "dingtalk", Enabled: false},
+	}); ok {
+		t.Fatal("disabled dingtalk connection must not be selected")
+	}
+}
+
 // TestSetBotSettingsDingtalkRuntimeOptionsRoundTrip 验证 legacy [bot.dingtalk]
 // 的模型/工具审批模式/工作目录经 SetBotSettings 落盘并被读回。这是排查
 // 「钉钉面板模型、权限切换无法保存」的回归测试：config 结构体与 settings

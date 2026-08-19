@@ -1903,12 +1903,12 @@ func Default() *Config {
 			Allowlist:          BotAllowlist{Enabled: true},
 			QQ:                 QQBotConfig{AppSecretEnv: "QQ_BOT_APP_SECRET"},
 			Feishu:             FeishuBotConfig{Domain: "feishu", AppSecretEnv: "FEISHU_BOT_APP_SECRET", Mode: "webhook", WebhookPort: 8080, RequireMention: true},
+			Dingtalk:           DingtalkBotConfig{RequireMention: true},
 			Weixin:             WeixinBotConfig{AccountID: "default", TokenEnv: "WEIXIN_BOT_TOKEN", APIBase: "https://ilinkai.weixin.qq.com"},
 		},
 		// New installs use DeepSeek's Anthropic-compatible Messages endpoint so
 		// provider-executed web search is available by default. Existing explicit
-		// provider entries are merged on top of these defaults and keep their
-		// configured protocol unchanged.
+		// provider entries are merged on top, keeping their configured protocol.
 		Providers: []ProviderEntry{
 			{
 				Name: "deepseek-flash", Kind: "anthropic", BaseURL: deepSeekAnthropicBaseURL,

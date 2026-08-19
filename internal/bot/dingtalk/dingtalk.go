@@ -125,6 +125,21 @@ func (a *adapter) Name() string           { return "dingtalk" }
 func (a *adapter) Start(ctx context.Context) error {
 	a.msgCh = make(chan bot.InboundMessage, 64)
 	ctx, a.cancel = context.WithCancel(ctx)
+	// 同步校验凭据与连接，失败直接报错而非标记 running 后由重连循环静默失败。
+	checkCtx, checkCancel := context.WithTimeout(ctx, connTimeout)
+	defer checkCancel()
+	if id := a.clientID(); strings.TrimSpace(id) == "" {
+		return fmt.Errorf("dingtalk client_id is not configured")
+	}
+	if secret := a.clientSecret(); strings.TrimSpace(secret) == "" {
+		return fmt.Errorf("dingtalk client_secret is not configured")
+	}
+	if _, err := a.accessToken(checkCtx); err != nil {
+		return fmt.Errorf("dingtalk credentials rejected: %w", err)
+	}
+	if _, err := a.openConnection(checkCtx); err != nil {
+		return fmt.Errorf("dingtalk connection failed: %w", err)
+	}
 	go a.runWithRetry(ctx)
 	return nil
 }
