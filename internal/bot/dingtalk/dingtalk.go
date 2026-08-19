@@ -38,8 +38,6 @@ const (
 
 	// tokenTTL 钉钉 access_token 有效期（秒），提前 60s 刷新。
 	tokenTTL = 7200 * time.Second
-	// wsPingInterval 服务端 ping 心跳间隔。
-	wsPingInterval = 8 * time.Second
 	// connTimeout 建连/HTTP 超时。
 	connTimeout = 15 * time.Second
 	// sendTimeout 单条回复超时。
