@@ -311,6 +311,13 @@ func (s *SubagentScheduler) canStartLocked(req AcquireRequest) (bool, string) {
 	if s.activeWriters >= s.maxWriters {
 		return false, fmt.Sprintf("writer concurrency %d/%d", s.activeWriters, s.maxWriters)
 	}
+	if req.WritePaths.WholeWorkspace {
+		for _, live := range s.activeLive {
+			if live.writer {
+				return false, "whole-workspace claim conflicts with a running writer"
+			}
+		}
+	}
 	for _, live := range s.activeLive {
 		if ScheduleOverlaps(req.WritePaths, live.reservation()) {
 			return false, "write path conflict with a running subagent"

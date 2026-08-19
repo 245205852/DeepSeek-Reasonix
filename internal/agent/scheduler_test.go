@@ -121,6 +121,42 @@ func TestSchedulerDirectoryClaimsStartInParallel(t *testing.T) {
 	}
 }
 
+func TestSchedulerWholeClaimCannotStartBehindUnrealizedDirectoryWriter(t *testing.T) {
+	s := NewSubagentScheduler(4, 2)
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "src"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dir, err := NormalizeWritePaths(root, []string{"src/"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	releaseDir, _, err := s.AcquireWithID(context.Background(), AcquireRequest{Writer: true, WritePaths: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer releaseDir()
+	whole, err := WholeWorkspaceWriteClaim(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	releaseWhole, _, err := s.AcquireWithID(context.Background(), AcquireRequest{
+		Writer: true, WritePaths: whole, Nested: true,
+	})
+	if err == nil {
+		releaseWhole()
+		t.Fatal("whole-workspace claim bypassed an active unrealized directory writer")
+	}
+	releaseDir()
+	releaseWhole, _, err = s.AcquireWithID(context.Background(), AcquireRequest{
+		Writer: true, WritePaths: whole, Nested: true,
+	})
+	if err != nil {
+		t.Fatalf("whole-workspace claim after directory writer release: %v", err)
+	}
+	releaseWhole()
+}
+
 func TestSchedulerRealizeSameFileConflicts(t *testing.T) {
 	s := NewSubagentScheduler(4, 2)
 	root := t.TempDir()
