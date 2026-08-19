@@ -15,12 +15,6 @@ function equal(actual: unknown, expected: unknown, label: string) {
   }
 }
 
-const questions = [
-  { id: "u0", text: "first", turn: 0 },
-  { id: "u1", text: "second", turn: 1 },
-  { id: "u2", text: "third", turn: 2 },
-];
-
 console.log("\ntranscript question navigation");
 
 equal(
