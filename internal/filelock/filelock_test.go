@@ -8,6 +8,59 @@ import (
 	"time"
 )
 
+func TestTryAcquireModeSharedIsNonBlocking(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.lock")
+	first, err := TryAcquireMode(path, ModeShared)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := TryAcquireMode(path, ModeShared)
+	if err != nil {
+		first()
+		t.Fatal(err)
+	}
+	first()
+	second()
+}
+
+func TestWaitingWriterBlocksNewLocalReaders(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.lock")
+	reader, err := AcquireMode(context.Background(), path, ModeShared)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writerAcquired := make(chan func(), 1)
+	go func() {
+		release, acquireErr := Acquire(context.Background(), path)
+		if acquireErr == nil {
+			writerAcquired <- release
+		}
+	}()
+	deadline := time.After(2 * time.Second)
+	for {
+		release, tryErr := TryAcquireMode(path, ModeShared)
+		if errors.Is(tryErr, ErrHeld) {
+			break
+		}
+		if tryErr != nil {
+			t.Fatal(tryErr)
+		}
+		release()
+		select {
+		case <-deadline:
+			t.Fatal("new readers continued to bypass the waiting writer")
+		default:
+		}
+	}
+	reader()
+	select {
+	case release := <-writerAcquired:
+		release()
+	case <-time.After(2 * time.Second):
+		t.Fatal("waiting writer did not acquire after reader release")
+	}
+}
+
 func TestAcquireHonorsDeadlineAndRecoversAfterRelease(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.lock")
 	release, err := Acquire(context.Background(), path)

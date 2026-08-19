@@ -62,7 +62,10 @@ Delivery worktrees stay optional. Non-isolated directories use the workspace
 lease (`filelock`). Path-bound writes take a shared workspace lock plus an
 exclusive file lock for the duration of that tool, so two sessions can write
 different files (including in the same repo) at once. `bash`/MCP mutations take
-the exclusive workspace lock only for that command. Read-only bash does not
-take a write lease. Conflict cards name the file or workspace being written.
-Git is never required. A finished conversation does not keep the write lease;
-use a worktree when you need a long-lived isolated tree.
+the exclusive workspace lock only for that command. Any tool call also uses the
+workspace lock when a configured tool hook may write undeclared paths.
+File identities map into a bounded lock stripe set; collisions may serialize
+unrelated files but cannot weaken protection. Read-only bash does not take a
+write lease. Conflict cards name the file or workspace being written. Git is
+never required. A finished conversation does not keep the write lease; use a
+worktree when you need a long-lived isolated tree.

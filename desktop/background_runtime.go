@@ -213,30 +213,29 @@ func controllerWorkspaceLeaseState(ctrl control.SessionAPI) workspacelease.State
 	return workspacelease.State{}
 }
 
-func controllerWorkspaceLeaseKeys(ctrl control.SessionAPI) []string {
-	if reporter, ok := ctrl.(workspaceLeaseReporter); ok {
-		return reporter.WorkspaceLeaseHeldKeys()
+func leaseDomainsOverlap(waitingRoot string, waiting workspacelease.State, holderRoot string, holder workspacelease.State) bool {
+	if waitingRoot == "" || waitingRoot != holderRoot {
+		return false
 	}
-	return nil
-}
-
-func leaseDomainsOverlap(waitingRoot string, waitingKeys []string, holderRoot string, holderKeys []string) bool {
-	if waitingRoot != "" && waitingRoot == holderRoot {
+	holderScope := holder.HeldScope
+	if holderScope == "" {
+		holderScope = holder.Scope
+	}
+	if waiting.Scope == "workspace" || holderScope == "workspace" {
 		return true
 	}
-	seen := make(map[string]bool, len(waitingKeys)+1)
-	for _, key := range waitingKeys {
+	// Older process-local reporters do not carry keys. Falling back to the root
+	// preserves their conservative behavior without misrouting current owners.
+	if len(waiting.WaitingKeys) == 0 || len(holder.HeldKeys) == 0 {
+		return true
+	}
+	seen := make(map[string]bool, len(waiting.WaitingKeys))
+	for _, key := range waiting.WaitingKeys {
 		if key != "" {
 			seen[key] = true
 		}
 	}
-	if waitingRoot != "" {
-		seen[waitingRoot] = true
-	}
-	if holderRoot != "" && seen[holderRoot] {
-		return true
-	}
-	for _, key := range holderKeys {
+	for _, key := range holder.HeldKeys {
 		if key != "" && seen[key] {
 			return true
 		}
@@ -267,7 +266,7 @@ func (a *App) WorkspaceConflictForTab(tabID string) WorkspaceConflictView {
 		return empty
 	}
 	targetState := controllerWorkspaceLeaseState(targetCtrl)
-	if !targetState.Waiting || targetState.Acquired {
+	if !targetState.Waiting {
 		return empty
 	}
 	targetRoot, err := workspacelease.CanonicalWorkspace(targetWorkspaceRoot)
@@ -298,19 +297,22 @@ func (a *App) WorkspaceConflictForTab(tabID string) WorkspaceConflictView {
 	}
 	a.mu.RUnlock()
 
-	targetKeys := controllerWorkspaceLeaseKeys(targetCtrl)
 	for _, candidate := range candidates {
 		root, err := workspacelease.CanonicalWorkspace(candidate.root)
-		if err != nil || !controllerWorkspaceLeaseState(candidate.ctrl).Acquired {
-			continue
-		}
-		if !leaseDomainsOverlap(targetRoot, targetKeys, root, controllerWorkspaceLeaseKeys(candidate.ctrl)) {
-			continue
-		}
 		ownerState := controllerWorkspaceLeaseState(candidate.ctrl)
+		if err != nil || !ownerState.Acquired {
+			continue
+		}
+		if !leaseDomainsOverlap(targetRoot, targetState, root, ownerState) {
+			continue
+		}
+		ownerScope, ownerLabel := ownerState.HeldScope, ownerState.HeldLabel
+		if ownerScope == "" {
+			ownerScope, ownerLabel = ownerState.Scope, ownerState.Label
+		}
 		return WorkspaceConflictView{
 			State: "local", OwnerTabID: candidate.id, OwnerTitle: candidate.title,
-			OwnerScope: ownerState.Scope, OwnerLabel: ownerState.Label,
+			OwnerScope: ownerScope, OwnerLabel: ownerLabel,
 			OwnerWork: activeWorkForController(candidate.ctrl), CanReveal: true,
 			CanCreateWorktree: availability.Available,
 		}

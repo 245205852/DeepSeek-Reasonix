@@ -543,58 +543,14 @@ func (a *Agent) applyRecoveryAndPermission(ctx context.Context, plan *toolCallPl
 // PreToolUse hooks and preview checkpoints, and injects call context. All of
 // this happens after permission and before the concrete Execute call.
 func (a *Agent) prepareToolExecution(ctx context.Context, plan *toolCallPlan) (toolOutcome, bool) {
-	// Acquire after permission is granted but before PreToolUse: hooks are user
-	// shell code and can themselves change the workspace. This keeps readers
-	// concurrent and avoids holding the workspace during an approval prompt while
-	// still covering every write-side action that follows authorization.
-	// Resolve the concrete execution target before hooks and lease selection.
-	// A proxy may carry a different target/name/argument set than the
-	// provider-visible call; the lease must follow the tool that will Execute.
-	plan.runTool = plan.execTool
-	plan.runArgs = plan.execArgs
-	if plan.resolved.Target != nil {
-		plan.runTool = plan.resolved.Target
-		plan.runArgs = plan.resolved.Args
-		if len(plan.runArgs) == 0 {
-			plan.runArgs = json.RawMessage(`{}`)
-		}
-	}
-	// Lazy workspace lease on the first real writer for every role setting.
-	// Path-bound tools lock the nested git repo; bash/MCP keep the exclusive
-	// workspace lock.
-	if plan.effects.WorkspaceMutation && a.svc.workspaceLease != nil {
-		releaseLease, err := a.acquireWorkspaceLease(ctx, plan)
-		if err != nil {
-			return toolOutcome{
-				output:  fmt.Sprintf("blocked: the workspace did not become available for writing: %v", err),
-				blocked: true,
-				errMsg:  "blocked: workspace write lease unavailable",
-			}, true
-		}
-		plan.releaseLease = releaseLease
-	}
-	// Hold the parent claim before PreToolUse: hooks are user shell code and may
-	// mutate the same workspace. The reservation remains live through hooks,
-	// checkpointing, and the concrete Execute call, closing both hook-side and
-	// check-before-write TOCTOU windows. Dynamic Economy/MCP tools are covered
-	// here after registry lookup without schema-changing wrappers.
-	// executeOne defers plan.releaseParentWrite so every return path releases.
-	if releaseParentWrite, perr := a.reserveParentWrite(plan.runTool, plan.runArgs, !plan.effects.WorkspaceMutation); perr != nil {
-		return toolOutcome{
-			output:  "blocked: " + perr.Error(),
-			blocked: true,
-			errMsg:  "blocked: write path claimed by background subagent",
-		}, true
-	} else if releaseParentWrite != nil {
-		plan.releaseParentWrite = releaseParentWrite
-	}
-	if blocked, early := a.applyLiveWriteReservation(ctx, plan); early {
+	if blocked, early := a.prepareWriteCoordination(ctx, plan); early {
 		return blocked, true
 	}
 	// Acquire the checkpoint barrier before preimage capture and any hook. It is
 	// held through post hooks and AfterMutation so rewind cannot interleave with
 	// writer-side user code.
-	if plan.effects.WorkspaceMutation && a.svc.mutationObserver != nil && a.svc.mutationObserver.Store() != nil {
+	if (plan.effects.WorkspaceMutation || plan.hooksMayMutateWorkspace) &&
+		a.svc.mutationObserver != nil && a.svc.mutationObserver.Store() != nil {
 		barrier := a.svc.mutationObserver.Store().Barrier()
 		if err := barrier.EnterWrite(); err != nil {
 			return toolOutcome{output: "blocked: " + err.Error(), blocked: true, errMsg: "blocked: mutation barrier unavailable"}, true
@@ -609,9 +565,9 @@ func (a *Agent) prepareToolExecution(ctx context.Context, plan *toolCallPlan) (t
 	if plan.effects.WorkspaceMutation {
 		a.observeBeforeMutation(ctx, plan)
 		plan.mutationObserved = plan.mutationPath != ""
-		if toolHooksMayMutateWorkspace(a.svc.hooks) && a.svc.mutationObserver != nil {
-			a.svc.mutationObserver.RecordGap(checkpoint.CoverageGap{Reason: checkpoint.GapHookWrite, Tool: plan.evidenceName, Detail: "tool hook may write paths that are not declared by the tool"})
-		}
+	}
+	if plan.hooksMayMutateWorkspace && a.svc.mutationObserver != nil {
+		a.svc.mutationObserver.RecordGap(checkpoint.CoverageGap{Reason: checkpoint.GapHookWrite, Tool: plan.evidenceName, Detail: "tool hook may write paths that are not declared by the tool"})
 	}
 	// Proxy tools fire hooks against the real MCP target name and arguments.
 	if a.svc.hooks != nil {
@@ -866,73 +822,4 @@ func (a *Agent) observeAfterMutation(plan *toolCallPlan) bool {
 		plan.effects.ContentMutation = true
 	}
 	return changed
-}
-
-func (a *Agent) applyLiveWriteReservation(ctx context.Context, plan *toolCallPlan) (toolOutcome, bool) {
-	if a == nil || plan == nil || !plan.effects.WorkspaceMutation || a.svc.writeScheduler == nil || plan.runTool == nil {
-		return toolOutcome{}, false
-	}
-	id := SubagentClaimID(ctx)
-	if id == 0 {
-		return toolOutcome{}, false
-	}
-	name := plan.runTool.Name()
-	if pathBoundWriterNames[name] {
-		claim, err := parentWriteReservation(a.writeWorkspaceRoot, name, plan.runArgs)
-		if err != nil {
-			return toolOutcome{
-				output:  "blocked: " + err.Error(),
-				blocked: true,
-				errMsg:  "blocked: write path claimed by background subagent",
-			}, true
-		}
-		if err := a.svc.writeScheduler.Realize(id, claim); err != nil {
-			return toolOutcome{
-				output:  "blocked: " + err.Error(),
-				blocked: true,
-				errMsg:  "blocked: write path claimed by background subagent",
-			}, true
-		}
-		return toolOutcome{}, false
-	}
-	if parentWriteGuardTarget(name) {
-		if err := a.svc.writeScheduler.MarkOpaque(id); err != nil {
-			return toolOutcome{
-				output:  "blocked: " + err.Error(),
-				blocked: true,
-				errMsg:  "blocked: write path claimed by background subagent",
-			}, true
-		}
-	}
-	return toolOutcome{}, false
-}
-
-func (a *Agent) acquireWorkspaceLease(ctx context.Context, plan *toolCallPlan) (func(), error) {
-	noop := func() {}
-	if a == nil || a.svc.workspaceLease == nil || plan == nil || plan.runTool == nil {
-		return noop, nil
-	}
-	name := plan.runTool.Name()
-	if pathBoundWriterNames[name] {
-		paths, err := extractWritePathsFromArgs(name, a.writeWorkspaceRoot, plan.runArgs)
-		if err == nil && len(paths) > 0 {
-			var holds []func()
-			for _, p := range paths {
-				rel, acqErr := a.svc.workspaceLease.HoldWriteForPath(ctx, resolveMaybeRelative(a.writeWorkspaceRoot, p))
-				if acqErr != nil {
-					for i := len(holds) - 1; i >= 0; i-- {
-						holds[i]()
-					}
-					return noop, acqErr
-				}
-				holds = append(holds, rel)
-			}
-			return func() {
-				for i := len(holds) - 1; i >= 0; i-- {
-					holds[i]()
-				}
-			}, nil
-		}
-	}
-	return a.svc.workspaceLease.HoldWrite(ctx)
 }

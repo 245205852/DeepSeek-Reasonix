@@ -2,167 +2,228 @@ package workspacelease
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"path/filepath"
-	"runtime"
+	"sort"
 	"strings"
 
 	"reasonix/internal/filelock"
 )
 
-// AcquireWriteForPath takes a file-scoped lease (shared workspace + exclusive
-// file). Different files may proceed in parallel, including inside one git
-// repo. Pair with ReleaseWrite or use HoldWriteForPath.
+// All workspaces share a fixed set of hashed path-lock files. Hash collisions
+// conservatively serialize unrelated files without allowing inode growth to
+// track every path ever written.
+const pathLockStripes = 4096
+
+type pathSpec struct {
+	key     string
+	display string
+	slot    string
+}
+
+// AcquireWriteForPath takes a legacy file-scoped hold released by ReleaseWrite
+// or EndRun. New call sites should prefer HoldWriteForPath(s).
 func (o *Owner) AcquireWriteForPath(ctx context.Context, abs string) error {
-	_, err := o.HoldWriteForPath(ctx, abs)
+	release, err := o.HoldWriteForPath(ctx, abs)
+	if err == nil && o != nil {
+		o.mu.Lock()
+		o.lease.legacy = append(o.lease.legacy, release)
+		o.mu.Unlock()
+	}
 	return err
 }
 
-// HoldWriteForPath acquires a file-scoped write hold and returns its release.
+// HoldWriteForPath acquires a file-scoped write hold.
 func (o *Owner) HoldWriteForPath(ctx context.Context, abs string) (func(), error) {
+	return o.HoldWriteForPaths(ctx, []string{abs})
+}
+
+// HoldWriteForPaths acquires one atomic, stably ordered file-scoped hold. All
+// paths are canonicalized and de-duplicated before any system lock is taken.
+func (o *Owner) HoldWriteForPaths(ctx context.Context, paths []string) (func(), error) {
 	if o == nil {
 		return func() {}, nil
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	fileKey, display, err := canonicalFileKey(abs)
-	if err != nil || fileKey == "" || !canonicalContains(o.canonical, fileKey) {
+	specs, err := o.pathSpecs(paths)
+	if err != nil || len(specs) == 0 {
 		return o.HoldWrite(ctx)
 	}
+	keys, slots := specKeys(specs), specSlots(specs)
+	scope, label := pathScope(specs)
 	for {
 		o.mu.Lock()
-		if o.exclusive {
-			o.toolHolds++
+		if id, hold := o.exclusiveHoldLocked(); hold != nil {
+			hold.refs++
 			o.cancelGraceLocked()
 			o.mu.Unlock()
-			return o.releaseHold, nil
+			return o.releaseHoldFunc(id), nil
 		}
-		if o.fileCounts[fileKey] > 0 {
-			o.fileCounts[fileKey]++
-			o.toolHolds++
+		if id, hold := o.coveringPathHoldLocked(keys); hold != nil {
+			hold.refs++
 			o.cancelGraceLocked()
 			o.mu.Unlock()
-			return func() { o.dropFileHold(fileKey) }, nil
+			return o.releaseHoldFunc(id), nil
 		}
-		if o.acquiring {
-			done := o.acquireDone
+		if o.lease.acquiring {
+			done := o.lease.acquireDone
 			o.mu.Unlock()
-			select {
-			case <-done:
-				continue
-			case <-ctx.Done():
-				return func() {}, ctx.Err()
+			if err := waitForSignal(ctx, done); err != nil {
+				return func() {}, err
 			}
+			continue
 		}
-		o.acquiring = true
-		o.acquireDone = make(chan struct{})
-		done := o.acquireDone
-		needShared := !o.shared
-		o.waitingScope = "file"
-		o.waitingLabel = display
-		o.mu.Unlock()
-
-		var wsRel func()
-		var fileRel func()
-		var acqErr error
-		if needShared {
-			wsRel, acqErr = o.acquireMode(ctx, o.lockPath, filelock.ModeShared)
-		}
-		if acqErr == nil {
-			fileRel, acqErr = o.acquireMode(ctx, lockFileFor(o.lockDir, "file:"+fileKey), filelock.ModeExclusive)
-			if acqErr != nil && needShared && wsRel != nil {
-				wsRel()
-				wsRel = nil
+		o.beginAcquisitionLocked(scope, label, keys)
+		for !o.pathOrderAllowedLocked(slots) {
+			if o.activity.background > 0 {
+				o.armGraceLocked()
 			}
-		}
-
-		o.mu.Lock()
-		o.acquiring = false
-		o.waiting = false
-		o.waitingScope = ""
-		o.waitingLabel = ""
-		if acqErr == nil {
-			o.acquired = true
-			if needShared && wsRel != nil {
-				o.shared = true
-				o.releaseSystem = wsRel
-			}
-			if o.fileHeld == nil {
-				o.fileHeld = map[string]func(){}
-				o.fileCounts = map[string]int{}
-				o.fileNames = map[string]string{}
-			}
-			o.fileHeld[fileKey] = fileRel
-			o.fileCounts[fileKey]++
-			o.fileNames[fileKey] = display
-			o.toolHolds++
-			o.cancelGraceLocked()
-			o.leaseEpoch++
-		}
-		close(done)
-		idle := o.releaseIfIdleLocked()
-		o.mu.Unlock()
-		if idle != nil {
-			idle()
-		}
-		if acqErr != nil {
-			return func() {}, acqErr
-		}
-		return func() { o.dropFileHold(fileKey) }, nil
-	}
-}
-
-func (o *Owner) dropFileHold(fileKey string) {
-	if o == nil {
-		return
-	}
-	o.mu.Lock()
-	if o.fileCounts[fileKey] > 0 {
-		o.fileCounts[fileKey]--
-	}
-	if o.fileCounts[fileKey] == 0 {
-		if rel := o.fileHeld[fileKey]; rel != nil {
-			delete(o.fileHeld, fileKey)
-			delete(o.fileCounts, fileKey)
-			delete(o.fileNames, fileKey)
+			changed := o.lease.changed
 			o.mu.Unlock()
-			rel()
+			if err := waitForSignal(ctx, changed); err != nil {
+				o.mu.Lock()
+				o.finishAcquisitionLocked()
+				o.mu.Unlock()
+				return func() {}, err
+			}
 			o.mu.Lock()
 		}
-	}
-	if o.toolHolds > 0 {
-		o.toolHolds--
-	}
-	release := o.releaseIfIdleLocked()
-	o.mu.Unlock()
-	if release != nil {
-		release()
+		o.mu.Unlock()
+
+		notified := false
+		release, err := o.acquirePathSystem(ctx, slots, &notified)
+		o.mu.Lock()
+		var id uint64
+		if err == nil {
+			id = o.addHoldLocked(&systemHold{
+				refs: 1, scope: scope, keys: keys, slots: slots, release: release,
+			})
+		}
+		o.finishAcquisitionLocked()
+		releases := o.collectInactiveLocked()
+		o.mu.Unlock()
+		runReleases(releases)
+		if err != nil {
+			return func() {}, err
+		}
+		return o.releaseHoldFunc(id), nil
 	}
 }
 
-func (o *Owner) acquireMode(ctx context.Context, path string, mode filelock.Mode) (func(), error) {
-	if mode == filelock.ModeExclusive {
-		release, err := filelock.TryAcquire(path)
-		if err == nil {
-			return release, nil
+func (o *Owner) pathSpecs(paths []string) ([]pathSpec, error) {
+	seen := map[string]bool{}
+	specs := make([]pathSpec, 0, len(paths))
+	for _, path := range paths {
+		key, display, err := canonicalFileKey(path)
+		if err != nil || key == "" || !canonicalContains(o.canonical, key) {
+			if err == nil {
+				err = errors.New("path is outside the workspace")
+			}
+			return nil, err
 		}
-		if !errors.Is(err, filelock.ErrHeld) {
-			return nil, fmt.Errorf("acquire workspace write lease: %w", err)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		specs = append(specs, pathSpec{key: key, display: display, slot: o.pathLockPath(key)})
+	}
+	sort.Slice(specs, func(i, j int) bool {
+		if specs[i].slot == specs[j].slot {
+			return specs[i].key < specs[j].key
+		}
+		return specs[i].slot < specs[j].slot
+	})
+	return specs, nil
+}
+
+func specKeys(specs []pathSpec) []string {
+	keys := make([]string, 0, len(specs))
+	for _, spec := range specs {
+		keys = append(keys, spec.key)
+	}
+	return keys
+}
+
+func specSlots(specs []pathSpec) []string {
+	var slots []string
+	for _, spec := range specs {
+		if len(slots) == 0 || slots[len(slots)-1] != spec.slot {
+			slots = append(slots, spec.slot)
 		}
 	}
-	o.mu.Lock()
-	o.waiting = true
-	o.mu.Unlock()
-	if o.onWait != nil {
-		o.onWait()
+	return slots
+}
+
+func pathScope(specs []pathSpec) (string, string) {
+	if len(specs) == 1 {
+		return "file", specs[0].display
 	}
-	release, err := filelock.AcquireMode(ctx, path, mode)
+	return "files", fmt.Sprintf("%d files", len(specs))
+}
+
+func (o *Owner) coveringPathHoldLocked(keys []string) (uint64, *systemHold) {
+	for id, hold := range o.lease.holds {
+		if hold.scope == "workspace" || len(hold.keys) < len(keys) {
+			continue
+		}
+		held := make(map[string]bool, len(hold.keys))
+		for _, key := range hold.keys {
+			held[key] = true
+		}
+		covered := true
+		for _, key := range keys {
+			if !held[key] {
+				covered = false
+				break
+			}
+		}
+		if covered {
+			return id, hold
+		}
+	}
+	return 0, nil
+}
+
+func (o *Owner) pathOrderAllowedLocked(slots []string) bool {
+	if len(slots) == 0 {
+		return true
+	}
+	var maxHeld string
+	for _, hold := range o.lease.holds {
+		for _, slot := range hold.slots {
+			if slot > maxHeld {
+				maxHeld = slot
+			}
+		}
+	}
+	return maxHeld == "" || slots[0] > maxHeld
+}
+
+func (o *Owner) acquirePathSystem(ctx context.Context, slots []string, notified *bool) (func(), error) {
+	parentRelease, err := o.acquireWorkspace(ctx, filelock.ModeShared, notified)
 	if err != nil {
-		return nil, fmt.Errorf("acquire workspace write lease: %w", err)
+		return nil, err
 	}
-	return release, nil
+	releases := []func(){parentRelease}
+	for _, slot := range slots {
+		release, acquireErr := o.acquireMode(ctx, slot, filelock.ModeExclusive, notified)
+		if acquireErr != nil {
+			runReleases(releases)
+			return nil, acquireErr
+		}
+		releases = append(releases, release)
+	}
+	return func() { runReleases(releases) }, nil
+}
+
+func (o *Owner) pathLockPath(key string) string {
+	sum := sha256.Sum256([]byte(key))
+	stripe := (int(sum[0])<<8 | int(sum[1])) % pathLockStripes
+	return filepath.Join(o.lockDir, fmt.Sprintf("path-%03x.lock", stripe))
 }
 
 func canonicalFileKey(abs string) (key, display string, err error) {
@@ -175,10 +236,9 @@ func canonicalFileKey(abs string) (key, display string, err error) {
 		return "", "", err
 	}
 	abs = filepath.Clean(abs)
-	cur := abs
-	tail := ""
+	cur, tail := abs, ""
 	for {
-		if resolved, resErr := filepath.EvalSymlinks(cur); resErr == nil {
+		if resolved, resolveErr := filepath.EvalSymlinks(cur); resolveErr == nil {
 			abs = filepath.Join(resolved, tail)
 			break
 		}
@@ -190,7 +250,7 @@ func canonicalFileKey(abs string) (key, display string, err error) {
 		cur = parent
 	}
 	display = filepath.Base(abs)
-	if runtime.GOOS == "windows" {
+	if caseInsensitivePlatform() {
 		abs = strings.ToLower(filepath.ToSlash(abs))
 	}
 	return abs, display, nil

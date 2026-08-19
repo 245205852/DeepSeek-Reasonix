@@ -1,10 +1,6 @@
 // Package workspacelease serializes Delivery writers that target the same
-// workspace. Readers never acquire a lease. A writer keeps a lease only while
-// a write-tool hold is active; a retained background job then extends it for a
-// bounded grace period so a finished conversation cannot pin the workspace.
-//
-// Owner is participation accounting only. Cross-process and in-process
-// serialization is delegated to internal/filelock.
+// workspace. Readers never acquire a lease. Write-tool holds are released when
+// the tool returns, with bounded retention for background jobs.
 package workspacelease
 
 import (
@@ -16,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -23,57 +20,67 @@ import (
 	"reasonix/internal/filelock"
 )
 
-// backgroundGrace bounds how long a retained background job may keep the write
-// lease after the last agent run ends. run_in_background is used for long-lived
-// services (dev servers, watchers) whose job channel may never close, so an
-// unbounded retention would hand one session the workspace permanently. The
-// window still covers a job's initial burst of workspace writes.
 const backgroundGrace = 30 * time.Second
 
 // WaitNotice is called once when an acquisition cannot complete immediately.
 // It must return quickly and must not call back into Owner.
 type WaitNotice func()
 
+type ownerActivity struct {
+	activeRuns int
+	background int
+}
+
+type systemHold struct {
+	refs    int
+	scope   string
+	keys    []string
+	slots   []string
+	release func()
+}
+
+type ownerLease struct {
+	acquiring   bool
+	waiting     bool
+	targetScope string
+	targetLabel string
+	targetKeys  []string
+	acquireDone chan struct{}
+	changed     chan struct{}
+	holds       map[uint64]*systemHold
+	nextID      uint64
+	legacy      []func()
+	epoch       uint64
+	graceTimer  *time.Timer
+}
+
 // Owner is one Delivery session's re-entrant workspace lease. One Owner may be
-// shared by the root agent and all of its subagents. Different sessions must
-// use different Owners, even when they share a workspace.
+// shared by the root agent and its subagents; different sessions use different
+// Owners even when they share a workspace.
 type Owner struct {
 	lockPath   string
+	queuePath  string
 	lockDir    string
 	canonical  string
 	onWait     WaitNotice
 	graceAfter time.Duration
 
-	mu            sync.Mutex
-	activeRuns    int
-	background    int
-	acquired      bool
-	exclusive     bool
-	shared        bool
-	acquiring     bool
-	waiting       bool
-	waitingScope  string
-	waitingLabel  string
-	toolHolds     int
-	acquireDone   chan struct{}
-	releaseSystem func()
-	fileHeld      map[string]func()
-	fileCounts    map[string]int
-	fileNames     map[string]string
-	// leaseEpoch changes on every acquisition so a pending grace release can
-	// prove it still targets the lease it was armed for.
-	leaseEpoch uint64
-	graceTimer *time.Timer
+	mu       sync.Mutex
+	activity ownerActivity
+	lease    ownerLease
 }
 
-// State is a sanitized process-local snapshot used by Desktop to explain a
-// workspace conflict. Scope/Label never include home paths or PIDs — Label is
-// a basename or a file count.
+// State is a sanitized process-local snapshot used by Desktop. WaitingKeys are
+// internal canonical identities; they are never copied into the Wails payload.
 type State struct {
-	Acquired bool
-	Waiting  bool
-	Scope    string
-	Label    string
+	Acquired    bool
+	Waiting     bool
+	Scope       string
+	Label       string
+	HeldScope   string
+	HeldLabel   string
+	HeldKeys    []string
+	WaitingKeys []string
 }
 
 // State returns the current acquisition state without performing lease I/O.
@@ -83,37 +90,50 @@ func (o *Owner) State() State {
 	}
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	st := State{Acquired: o.acquired, Waiting: o.waiting}
-	if o.waiting {
-		st.Scope = o.waitingScope
-		st.Label = o.waitingLabel
-		if st.Scope == "" {
-			st.Scope = "workspace"
-		}
-		return st
+	heldScope, heldLabel := o.holdScopeLocked()
+	heldKeys := o.heldKeysLocked()
+	state := State{
+		Acquired:  len(o.lease.holds) > 0,
+		Waiting:   o.lease.waiting,
+		Scope:     heldScope,
+		Label:     heldLabel,
+		HeldScope: heldScope,
+		HeldLabel: heldLabel,
+		HeldKeys:  heldKeys,
 	}
-	st.Scope, st.Label = o.holdScopeLocked()
-	return st
+	if o.lease.waiting {
+		state.Scope = o.lease.targetScope
+		state.Label = o.lease.targetLabel
+		state.WaitingKeys = append([]string(nil), o.lease.targetKeys...)
+	}
+	return state
 }
 
-func (o *Owner) holdScopeLocked() (scope, label string) {
-	if o.exclusive {
-		return "workspace", ""
+func (o *Owner) holdScopeLocked() (string, string) {
+	keys := map[string]string{}
+	for _, hold := range o.lease.holds {
+		if hold.scope == "workspace" {
+			return "workspace", ""
+		}
+		for _, key := range hold.keys {
+			keys[key] = filepath.Base(key)
+		}
 	}
-	switch len(o.fileCounts) {
+	switch len(keys) {
 	case 0:
-		return "workspace", ""
+		return "", ""
 	case 1:
-		for key := range o.fileCounts {
-			return "file", o.fileNames[key]
+		for _, label := range keys {
+			return "file", label
 		}
+	default:
+		return "files", fmt.Sprintf("%d files", len(keys))
 	}
-	return "files", fmt.Sprintf("%d files", len(o.fileCounts))
+	return "", ""
 }
 
-// New returns a Delivery-session lease owner for workspaceRoot. lockDir must be
-// shared by Reasonix processes for cross-process protection; it is kept outside
-// the workspace so acquiring a lease never dirties user files.
+// New returns a Delivery-session lease owner for workspaceRoot. lockDir is
+// shared by Reasonix processes and remains outside the user's workspace.
 func New(workspaceRoot, lockDir string, onWait WaitNotice) (*Owner, error) {
 	canonical, err := CanonicalWorkspace(workspaceRoot)
 	if err != nil {
@@ -127,46 +147,42 @@ func New(workspaceRoot, lockDir string, onWait WaitNotice) (*Owner, error) {
 		return nil, fmt.Errorf("create workspace lease directory: %w", err)
 	}
 	sum := sha256.Sum256([]byte(canonical))
-	key := hex.EncodeToString(sum[:])
-
+	lockPath := filepath.Join(lockDir, hex.EncodeToString(sum[:])+".lock")
 	return &Owner{
-		lockPath:   filepath.Join(lockDir, key+".lock"),
-		lockDir:    lockDir,
-		canonical:  canonical,
-		onWait:     onWait,
-		graceAfter: backgroundGrace,
+		lockPath: lockPath, queuePath: lockPath + ".queue", canonical: canonical,
+		lockDir: lockDir,
+		onWait:  onWait, graceAfter: backgroundGrace,
+		lease: ownerLease{changed: make(chan struct{}), holds: map[uint64]*systemHold{}},
 	}, nil
 }
 
-func lockFileFor(lockDir, canonical string) string {
-	sum := sha256.Sum256([]byte(canonical))
-	return filepath.Join(lockDir, hex.EncodeToString(sum[:])+".lock")
-}
-
-// HeldKeys returns the workspace identity and any nested repo identities this
-// session currently holds. Desktop uses the set to match a waiting tab to a
-// local holder. Nil/empty means no write lock is held.
+// HeldKeys returns the actual lock-domain identities currently held. An
+// exclusive hold reports the workspace root; path holds report only files.
 func (o *Owner) HeldKeys() []string {
 	if o == nil {
 		return nil
 	}
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	if !o.acquired {
-		return nil
-	}
-	out := []string{o.canonical}
-	for key := range o.fileCounts {
-		if key != "" && key != o.canonical {
-			out = append(out, key)
+	return o.heldKeysLocked()
+}
+
+func (o *Owner) heldKeysLocked() []string {
+	seen := map[string]bool{}
+	for _, hold := range o.lease.holds {
+		for _, key := range hold.keys {
+			seen[key] = true
 		}
 	}
+	out := make([]string, 0, len(seen))
+	for key := range seen {
+		out = append(out, key)
+	}
+	sort.Strings(out)
 	return out
 }
 
-// CanonicalWorkspace returns the stable identity used to key a workspace. It
-// resolves symlinks when possible and folds case on Windows, where paths are
-// case-insensitive by default.
+// CanonicalWorkspace returns the stable identity used to key a workspace.
 func CanonicalWorkspace(root string) (string, error) {
 	root = strings.TrimSpace(root)
 	if root == "" {
@@ -183,17 +199,16 @@ func CanonicalWorkspace(root string) (string, error) {
 		return "", fmt.Errorf("canonicalize workspace root: %w", resolveErr)
 	}
 	abs = nearestGitWorktreeRoot(abs)
-	if runtime.GOOS == "windows" {
+	if caseInsensitivePlatform() {
 		abs = strings.ToLower(filepath.ToSlash(abs))
 	}
 	return abs, nil
 }
 
-// nearestGitWorktreeRoot folds a repository root and any selected directory
-// beneath it into one writer domain. It intentionally detects the .git marker
-// through the filesystem instead of invoking Git, so the no-Git Windows path
-// keeps the same safety guarantee. Linked worktrees each have their own .git
-// marker and therefore remain independent writer domains.
+func caseInsensitivePlatform() bool {
+	return runtime.GOOS == "windows" || runtime.GOOS == "darwin"
+}
+
 func nearestGitWorktreeRoot(path string) string {
 	start := path
 	if info, err := os.Stat(path); err == nil && !info.IsDir() {
@@ -210,50 +225,51 @@ func nearestGitWorktreeRoot(path string) string {
 	}
 }
 
-// BeginRun registers an agent run that participates in this session. The call
-// is intentionally cheap and does not acquire the write lease; read-only turns
-// therefore remain fully concurrent.
+// BeginRun registers an agent run without taking a writer lease.
 func (o *Owner) BeginRun() {
 	if o == nil {
 		return
 	}
 	o.mu.Lock()
-	o.activeRuns++
-	// A new run may write immediately, so revoke any grace release still pending
-	// from the previous run's background jobs.
+	o.activity.activeRuns++
 	o.cancelGraceLocked()
 	o.mu.Unlock()
 }
 
-// EndRun drops leftover tool holds when the last run finishes, then releases
-// the flock if nothing else is retaining it.
+// EndRun drops leaked tool references after the final participating run.
 func (o *Owner) EndRun() {
 	if o == nil {
 		return
 	}
 	o.mu.Lock()
-	if o.activeRuns > 0 {
-		o.activeRuns--
+	if o.activity.activeRuns > 0 {
+		o.activity.activeRuns--
 	}
-	if o.activeRuns == 0 {
-		o.toolHolds = 0
+	if o.activity.activeRuns == 0 {
+		for _, hold := range o.lease.holds {
+			hold.refs = 0
+		}
+		o.lease.legacy = nil
 	}
-	release := o.releaseIfIdleLocked()
+	releases := o.collectInactiveLocked()
 	o.mu.Unlock()
-	if release != nil {
-		release()
-	}
+	runReleases(releases)
 }
 
-// AcquireWrite acquires an exclusive workspace write lease. Pair with
-// ReleaseWrite (or EndRun) so the flock does not outlive the write.
+// AcquireWrite acquires a legacy workspace hold released by ReleaseWrite or
+// EndRun. New call sites should prefer HoldWrite.
 func (o *Owner) AcquireWrite(ctx context.Context) error {
-	_, err := o.HoldWrite(ctx)
+	release, err := o.HoldWrite(ctx)
+	if err == nil && o != nil {
+		o.mu.Lock()
+		o.lease.legacy = append(o.lease.legacy, release)
+		o.mu.Unlock()
+	}
 	return err
 }
 
-// HoldWrite acquires exclusive workspace write and returns a release for this
-// hold. The flock drops when no holds remain, even if a Run is still active.
+// HoldWrite acquires an exclusive workspace hold. If this Owner already has
+// path holds, it waits for them to finish instead of dropping their protection.
 func (o *Owner) HoldWrite(ctx context.Context) (func(), error) {
 	if o == nil {
 		return func() {}, nil
@@ -263,208 +279,281 @@ func (o *Owner) HoldWrite(ctx context.Context) (func(), error) {
 	}
 	for {
 		o.mu.Lock()
-		if o.exclusive {
-			o.toolHolds++
+		if id, hold := o.exclusiveHoldLocked(); hold != nil {
+			hold.refs++
 			o.cancelGraceLocked()
 			o.mu.Unlock()
-			return o.releaseHold, nil
+			return o.releaseHoldFunc(id), nil
 		}
-		if o.acquiring {
-			done := o.acquireDone
+		if o.lease.acquiring {
+			done := o.lease.acquireDone
 			o.mu.Unlock()
-			select {
-			case <-done:
-				continue
-			case <-ctx.Done():
-				return func() {}, ctx.Err()
+			if err := waitForSignal(ctx, done); err != nil {
+				return func() {}, err
 			}
+			continue
 		}
-		o.acquiring = true
-		o.acquireDone = make(chan struct{})
-		done := o.acquireDone
-		o.waitingScope = "workspace"
-		o.waitingLabel = ""
-		old := o.detachHoldsLocked()
+		o.beginAcquisitionLocked("workspace", "", []string{o.canonical})
+		for o.hasPathHoldsLocked() {
+			if o.activity.background > 0 {
+				o.armGraceLocked()
+			}
+			changed := o.lease.changed
+			o.mu.Unlock()
+			if err := waitForSignal(ctx, changed); err != nil {
+				o.mu.Lock()
+				o.finishAcquisitionLocked()
+				o.mu.Unlock()
+				return func() {}, err
+			}
+			o.mu.Lock()
+		}
 		o.mu.Unlock()
-		for _, rel := range old {
-			rel()
-		}
 
-		release, err := o.acquire(ctx)
+		notified := false
+		release, err := o.acquireWorkspace(ctx, filelock.ModeExclusive, &notified)
 		o.mu.Lock()
-		o.acquiring = false
-		o.waiting = false
-		o.waitingScope = ""
-		o.waitingLabel = ""
+		var id uint64
 		if err == nil {
-			o.acquired = true
-			o.exclusive = true
-			o.shared = false
-			o.releaseSystem = release
-			o.toolHolds++
-			o.cancelGraceLocked()
-			o.leaseEpoch++
+			id = o.addHoldLocked(&systemHold{
+				refs: 1, scope: "workspace", keys: []string{o.canonical}, release: release,
+			})
 		}
-		close(done)
-		releaseIfIdle := o.releaseIfIdleLocked()
+		o.finishAcquisitionLocked()
+		releases := o.collectInactiveLocked()
 		o.mu.Unlock()
-		if releaseIfIdle != nil {
-			releaseIfIdle()
-		}
+		runReleases(releases)
 		if err != nil {
 			return func() {}, err
 		}
-		return o.releaseHold, nil
+		return o.releaseHoldFunc(id), nil
 	}
 }
 
-// ReleaseWrite drops one exclusive/path hold acquired without HoldWrite.
+// ReleaseWrite releases the most recent legacy AcquireWrite/AcquireWriteForPath.
 func (o *Owner) ReleaseWrite() {
 	if o == nil {
 		return
 	}
-	o.releaseHold()
-}
-
-func (o *Owner) releaseHold() {
-	if o == nil {
+	o.mu.Lock()
+	if len(o.lease.legacy) == 0 {
+		o.mu.Unlock()
 		return
 	}
-	o.mu.Lock()
-	if o.toolHolds > 0 {
-		o.toolHolds--
-	}
-	release := o.releaseIfIdleLocked()
+	last := len(o.lease.legacy) - 1
+	release := o.lease.legacy[last]
+	o.lease.legacy = o.lease.legacy[:last]
 	o.mu.Unlock()
-	if release != nil {
-		release()
-	}
+	release()
 }
 
-func (o *Owner) detachHoldsLocked() []func() {
-	var old []func()
-	for _, rel := range o.fileHeld {
-		if rel != nil {
-			old = append(old, rel)
+func (o *Owner) exclusiveHoldLocked() (uint64, *systemHold) {
+	for id, hold := range o.lease.holds {
+		if hold.scope == "workspace" {
+			return id, hold
 		}
 	}
-	if o.releaseSystem != nil {
-		old = append(old, o.releaseSystem)
-	}
-	o.fileHeld = nil
-	o.fileCounts = nil
-	o.fileNames = nil
-	o.releaseSystem = nil
-	o.shared = false
-	o.exclusive = false
-	o.acquired = false
-	return old
+	return 0, nil
 }
 
-// RetainUntil keeps an already-acquired lease alive for a background job. It
-// is a no-op when this session has not acquired the workspace, which preserves
-// concurrency for background readers.
+func (o *Owner) hasPathHoldsLocked() bool {
+	for _, hold := range o.lease.holds {
+		if hold.scope != "workspace" {
+			return true
+		}
+	}
+	return false
+}
+
+func (o *Owner) addHoldLocked(hold *systemHold) uint64 {
+	o.lease.nextID++
+	o.lease.holds[o.lease.nextID] = hold
+	o.lease.epoch++
+	o.cancelGraceLocked()
+	o.signalChangedLocked()
+	return o.lease.nextID
+}
+
+func (o *Owner) releaseHoldFunc(id uint64) func() {
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			o.mu.Lock()
+			if hold := o.lease.holds[id]; hold != nil && hold.refs > 0 {
+				hold.refs--
+			}
+			releases := o.collectInactiveLocked()
+			o.signalChangedLocked()
+			o.mu.Unlock()
+			runReleases(releases)
+		})
+	}
+}
+
+// RetainUntil keeps completed tool holds alive for a background job.
 func (o *Owner) RetainUntil(done <-chan struct{}) {
 	if o == nil || done == nil {
 		return
 	}
 	o.mu.Lock()
-	if !o.acquired {
+	if len(o.lease.holds) == 0 {
 		o.mu.Unlock()
 		return
 	}
-	o.background++
+	o.activity.background++
 	o.mu.Unlock()
 	go func() {
 		<-done
 		o.mu.Lock()
-		if o.background > 0 {
-			o.background--
+		if o.activity.background > 0 {
+			o.activity.background--
 		}
-		release := o.releaseIfIdleLocked()
+		releases := o.collectInactiveLocked()
 		o.mu.Unlock()
-		if release != nil {
-			release()
-		}
+		runReleases(releases)
 	}()
 }
 
-func (o *Owner) releaseIfIdleLocked() func() {
-	if !o.acquired || o.acquiring || o.toolHolds > 0 {
+func (o *Owner) collectInactiveLocked() []func() {
+	var inactive bool
+	for _, hold := range o.lease.holds {
+		if hold.refs == 0 {
+			inactive = true
+			break
+		}
+	}
+	if !inactive {
 		return nil
 	}
-	if o.background != 0 {
+	if o.activity.background > 0 {
 		o.armGraceLocked()
 		return nil
 	}
-	return o.takeLeaseLocked()
+	return o.takeInactiveLocked()
 }
 
-// takeLeaseLocked detaches the system release from this Owner exactly once, so
-// no two paths can release the same acquisition.
-func (o *Owner) takeLeaseLocked() func() {
+func (o *Owner) takeInactiveLocked() []func() {
 	o.cancelGraceLocked()
-	old := o.detachHoldsLocked()
-	if len(old) == 0 {
-		return nil
-	}
-	return func() {
-		for _, rel := range old {
-			rel()
+	var releases []func()
+	for id, hold := range o.lease.holds {
+		if hold.refs != 0 {
+			continue
+		}
+		delete(o.lease.holds, id)
+		if hold.release != nil {
+			releases = append(releases, hold.release)
 		}
 	}
+	if len(releases) > 0 {
+		o.signalChangedLocked()
+	}
+	return releases
 }
 
-// armGraceLocked schedules the bounded release that keeps a resident background
-// job from owning the workspace indefinitely. The callback re-checks the epoch
-// and participation because Timer.Stop loses the race with an already-running
-// callback, and because a run may start or the lease may be reacquired first.
 func (o *Owner) armGraceLocked() {
-	if o.graceAfter <= 0 || o.graceTimer != nil {
+	if o.graceAfter <= 0 || o.lease.graceTimer != nil {
 		return
 	}
-	epoch := o.leaseEpoch
-	o.graceTimer = time.AfterFunc(o.graceAfter, func() {
+	epoch := o.lease.epoch
+	o.lease.graceTimer = time.AfterFunc(o.graceAfter, func() {
 		o.mu.Lock()
-		if o.graceTimer == nil || o.leaseEpoch != epoch || !o.acquired || o.acquiring || o.toolHolds > 0 {
+		if o.lease.graceTimer == nil || o.lease.epoch != epoch {
 			o.mu.Unlock()
 			return
 		}
-		release := o.takeLeaseLocked()
+		releases := o.takeInactiveLocked()
 		o.mu.Unlock()
-		if release != nil {
-			release()
-		}
+		runReleases(releases)
 	})
 }
 
 func (o *Owner) cancelGraceLocked() {
-	if o.graceTimer != nil {
-		o.graceTimer.Stop()
-		o.graceTimer = nil
+	if o.lease.graceTimer != nil {
+		o.lease.graceTimer.Stop()
+		o.lease.graceTimer = nil
 	}
 }
 
-// acquire tries filelock.TryAcquire, then waits via filelock.Acquire.
-// Contention flips waiting=true and fires the wait notice once.
-func (o *Owner) acquire(ctx context.Context) (func(), error) {
-	release, err := filelock.TryAcquire(o.lockPath)
+func (o *Owner) beginAcquisitionLocked(scope, label string, keys []string) {
+	o.lease.acquiring = true
+	o.lease.acquireDone = make(chan struct{})
+	o.lease.targetScope = scope
+	o.lease.targetLabel = label
+	o.lease.targetKeys = append([]string(nil), keys...)
+	o.signalChangedLocked()
+}
+
+func (o *Owner) finishAcquisitionLocked() {
+	o.lease.acquiring = false
+	o.lease.waiting = false
+	o.lease.targetScope = ""
+	o.lease.targetLabel = ""
+	o.lease.targetKeys = nil
+	if o.lease.acquireDone != nil {
+		close(o.lease.acquireDone)
+		o.lease.acquireDone = nil
+	}
+	o.signalChangedLocked()
+}
+
+func (o *Owner) signalChangedLocked() {
+	if o.lease.changed != nil {
+		close(o.lease.changed)
+	}
+	o.lease.changed = make(chan struct{})
+}
+
+func (o *Owner) markWaiting() bool {
+	o.mu.Lock()
+	first := !o.lease.waiting
+	o.lease.waiting = true
+	o.signalChangedLocked()
+	o.mu.Unlock()
+	return first
+}
+
+func (o *Owner) acquireWorkspace(ctx context.Context, mode filelock.Mode, notified *bool) (func(), error) {
+	queueRelease, err := o.acquireMode(ctx, o.queuePath, filelock.ModeExclusive, notified)
+	if err != nil {
+		return nil, err
+	}
+	release, err := o.acquireMode(ctx, o.lockPath, mode, notified)
+	queueRelease()
+	return release, err
+}
+
+func (o *Owner) acquireMode(ctx context.Context, path string, mode filelock.Mode, notified *bool) (func(), error) {
+	release, err := filelock.TryAcquireMode(path, mode)
 	if err == nil {
 		return release, nil
 	}
 	if !errors.Is(err, filelock.ErrHeld) {
 		return nil, fmt.Errorf("acquire workspace write lease: %w", err)
 	}
-
-	o.mu.Lock()
-	o.waiting = true
-	o.mu.Unlock()
-	if o.onWait != nil {
-		o.onWait()
+	if o.markWaiting() && !*notified {
+		*notified = true
+		if o.onWait != nil {
+			o.onWait()
+		}
 	}
-	release, err = filelock.Acquire(ctx, o.lockPath)
+	release, err = filelock.AcquireMode(ctx, path, mode)
 	if err != nil {
 		return nil, fmt.Errorf("acquire workspace write lease: %w", err)
 	}
 	return release, nil
+}
+
+func waitForSignal(ctx context.Context, signal <-chan struct{}) error {
+	select {
+	case <-signal:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func runReleases(releases []func()) {
+	for i := len(releases) - 1; i >= 0; i-- {
+		releases[i]()
+	}
 }

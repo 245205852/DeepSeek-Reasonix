@@ -5005,11 +5005,8 @@ export default function App() {
                 title={t("runtime.workspaceConflictTitle")}
                 badge={t("runtime.workspaceConflictBadge")}
                 meta={workspaceConflict.state === "local"
-                  ? workspaceConflict.ownerScope === "file" && workspaceConflict.ownerLabel
-                    ? t("runtime.workspaceConflictLocalFile", { title: workspaceConflict.ownerTitle || t("runtime.unknownTask"), label: workspaceConflict.ownerLabel })
-                    : workspaceConflict.ownerScope === "files" && workspaceConflict.ownerLabel
-                      ? t("runtime.workspaceConflictLocalFiles", { title: workspaceConflict.ownerTitle || t("runtime.unknownTask"), label: workspaceConflict.ownerLabel })
-                      : t("runtime.workspaceConflictLocal", { title: workspaceConflict.ownerTitle || t("runtime.unknownTask") })
+                  ? t(workspaceConflict.ownerScope === "file" ? "runtime.workspaceConflictLocalFile" : workspaceConflict.ownerScope === "files" ? "runtime.workspaceConflictLocalFiles" : "runtime.workspaceConflictLocal",
+                    { title: workspaceConflict.ownerTitle || t("runtime.unknownTask"), label: workspaceConflict.ownerLabel || "" })
                   : t("runtime.workspaceConflictExternal")}
                 note={t("runtime.workspaceConflictNote")}
                 onCancel={() => {

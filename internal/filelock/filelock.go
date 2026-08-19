@@ -23,11 +23,12 @@ var ErrHeld = errors.New("file lock held")
 // so the registry can reclaim entries when no one is waiting or holding —
 // important for short-lived paths such as session-temp owner locks.
 type localLock struct {
-	mu        sync.Mutex
-	cond      *sync.Cond
-	exclusive bool
-	readers   int
-	refs      int
+	mu             sync.Mutex
+	cond           *sync.Cond
+	exclusive      bool
+	readers        int
+	waitingWriters int
+	refs           int
 }
 
 var localRegistry = struct {
@@ -111,16 +112,21 @@ func acquire(ctx context.Context, path string, externalTimeout time.Duration, mo
 // TryAcquire attempts a non-blocking exclusive lock. It returns ErrHeld when
 // another holder (in this process or another) currently owns the lock.
 func TryAcquire(path string) (func(), error) {
+	return TryAcquireMode(path, ModeExclusive)
+}
+
+// TryAcquireMode attempts a non-blocking lock in exclusive or shared mode.
+func TryAcquireMode(path string, mode Mode) (func(), error) {
 	key, err := canonicalLockPath(path)
 	if err != nil {
 		return nil, err
 	}
-	releaseLocal, ok := tryAcquireLocal(key, ModeExclusive)
+	releaseLocal, ok := tryAcquireLocal(key, mode)
 	if !ok {
 		return nil, ErrHeld
 	}
 
-	releaseFile, err := tryLockFileMode(key, ModeExclusive)
+	releaseFile, err := tryLockFileMode(key, mode)
 	if err != nil {
 		releaseLocal()
 		if errors.Is(err, ErrHeld) {
@@ -161,19 +167,28 @@ func acquireLocal(ctx context.Context, key string, mode Mode) (func(), error) {
 	defer stop()
 
 	local.mu.Lock()
+	writer := mode == ModeExclusive
+	if writer {
+		local.waitingWriters++
+	}
 	for {
 		if ctx.Err() != nil {
+			if writer {
+				local.waitingWriters--
+				local.cond.Broadcast()
+			}
 			local.mu.Unlock()
 			dropLocalRef(key, local)
 			return nil, fmt.Errorf("acquire file lock: %w", ctx.Err())
 		}
 		if mode == ModeShared {
-			if !local.exclusive {
+			if !local.exclusive && local.waitingWriters == 0 {
 				local.readers++
 				local.mu.Unlock()
 				return releaseLocalFunc(key, local, mode), nil
 			}
 		} else if !local.exclusive && local.readers == 0 {
+			local.waitingWriters--
 			local.exclusive = true
 			local.mu.Unlock()
 			return releaseLocalFunc(key, local, mode), nil
@@ -189,7 +204,7 @@ func tryAcquireLocal(key string, mode Mode) (func(), bool) {
 
 	local.mu.Lock()
 	if mode == ModeShared {
-		if local.exclusive {
+		if local.exclusive || local.waitingWriters > 0 {
 			local.mu.Unlock()
 			dropLocalRef(key, local)
 			return nil, false
@@ -254,7 +269,7 @@ func canonicalLockPath(path string) (string, error) {
 		return "", fmt.Errorf("resolve file lock path: %w", err)
 	}
 	abs = filepath.Clean(abs)
-	if runtime.GOOS == "windows" {
+	if runtime.GOOS == "windows" || runtime.GOOS == "darwin" {
 		abs = strings.ToLower(filepath.ToSlash(abs))
 	}
 	return abs, nil

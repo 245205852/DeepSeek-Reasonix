@@ -552,10 +552,25 @@ func TestPathWriteUpgradeToExclusiveBlocksOtherRepo(t *testing.T) {
 	}
 	first.BeginRun()
 	second.BeginRun()
-	if err := first.AcquireWriteForPath(context.Background(), filepath.Join(repoA, "a.go")); err != nil {
+	releasePath, err := first.HoldWriteForPath(context.Background(), filepath.Join(repoA, "a.go"))
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := first.AcquireWrite(context.Background()); err != nil {
+	upgraded := make(chan error, 1)
+	go func() {
+		release, upgradeErr := first.HoldWrite(context.Background())
+		if upgradeErr == nil {
+			release()
+		}
+		upgraded <- upgradeErr
+	}()
+	waitForOwnerAcquisition(t, first)
+	releasePath()
+	if err := <-upgraded; err != nil {
+		t.Fatal(err)
+	}
+	release, err := first.HoldWrite(context.Background())
+	if err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 80*time.Millisecond)
@@ -564,6 +579,7 @@ func TestPathWriteUpgradeToExclusiveBlocksOtherRepo(t *testing.T) {
 		t.Fatalf("upgrade to exclusive should block other repo: %v", err)
 	}
 	cancel()
+	release()
 	first.EndRun()
 	if err := second.AcquireWriteForPath(context.Background(), filepath.Join(repoB, "b.go")); err != nil {
 		t.Fatal(err)

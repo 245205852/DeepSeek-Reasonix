@@ -35,6 +35,7 @@ type toolCallPlan struct {
 	releaseParentWrite, releaseMutationWrite, releaseLease func()
 	mutationPath                                           string
 	mutationObserved, mutationAfterDone, executed          bool
+	hooksMayMutateWorkspace                                bool
 	perCallWriteRoots                                      []string
 	skipOrdinaryGate                                       bool
 }
