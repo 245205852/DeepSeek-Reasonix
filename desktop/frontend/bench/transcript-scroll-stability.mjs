@@ -1082,7 +1082,7 @@ try {
   // frames before watching the idle tail. A single bottom sample can race a
   // late markdown/row remeasurement on loaded CI runners and contaminate the
   // idle probe with legitimate convergence motion.
-  await waitForStableTranscriptGeometry(reducedPage, { requireTail: true });
+  await waitForStableTranscriptGeometry(reducedPage, { timeout: 30_000, requireTail: true });
   const reducedIdle = await reducedPage.evaluate(() => new Promise((resolve) => {
     const element = document.querySelector(".transcript");
     const writes = [];
