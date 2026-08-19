@@ -11893,6 +11893,13 @@ body > .mermaid-diagram--fullscreen {
   outline: none;
   box-shadow: 0 0 0 2px var(--accent-soft);
 }
+.provider-name-input:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+.mem-hint.provider-name-readonly-hint {
+  color: var(--fg-dim);
+}
 .mem-input {
   flex: 1;
   min-width: 0;
