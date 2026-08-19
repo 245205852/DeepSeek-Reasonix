@@ -71,11 +71,17 @@ console.log("\nbundle budgets");
 // Diagnostic builds intentionally keep content-free row geometry and scroll
 // transition probes in the initial transcript path. Stable builds retain the
 // existing production ratchet. Per-row measurement versions and a bounded
-// recovery probe add less than 0.1% gzip. Complete-history navigation keeps a
-// fixed marker DOM and lazy-loads its 1.68 KiB rail, but the combined owner
-// wiring is 511 B (0.117%) over the merged gate. Retain both with a 0.6 KiB
-// (0.141%) production increment and about 103 B of measured build-SHA headroom.
-const initialJSBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 428.0 : 426.1;
+// recovery probe add less than 0.1% gzip; retain them with a 0.5 KiB (0.118%)
+// production ratchet rather than weakening either recovery contract. The
+// bounded allowance also covers small gzip drift from the embedded build SHA.
+// Reader extent stabilization adds 1.2 KiB gzip (0.28%) in production for its
+// bounded input, collapse, rebound, and ownership transaction. Retain it with
+// a 1.5 KiB (0.35%) ratchet instead of weakening the Windows scroll invariant.
+// Complete-history navigation adds 0.3 KiB gzip (0.070%) to that production
+// path while keeping its 1.68 KiB question rail lazy-loaded. Test diagnostics
+// plus the navigation owner add 0.7 KiB gzip (0.164%) over the merged test gate.
+// Keep about 100 B of measured build-SHA headroom in each channel.
+const initialJSBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 428.7 : 427.3;
 assertBudget("initial JavaScript gzip", initialJSGzip, initialJSBudgetKiB * 1024);
 assertBudget("largest initial JavaScript chunk gzip", largestInitialJS, 280 * 1024);
 assertBudget("render-blocking CSS gzip", initialCSSGzip, 4 * 1024);
@@ -107,8 +113,8 @@ for (const path of localeChunks) {
 const rawInitialBytes = [...initialJS, ...initialCSS, ...appShellCSS]
   .reduce((total, path) => total + statSync(path).size, 0);
 // The maintained Virtuoso engine adds 49.1 KiB raw (2.2%) over the previous
-// 2268.7 KiB gate. Test diagnostics plus the extracted navigation owner exceed
-// the merged guard by 1,146 B (0.048%); a 1.2 KiB increment (+0.051%) leaves
-// about 83 B of measured headroom without widening the gzip budget.
-assertBudget("initial raw JavaScript and CSS", rawInitialBytes, 2_342.2 * 1024);
+// 2268.7 KiB gate. Navigation remains inside the 2341 KiB production ceiling;
+// its combined diagnostic wiring adds 2.2 KiB (0.094%) to the test channel.
+const rawInitialBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 2_346.2 : 2_341;
+assertBudget("initial raw JavaScript and CSS", rawInitialBytes, rawInitialBudgetKiB * 1024);
 assertBudget("largest initial JavaScript chunk raw", largestInitialJSRaw, 1_000 * 1024);
