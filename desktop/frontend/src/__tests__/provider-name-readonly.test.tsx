@@ -117,6 +117,7 @@ eq(zhTW["settings.customProviderNameReadonlyHint"], "暫不支援供應商名稱
 
 eq(finalDeclaration(".provider-name-input:disabled", "opacity"), "0.6", "disabled provider-name input is faded");
 eq(finalDeclaration(".provider-name-input:disabled", "cursor"), "not-allowed", "disabled provider-name input uses not-allowed cursor");
+eq(finalDeclaration(".mem-hint.provider-name-readonly-hint", "color"), "var(--fg-dim)", "readonly hint uses the stronger secondary text color");
 eq(finalDeclaration(".mem-input:disabled", "opacity"), undefined, "no global mem-input:disabled fade rule remains");
 eq(finalDeclaration(".mem-select:disabled", "opacity"), undefined, "no global mem-select:disabled fade rule remains");
 
@@ -152,6 +153,9 @@ const newNameInput = rootEl.querySelector<HTMLInputElement>('input[placeholder="
 ok(newNameInput?.disabled !== true, "new custom provider name stays editable");
 ok(newNameInput?.classList.contains("mem-input") === true, "provider name keeps mem-input base styling");
 ok(newNameInput?.classList.contains("provider-name-input") === true, "provider name carries the scoped provider-name-input class");
+ok(Boolean(newNameInput?.id), "new custom provider name has a stable input id");
+eq(rootEl.querySelector<HTMLLabelElement>(`label[for="${newNameInput?.id}"]`)?.textContent, en["settings.customProviderName"], "new custom provider name has a programmatic label");
+eq(newNameInput?.getAttribute("aria-describedby"), null, "editable provider name omits the readonly description reference");
 ok(nameHint(rootEl) === null, "new custom provider editor omits the rename hint");
 
 await act(async () => {
@@ -162,7 +166,12 @@ const existingNameInput = rootEl.querySelector<HTMLInputElement>('input[placehol
 ok(existingNameInput?.disabled === true, "existing custom provider name is locked");
 ok(existingNameInput?.classList.contains("mem-input") === true, "locked provider name keeps mem-input base styling");
 ok(existingNameInput?.classList.contains("provider-name-input") === true, "locked provider name carries the scoped provider-name-input class");
-eq(nameHint(rootEl)?.textContent, en["settings.customProviderNameReadonlyHint"], "existing custom provider editor shows the rename hint");
+eq(rootEl.querySelector<HTMLLabelElement>(`label[for="${existingNameInput?.id}"]`)?.textContent, en["settings.customProviderName"], "locked provider name has a programmatic label");
+const existingNameHint = nameHint(rootEl);
+eq(existingNameHint?.textContent, en["settings.customProviderNameReadonlyHint"], "existing custom provider editor shows the rename hint");
+ok(existingNameHint?.classList.contains("provider-name-readonly-hint") === true, "rename hint carries the stronger contrast class");
+ok(Boolean(existingNameHint?.id), "rename hint has a stable id");
+eq(existingNameInput?.getAttribute("aria-describedby"), existingNameHint?.id, "locked provider name references the rename hint");
 
 await act(async () => {
   root.unmount();

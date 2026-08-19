@@ -11839,6 +11839,9 @@ body > .mermaid-diagram--fullscreen {
   opacity: 0.6;
   cursor: not-allowed;
 }
+.mem-hint.provider-name-readonly-hint {
+  color: var(--fg-dim);
+}
 .mem-input {
   flex: 1;
   min-width: 0;
