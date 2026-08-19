@@ -1020,16 +1020,26 @@ try {
     `reduced-motion tail rests on the physical bottom (${reducedIdle.finalDistance}px)`,
   );
   // The #9089 gesture: wheel up, wheel back to the bottom, release, idle.
-  await moveToOuterReaderGutter(reducedPage, reducedPage.locator(".transcript"));
+  const reducedTranscript = reducedPage.locator(".transcript");
+  const reducedBottomTop = await reducedTranscript.evaluate((element) => element.scrollTop);
+  await moveToOuterReaderGutter(reducedPage, reducedTranscript);
   await reducedPage.mouse.wheel(0, -900);
-  await reducedPage.waitForTimeout(120);
-  await reducedPage.mouse.wheel(0, 100_000);
-  await reducedPage.waitForFunction(() => {
+  await reducedPage.waitForFunction((bottomTop) => {
     const element = document.querySelector(".transcript");
     return element instanceof HTMLElement
-      && element.dataset.scrollMode === "tail-follow"
-      && element.scrollHeight - element.scrollTop - element.clientHeight <= 4;
-  }, undefined, { timeout: 10_000 });
+      && element.dataset.scrollMode === "manual"
+      && element.scrollTop < bottomTop - 1
+      && element.scrollHeight - element.scrollTop - element.clientHeight > 4;
+  }, reducedBottomTop, { timeout: 5_000 });
+  let reducedReachedBottom = false;
+  for (let attempt = 0; attempt < 20 && !reducedReachedBottom; attempt += 1) {
+    await reducedPage.mouse.wheel(0, 640);
+    await reducedPage.waitForTimeout(50);
+    reducedReachedBottom = await reducedTranscript.evaluate((element) =>
+      element.dataset.scrollMode === "tail-follow"
+      && element.scrollHeight - element.scrollTop - element.clientHeight <= 4);
+  }
+  assert(reducedReachedBottom, "reduced-motion repeated downward wheels return to the physical bottom (#9089)");
   const reducedReturn = await reducedPage.evaluate(() => new Promise((resolve) => {
     const element = document.querySelector(".transcript");
     const tops = [];
