@@ -68,7 +68,14 @@ console.log("\nbundle budgets");
 // blank-project flow landed; project-topic sort invalidation and request
 // ordering add another bounded 0.2 KiB. Retain both owner boundaries with a
 // narrowly rounded 1 KiB ratchet.
-assertBudget("initial JavaScript gzip", initialJSGzip, 425.0 * 1024);
+// Diagnostic builds intentionally keep content-free row geometry and scroll
+// transition probes in the initial transcript path. Stable builds retain the
+// existing production ratchet. Per-row measurement versions and a bounded
+// recovery probe add less than 0.1% gzip; retain them with a 0.5 KiB (0.118%)
+// production ratchet rather than weakening either recovery contract. The
+// bounded allowance also covers small gzip drift from the embedded build SHA.
+const initialJSBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 428.0 : 425.5;
+assertBudget("initial JavaScript gzip", initialJSGzip, initialJSBudgetKiB * 1024);
 assertBudget("largest initial JavaScript chunk gzip", largestInitialJS, 280 * 1024);
 assertBudget("render-blocking CSS gzip", initialCSSGzip, 4 * 1024);
 // Extension surfaces, Task Monitor, and compact decision receipts share the

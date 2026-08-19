@@ -96,7 +96,17 @@ eq(finalDeclaration(".code-search__actions", "display"), "flex", "search actions
 eq(finalDeclaration(".code-search__actions", "margin-left"), "auto", "wrapped search actions stay aligned to the toolbar edge");
 eq(finalDeclaration(".workspace-preview__body--code .code", "overflow"), "auto", "code viewport owns horizontal and vertical scrolling");
 eq(finalDeclaration(".workspace-preview__body--code .code", "min-height"), "0", "code viewport can shrink inside the preview pane");
+eq(finalDeclaration(".workspace-preview__body--code .code", "max-height"), "none", "workspace code clears the shared scroll-y height cap");
 eq(finalDeclaration(".workspace-preview__body--code .code", "margin"), "0", "code viewport scrollbar sits at the visible pane bottom");
+eq(
+  computedDeclaration(
+    `<html><head></head><body><div class="workspace-preview__body workspace-preview__body--code"><pre class="code code--scroll-y"></pre></div></body></html>`,
+    ".code--scroll-y",
+    "max-height",
+  ),
+  "none",
+  "workspace selector wins over the shared virtual-scroll cap",
+);
 eq(finalDeclaration(".code-search__input", "min-width"), "60px", "search input reserves a minimum readable width");
 eq(
   computedDeclaration(

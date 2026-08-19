@@ -1672,7 +1672,7 @@ export function WorkspacePanel({
         </div>
 
         <div
-          className={`workspace-preview__body${codePreviewActive ? " workspace-preview__body--code" : ""}`}
+          className={`workspace-preview__body${selectedPath && !changedMode && !isMarkdown && !previewErr && !preview?.err && !preview?.kind && !preview?.binary ? " workspace-preview__body--code" : ""}`}
           ref={previewBodyRef}
           onContextMenu={openSelectionMenu}
           onMouseUp={showSelectionToolbar}

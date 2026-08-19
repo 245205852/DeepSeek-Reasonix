@@ -1,4 +1,4 @@
-import { forwardRef, memo, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type TouchEvent as ReactTouchEvent, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type WheelEvent as ReactWheelEvent } from "react";
+import { forwardRef, lazy, memo, Suspense, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type TouchEvent as ReactTouchEvent, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type WheelEvent as ReactWheelEvent } from "react";
 import { Virtuoso, type Components, type ItemProps, type ListItem, type ListProps } from "react-virtuoso";
 import type { ControllerLiveStore, Item, LiveStream } from "../lib/useController";
 import type { CheckpointMeta, WireCompletionSummary } from "../lib/types";
@@ -33,9 +33,10 @@ import {
   type ToolItem,
   type TranscriptLiveFlags,
   type TranscriptRow,
+  transcriptRowMeasurementVersion,
 } from "../lib/transcriptRows";
 import { getTranscriptStore } from "../lib/transcriptStore";
-import { createTranscriptMeasuredSizes, type TranscriptMeasuredSizes } from "../lib/transcriptMeasuredSizes";
+import { createTranscriptMeasuredSizes } from "../lib/transcriptMeasuredSizes";
 import { acquireMarkdownWorkerClient, releaseMarkdownWorkerClient } from "../lib/markdownWorkerClient";
 import { noteTranscriptRecoveryTerminal, noteTranscriptRowCounts } from "../lib/sessionDiagnostics";
 import { useReasoningDisplayMode } from "../lib/reasoningDisplayPreference";
@@ -53,6 +54,7 @@ import { hasTranscriptScrollableRange, TRANSCRIPT_AT_BOTTOM_THRESHOLD_PX, useTra
 import { useTranscriptLayoutIntegrity } from "../lib/useTranscriptLayoutIntegrity";
 import { TranscriptLayoutIntentProvider } from "./TranscriptLayoutIntentContext";
 import { MarkdownImageTabContext } from "./MarkdownImageContext";
+import { recordTranscriptScrollDiagnostic } from "../lib/transcriptScrollProbe";
 
 // NoticeCard lives with the other row cards; keep the historical export path.
 export { NoticeCard } from "./TranscriptCards";
@@ -62,6 +64,8 @@ type AssistantReasoningDisplay = "normal" | "hide";
 const EMPTY_CHECKPOINTS: CheckpointMeta[] = [];
 const EMPTY_INVOCATION_METADATA: InvocationMetadataMap = {};
 const NO_HELD_ROWS: readonly TranscriptRow[] = [];
+const SHOW_SCROLL_DIAGNOSTICS = typeof __BUILD_CHANNEL__ === "undefined" || __BUILD_CHANNEL__ === "test" || import.meta.env.DEV;
+const ScrollDiagnosticPanel = SHOW_SCROLL_DIAGNOSTICS ? lazy(() => import("./ScrollDiagnosticPanel")) : null;
 
 const LiveAssistantMessage = memo(function LiveAssistantMessage({
   item,
@@ -116,7 +120,7 @@ type TranscriptVirtuosoContext = {
   scrollElement: HTMLDivElement | null;
   nativeScrollbarDragging: boolean;
   overlayRevision: string;
-  measuredSizes: TranscriptMeasuredSizes;
+  scrollDiagnostics?: { heightEstimates: readonly number[]; contentRevision: number };
   /** The active turn's in-flow footer region; null when no turn is live. */
   liveRegion: null | {
     rows: readonly TranscriptRow[];
@@ -139,18 +143,34 @@ const TranscriptVirtuosoItem = forwardRef<HTMLDivElement, ItemProps<TranscriptRo
       if (entryId) getTranscriptStore().requestEntryFullContent(context.tabId, entryId);
     }, [context.tabId, entryId]);
     const knownSize = Number.parseFloat(String(props["data-known-size"] ?? ""));
-    useEffect(() => {
-      // Feed Virtuoso's own measurement back into the session cache so a
-      // future remount restarts from measured geometry, not static priors.
-      if (Number.isFinite(knownSize) && knownSize > 0) {
-        context.measuredSizes.record(String(item.key), item.kind, knownSize);
-      }
-    }, [context.measuredSizes, item.key, item.kind, knownSize]);
+    // data-index is logical; data-item-index includes the large prepend anchor.
+    const rowIndex = SHOW_SCROLL_DIAGNOSTICS
+      ? Number.parseInt(String(props["data-index"] ?? ""), 10)
+      : Number.NaN;
+    const estimatedSize = Number.isInteger(rowIndex) && rowIndex >= 0
+      ? context.scrollDiagnostics?.heightEstimates[rowIndex]
+      : undefined;
+    const diagnosticAttributes = SHOW_SCROLL_DIAGNOSTICS
+      ? {
+          "data-logical-index": Number.isInteger(rowIndex) && rowIndex >= 0 ? rowIndex : undefined,
+          "data-estimated-size": estimatedSize,
+          "data-content-revision": context.scrollDiagnostics?.contentRevision,
+        }
+      : {};
     const frozenStyle = context.nativeScrollbarDragging && Number.isFinite(knownSize) && knownSize > 0
       ? { ...style, boxSizing: "border-box" as const, height: knownSize, overflow: "hidden" as const }
       : style;
     return (
-      <div {...props} ref={ref} style={frozenStyle} data-row-key={String(item.key)} className="transcript__row">
+      <div
+        {...props}
+        ref={ref}
+        style={frozenStyle}
+        data-row-key={String(item.key)}
+        data-row-kind={item.kind}
+        data-layout-version={transcriptRowMeasurementVersion(item)}
+        {...diagnosticAttributes}
+        className="transcript__row"
+      >
         {children}
       </div>
     );
@@ -254,6 +274,7 @@ export function Transcript({
   loadingOlderHistory = false,
   onLoadOlderHistory,
   turnStartAt,
+  contentRevision = 0,
   invocationMetadata = EMPTY_INVOCATION_METADATA,
 }: {
   items: Item[];
@@ -284,6 +305,7 @@ export function Transcript({
   loadingOlderHistory?: boolean;
   onLoadOlderHistory?: () => void;
   turnStartAt?: number;
+  contentRevision?: number;
   invocationMetadata?: InvocationMetadataMap;
 }) {
   const t = useT();
@@ -296,6 +318,9 @@ export function Transcript({
     [liveProp, liveStore, tabId],
   );
   const live = useSyncExternalStore(subscribeLive, getLiveSnapshot, getLiveSnapshot);
+  const layoutSurfaceKey = `${tabId ?? ""}:${revealSignal}`;
+  const measuredSizes = useMemo(() => createTranscriptMeasuredSizes(), [layoutSurfaceKey]);
+  const [layoutWidth, setLayoutWidth] = useState<number>();
   const {
     virtuosoRef,
     scrollRef,
@@ -327,9 +352,12 @@ export function Transcript({
     retryRecoveryRequest,
     lastGoodAnchorRef,
     captureStateSnapshot,
-  } = useTranscriptScrollArbiter({ onRecoveryTerminal: noteTranscriptRecoveryTerminal });
+    layoutTransientRef,
+  } = useTranscriptScrollArbiter({
+    onRecoveryTerminal: noteTranscriptRecoveryTerminal,
+    onItemMeasured: measuredSizes.record,
+  });
   const virtuosoReadyRef = useRef(false);
-  const layoutSurfaceKey = `${tabId ?? ""}:${revealSignal}`;
 
   const entranceRef = useTranscriptEntranceAnimation<HTMLDivElement>(tabId, revealSignal, items);
 
@@ -406,11 +434,19 @@ export function Transcript({
     const element = scrollElement;
     if (!element || typeof ResizeObserver === "undefined") return;
     let lastHeight = element.clientHeight;
+    let lastWidth = element.clientWidth;
+    setLayoutWidth(lastWidth);
     const observer = new ResizeObserver(() => {
       const height = element.clientHeight;
-      if (height === lastHeight) return;
-      lastHeight = height;
-      followGrowingTail();
+      const width = element.clientWidth;
+      if (width !== lastWidth) {
+        lastWidth = width;
+        setLayoutWidth(width);
+      }
+      if (height !== lastHeight) {
+        lastHeight = height;
+        followGrowingTail();
+      }
     });
     observer.observe(element);
     return () => observer.disconnect();
@@ -535,6 +571,7 @@ export function Transcript({
     invalidateAnchors,
     noteUserScrollIntent,
     noteScrollActivity,
+    safeMode: layoutSafeMode,
   } = useTranscriptLayoutIntegrity({
     surfaceKey: layoutSurfaceKey,
     rows: virtualRows,
@@ -547,6 +584,8 @@ export function Transcript({
     retryRecoveryRequest,
     lastGoodAnchorRef,
     captureStateSnapshot,
+    layoutTransientRef,
+    layoutWidth,
   });
   const selectionRetention = useTranscriptSelectionRetention({
     tabId,
@@ -566,7 +605,10 @@ export function Transcript({
   // follow-up).
   const onWheelIntentWithRecovery = useCallback((event: ReactWheelEvent<HTMLElement>) => {
     const accepted = onWheelIntent(event);
-    if (accepted) noteUserScrollIntent();
+    if (accepted) {
+      if (SHOW_SCROLL_DIAGNOSTICS) recordTranscriptScrollDiagnostic("wheel", { deltaY: event.deltaY });
+      noteUserScrollIntent();
+    }
     return accepted;
   }, [noteUserScrollIntent, onWheelIntent]);
   const onTouchStartIntentWithRecovery = useCallback((event: ReactTouchEvent<HTMLElement>) => {
@@ -599,17 +641,20 @@ export function Transcript({
     onScrollEnd: finishProgrammaticScroll,
     onSelectionPointerDown: selectionRetention.onPointerDownCapture,
   });
-  // Measured-geometry cache: remounts restart from real row heights instead
-  // of static priors, so the size-tree collapse loses its blast radius.
-  const measuredSizes = useMemo(() => createTranscriptMeasuredSizes(), [layoutSurfaceKey]);
-  const heightEstimates = useMemo(() => measuredSizes.synthesize(virtualRows), [measuredSizes, virtualRows]);
+  // Keep estimates stable across token patches; refresh for rows, width, or remount.
+  const heightEstimates = useMemo(
+    () => measuredSizes.synthesize(virtualRows, layoutWidth),
+    [layoutWidth, measuredSizes, virtuosoResetKey, virtualRows],
+  );
   const overlayRevision = useMemo(
     () => virtualRows.map((row) => String(row.key)).join("|"),
     [virtualRows],
   );
   const handleScrollerRef = useCallback((node: HTMLElement | Window | null) => {
     scrollerRef(node);
-    entranceRef.current = node instanceof HTMLElement ? node as HTMLDivElement : null;
+    const element = node instanceof HTMLElement ? node as HTMLDivElement : null;
+    entranceRef.current = element;
+    if (element) setLayoutWidth(element.clientWidth);
   }, [entranceRef, scrollerRef]);
   const handleTranscriptScroll = useCallback(() => {
     deliverScroll();
@@ -884,12 +929,17 @@ export function Transcript({
     }
   }, [handleRecoveryItemsRendered, holdingLiveRegion, selectionRetention.reconcileLogicalFocus, virtualRows.length]);
 
+  const handleTotalListHeightChanged = useCallback((height: number) => {
+    if (SHOW_SCROLL_DIAGNOSTICS) recordTranscriptScrollDiagnostic("list-height", { listHeight: height });
+    followGrowingTail();
+  }, [followGrowingTail]);
+
   const virtuosoContext = useMemo<TranscriptVirtuosoContext>(() => ({
     tabId,
     scrollElement,
     nativeScrollbarDragging,
     overlayRevision,
-    measuredSizes,
+    scrollDiagnostics: SHOW_SCROLL_DIAGNOSTICS ? { heightEstimates, contentRevision } : undefined,
     liveRegion: showLiveRegion
       ? {
           rows: liveSplit.liveActive ? liveSplit.liveRows : heldLiveRows,
@@ -908,11 +958,12 @@ export function Transcript({
       : null,
   }), [
     hasOlderHistory,
+    heightEstimates,
     heldLiveRows,
     liveSplit.liveActive,
     liveSplit.liveRows,
     loadingOlderHistory,
-    measuredSizes,
+    contentRevision,
     nativeScrollbarDragging,
     olderHistoryCount,
     onLoadOlderHistory,
@@ -969,11 +1020,15 @@ export function Transcript({
             atBottomStateChange={atBottomStateChange}
             heightEstimates={heightEstimates}
             itemSize={itemSize}
-            minOverscanItemCount={{ top: VIRTUAL_OVERSCAN_ROWS, bottom: VIRTUAL_OVERSCAN_ROWS }}
-            increaseViewportBy={{ top: 480, bottom: 480 }}
+            minOverscanItemCount={layoutSafeMode
+              ? { top: 32, bottom: 32 }
+              : { top: VIRTUAL_OVERSCAN_ROWS, bottom: VIRTUAL_OVERSCAN_ROWS }}
+            increaseViewportBy={layoutSafeMode
+              ? { top: (scrollElement?.clientHeight ?? 0) * 2, bottom: (scrollElement?.clientHeight ?? 0) * 2 }
+              : { top: 480, bottom: 480 }}
             scrollerRef={handleScrollerRef}
             itemsRendered={handleItemsRendered}
-            totalListHeightChanged={followGrowingTail}
+            totalListHeightChanged={handleTotalListHeightChanged}
             itemContent={renderVirtuosoRow}
             onScroll={handleTranscriptScroll}
             onWheelCapture={scrollInteractions.onWheelCapture}
@@ -1016,6 +1071,7 @@ export function Transcript({
           <ArrowDown size={18} strokeWidth={2.2} aria-hidden="true" />
         </button>
       )}
+      {ScrollDiagnosticPanel && <Suspense fallback={null}><ScrollDiagnosticPanel scrollElement={scrollElement} totalRows={virtualRows.length} /></Suspense>}
     </div>
     </TranscriptLayoutIntentProvider>
     </MarkdownImageTabContext.Provider>
