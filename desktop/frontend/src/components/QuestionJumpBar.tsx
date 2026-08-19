@@ -4,18 +4,22 @@ import { useEffect, useRef, useState, type CSSProperties, type MouseEvent as Rea
 import { useT } from "../lib/i18n";
 import type { QuestionAnchor } from "../lib/transcriptGrouping";
 
-export function QuestionJumpBar({ questions, onJump }: { questions: QuestionAnchor[]; onJump: (question: QuestionAnchor) => void }) {
+export function QuestionJumpBar({
+  questions,
+  activeTurn,
+  onJump,
+}: {
+  questions: QuestionAnchor[];
+  activeTurn: number | null;
+  onJump: (question: QuestionAnchor) => void;
+}) {
   const t = useT();
   const [hovered, setHovered] = useState<number | null>(null);
-  const [active, setActive] = useState<number | null>(null);
   const barRef = useRef<HTMLDivElement>(null);
   const previewTop = useRef(0);
   const [showPreview, setShowPreview] = useState(false);
 
-  useEffect(() => {
-    if (questions.length === 0) return;
-    setActive(questions[questions.length - 1]?.turn ?? null);
-  }, [questions]);
+  const active = activeTurn ?? questions[questions.length - 1]?.turn ?? null;
 
   useEffect(() => {
     if (active === null) return;
@@ -58,7 +62,6 @@ export function QuestionJumpBar({ questions, onJump }: { questions: QuestionAnch
   };
 
   const scrollTo = (question: QuestionAnchor) => {
-    setActive(question.turn);
     onJump(question);
   };
 

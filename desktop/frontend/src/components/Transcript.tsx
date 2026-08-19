@@ -15,7 +15,15 @@ import { getProcessFoldPreference, onProcessFoldPreferenceChange, type ProcessFo
 import { isSteerNoticeText } from "../lib/useController";
 import { useTranscriptEntranceAnimation } from "../lib/useEntranceAnimation";
 import { useTranscriptSelectionRetention } from "../lib/useTranscriptSelectionRetention";
-import { compactQuestionText, lastQuestionTurn, questionAnchorId, questionTurnsById, type QuestionAnchor } from "../lib/transcriptGrouping";
+import {
+  activeQuestionTurn,
+  compactQuestionText,
+  lastQuestionTurn,
+  questionAnchorId,
+  questionTurnsById,
+  type QuestionAnchor,
+  type QuestionAnchorPosition,
+} from "../lib/transcriptGrouping";
 import {
   buildTranscriptRows,
   buildTurnModels,
@@ -330,6 +338,8 @@ export function Transcript({
   } = useTranscriptScrollArbiter({ onRecoveryTerminal: noteTranscriptRecoveryTerminal });
   const virtuosoReadyRef = useRef(false);
   const layoutSurfaceKey = `${tabId ?? ""}:${revealSignal}`;
+  const activeQuestionFrame = useRef<number | null>(null);
+  const [activeQuestion, setActiveQuestion] = useState<number | null>(null);
 
   const entranceRef = useTranscriptEntranceAnimation<HTMLDivElement>(tabId, revealSignal, items);
 
@@ -373,6 +383,36 @@ export function Transcript({
     return anchors;
   }, [items]);
   const showQuestionNav = questionNavigator && questions.length >= QUESTION_NAV_MIN_COUNT;
+
+  const syncActiveQuestion = useCallback(() => {
+    if (!scrollElement || questions.length === 0) return;
+    const scrollerTop = scrollElement.getBoundingClientRect().top;
+    const positions: QuestionAnchorPosition[] = [];
+    scrollElement.querySelectorAll<HTMLElement>("[data-question-anchor]").forEach((anchor) => {
+      const turn = Number(anchor.dataset.turn);
+      if (!Number.isInteger(turn)) return;
+      positions.push({ turn, top: anchor.getBoundingClientRect().top - scrollerTop });
+    });
+    const next = activeQuestionTurn(questions, positions);
+    if (next != null) setActiveQuestion(next);
+  }, [questions, scrollElement]);
+
+  const scheduleActiveQuestionSync = useCallback(() => {
+    if (activeQuestionFrame.current != null) return;
+    activeQuestionFrame.current = requestAnimationFrame(() => {
+      activeQuestionFrame.current = null;
+      syncActiveQuestion();
+    });
+  }, [syncActiveQuestion]);
+
+  useEffect(() => () => {
+    if (activeQuestionFrame.current != null) cancelAnimationFrame(activeQuestionFrame.current);
+  }, []);
+
+  useEffect(() => {
+    setActiveQuestion(questions[questions.length - 1]?.turn ?? null);
+    scheduleActiveQuestionSync();
+  }, [questions, scheduleActiveQuestionSync]);
 
   // A new local question is an explicit request to reveal the tail. Prepending
   // older history keeps the same last id and is left entirely to Virtuoso's
@@ -615,8 +655,9 @@ export function Transcript({
     deliverScroll();
     noteScrollActivity();
     if (creationMode) handleCreationScroll();
+    scheduleActiveQuestionSync();
     scheduleBlankViewportCheck();
-  }, [creationMode, deliverScroll, handleCreationScroll, noteScrollActivity, scheduleBlankViewportCheck]);
+  }, [creationMode, deliverScroll, handleCreationScroll, noteScrollActivity, scheduleActiveQuestionSync, scheduleBlankViewportCheck]);
   // ── JumpBar integration ───────────────────────────────────────────────────
   const handleJumpToQuestion = useCallback((question: QuestionAnchor) => {
     const index = rowIndexByKey.get(String(userRowKey(question.id)));
@@ -627,6 +668,7 @@ export function Transcript({
     document.getSelection()?.removeAllRanges();
     clearTranscriptSelection("question-navigation");
     invalidateAnchors();
+    setActiveQuestion(question.turn);
     scrollToDataIndex(index, "smooth");
   }, [clearTranscriptSelection, invalidateAnchors, rowIndexByKey, scrollToDataIndex]);
 
@@ -874,6 +916,7 @@ export function Transcript({
     noteTranscriptRowCounts(rendered.length, virtualRows.length);
     selectionRetention.reconcileLogicalFocus();
     handleRecoveryItemsRendered(rendered.length);
+    scheduleActiveQuestionSync();
     if (holdingLiveRegion) {
       const held = heldLiveRowsRef.current;
       const lastKey = held.length > 0 ? String(held[held.length - 1].key) : null;
@@ -882,7 +925,7 @@ export function Transcript({
         setHoldingLiveRegion(false);
       }
     }
-  }, [handleRecoveryItemsRendered, holdingLiveRegion, selectionRetention.reconcileLogicalFocus, virtualRows.length]);
+  }, [handleRecoveryItemsRendered, holdingLiveRegion, scheduleActiveQuestionSync, selectionRetention.reconcileLogicalFocus, virtualRows.length]);
 
   const virtuosoContext = useMemo<TranscriptVirtuosoContext>(() => ({
     tabId,
@@ -1002,7 +1045,7 @@ export function Transcript({
       )}
 
       {!empty && showQuestionNav && (
-        <QuestionJumpBar questions={questions} onJump={handleJumpToQuestion} />
+        <QuestionJumpBar questions={questions} activeTurn={activeQuestion} onJump={handleJumpToQuestion} />
       )}
 
       {!empty && !isAtBottom && scrollElement && hasTranscriptScrollableRange(scrollElement) && (
