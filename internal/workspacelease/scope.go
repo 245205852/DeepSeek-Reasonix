@@ -24,9 +24,10 @@ const pathLockStripes = 4096
 const treeLockStripes = 4096
 
 type pathSpec struct {
-	key     string
-	display string
-	slot    string
+	key           string
+	compatibility string
+	display       string
+	slot          string
 }
 
 // AcquireWriteForPath takes a legacy file-scoped hold released by ReleaseWrite
@@ -126,7 +127,8 @@ func (o *Owner) pathSpecs(paths []string) ([]pathSpec, error) {
 	seen := map[string]bool{}
 	specs := make([]pathSpec, 0, len(paths))
 	for _, path := range paths {
-		key, display, err := canonicalFileKey(path)
+		compatibility, display, err := canonicalFilePath(path)
+		key := normalizeIdentityPath(compatibility)
 		if err != nil || key == "" || !canonicalContains(o.canonical, key) {
 			if err == nil {
 				err = errors.New("path is outside the workspace")
@@ -137,7 +139,10 @@ func (o *Owner) pathSpecs(paths []string) ([]pathSpec, error) {
 			continue
 		}
 		seen[key] = true
-		specs = append(specs, pathSpec{key: key, display: display, slot: o.pathLockPath(key)})
+		specs = append(specs, pathSpec{
+			key: key, compatibility: compatibility,
+			display: display, slot: o.pathLockPath(key),
+		})
 	}
 	sort.Slice(specs, func(i, j int) bool {
 		if specs[i].slot == specs[j].slot {
@@ -255,15 +260,37 @@ func stripedLockPath(lockDir, prefix, key string, stripes int) string {
 }
 
 func (o *Owner) compatibilityRoots(specs []pathSpec) []string {
-	roots := ancestorDirectories(o.canonical)
+	roots := append(ancestorDirectories(o.canonical), ancestorDirectories(o.compatibility)...)
 	for _, spec := range specs {
-		for _, dir := range pathChain(o.canonical, filepath.Dir(spec.key)) {
+		for _, dir := range compatibilityPathChain(o.compatibility, filepath.Dir(spec.compatibility)) {
 			if _, err := os.Lstat(filepath.Join(dir, ".git")); err == nil {
-				roots = append(roots, dir)
+				roots = append(roots, dir, normalizeIdentityPath(dir))
 			}
 		}
 	}
 	return orderedWorkspaceRoots(roots)
+}
+
+func compatibilityPathChain(root, target string) []string {
+	root = compatibilityIdentityPath(root)
+	target = compatibilityIdentityPath(target)
+	if !canonicalContains(root, target) {
+		return []string{root}
+	}
+	out := []string{root}
+	rel, err := filepath.Rel(root, target)
+	if err != nil || rel == "." {
+		return out
+	}
+	current := root
+	for part := range strings.SplitSeq(filepath.ToSlash(rel), "/") {
+		if part == "" || part == "." {
+			continue
+		}
+		current = compatibilityIdentityPath(filepath.Join(current, part))
+		out = append(out, current)
+	}
+	return out
 }
 
 func (o *Owner) pathTreeSlots(specs []pathSpec) []string {
@@ -305,6 +332,14 @@ func pathChain(root, target string) []string {
 }
 
 func canonicalFileKey(abs string) (key, display string, err error) {
+	abs, display, err = canonicalFilePath(abs)
+	if err != nil {
+		return "", "", err
+	}
+	return normalizeIdentityPath(abs), display, nil
+}
+
+func canonicalFilePath(abs string) (canonical, display string, err error) {
 	abs = strings.TrimSpace(abs)
 	if abs == "" {
 		return "", "", errors.New("path is empty")
@@ -328,10 +363,7 @@ func canonicalFileKey(abs string) (key, display string, err error) {
 		cur = parent
 	}
 	display = filepath.Base(abs)
-	if caseInsensitivePlatform() {
-		abs = strings.ToLower(filepath.ToSlash(abs))
-	}
-	return abs, display, nil
+	return compatibilityIdentityPath(abs), display, nil
 }
 
 func canonicalContains(root, path string) bool {

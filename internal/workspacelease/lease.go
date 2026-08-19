@@ -65,11 +65,12 @@ type ownerLease struct {
 // shared by the root agent and its subagents; different sessions use different
 // Owners even when they share a workspace.
 type Owner struct {
-	lockPath   string
-	lockDir    string
-	canonical  string
-	onWait     WaitNotice
-	graceAfter time.Duration
+	lockPath      string
+	lockDir       string
+	canonical     string
+	compatibility string
+	onWait        WaitNotice
+	graceAfter    time.Duration
 
 	mu       sync.Mutex
 	activity ownerActivity
@@ -141,7 +142,7 @@ func (o *Owner) holdScopeLocked() (string, string) {
 // New returns a Delivery-session lease owner for workspaceRoot. lockDir is
 // shared by Reasonix processes and remains outside the user's workspace.
 func New(workspaceRoot, lockDir string, onWait WaitNotice) (*Owner, error) {
-	canonical, err := CanonicalWorkspace(workspaceRoot)
+	canonical, compatibility, err := workspaceIdentities(workspaceRoot)
 	if err != nil {
 		return nil, err
 	}
@@ -152,9 +153,9 @@ func New(workspaceRoot, lockDir string, onWait WaitNotice) (*Owner, error) {
 	if err := os.MkdirAll(lockDir, 0o700); err != nil {
 		return nil, fmt.Errorf("create workspace lease directory: %w", err)
 	}
-	lockPath := workspaceLockPath(lockDir, canonical)
+	lockPath := workspaceLockPath(lockDir, compatibility)
 	return &Owner{
-		lockPath: lockPath, canonical: canonical,
+		lockPath: lockPath, canonical: canonical, compatibility: compatibility,
 		lockDir: lockDir,
 		onWait:  onWait, graceAfter: backgroundGrace,
 		lease: ownerLease{
@@ -192,25 +193,28 @@ func (o *Owner) heldKeysLocked() []string {
 
 // CanonicalWorkspace returns the stable identity used to key a workspace.
 func CanonicalWorkspace(root string) (string, error) {
+	canonical, _, err := workspaceIdentities(root)
+	return canonical, err
+}
+
+func workspaceIdentities(root string) (canonical, compatibility string, err error) {
 	root = strings.TrimSpace(root)
 	if root == "" {
-		return "", errors.New("workspace root is empty")
+		return "", "", errors.New("workspace root is empty")
 	}
 	abs, err := filepath.Abs(root)
 	if err != nil {
-		return "", fmt.Errorf("resolve workspace root: %w", err)
+		return "", "", fmt.Errorf("resolve workspace root: %w", err)
 	}
 	abs = filepath.Clean(abs)
 	if resolved, resolveErr := filepath.EvalSymlinks(abs); resolveErr == nil {
 		abs = filepath.Clean(resolved)
 	} else if !os.IsNotExist(resolveErr) {
-		return "", fmt.Errorf("canonicalize workspace root: %w", resolveErr)
+		return "", "", fmt.Errorf("canonicalize workspace root: %w", resolveErr)
 	}
 	abs = nearestGitWorktreeRoot(abs)
-	if caseInsensitivePlatform() {
-		abs = strings.ToLower(filepath.ToSlash(abs))
-	}
-	return abs, nil
+	compatibility = compatibilityIdentityPath(abs)
+	return normalizeIdentityPath(compatibility), compatibility, nil
 }
 
 func caseInsensitivePlatform() bool {
@@ -521,7 +525,8 @@ func (o *Owner) markWaiting() bool {
 }
 
 func (o *Owner) acquireWorkspace(ctx context.Context, mode filelock.Mode, notified *bool) (func(), error) {
-	compatRelease, err := o.acquireCompatibilityRoots(ctx, ancestorDirectories(o.canonical), mode, notified)
+	roots := append(ancestorDirectories(o.canonical), ancestorDirectories(o.compatibility)...)
+	compatRelease, err := o.acquireCompatibilityRoots(ctx, roots, mode, notified)
 	if err != nil {
 		return nil, err
 	}
@@ -550,7 +555,7 @@ func (o *Owner) acquireCompatibilityRoots(
 	releases := make([]func(), 0, len(roots))
 	for _, root := range roots {
 		mode := filelock.ModeShared
-		if root == o.canonical {
+		if normalizeIdentityPath(root) == o.canonical {
 			mode = rootMode
 		}
 		release, err := o.acquireQueuedMode(ctx, workspaceLockPath(o.lockDir, root), mode, notified)
@@ -571,7 +576,7 @@ func (o *Owner) acquireQueuedMode(ctx context.Context, lockPath string, mode fil
 }
 
 func (o *Owner) acquireSharedDomain(ctx context.Context, lockPath string, notified *bool) (func(), error) {
-	lockPath = normalizeIdentityPath(lockPath)
+	lockPath = compatibilityIdentityPath(lockPath)
 	o.mu.Lock()
 	// Re-enter before the writer-priority queue: its writer waits for this Owner's
 	// shared hold, so queueing the same Owner would deadlock. Other Owners still
@@ -626,16 +631,16 @@ func (o *Owner) acquireQueuedModeRaw(ctx context.Context, lockPath string, mode 
 }
 
 func workspaceLockPath(lockDir, canonical string) string {
-	canonical = normalizeIdentityPath(canonical)
+	canonical = compatibilityIdentityPath(canonical)
 	sum := sha256.Sum256([]byte(canonical))
 	return filepath.Join(lockDir, hex.EncodeToString(sum[:])+".lock")
 }
 
 func ancestorDirectories(path string) []string {
-	path = normalizeIdentityPath(path)
+	path = compatibilityIdentityPath(path)
 	reversed := []string{path}
 	for current := path; ; {
-		parent := normalizeIdentityPath(filepath.Dir(current))
+		parent := compatibilityIdentityPath(filepath.Dir(current))
 		if parent == current {
 			break
 		}
@@ -653,7 +658,7 @@ func orderedWorkspaceRoots(roots []string) []string {
 	seen := make(map[string]bool, len(roots))
 	out := make([]string, 0, len(roots))
 	for _, root := range roots {
-		root = normalizeIdentityPath(root)
+		root = compatibilityIdentityPath(root)
 		if root == "" || seen[root] {
 			continue
 		}
@@ -669,6 +674,17 @@ func orderedWorkspaceRoots(roots []string) []string {
 		return leftDepth < rightDepth
 	})
 	return out
+}
+
+// compatibilityIdentityPath preserves the exact path bytes used by the
+// previous workspace-lock protocol. New path and hierarchy stripes use
+// normalizeIdentityPath instead, so macOS aliases still share those domains.
+func compatibilityIdentityPath(path string) string {
+	path = filepath.Clean(path)
+	if runtime.GOOS == "windows" {
+		path = strings.ToLower(filepath.ToSlash(path))
+	}
+	return path
 }
 
 func normalizeIdentityPath(path string) string {

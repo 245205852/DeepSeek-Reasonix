@@ -63,10 +63,11 @@ func acquire(ctx context.Context, path string, externalTimeout time.Duration, mo
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	key, err := canonicalLockPath(path)
+	lockPath, err := canonicalLockPath(path)
 	if err != nil {
 		return nil, err
 	}
+	key := localRegistryKey(lockPath)
 	releaseLocal, err := acquireLocal(ctx, key, mode)
 	if err != nil {
 		return nil, err
@@ -79,7 +80,7 @@ func acquire(ctx context.Context, path string, externalTimeout time.Duration, mo
 	defer cancel()
 
 	for {
-		releaseFile, err := tryLockFileMode(key, mode)
+		releaseFile, err := tryLockFileMode(lockPath, mode)
 		if err == nil {
 			var once sync.Once
 			return func() {
@@ -117,16 +118,17 @@ func TryAcquire(path string) (func(), error) {
 
 // TryAcquireMode attempts a non-blocking lock in exclusive or shared mode.
 func TryAcquireMode(path string, mode Mode) (func(), error) {
-	key, err := canonicalLockPath(path)
+	lockPath, err := canonicalLockPath(path)
 	if err != nil {
 		return nil, err
 	}
+	key := localRegistryKey(lockPath)
 	releaseLocal, ok := tryAcquireLocal(key, mode)
 	if !ok {
 		return nil, ErrHeld
 	}
 
-	releaseFile, err := tryLockFileMode(key, mode)
+	releaseFile, err := tryLockFileMode(lockPath, mode)
 	if err != nil {
 		releaseLocal()
 		if errors.Is(err, ErrHeld) {
@@ -269,8 +271,15 @@ func canonicalLockPath(path string) (string, error) {
 		return "", fmt.Errorf("resolve file lock path: %w", err)
 	}
 	abs = filepath.Clean(abs)
-	if runtime.GOOS == "windows" || runtime.GOOS == "darwin" {
+	if runtime.GOOS == "windows" {
 		abs = strings.ToLower(filepath.ToSlash(abs))
 	}
 	return abs, nil
+}
+
+func localRegistryKey(path string) string {
+	if runtime.GOOS == "darwin" {
+		return strings.ToLower(filepath.ToSlash(path))
+	}
+	return path
 }
