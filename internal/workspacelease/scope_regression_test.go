@@ -214,10 +214,10 @@ func TestSameOwnerReusesSharedDomainsWithoutLettingOtherReadersBypassWriter(t *t
 func increasingPathSlots(t *testing.T, owner *Owner) (string, string) {
 	t.Helper()
 	first := filepath.Join(owner.canonical, "slot-0.go")
-	firstSlot := owner.pathLockPath(first)
+	firstSlot := canonicalPathSlot(t, owner, first)
 	for i := 1; i < pathLockStripes*2; i++ {
 		candidate := filepath.Join(owner.canonical, fmt.Sprintf("slot-%d.go", i))
-		candidateSlot := owner.pathLockPath(candidate)
+		candidateSlot := canonicalPathSlot(t, owner, candidate)
 		if candidateSlot > firstSlot {
 			return first, candidate
 		}
@@ -227,6 +227,15 @@ func increasingPathSlots(t *testing.T, owner *Owner) (string, string) {
 	}
 	t.Fatal("could not find two distinct path lock slots")
 	return "", ""
+}
+
+func canonicalPathSlot(t *testing.T, owner *Owner, path string) string {
+	t.Helper()
+	specs, err := owner.pathSpecs([]string{path})
+	if err != nil || len(specs) != 1 {
+		t.Fatalf("resolve path slot for %q: specs=%v err=%v", path, specs, err)
+	}
+	return specs[0].slot
 }
 
 func TestPathLockFilesUseBoundedStripes(t *testing.T) {
