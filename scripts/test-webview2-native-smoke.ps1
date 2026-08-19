@@ -285,6 +285,9 @@ finally {
         & taskkill.exe /PID $process.Id /T /F 2>$null | Out-Null
     }
     if (Test-Path $smokeRoot) {
-        Remove-Item -LiteralPath $smokeRoot -Recurse -Force
+        # The app may finish deleting a nested session file after the main
+        # process exits. Missing children during this best-effort cleanup must
+        # not turn an otherwise healthy native smoke run into a failure.
+        Remove-Item -LiteralPath $smokeRoot -Recurse -Force -ErrorAction SilentlyContinue
     }
 }

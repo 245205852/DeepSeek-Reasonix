@@ -452,6 +452,7 @@ export interface AppBindings extends SessionCatalogBindings, ProjectTreeOrganiza
   PickExportFile(defaultFilename: string, mimeType: string): Promise<string>;
   SaveExportFile(path: string, payload: string, base64Encoded: boolean): Promise<void>;
   SaveExportImageFiles(path: string, payloads: string[]): Promise<void>;
+  ExportScrollDiagnostics?(payload: string): Promise<string>;
   AttachDropped(path: string): Promise<DroppedItem>;
   AttachmentDataURL(path: string): Promise<string>;
   Models(): Promise<ModelInfo[]>;

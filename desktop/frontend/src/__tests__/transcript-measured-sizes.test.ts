@@ -96,15 +96,19 @@ function fakeRow(key: string, kind: TranscriptRow["kind"], text: string): Transc
   return { key, kind, item: { id: key, text } } as unknown as TranscriptRow;
 }
 
+function estimateFor(store: ReturnType<typeof createTranscriptMeasuredSizes>, row: TranscriptRow, width?: number) {
+  return store.synthesize([row], width)[0];
+}
+
 {
   const store = createTranscriptMeasuredSizes();
   const row = fakeRow("r1", "answer", "hello");
-  ok(store.estimateFor(row) === estimateTranscriptRowSize(row), "no data falls back to the static prior");
+  ok(estimateFor(store, row) === estimateTranscriptRowSize(row), "no data falls back to the static prior");
   store.record("r1", "answer", 432);
-  eq(store.estimateFor(row), 432, "exact rowKey measurement wins");
+  eq(estimateFor(store, row), 432, "exact rowKey measurement wins");
   store.record("r1", "answer", 0);
   store.record("r1", "answer", Number.NaN);
-  eq(store.estimateFor(row), 432, "non-positive and NaN measurements are ignored");
+  eq(estimateFor(store, row), 432, "non-positive and NaN measurements are ignored");
 }
 
 {
@@ -113,9 +117,33 @@ function fakeRow(key: string, kind: TranscriptRow["kind"], text: string): Transc
   store.record("a2", "answer", 300);
   store.record("a3", "answer", 200);
   const unseen = fakeRow("a4", "answer", "some answer text that is long enough to matter");
-  eq(store.estimateFor(unseen), 200, "unseen row of a sampled kind uses the kind median");
+  eq(estimateFor(store, unseen), 200, "unseen row of a sampled kind uses the kind median");
   const toolRow = fakeRow("t1", "tool", "");
-  eq(store.estimateFor(toolRow), estimateTranscriptRowSize(toolRow), "unsampled kind still uses the static prior");
+  eq(estimateFor(store, toolRow), estimateTranscriptRowSize(toolRow), "unsampled kind still uses the static prior");
+}
+
+{
+  const store = createTranscriptMeasuredSizes();
+  const first = fakeRow("a1", "answer", "first answer");
+  const second = fakeRow("a2", "answer", "second answer");
+  const unseen = fakeRow("a3", "answer", "unseen answer");
+  store.record("a1", "answer", 291, 960);
+  store.record("a1", "answer", 632, 960);
+  store.record("a2", "answer", 400, 960);
+  eq(estimateFor(store, first, 960), 632, "a later real measurement replaces the stale estimate for the same row");
+  eq(estimateFor(store, second, 960), 400, "a second row keeps its own latest measurement");
+  eq(estimateFor(store, unseen, 960), 516, "kind fallback uses one latest sample per row instead of duplicate observations");
+}
+
+{
+  const store = createTranscriptMeasuredSizes();
+  const row = fakeRow("width-sensitive", "answer", "wrapped answer");
+  store.record("width-sensitive", "answer", 632, 960);
+  eq(estimateFor(store, row, 960), 632, "an exact measurement is reused at the measured width");
+  ok(
+    estimateFor(store, row, 760) === estimateTranscriptRowSize(row),
+    "a measurement from another content width is not reused after responsive reflow",
+  );
 }
 
 {
@@ -133,7 +161,7 @@ function fakeRow(key: string, kind: TranscriptRow["kind"], text: string): Transc
   store.record("r1", "answer", 500);
   store.clear();
   const row = fakeRow("r1", "answer", "hello");
-  ok(store.estimateFor(row) === estimateTranscriptRowSize(row), "clear() drops measurements and medians");
+  ok(estimateFor(store, row) === estimateTranscriptRowSize(row), "clear() drops measurements and medians");
 }
 
 process.stdout.write(`\n${passed} passed, ${failed} failed\n`);
