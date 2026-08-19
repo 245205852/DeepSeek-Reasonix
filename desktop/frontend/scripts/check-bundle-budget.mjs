@@ -67,9 +67,16 @@ console.log("\nbundle budgets");
 // guards add 611 bytes gzip over main-v2's 423.988 KiB startup path after the
 // blank-project flow landed; project-topic sort invalidation and request
 // ordering add another bounded 0.2 KiB. Retain both owner boundaries with a
-// narrowly rounded 1 KiB ratchet. The lazy question-rail boundary and absolute
-// turn wiring add 25 bytes; retain that 0.0057% growth with a 0.1 KiB increment.
-assertBudget("initial JavaScript gzip", initialJSGzip, 425.1 * 1024);
+// narrowly rounded 1 KiB ratchet.
+// Diagnostic builds intentionally keep content-free row geometry and scroll
+// transition probes in the initial transcript path. Stable builds retain the
+// existing production ratchet. Per-row measurement versions and a bounded
+// recovery probe add less than 0.1% gzip. Complete-history navigation keeps a
+// fixed marker DOM and lazy-loads its 1.68 KiB rail, but the combined owner
+// wiring is 511 B (0.117%) over the merged gate. Retain both with a 0.6 KiB
+// (0.141%) production increment and about 103 B of measured build-SHA headroom.
+const initialJSBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 428.0 : 426.1;
+assertBudget("initial JavaScript gzip", initialJSGzip, initialJSBudgetKiB * 1024);
 assertBudget("largest initial JavaScript chunk gzip", largestInitialJS, 280 * 1024);
 assertBudget("render-blocking CSS gzip", initialCSSGzip, 4 * 1024);
 // Extension surfaces, Task Monitor, and compact decision receipts share the
@@ -100,6 +107,8 @@ for (const path of localeChunks) {
 const rawInitialBytes = [...initialJS, ...initialCSS, ...appShellCSS]
   .reduce((total, path) => total + statSync(path).size, 0);
 // The maintained Virtuoso engine adds 49.1 KiB raw (2.2%) over the previous
-// 2268.7 KiB gate. Retain 1% headroom to bound hash/minifier drift.
-assertBudget("initial raw JavaScript and CSS", rawInitialBytes, 2_341 * 1024);
+// 2268.7 KiB gate. Test diagnostics plus the extracted navigation owner exceed
+// the merged guard by 1,146 B (0.048%); a 1.2 KiB increment (+0.051%) leaves
+// about 83 B of measured headroom without widening the gzip budget.
+assertBudget("initial raw JavaScript and CSS", rawInitialBytes, 2_342.2 * 1024);
 assertBudget("largest initial JavaScript chunk raw", largestInitialJSRaw, 1_000 * 1024);

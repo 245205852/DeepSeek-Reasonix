@@ -16,13 +16,7 @@ import { isSteerNoticeText } from "../lib/useController";
 import { useTranscriptEntranceAnimation } from "../lib/useEntranceAnimation";
 import { useTranscriptSelectionRetention } from "../lib/useTranscriptSelectionRetention";
 import {
-  activeQuestionTurn,
-  compactQuestionText,
-  lastQuestionTurn,
   questionAnchorId,
-  questionTurnsById,
-  type QuestionAnchor,
-  type QuestionAnchorPosition,
 } from "../lib/transcriptGrouping";
 import {
   buildTranscriptRows,
@@ -33,7 +27,6 @@ import {
   historyEntryIdForRow,
   reconcileFoldEntries,
   splitTranscriptLiveRows,
-  userRowKey,
   EMPTY_FOLDS,
   NO_LIVE,
   type AssistantItem,
@@ -41,9 +34,10 @@ import {
   type ToolItem,
   type TranscriptLiveFlags,
   type TranscriptRow,
+  transcriptRowMeasurementVersion,
 } from "../lib/transcriptRows";
 import { getTranscriptStore } from "../lib/transcriptStore";
-import { createTranscriptMeasuredSizes, type TranscriptMeasuredSizes } from "../lib/transcriptMeasuredSizes";
+import { createTranscriptMeasuredSizes } from "../lib/transcriptMeasuredSizes";
 import { acquireMarkdownWorkerClient, releaseMarkdownWorkerClient } from "../lib/markdownWorkerClient";
 import { noteTranscriptRecoveryTerminal, noteTranscriptRowCounts } from "../lib/sessionDiagnostics";
 import { useReasoningDisplayMode } from "../lib/reasoningDisplayPreference";
@@ -60,17 +54,20 @@ import { hasTranscriptScrollableRange, TRANSCRIPT_AT_BOTTOM_THRESHOLD_PX, useTra
 import { useTranscriptLayoutIntegrity } from "../lib/useTranscriptLayoutIntegrity";
 import { TranscriptLayoutIntentProvider } from "./TranscriptLayoutIntentContext";
 import { MarkdownImageTabContext } from "./MarkdownImageContext";
+import { recordTranscriptScrollDiagnostic } from "../lib/transcriptScrollProbe";
+import { useTranscriptQuestionJump, useTranscriptQuestions } from "../lib/useTranscriptQuestionNavigation";
 
 // NoticeCard lives with the other row cards; keep the historical export path.
 export { NoticeCard } from "./TranscriptCards";
 type OpenTurnAction = { turn: number; menu: "summary" | "rewind" };
 const QUESTION_NAV_MIN_COUNT = 2;
-const HISTORY_AUTO_COMPLETE_TURNS = 60;
 type AssistantReasoningDisplay = "normal" | "hide";
 const EMPTY_CHECKPOINTS: CheckpointMeta[] = [];
 const EMPTY_INVOCATION_METADATA: InvocationMetadataMap = {};
 const NO_HELD_ROWS: readonly TranscriptRow[] = [];
 const QuestionJumpBar = lazy(() => import("./QuestionJumpBar"));
+const SHOW_SCROLL_DIAGNOSTICS = typeof __BUILD_CHANNEL__ === "undefined" || __BUILD_CHANNEL__ === "test" || import.meta.env.DEV;
+const ScrollDiagnosticPanel = SHOW_SCROLL_DIAGNOSTICS ? lazy(() => import("./ScrollDiagnosticPanel")) : null;
 
 const LiveAssistantMessage = memo(function LiveAssistantMessage({
   item,
@@ -125,7 +122,7 @@ type TranscriptVirtuosoContext = {
   scrollElement: HTMLDivElement | null;
   nativeScrollbarDragging: boolean;
   overlayRevision: string;
-  measuredSizes: TranscriptMeasuredSizes;
+  scrollDiagnostics?: { heightEstimates: readonly number[]; contentRevision: number };
   /** The active turn's in-flow footer region; null when no turn is live. */
   liveRegion: null | {
     rows: readonly TranscriptRow[];
@@ -148,18 +145,34 @@ const TranscriptVirtuosoItem = forwardRef<HTMLDivElement, ItemProps<TranscriptRo
       if (entryId) getTranscriptStore().requestEntryFullContent(context.tabId, entryId);
     }, [context.tabId, entryId]);
     const knownSize = Number.parseFloat(String(props["data-known-size"] ?? ""));
-    useEffect(() => {
-      // Feed Virtuoso's own measurement back into the session cache so a
-      // future remount restarts from measured geometry, not static priors.
-      if (Number.isFinite(knownSize) && knownSize > 0) {
-        context.measuredSizes.record(String(item.key), item.kind, knownSize);
-      }
-    }, [context.measuredSizes, item.key, item.kind, knownSize]);
+    // data-index is logical; data-item-index includes the large prepend anchor.
+    const rowIndex = SHOW_SCROLL_DIAGNOSTICS
+      ? Number.parseInt(String(props["data-index"] ?? ""), 10)
+      : Number.NaN;
+    const estimatedSize = Number.isInteger(rowIndex) && rowIndex >= 0
+      ? context.scrollDiagnostics?.heightEstimates[rowIndex]
+      : undefined;
+    const diagnosticAttributes = SHOW_SCROLL_DIAGNOSTICS
+      ? {
+          "data-logical-index": Number.isInteger(rowIndex) && rowIndex >= 0 ? rowIndex : undefined,
+          "data-estimated-size": estimatedSize,
+          "data-content-revision": context.scrollDiagnostics?.contentRevision,
+        }
+      : {};
     const frozenStyle = context.nativeScrollbarDragging && Number.isFinite(knownSize) && knownSize > 0
       ? { ...style, boxSizing: "border-box" as const, height: knownSize, overflow: "hidden" as const }
       : style;
     return (
-      <div {...props} ref={ref} style={frozenStyle} data-row-key={String(item.key)} className="transcript__row">
+      <div
+        {...props}
+        ref={ref}
+        style={frozenStyle}
+        data-row-key={String(item.key)}
+        data-row-kind={item.kind}
+        data-layout-version={transcriptRowMeasurementVersion(item)}
+        {...diagnosticAttributes}
+        className="transcript__row"
+      >
         {children}
       </div>
     );
@@ -275,6 +288,7 @@ export function Transcript({
   olderHistoryError,
   onLoadOlderHistory,
   turnStartAt,
+  contentRevision = 0,
   invocationMetadata = EMPTY_INVOCATION_METADATA,
 }: {
   items: Item[];
@@ -307,6 +321,7 @@ export function Transcript({
   olderHistoryError?: string;
   onLoadOlderHistory?: (targetTurn?: number) => boolean | Promise<boolean>;
   turnStartAt?: number;
+  contentRevision?: number;
   invocationMetadata?: InvocationMetadataMap;
 }) {
   const t = useT();
@@ -319,6 +334,9 @@ export function Transcript({
     [liveProp, liveStore, tabId],
   );
   const live = useSyncExternalStore(subscribeLive, getLiveSnapshot, getLiveSnapshot);
+  const layoutSurfaceKey = `${tabId ?? ""}:${revealSignal}`;
+  const measuredSizes = useMemo(() => createTranscriptMeasuredSizes(), [layoutSurfaceKey]);
+  const [layoutWidth, setLayoutWidth] = useState<number>();
   const {
     virtuosoRef,
     scrollRef,
@@ -350,12 +368,12 @@ export function Transcript({
     retryRecoveryRequest,
     lastGoodAnchorRef,
     captureStateSnapshot,
-  } = useTranscriptScrollArbiter({ onRecoveryTerminal: noteTranscriptRecoveryTerminal });
+    layoutTransientRef,
+  } = useTranscriptScrollArbiter({
+    onRecoveryTerminal: noteTranscriptRecoveryTerminal,
+    onItemMeasured: measuredSizes.record,
+  });
   const virtuosoReadyRef = useRef(false);
-  const layoutSurfaceKey = `${tabId ?? ""}:${revealSignal}`;
-  const activeQuestionFrame = useRef<number | null>(null);
-  const [activeQuestion, setActiveQuestion] = useState<number | null>(null);
-
   const entranceRef = useTranscriptEntranceAnimation<HTMLDivElement>(tabId, revealSignal, items);
 
   // Lease the markdown parse worker for as long as a transcript surface is
@@ -387,73 +405,17 @@ export function Transcript({
     finishProgrammaticScroll,
   });
 
-  const questionNavigation = useMemo(() => {
-    const loadedByTurn = new Map<number, QuestionAnchor>();
-    let nextTurn = historyStartTurn > 0 ? historyStartTurn - 1 : 0;
-    for (const it of items) {
-      if (it.kind !== "user") continue;
-      const turn = it.historyTurn != null && it.historyTurn > 0 ? it.historyTurn - 1 : nextTurn;
-      loadedByTurn.set(turn, {
-        id: it.id,
-        text: compactQuestionText(it.text),
-        turn,
-        checkpointTurn: it.checkpointTurn,
-      });
-      nextTurn = Math.max(nextTurn, turn + 1);
-    }
-    return {
-      loaded: Array.from(loadedByTurn.values()).sort((left, right) => left.turn - right.turn),
-      loadedByTurn,
-      total: Math.max(historyTotalTurns, nextTurn),
-    };
-  }, [historyStartTurn, historyTotalTurns, items]);
-  const questions = questionNavigation.loaded;
-  const totalQuestions = questionNavigation.total;
+  const [
+    questions,
+    loadedByTurn,
+    totalQuestions,
+    activeQuestion,
+    setActiveQuestion,
+    scheduleActiveQuestionSync,
+    turnForUser,
+    lastTurn,
+  ] = useTranscriptQuestions(items, historyStartTurn, historyTotalTurns, scrollElement, scrollToBottom);
   const showQuestionNav = questionNavigator && totalQuestions >= QUESTION_NAV_MIN_COUNT;
-  const questionTurnByAnchorId = useMemo(() => new Map(
-    questions.map((question) => [questionAnchorId(question.id), question.turn]),
-  ), [questions]);
-
-  const syncActiveQuestion = useCallback(() => {
-    if (!scrollElement || questions.length === 0) return;
-    const scrollerTop = scrollElement.getBoundingClientRect().top;
-    const positions: QuestionAnchorPosition[] = [];
-    scrollElement.querySelectorAll<HTMLElement>("[data-question-anchor]").forEach((anchor) => {
-      const turn = questionTurnByAnchorId.get(anchor.id);
-      if (turn == null) return;
-      positions.push({ turn, top: anchor.getBoundingClientRect().top - scrollerTop });
-    });
-    const next = activeQuestionTurn(positions);
-    if (next != null) setActiveQuestion(next);
-  }, [questionTurnByAnchorId, questions.length, scrollElement]);
-
-  const scheduleActiveQuestionSync = useCallback(() => {
-    if (activeQuestionFrame.current != null) return;
-    activeQuestionFrame.current = requestAnimationFrame(() => {
-      activeQuestionFrame.current = null;
-      syncActiveQuestion();
-    });
-  }, [syncActiveQuestion]);
-
-  useEffect(() => () => {
-    if (activeQuestionFrame.current != null) cancelAnimationFrame(activeQuestionFrame.current);
-  }, []);
-
-  useEffect(() => {
-    setActiveQuestion(questions[questions.length - 1]?.turn ?? null);
-    scheduleActiveQuestionSync();
-  }, [questions, scheduleActiveQuestionSync]);
-
-  // A new local question is an explicit request to reveal the tail. Prepending
-  // older history keeps the same last id and is left entirely to Virtuoso's
-  // firstItemIndex anchor contract.
-  const questionTailRef = useRef({ total: 0, lastId: "" });
-  useEffect(() => {
-    const lastId = questions[questions.length - 1]?.id ?? "";
-    const prev = questionTailRef.current;
-    questionTailRef.current = { total: totalQuestions, lastId };
-    if (prev.total > 0 && totalQuestions > prev.total && lastId !== prev.lastId) scrollToBottom();
-  }, [questions, scrollToBottom, totalQuestions]);
 
   // Reset the auto-scroll pin when switching tabs so the new session always
   // starts at the bottom. Without this, stick.current from the previous tab
@@ -476,11 +438,19 @@ export function Transcript({
     const element = scrollElement;
     if (!element || typeof ResizeObserver === "undefined") return;
     let lastHeight = element.clientHeight;
+    let lastWidth = element.clientWidth;
+    setLayoutWidth(lastWidth);
     const observer = new ResizeObserver(() => {
       const height = element.clientHeight;
-      if (height === lastHeight) return;
-      lastHeight = height;
-      followGrowingTail();
+      const width = element.clientWidth;
+      if (width !== lastWidth) {
+        lastWidth = width;
+        setLayoutWidth(width);
+      }
+      if (height !== lastHeight) {
+        lastHeight = height;
+        followGrowingTail();
+      }
     });
     observer.observe(element);
     return () => observer.disconnect();
@@ -554,12 +524,8 @@ export function Transcript({
     return () => document.removeEventListener("mousedown", onDown);
   }, [openAction]);
 
-  const userTurn = useMemo(() => questionTurnsById(questions), [questions]);
-  const lastTurn = useMemo(() => lastQuestionTurn(questions, userTurn), [questions, userTurn]);
   const checkpointsByTurn = useMemo(() => new Map(checkpoints.map((checkpoint) => [checkpoint.turn, checkpoint])), [checkpoints]);
   const hasCheckpointForTurn = useCallback((turn: number) => checkpointsByTurn.has(turn), [checkpointsByTurn]);
-
-  const turnForUser = useCallback((item: Extract<Item, { kind: "user" }>) => userTurn.get(item.id), [userTurn]);
   const rows = useMemo(
     () => buildTranscriptRows(turnModels, { folds, foldPreference, hasOlderHistory, creationMode, turnForUser, hasCheckpointForTurn }),
     [turnModels, folds, foldPreference, hasOlderHistory, creationMode, turnForUser, hasCheckpointForTurn],
@@ -605,6 +571,7 @@ export function Transcript({
     invalidateAnchors,
     noteUserScrollIntent,
     noteScrollActivity,
+    safeMode: layoutSafeMode,
   } = useTranscriptLayoutIntegrity({
     surfaceKey: layoutSurfaceKey,
     rows: virtualRows,
@@ -617,6 +584,8 @@ export function Transcript({
     retryRecoveryRequest,
     lastGoodAnchorRef,
     captureStateSnapshot,
+    layoutTransientRef,
+    layoutWidth,
   });
   const selectionRetention = useTranscriptSelectionRetention({
     tabId,
@@ -636,7 +605,10 @@ export function Transcript({
   // follow-up).
   const onWheelIntentWithRecovery = useCallback((event: ReactWheelEvent<HTMLElement>) => {
     const accepted = onWheelIntent(event);
-    if (accepted) noteUserScrollIntent();
+    if (accepted) {
+      if (SHOW_SCROLL_DIAGNOSTICS) recordTranscriptScrollDiagnostic("wheel", { deltaY: event.deltaY });
+      noteUserScrollIntent();
+    }
     return accepted;
   }, [noteUserScrollIntent, onWheelIntent]);
   const onTouchStartIntentWithRecovery = useCallback((event: ReactTouchEvent<HTMLElement>) => {
@@ -669,17 +641,20 @@ export function Transcript({
     onScrollEnd: finishProgrammaticScroll,
     onSelectionPointerDown: selectionRetention.onPointerDownCapture,
   });
-  // Measured-geometry cache: remounts restart from real row heights instead
-  // of static priors, so the size-tree collapse loses its blast radius.
-  const measuredSizes = useMemo(() => createTranscriptMeasuredSizes(), [layoutSurfaceKey]);
-  const heightEstimates = useMemo(() => measuredSizes.synthesize(virtualRows), [measuredSizes, virtualRows]);
+  // Keep estimates stable across token patches; refresh for rows, width, or remount.
+  const heightEstimates = useMemo(
+    () => measuredSizes.synthesize(virtualRows, layoutWidth),
+    [layoutWidth, measuredSizes, virtuosoResetKey, virtualRows],
+  );
   const overlayRevision = useMemo(
     () => virtualRows.map((row) => String(row.key)).join("|"),
     [virtualRows],
   );
   const handleScrollerRef = useCallback((node: HTMLElement | Window | null) => {
     scrollerRef(node);
-    entranceRef.current = node instanceof HTMLElement ? node as HTMLDivElement : null;
+    const element = node instanceof HTMLElement ? node as HTMLDivElement : null;
+    entranceRef.current = element;
+    if (element) setLayoutWidth(element.clientWidth);
   }, [entranceRef, scrollerRef]);
   const handleTranscriptScroll = useCallback(() => {
     deliverScroll();
@@ -688,75 +663,22 @@ export function Transcript({
     scheduleActiveQuestionSync();
     scheduleBlankViewportCheck();
   }, [creationMode, deliverScroll, handleCreationScroll, noteScrollActivity, scheduleActiveQuestionSync, scheduleBlankViewportCheck]);
-  // ── JumpBar integration ───────────────────────────────────────────────────
-  const [pendingQuestion, setPendingQuestion] = useState<{ surfaceKey: string; turn: number } | null>(null);
-  const olderRequestInFlightRef = useRef<string | null>(null);
-  const requestOlderHistory = useCallback(async (targetTurn?: number, retry = false): Promise<boolean> => {
-    if (!hasOlderHistory || loadingOlderHistory || running || !onLoadOlderHistory || (!retry && olderHistoryError)) return false;
-    if (olderRequestInFlightRef.current === layoutSurfaceKey) return false;
-    olderRequestInFlightRef.current = layoutSurfaceKey;
-    try {
-      return Boolean(await onLoadOlderHistory(targetTurn));
-    } finally {
-      if (olderRequestInFlightRef.current === layoutSurfaceKey) olderRequestInFlightRef.current = null;
-    }
-  }, [hasOlderHistory, layoutSurfaceKey, loadingOlderHistory, olderHistoryError, onLoadOlderHistory, running]);
-  const jumpToLoadedQuestion = useCallback((question: QuestionAnchor) => {
-    const index = rowIndexByKey.get(String(userRowKey(question.id)));
-    if (index == null) return;
-    // WebView2 can lose the pointerup that ends a transcript text-selection
-    // gesture. An explicit navigator click owns the next viewport position,
-    // so clear that stale selection before asking the scroll arbiter to jump.
-    document.getSelection()?.removeAllRanges();
-    clearTranscriptSelection("question-navigation");
-    invalidateAnchors();
-    setActiveQuestion(question.turn);
-    scrollToDataIndex(index, "smooth");
-  }, [clearTranscriptSelection, invalidateAnchors, rowIndexByKey, scrollToDataIndex]);
-  const handleJumpToQuestion = useCallback((question: QuestionAnchor) => {
-    setActiveQuestion(question.turn);
-    if (question.loaded !== false) {
-      setPendingQuestion(null);
-      jumpToLoadedQuestion(question);
-      return;
-    }
-    document.getSelection()?.removeAllRanges();
-    clearTranscriptSelection("question-navigation");
-    setPendingQuestion({ surfaceKey: layoutSurfaceKey, turn: question.turn });
-    void requestOlderHistory(question.turn + 1, true);
-  }, [clearTranscriptSelection, jumpToLoadedQuestion, layoutSurfaceKey, requestOlderHistory]);
-
-  useEffect(() => {
-    if (!pendingQuestion || pendingQuestion.surfaceKey !== layoutSurfaceKey) return;
-    const question = questionNavigation.loadedByTurn.get(pendingQuestion.turn);
-    if (question) {
-      setPendingQuestion(null);
-      jumpToLoadedQuestion(question);
-      return;
-    }
-    if (!loadingOlderHistory && !olderHistoryError) {
-      void requestOlderHistory(pendingQuestion.turn + 1);
-    }
-  }, [jumpToLoadedQuestion, layoutSurfaceKey, loadingOlderHistory, olderHistoryError, pendingQuestion, questionNavigation, requestOlderHistory]);
-
-  useEffect(() => {
-    setPendingQuestion(null);
-    if (olderRequestInFlightRef.current !== layoutSurfaceKey) olderRequestInFlightRef.current = null;
-  }, [layoutSurfaceKey]);
-
-  const earlierTurnsRemaining = Math.max(0, historyStartTurn - 1);
-  useEffect(() => {
-    if (earlierTurnsRemaining > 0 && earlierTurnsRemaining < HISTORY_AUTO_COMPLETE_TURNS) {
-      void requestOlderHistory();
-    }
-  }, [earlierTurnsRemaining, requestOlderHistory]);
-  const handleEarlierHistoryReached = useCallback(() => {
-    void requestOlderHistory();
-  }, [requestOlderHistory]);
-  const retryOlderHistory = useCallback(() => {
-    const targetTurn = pendingQuestion?.surfaceKey === layoutSurfaceKey ? pendingQuestion.turn + 1 : undefined;
-    void requestOlderHistory(targetTurn, true);
-  }, [layoutSurfaceKey, pendingQuestion, requestOlderHistory]);
+  const [handleJumpToQuestion, handleEarlierHistoryReached, retryOlderHistory] = useTranscriptQuestionJump({
+    questions,
+    loadedByTurn,
+    layoutSurfaceKey,
+    rowIndexByKey,
+    hasOlderHistory,
+    loadingOlderHistory,
+    olderHistoryError,
+    running,
+    onLoadOlderHistory,
+    clearTranscriptSelection,
+    invalidateAnchors,
+    scrollToDataIndex,
+    setActiveQuestion,
+    rewindSignal,
+  });
 
   // The jump-bottom click is explicit user intent: it outranks any in-flight
   // recovery anchor restore and ends a stale selection gesture whose
@@ -766,18 +688,6 @@ export function Transcript({
     invalidateAnchors();
     scrollToBottom();
   };
-
-  // After a non-fork rewind, scroll to the last user message (the
-  // rewound-to point) so the user knows where they are.
-  useEffect(() => {
-    if (rewindSignal <= 0 || questions.length === 0) return;
-    const lastQ = questions[questions.length - 1];
-    const index = rowIndexByKey.get(String(userRowKey(lastQ.id)));
-    if (index == null) return;
-    invalidateAnchors();
-    scrollToDataIndex(index);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rewindSignal]);
 
   const empty = items.length === 0;
 
@@ -1001,12 +911,17 @@ export function Transcript({
     }
   }, [handleRecoveryItemsRendered, holdingLiveRegion, scheduleActiveQuestionSync, selectionRetention.reconcileLogicalFocus, virtualRows.length]);
 
+  const handleTotalListHeightChanged = useCallback((height: number) => {
+    if (SHOW_SCROLL_DIAGNOSTICS) recordTranscriptScrollDiagnostic("list-height", { listHeight: height });
+    followGrowingTail();
+  }, [followGrowingTail]);
+
   const virtuosoContext = useMemo<TranscriptVirtuosoContext>(() => ({
     tabId,
     scrollElement,
     nativeScrollbarDragging,
     overlayRevision,
-    measuredSizes,
+    scrollDiagnostics: SHOW_SCROLL_DIAGNOSTICS ? { heightEstimates, contentRevision } : undefined,
     liveRegion: showLiveRegion
       ? {
           rows: liveSplit.liveActive ? liveSplit.liveRows : heldLiveRows,
@@ -1025,11 +940,12 @@ export function Transcript({
       : null,
   }), [
     hasOlderHistory,
+    heightEstimates,
     heldLiveRows,
     liveSplit.liveActive,
     liveSplit.liveRows,
     loadingOlderHistory,
-    measuredSizes,
+    contentRevision,
     nativeScrollbarDragging,
     olderHistoryError,
     overlayRevision,
@@ -1086,12 +1002,16 @@ export function Transcript({
             atBottomStateChange={atBottomStateChange}
             heightEstimates={heightEstimates}
             itemSize={itemSize}
-            minOverscanItemCount={{ top: VIRTUAL_OVERSCAN_ROWS, bottom: VIRTUAL_OVERSCAN_ROWS }}
-            increaseViewportBy={{ top: 480, bottom: 480 }}
+            minOverscanItemCount={layoutSafeMode
+              ? { top: 32, bottom: 32 }
+              : { top: VIRTUAL_OVERSCAN_ROWS, bottom: VIRTUAL_OVERSCAN_ROWS }}
+            increaseViewportBy={layoutSafeMode
+              ? { top: (scrollElement?.clientHeight ?? 0) * 2, bottom: (scrollElement?.clientHeight ?? 0) * 2 }
+              : { top: 480, bottom: 480 }}
             scrollerRef={handleScrollerRef}
             itemsRendered={handleItemsRendered}
             startReached={handleEarlierHistoryReached}
-            totalListHeightChanged={followGrowingTail}
+            totalListHeightChanged={handleTotalListHeightChanged}
             itemContent={renderVirtuosoRow}
             onScroll={handleTranscriptScroll}
             onWheelCapture={scrollInteractions.onWheelCapture}
@@ -1141,6 +1061,7 @@ export function Transcript({
           <ArrowDown size={18} strokeWidth={2.2} aria-hidden="true" />
         </button>
       )}
+      {ScrollDiagnosticPanel && <Suspense fallback={null}><ScrollDiagnosticPanel scrollElement={scrollElement} totalRows={virtualRows.length} /></Suspense>}
     </div>
     </TranscriptLayoutIntentProvider>
     </MarkdownImageTabContext.Provider>
