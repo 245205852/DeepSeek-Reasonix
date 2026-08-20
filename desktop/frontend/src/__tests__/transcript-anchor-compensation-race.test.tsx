@@ -173,15 +173,19 @@ check(arbiter?.modeRef.current === "manual", "an upward gesture between at-botto
 await wheelDown();
 check(arbiter?.modeRef.current === "tail-follow", "two consecutive held deliveries after the reset re-enter tail-follow");
 
-// The hold lives inside one reader-intent window: once the 180ms idle timer
-// closes the window, the streak ends with it.
+// The 180ms idle close performs one final native delivery so a large wheel or
+// touch gesture that clamps at the physical bottom can complete the hold even
+// when the browser emits no second scroll event. The completed transition
+// still resets the streak before a fresh reader-intent window begins.
 await act(async () => arbiter?.releaseTailFollow());
 await wheelDown();
 await advanceClock(200);
+check(arbiter?.modeRef.current === "tail-follow", "idle close re-samples a held physical bottom before ending intent");
+await act(async () => arbiter?.releaseTailFollow());
 await wheelDown();
-check(arbiter?.modeRef.current === "manual", "a closed intent window ends the bottom-hold streak");
+check(arbiter?.modeRef.current === "manual", "a fresh intent window rebuilds the bottom hold from zero");
 await wheelDown();
-check(arbiter?.modeRef.current === "tail-follow", "a fresh window rebuilds the hold from zero");
+check(arbiter?.modeRef.current === "tail-follow", "the fresh window re-enters tail-follow after its second delivery");
 
 // A thumb gesture that reaches the frozen native bottom claims the tail when
 // the drag's own deliveries already held the bottom before release resumes
