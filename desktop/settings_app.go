@@ -92,6 +92,8 @@ type ProviderPresetView struct {
 	Label               string   `json:"label"`
 	Description         string   `json:"description"`
 	KeyEnv              string   `json:"keyEnv"`
+	Recommended         bool     `json:"recommended,omitempty"`
+	BillingMode         string   `json:"billingMode,omitempty"`
 	ProviderNames       []string `json:"providerNames"`
 	Models              []string `json:"models"`
 	Added               bool     `json:"added"`
@@ -763,6 +765,8 @@ func providerPresetViewsForRootWithResolver(cfg *config.Config, root string, res
 			Label:               preset.Label,
 			Description:         preset.Description,
 			KeyEnv:              keyEnv,
+			Recommended:         preset.Recommended,
+			BillingMode:         preset.BillingMode,
 			ProviderNames:       nonNil(names),
 			Models:              nonNil(models),
 			Added:               added,
