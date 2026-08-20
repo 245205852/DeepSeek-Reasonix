@@ -27417,18 +27417,41 @@ body > .mermaid-diagram--fullscreen {
   margin-bottom: 12px;
 }
 
-.sidebar--workbench .project-tree__section--pinned .project-tree__folder {
-  padding-left: 8px;
-}
-
-.sidebar--workbench .project-tree__section--pinned .project-tree__folder-main > svg {
-  width: 14px;
-  height: 14px;
+.sidebar--workbench .project-tree__section-title {
+  min-height: 28px;
+  padding: 6px 0 2px 8px;
   color: var(--fg-faint);
+  font-size: 14px;
+  font-weight: 620;
+  line-height: 1.35;
 }
 
-:root[data-theme-style] .sidebar--workbench .project-tree__section--pinned .project-tree__folder-main > svg {
+:root[data-theme-style] .sidebar--workbench .project-tree__section-title {
+  min-height: 28px;
+  padding: 6px 0 2px 8px;
+  font-size: 14px;
+  font-weight: 620;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.sidebar--workbench .project-tree__section-title--pinned,
+:root[data-theme-style] .sidebar--workbench .project-tree__section-title--pinned {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 32px;
+  min-height: 32px;
+  padding: 0 0 0 8px;
+  color: var(--fg-dim);
+  font-size: 15px;
+  font-weight: 500;
+}
+
+.sidebar--workbench .project-tree__section-title-icon,
+:root[data-theme-style] .sidebar--workbench .project-tree__section-title-icon {
   display: inline-flex;
+  flex: 0 0 auto;
   width: 14px;
   height: 14px;
   color: var(--fg-faint);
