@@ -104,9 +104,7 @@ func normalizeLegacyOpenCodeGoRouteCatalog(c *Config) bool {
 				sibling.ContextWindow = openCodeGoCanonicalContextWindow(route)
 			}
 			applyOpenCodeGoModelGroup(&sibling, routeModels)
-			if mergeOpenCodeGoRouteDefaults(&sibling, route) {
-				changed = true
-			}
+			mergeOpenCodeGoRouteDefaults(&sibling, route)
 			retargetOpenCodeGoRefs(c, p.Name, routeModels, sibling.Name, originalDefault)
 			addOpenCodeGoAccess(c, p.Name, sibling.Name)
 			c.Providers = append(c.Providers, sibling)
@@ -306,8 +304,7 @@ func retargetOpenCodeGoRefs(c *Config, oldName string, models []string, newName,
 	}
 	rewrite := func(ref string) string {
 		ref = strings.TrimSpace(ref)
-		if strings.HasPrefix(ref, oldName+"/") {
-			model := strings.TrimPrefix(ref, oldName+"/")
+		if model, ok := strings.CutPrefix(ref, oldName+"/"); ok {
 			if wanted[strings.ToLower(strings.TrimSpace(model))] {
 				return newName + "/" + model
 			}
