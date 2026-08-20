@@ -56,7 +56,6 @@
     "remark-math": "^6.0.0",
     "remark-parse": "11.0.0",
     "remark-rehype": "11.1.2",
-    "svg-pan-zoom": "^3.6.2",
     "unified": "11.0.5",
     "unist-util-visit": "^5.1.0",
     "vfile": "6.0.3",
