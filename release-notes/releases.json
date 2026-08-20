@@ -2,6 +2,347 @@
   "schemaVersion": 1,
   "releases": [
     {
+      "version": "1.30.0",
+      "date": "2026-08-20",
+      "channel": "stable",
+      "title": {
+        "en": "Reasonix 1.30.0",
+        "zh": "Reasonix 1.30.0"
+      },
+      "summary": {
+        "en": "Improved write conflict handling, added DingTalk bot adapter, and fixed multiple desktop UI issues for smoother long-session navigation and streaming.",
+        "zh": "改进写入冲突处理，新增钉钉机器人适配器，并修复多项桌面端 UI 问题，提升长会话导航与流式体验。"
+      },
+      "surfaces": [
+        "desktop"
+      ],
+      "guides": [
+        {
+          "title": {
+            "en": "CLI Documentation",
+            "zh": "CLI 文档"
+          },
+          "body": {
+            "en": "Command-line usage and configuration reference.",
+            "zh": "命令行使用与配置参考。"
+          },
+          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/771cbfe7ccc2e23f98cba6e890f0073d37c234f1/docs/CLI.md"
+        },
+        {
+          "title": {
+            "en": "CLI Documentation (Chinese)",
+            "zh": "CLI 文档（中文）"
+          },
+          "body": {
+            "en": "Chinese reference for command-line usage and configuration.",
+            "zh": "命令行使用与配置的中文参考。"
+          },
+          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/771cbfe7ccc2e23f98cba6e890f0073d37c234f1/docs/CLI.zh-CN.md"
+        },
+        {
+          "title": {
+            "en": "Session Ownership",
+            "zh": "会话所有权"
+          },
+          "body": {
+            "en": "Details on session ownership and write conflict handling.",
+            "zh": "会话所有权与写入冲突处理详情。"
+          },
+          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/771cbfe7ccc2e23f98cba6e890f0073d37c234f1/docs/SESSION_OWNERSHIP.md"
+        },
+        {
+          "title": {
+            "en": "Session Ownership (Chinese)",
+            "zh": "会话所有权（中文）"
+          },
+          "body": {
+            "en": "Chinese details on session ownership and write conflict handling.",
+            "zh": "会话所有权与写入冲突处理的中文详情。"
+          },
+          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/771cbfe7ccc2e23f98cba6e890f0073d37c234f1/docs/SESSION_OWNERSHIP.zh-CN.md"
+        },
+        {
+          "title": {
+            "en": "Specification",
+            "zh": "规范"
+          },
+          "body": {
+            "en": "Reasonix technical specification.",
+            "zh": "Reasonix 技术规范。"
+          },
+          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/771cbfe7ccc2e23f98cba6e890f0073d37c234f1/docs/SPEC.md"
+        },
+        {
+          "title": {
+            "en": "Specification (Chinese)",
+            "zh": "规范（中文）"
+          },
+          "body": {
+            "en": "Chinese version of the Reasonix technical specification.",
+            "zh": "Reasonix 技术规范的中文版本。"
+          },
+          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/771cbfe7ccc2e23f98cba6e890f0073d37c234f1/docs/SPEC.zh-CN.md"
+        },
+        {
+          "title": {
+            "en": "Subagent Profiles",
+            "zh": "子代理配置文件"
+          },
+          "body": {
+            "en": "Guide to subagent profile configuration.",
+            "zh": "子代理配置文件指南。"
+          },
+          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/771cbfe7ccc2e23f98cba6e890f0073d37c234f1/docs/SUBAGENT_PROFILES.md"
+        },
+        {
+          "title": {
+            "en": "Subagent Profiles (Chinese)",
+            "zh": "子代理配置文件（中文）"
+          },
+          "body": {
+            "en": "Chinese guide to subagent profile configuration.",
+            "zh": "子代理配置文件的中文指南。"
+          },
+          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/771cbfe7ccc2e23f98cba6e890f0073d37c234f1/docs/SUBAGENT_PROFILES.zh-CN.md"
+        }
+      ],
+      "highlights": [
+        {
+          "kind": "improved",
+          "title": {
+            "en": "Smarter write conflict detection",
+            "zh": "更智能的写入冲突检测"
+          },
+          "body": {
+            "en": "Write conflicts are now determined by actual file paths rather than treating the entire workspace as exclusive, allowing concurrent writes to different files while still serializing writes to the same file.",
+            "zh": "写入冲突现在按实际文件路径判定，不再将整个工作区视为独占，允许不同文件的并发写入，同时仍对同一文件的写入进行串行化。"
+          },
+          "refs": [
+            9137
+          ]
+        },
+        {
+          "kind": "new",
+          "title": {
+            "en": "DingTalk bot adapter",
+            "zh": "钉钉机器人适配器"
+          },
+          "body": {
+            "en": "Added a DingTalk Stream adapter with WebSocket long connections, @mention gating, message deduplication, and session webhook replies.",
+            "zh": "新增钉钉 Stream 适配器，支持 WebSocket 长连接、@提及门控、消息去重和会话 webhook 回复。"
+          },
+          "refs": [
+            9116
+          ]
+        },
+        {
+          "kind": "fixed",
+          "title": {
+            "en": "Stable long-session navigation",
+            "zh": "稳定的长会话导航"
+          },
+          "body": {
+            "en": "Fixed Windows session geometry issues, height rebounds, and history navigation problems to keep long conversations smooth and fully navigable.",
+            "zh": "修复 Windows 会话几何问题、高度回弹和历史导航问题，使长对话保持流畅且完全可导航。"
+          },
+          "refs": [
+            9117,
+            9130,
+            9140
+          ]
+        }
+      ],
+      "changes": {
+        "new": [
+          {
+            "title": {
+              "en": "DingTalk bot adapter",
+              "zh": "钉钉机器人适配器"
+            },
+            "body": {
+              "en": "Added a DingTalk Stream adapter with WebSocket long connections, @mention gating, message deduplication, and session webhook replies.",
+              "zh": "新增钉钉 Stream 适配器，支持 WebSocket 长连接、@提及门控、消息去重和会话 webhook 回复。"
+            },
+            "refs": [
+              9116
+            ]
+          }
+        ],
+        "improved": [
+          {
+            "title": {
+              "en": "Smarter write conflict detection",
+              "zh": "更智能的写入冲突检测"
+            },
+            "body": {
+              "en": "Write conflicts are now determined by actual file paths rather than treating the entire workspace as exclusive, allowing concurrent writes to different files while still serializing writes to the same file.",
+              "zh": "写入冲突现在按实际文件路径判定，不再将整个工作区视为独占，允许不同文件的并发写入，同时仍对同一文件的写入进行串行化。"
+            },
+            "refs": [
+              9137
+            ]
+          },
+          {
+            "title": {
+              "en": "Clearer disabled style for immutable provider names",
+              "zh": "供应商名称不可修改时提供更直观的置灰与提示样式"
+            },
+            "body": {
+              "en": "When editing an existing custom provider, the provider name input is now visually disabled with a localized hint explaining that changing the name is not supported yet.",
+              "zh": "编辑已添加的自定义供应商时，供应商名称输入框现在会显示为禁用状态，并带有本地化提示，说明暂不支持修改名称。"
+            },
+            "refs": [
+              9066
+            ]
+          },
+          {
+            "title": {
+              "en": "Larger session-group header font",
+              "zh": "分组标题字号略大于普通会话标题"
+            },
+            "body": {
+              "en": "Session-group headers now use a slightly larger font than session titles, improving hierarchy and clickable area.",
+              "zh": "会话分组标题现在使用略大于会话标题的字号，改善层级和可点击区域。"
+            },
+            "refs": [
+              9032
+            ]
+          },
+          {
+            "title": {
+              "en": "Turn verification opens change-panel summary",
+              "zh": "本轮验证打开改动面板摘要"
+            },
+            "body": {
+              "en": "Completion notices now include a functional Turn verification button that opens the changed dock and scrolls to the turn-verification summary.",
+              "zh": "完成通知现在包含可用的“本轮验证”按钮，打开改动面板并滚动到本轮验证摘要。"
+            },
+            "refs": [
+              9102
+            ]
+          },
+          {
+            "title": {
+              "en": "Scratch writes no longer trigger delivery attention card",
+              "zh": "探路写入不再触发交付警告卡"
+            },
+            "body": {
+              "en": "Writes to scratch directories like /tmp no longer count as delivery work, preventing false warnings about unverified project changes.",
+              "zh": "写入 /tmp 等临时目录不再计为交付工作，避免出现关于未验证项目更改的错误警告。"
+            },
+            "refs": [
+              9096
+            ]
+          }
+        ],
+        "fixed": [
+          {
+            "title": {
+              "en": "Keep complete history navigable",
+              "zh": "保持完整历史对话可导航"
+            },
+            "body": {
+              "en": "Historical conversations are now fully navigable, with automatic loading of older pages and synchronized active question markers.",
+              "zh": "历史对话现在完全可导航，旧页面自动加载，活动问题标记与滚动同步。"
+            },
+            "refs": [
+              9117
+            ]
+          },
+          {
+            "title": {
+              "en": "Preserve reader intent across extent rebounds",
+              "zh": "修复会话高度回弹导致的反向跳动"
+            },
+            "body": {
+              "en": "Prevented Windows WebView2 transcript extent rebounds from reversing active reader gestures by multiple screens.",
+              "zh": "防止 Windows WebView2 会话高度回弹导致活动阅读手势反向跳动多个屏幕。"
+            },
+            "refs": [
+              9140
+            ]
+          },
+          {
+            "title": {
+              "en": "Stabilize Windows transcript geometry",
+              "zh": "修复 Windows 长会话滚动跳变与空白"
+            },
+            "body": {
+              "en": "Fixed visible flashes, jumps, and viewport instability in long transcripts on Windows by correcting stale row geometry handling.",
+              "zh": "通过纠正过时的行几何处理，修复 Windows 长会话中的可见闪烁、跳动和视口不稳定问题。"
+            },
+            "refs": [
+              9130
+            ]
+          },
+          {
+            "title": {
+              "en": "Fall back to text paste when clipboard holds no image",
+              "zh": "修复剪贴板无图片时 Ctrl+V 拦截纯文本粘贴"
+            },
+            "body": {
+              "en": "Ctrl+V now falls back to text paste when the clipboard contains no image, instead of showing an error notice.",
+              "zh": "当剪贴板中没有图片时，Ctrl+V 现在会回退到文本粘贴，而不是显示错误通知。"
+            },
+            "refs": [
+              9000
+            ]
+          },
+          {
+            "title": {
+              "en": "Fix large file preview height and row gaps",
+              "zh": "修复文件预览限高与行间距空白"
+            },
+            "body": {
+              "en": "Fixed code preview layout issues in the desktop file panel, including incorrect row gaps and insufficient height for large files.",
+              "zh": "修复桌面文件面板中代码预览的布局问题，包括行间距错误和大文件高度不足。"
+            },
+            "refs": [
+              9001
+            ]
+          },
+          {
+            "title": {
+              "en": "Flush stream deltas on a stall timer",
+              "zh": "修复思考中卡住、停止后才显示内容"
+            },
+            "body": {
+              "en": "Added a fallback stall timer to flush stream deltas when requestAnimationFrame pauses, preventing frozen 'thinking...' states.",
+              "zh": "添加备用停滞计时器，在 requestAnimationFrame 暂停时刷新流增量，防止出现卡在“思考中”的状态。"
+            },
+            "refs": [
+              9045
+            ]
+          }
+        ]
+      },
+      "upgrade": [],
+      "risks": [],
+      "contributors": [
+        "SivanCola",
+        "ttmouse",
+        "wuhanwoaini521",
+        "Huang-404-Q",
+        "zcxads666",
+        "Linearl",
+        "75924"
+      ],
+      "links": {
+        "github": "https://github.com/esengine/DeepSeek-Reasonix/releases/tag/desktop-v1.30.0",
+        "compare": "https://github.com/esengine/DeepSeek-Reasonix/compare/desktop-v1.29.0...desktop-v1.30.0",
+        "download": "https://reasonix.io/?download=desktop&channel=stable#start"
+      },
+      "releaseId": "1.30.0",
+      "baseVersion": "1.30.0",
+      "status": "reviewed",
+      "previousRelease": "1.29.0",
+      "builds": {
+        "cli": "v1.30.0",
+        "desktop": "v1.30.0",
+        "npm": "1.30.0"
+      }
+    },
+    {
       "version": "1.29.0",
       "date": "2026-08-18",
       "channel": "stable",
