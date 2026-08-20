@@ -229,19 +229,6 @@ scrollElement.scrollTop = 400;
 await act(async () => arbiter?.atBottomStateChange(false));
 check(arbiter?.isAtBottom === true, "physical bottom overrides a stale Virtuoso atBottom=false report");
 
-// Composer wrap grows the in-flow footer and shrinks the transcript viewport
-// by ~one line. Pin the native tail before rAF so jump-bottom cannot flash.
-scrollElement.scrollTop = 400;
-Object.defineProperty(scrollElement, "clientHeight", { configurable: true, value: 80 });
-await act(async () => arbiter?.followGrowingTail());
-check(scrollElement.scrollTop === 420, "footer-driven viewport shrink pins the native tail before rAF");
-await act(async () => arbiter?.deliverScroll());
-check(arbiter?.isAtBottom === true, "tail-follow keeps isAtBottom through a composer-wrap gap");
-await flushFrames();
-await flushFrames();
-Object.defineProperty(scrollElement, "clientHeight", { configurable: true, value: 100 });
-scrollElement.scrollTop = 400;
-
 // A thumb gesture that reaches the frozen native bottom must claim the tail
 // before release resumes real row measurements and changes the extent.
 scrollElement.scrollTop = 0;

@@ -82,6 +82,34 @@ eq(
 );
 
 eq(
+  workspaceSplitTreeWidthFromPointer({
+    clientX: 650,
+    panelLeft: 100,
+    panelWidth: 800,
+    railWidth: TREE_RAIL_WIDTH,
+    treeMinWidth: TREE_MIN_WIDTH,
+    previewMinWidth: PREVIEW_MIN_WIDTH,
+    treeOnRight: true,
+  }),
+  250,
+  "right-side tree width is measured from the pointer to the panel's right edge",
+);
+
+eq(
+  workspaceSplitTreeWidthFromPointer({
+    clientX: 100,
+    panelLeft: 100,
+    panelWidth: 800,
+    railWidth: TREE_RAIL_WIDTH,
+    treeMinWidth: TREE_MIN_WIDTH,
+    previewMinWidth: PREVIEW_MIN_WIDTH,
+    treeOnRight: true,
+  }),
+  616,
+  "right-side tree maximum keeps space for the rail and preview",
+);
+
+eq(
   resolveWorkspaceSplitTreeWidth({
     mode: "even",
     currentTreeWidth: 140,
