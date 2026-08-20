@@ -142,6 +142,21 @@ func (o *turnOrchestrator) continueUntilReady(ctx context.Context, turnErr error
 			return finalReadinessWithAttempts(turnErr, initialAttempts+automaticTurns)
 		}
 		o.c.notice(i18n.M.ReadinessContinuing)
+		// Notice delivery is an observable boundary: an interactive frontend may
+		// enqueue new user work while handling it. Re-check immediately before the
+		// synthetic run so that work wins without consuming the recovery action.
+		if err := ctx.Err(); err != nil {
+			o.c.executor.RestoreFinalReadinessRecoveryPreparation()
+			return err
+		}
+		if o.c.CancelRequested() {
+			o.c.executor.RestoreFinalReadinessRecoveryPreparation()
+			return context.Canceled
+		}
+		if o.c.hasPendingUserWork() {
+			o.c.executor.RestoreFinalReadinessRecoveryPreparation()
+			return finalReadinessWithAttempts(turnErr, initialAttempts+automaticTurns)
+		}
 		previousProgress = readinessErr.ProgressKey
 		nextErr := o.runOrchestratedTurn(ctx, orchestratedTurn{
 			input: prompt, raw: prompt, synthetic: true,

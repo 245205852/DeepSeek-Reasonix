@@ -551,8 +551,8 @@ func (a *Agent) handleFinalResponse(ctx context.Context, state *turnRuntime, tex
 	if readiness.reason != "" || controlReadiness.reason != "" {
 		// The host owns the concrete missing requirements. Return them to the
 		// controller when automatic continuation is armed (or for the existing
-			// strict/Goal path). Standard receives only the task-progress control
-			// projection; the complete observed facts still feed its readiness audit.
+		// strict/Goal path). Standard receives only the task-progress control
+		// projection; the complete observed facts still feed its readiness audit.
 		if controlReadiness.reason != "" && a.readinessPauseActive(controlReadiness) &&
 			(a.turn.automaticReadinessContinuation || a.closedLoopActive() || controlReadiness.missingSignoff > 0 || controlReadiness.missingActionEvidence > 0) {
 			event.RecordReadinessAudit(a.svc.sink, readiness.audit(evidence.ReadinessErrored, false))
