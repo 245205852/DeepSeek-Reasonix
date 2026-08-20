@@ -1827,6 +1827,8 @@ export interface ProviderPresetView {
   label: string;
   description: string;
   keyEnv: string;
+  recommended?: boolean;
+  billingMode?: string;
   providerNames: string[];
   models: string[];
   added: boolean;
