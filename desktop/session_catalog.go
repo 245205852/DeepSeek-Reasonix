@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"reasonix/internal/agent"
-	"reasonix/internal/config"
 	"reasonix/internal/history"
 	"reasonix/internal/sessioncatalog"
 	"reasonix/internal/stats"
@@ -50,14 +49,19 @@ func (observer desktopSessionCatalogPersistObserver) EnqueueSessionPersist(event
 }
 
 type SessionCatalogStatus struct {
-	State           string `json:"state"`
-	Mode            string `json:"mode"`
-	Revision        uint64 `json:"revision"`
-	Indexed         int64  `json:"indexed"`
-	Total           int64  `json:"total"`
-	RepairPending   int64  `json:"repairPending"`
-	LastError       string `json:"lastError,omitempty"`
-	QuarantinedPath string `json:"quarantinedPath,omitempty"`
+	State                string `json:"state"`
+	Mode                 string `json:"mode"`
+	Revision             uint64 `json:"revision"`
+	Indexed              int64  `json:"indexed"`
+	Total                int64  `json:"total"`
+	RepairPending        int64  `json:"repairPending"`
+	RepairReason         string `json:"repairReason,omitempty"`
+	SourceCount          int64  `json:"sourceCount"`
+	UnindexedTargetCount int64  `json:"unindexedTargetCount"`
+	LastRepairAt         int64  `json:"lastRepairAt,omitempty"`
+	CanRebuild           bool   `json:"canRebuild"`
+	LastError            string `json:"lastError,omitempty"`
+	QuarantinedPath      string `json:"quarantinedPath,omitempty"`
 }
 
 type ProjectTreeSnapshot struct {
@@ -143,6 +147,10 @@ func sessionCatalogStatus(status sessioncatalog.Status) SessionCatalogStatus {
 		Indexed:         status.Indexed,
 		Total:           status.Total,
 		RepairPending:   status.RepairPending,
+		RepairReason:    status.RepairReason,
+		SourceCount:     status.SourceCount,
+		LastRepairAt:    status.LastRepairAt,
+		CanRebuild:      true,
 		LastError:       status.LastError,
 		QuarantinedPath: status.QuarantinedPath,
 	}
@@ -153,12 +161,20 @@ func (a *App) currentSessionCatalogStatus() SessionCatalogStatus {
 		return SessionCatalogStatus{State: string(sessioncatalog.StateDegraded), Mode: string(sessioncatalog.ModeMemory)}
 	}
 	if a.catalogRebuilding.Load() {
-		return SessionCatalogStatus{State: string(sessioncatalog.StateRebuilding)}
+		return SessionCatalogStatus{State: string(sessioncatalog.StateRebuilding), CanRebuild: false}
 	}
 	if catalog := a.sessionCatalog.Load(); catalog != nil {
-		return sessionCatalogStatus(catalog.Status())
+		out := sessionCatalogStatus(catalog.Status())
+		ctx, cancel := context.WithTimeout(a.bootContext(), 2*time.Second)
+		defer cancel()
+		for _, target := range a.sessionCatalogTargets() {
+			if !catalog.DirectoryScanReady(ctx, target.Path) {
+				out.UnindexedTargetCount++
+			}
+		}
+		return out
 	}
-	return SessionCatalogStatus{State: string(sessioncatalog.StateOpening)}
+	return SessionCatalogStatus{State: string(sessioncatalog.StateOpening), CanRebuild: true}
 }
 
 func (a *App) startSessionCatalog(rebuild bool) {
@@ -181,77 +197,7 @@ func (a *App) startSessionCatalog(rebuild bool) {
 	go func() {
 		defer close(done)
 		defer a.catalogRebuilding.Store(false)
-		path := sessioncatalog.DefaultPath()
-		targets := a.sessionCatalogTargets()
-		history.RegisterCatalogRoots(historyCatalogRoots(targets))
-		projects := loadProjectsFile()
-		taskcatalog.RegisterSharedProject(globalWorkspaceRoot(), projects.GlobalTitle)
-		for _, project := range projects.Projects {
-			taskcatalog.RegisterSharedProject(project.Root, projectDisplayName(project))
-		}
-		if rebuild {
-			if _, err := sessioncatalog.Rebuild(ctx, path, targets); err != nil && !errors.Is(err, context.Canceled) {
-				slog.Warn("desktop: rebuild session catalog", "err", err)
-			}
-		}
-		catalog, err := sessioncatalog.Open(ctx, sessioncatalog.Options{
-			Path: path,
-			OnRevision: func(revision uint64, roots []string, reason string) {
-				a.emitProjectTreeChangedV2(revision, roots, reason)
-			},
-		})
-		if err != nil {
-			slog.Warn("desktop: open session catalog", "err", err)
-			return
-		}
-		if ctx.Err() != nil || a.shuttingDown.Load() {
-			closeCtx, closeCancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
-			_ = catalog.Close(closeCtx)
-			closeCancel()
-			return
-		}
-		a.sessionCatalog.Store(catalog)
-		if err := a.syncSessionCatalogMetadataBounded(ctx, catalog); err != nil && !errors.Is(err, context.Canceled) {
-			slog.Warn("desktop: sync session catalog metadata", "err", err)
-		}
-		select {
-		case <-a.tabsRestoredSignal():
-		case <-ctx.Done():
-			return
-		}
-		a.indexRestoredSessionPaths(ctx, catalog)
-		for _, target := range targets {
-			if ctx.Err() != nil || a.shuttingDown.Load() {
-				return
-			}
-			// Legacy assignment is deliberately background-only. It can scan and
-			// repair old metadata, but no project-tree or controller request waits.
-			if migrated := migrateLegacySessionsIntoGlobalTopics(target.Path); len(migrated) > 0 {
-				_ = a.syncSessionCatalogMetadataBounded(ctx, catalog)
-			}
-			if err := catalog.ReconcileDirectory(ctx, target); err != nil && !errors.Is(err, context.Canceled) {
-				slog.Debug("desktop: reconcile session catalog directory", "dir", target.Path, "err", err)
-			}
-		}
-		a.retargetOpenTabsToContinuations()
-		ticker := time.NewTicker(30 * time.Second)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ticker.C:
-				if err := a.syncSessionCatalogMetadataBounded(ctx, catalog); err != nil && !errors.Is(err, context.Canceled) {
-					slog.Debug("desktop: refresh session catalog metadata", "err", err)
-				}
-				for _, target := range a.sessionCatalogTargets() {
-					if migrated := migrateLegacySessionsIntoGlobalTopics(target.Path); len(migrated) > 0 {
-						_ = a.syncSessionCatalogMetadataBounded(ctx, catalog)
-					}
-					catalog.RequestReconcile(target)
-				}
-			case <-ctx.Done():
-				return
-			}
-		}
+		a.runSessionCatalog(ctx, rebuild)
 	}()
 }
 
@@ -333,26 +279,6 @@ func (a *App) cancelAllTabBuilds() {
 	a.mu.Unlock()
 }
 
-func (a *App) sessionCatalogTargets() []sessioncatalog.DirectoryTarget {
-	f := loadProjectsFile()
-	seen := map[string]bool{}
-	out := []sessioncatalog.DirectoryTarget{}
-	add := func(target sessioncatalog.DirectoryTarget) {
-		target.Path = filepath.Clean(strings.TrimSpace(target.Path))
-		if target.Path == "." || target.Path == "" || seen[target.Path] {
-			return
-		}
-		seen[target.Path] = true
-		out = append(out, target)
-	}
-	add(sessioncatalog.DirectoryTarget{Path: config.SessionDir(), Scope: "global"})
-	add(sessioncatalog.DirectoryTarget{Path: desktopSessionDir(globalWorkspaceRoot()), Scope: "global"})
-	for _, project := range f.Projects {
-		add(sessioncatalog.DirectoryTarget{Path: desktopSessionDir(project.Root), Scope: "project", WorkspaceRoot: project.Root})
-	}
-	return out
-}
-
 func listCatalogSessionsForDirectory(ctx context.Context, catalog *sessioncatalog.Catalog,
 	target sessioncatalog.DirectoryTarget, directory string) ([]sessioncatalog.SessionRecord, error) {
 	for range 2 {
@@ -375,37 +301,6 @@ func listCatalogSessionsForDirectory(ctx context.Context, catalog *sessioncatalo
 		}
 	}
 	return []sessioncatalog.SessionRecord{}, nil
-}
-
-func (a *App) indexRestoredSessionPaths(ctx context.Context, catalog *sessioncatalog.Catalog) {
-	type restored struct {
-		target sessioncatalog.DirectoryTarget
-		path   string
-	}
-	a.mu.RLock()
-	items := make([]restored, 0, len(a.tabs)+len(a.detachedSessions))
-	collect := func(tab *WorkspaceTab) {
-		if tab == nil || strings.TrimSpace(tab.SessionPath) == "" {
-			return
-		}
-		items = append(items, restored{
-			target: sessioncatalog.DirectoryTarget{Path: filepath.Dir(tab.SessionPath), Scope: tab.Scope, WorkspaceRoot: tab.WorkspaceRoot},
-			path:   tab.SessionPath,
-		})
-	}
-	for _, tab := range a.tabs {
-		collect(tab)
-	}
-	for _, tab := range a.detachedSessions {
-		collect(tab)
-	}
-	a.mu.RUnlock()
-	for _, item := range items {
-		if ctx.Err() != nil {
-			return
-		}
-		_ = catalog.IndexSessionPath(ctx, item.target, item.path)
-	}
 }
 
 // syncSessionCatalogMetadataBounded is the only form the long-lived catalog
