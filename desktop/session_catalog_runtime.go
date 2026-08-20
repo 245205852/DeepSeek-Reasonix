@@ -336,11 +336,13 @@ func (a *App) projectNodeFromCatalogTopic(topic sessioncatalog.TopicRecord, topi
 	recoveryBranchCount := 0
 	recoveryUnresolvedCount := 0
 	recoveryCleanupEligibleCount := 0
-	if recoveryOnly || canonicalRecovery {
+	if recoveryOnly {
 		recoveryState = topic.RecoveryState
 		recoveryBranchCount = topic.RecoveryBranchCount
 		recoveryUnresolvedCount = topic.RecoveryUnresolvedCount
 		recoveryCleanupEligibleCount = topic.RecoveryCleanupEligibleCount
+	} else if canonicalRecovery {
+		recoveryState = topic.RecoveryState
 	}
 	overlay := topicOverlays[topicSummaryKey(topic.Scope, topic.WorkspaceRoot, topic.TopicID)]
 	node := ProjectNode{
