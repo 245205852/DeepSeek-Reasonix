@@ -117,7 +117,11 @@ for (const path of localeChunks) {
   // language. DingTalk setup and mention guidance add at most 0.2 KiB more
   // (0.36%); retain the complete security and group-chat copy instead of
   // abbreviating user-facing instructions to fit the old locale ratchet.
-  const budget = name.startsWith("zh-TW-") ? 56.6 * 1024 : 55.9 * 1024;
+  // Recovery-copy and catalog-only sidebar labels can move the simplified
+  // Chinese chunk across the rounded 55.9 KiB boundary on CI's Node/zlib;
+  // retain a narrow 0.1 KiB headroom rather than making gzip output a
+  // platform-dependent gate.
+  const budget = name.startsWith("zh-TW-") ? 56.6 * 1024 : 56.0 * 1024;
   assertBudget(`${name} gzip`, gzipBytes(path), budget);
 }
 

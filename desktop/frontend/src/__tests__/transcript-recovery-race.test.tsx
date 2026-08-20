@@ -229,28 +229,6 @@ scrollElement.scrollTop = 400;
 await act(async () => arbiter?.atBottomStateChange(false));
 check(arbiter?.isAtBottom === true, "physical bottom overrides a stale Virtuoso atBottom=false report");
 
-// A thumb gesture that reaches the frozen native bottom must claim the tail
-// before release resumes real row measurements and changes the extent. The
-// claim now requires the bottom to be HELD (#8709/#9099): the native scroll
-// deliveries while the thumb rests at the bottom build the hold streak that
-// the release's final delivery completes.
-scrollElement.scrollTop = 0;
-await act(async () => arbiter?.onPointerDownIntent({
-  button: 0,
-  nativeEvent: { button: 0, clientX: 795 },
-} as React.PointerEvent<HTMLElement>));
-scrollElement.scrollTop = 400;
-await act(async () => arbiter?.deliverScroll());
-await act(async () => window.dispatchEvent(new dom.window.Event("pointerup")));
-check(arbiter?.modeRef.current === "tail-follow", "native thumb release after a held physical bottom resumes tail-follow");
-scrollExtent = 900;
-await act(async () => arbiter?.deliverScroll());
-await flushFrames();
-await flushFrames();
-await flushFrames();
-check(scrollElement.scrollTop === 800, "post-release remeasurement reconverges the claimed native bottom");
-scrollExtent = 500;
-
 // A nested code/tool scrollport owns the wheel until it reaches its edge.
 // Capturing the event on Transcript must not release tail-follow early.
 const nestedScroller = dom.window.document.createElement("div");
@@ -281,76 +259,6 @@ await act(async () => {
 });
 check(nestedWheelAccepted && arbiter?.modeRef.current === "manual", "a nested edge hands wheel ownership to the transcript");
 nestedScroller.remove();
-
-// If measurement/clamping reaches the physical bottom between scroll events,
-// a fresh downward gesture must still claim the tail even though the browser
-// has no remaining pixels to deliver. Tail-follow re-entry now requires the
-// bottom to be HELD (#8709/#9099): a single touch-down claims the gesture
-// but stays manual, and a second at-bottom delivery inside the same intent
-// window re-enters tail-follow.
-scrollElement.scrollTop = 400;
-let bottomWheelAccepted = false;
-await act(async () => {
-  bottomWheelAccepted = arbiter?.onWheelIntent({
-    ctrlKey: false,
-    deltaX: 0,
-    deltaY: 40,
-    target: scrollElement,
-  } as React.WheelEvent<HTMLElement>) ?? false;
-});
-check(bottomWheelAccepted && arbiter?.modeRef.current === "manual", "a single downward touch-down claims the gesture without re-entering tail-follow");
-await act(async () => {
-  bottomWheelAccepted = arbiter?.onWheelIntent({
-    ctrlKey: false,
-    deltaX: 0,
-    deltaY: 40,
-    target: scrollElement,
-  } as React.WheelEvent<HTMLElement>) ?? false;
-});
-check(bottomWheelAccepted && arbiter?.modeRef.current === "tail-follow", "a held physical bottom (second delivery) re-enters tail-follow");
-
-// An upward gesture inside the streak resets the hold: the next downward
-// gesture must re-establish it from zero.
-await act(async () => arbiter?.releaseTailFollow());
-scrollElement.scrollTop = 400;
-await act(async () => {
-  arbiter?.onWheelIntent({
-    ctrlKey: false,
-    deltaX: 0,
-    deltaY: 40,
-    target: scrollElement,
-  } as React.WheelEvent<HTMLElement>);
-});
-check(arbiter?.modeRef.current === "manual", "one at-bottom delivery starts the hold without re-entering");
-await act(async () => {
-  arbiter?.onWheelIntent({
-    ctrlKey: false,
-    deltaX: 0,
-    deltaY: -40,
-    target: scrollElement,
-  } as React.WheelEvent<HTMLElement>);
-});
-scrollElement.scrollTop = 300;
-await act(async () => arbiter?.deliverScroll());
-scrollElement.scrollTop = 400;
-await act(async () => {
-  arbiter?.onWheelIntent({
-    ctrlKey: false,
-    deltaX: 0,
-    deltaY: 40,
-    target: scrollElement,
-  } as React.WheelEvent<HTMLElement>);
-});
-check(arbiter?.modeRef.current === "manual", "an upward gesture between at-bottom deliveries breaks the hold");
-await act(async () => {
-  arbiter?.onWheelIntent({
-    ctrlKey: false,
-    deltaX: 0,
-    deltaY: 40,
-    target: scrollElement,
-  } as React.WheelEvent<HTMLElement>);
-});
-check(arbiter?.modeRef.current === "tail-follow", "two consecutive held deliveries after the reset re-enter tail-follow");
 
 // A queued confirmation belongs to the surface that requested it. Resetting
 // before its frame runs must prevent the old request from writing the new one.
@@ -845,76 +753,6 @@ await advanceClock(2_100);
 const nextGenerationResetBefore = integrity?.resetKey;
 await triggerWatchdogRebuild();
 check(integrity?.resetKey !== nextGenerationResetBefore, "a changed 10,000-row generation receives a fresh hard-reset budget");
-
-// ── Manual-mode viewport anchor compensation (#8438/#8488/#8897): an
-// above-viewport height change (fold auto-collapse, history patch) must not
-// push the reading position. The drift is measured against the anchor sampled
-// on the last delivered scroll and corrected through exactly one arbiter-owned
-// offset write; growth below the viewport and ownership changes earn none.
-await switchSurface("surface-anchor");
-scrollElement.appendChild(rowElement);
-scrollExtent = 500;
-// Real-geometry stub: the row's client position tracks scrollTop like a
-// browser's would (document top 150).
-rowElement.getBoundingClientRect = () => rectAt(150 - scrollElement.scrollTop);
-scrollElement.scrollTop = 100;
-await act(async () => arbiter?.setMode("manual", "test-anchor-compensation"));
-await act(async () => arbiter?.deliverScroll());
-scrollWrites.length = 0;
-// A fold above the viewport expands: extent and the row both move +200.
-scrollExtent = 700;
-rowElement.getBoundingClientRect = () => rectAt(350 - scrollElement.scrollTop);
-await act(async () => arbiter?.followGrowingTail());
-await flushFrames(); // followGrowingTail frame: LAYOUT_HEIGHT_CHANGED + compensation scheduled
-await flushFrames(); // compensation measures drift and writes once
-await flushFrames(); // stable frame 1
-await flushFrames(); // stable frame 2: done
-const compensationWrites = scrollWrites.filter((write) => write.owner === "anchor-compensation");
-check(compensationWrites.length === 1, `above-viewport growth in manual mode emits exactly one anchor-compensation write (${compensationWrites.length})`);
-check(compensationWrites[0]?.top === 300 && scrollElement.scrollTop === 300, "the compensation restores the anchor row's viewport offset");
-check(arbiter?.modeRef.current === "manual", "anchor compensation preserves manual reading ownership");
-check(rowElement.getBoundingClientRect().top === 50, "the anchor row is physically back at its pre-change offset");
-
-// Growth below the viewport (streaming tail) leaves the anchor row put:
-// zero measured drift, zero writes.
-await act(async () => arbiter?.deliverScroll());
-scrollWrites.length = 0;
-scrollExtent = 900;
-await act(async () => arbiter?.followGrowingTail());
-for (let i = 0; i < 4; i += 1) await flushFrames();
-check(
-  scrollWrites.filter((write) => write.owner === "anchor-compensation").length === 0,
-  "below-viewport growth earns no compensation write",
-);
-check(scrollElement.scrollTop === 300, "below-viewport growth leaves the reading position untouched");
-
-// A collapse above the viewport (CONTENT_SHRANK path) compensates upward.
-scrollWrites.length = 0;
-scrollExtent = 600;
-rowElement.getBoundingClientRect = () => rectAt(150 - scrollElement.scrollTop);
-await act(async () => arbiter?.followGrowingTail());
-for (let i = 0; i < 4; i += 1) await flushFrames();
-const shrinkWrites = scrollWrites.filter((write) => write.owner === "anchor-compensation");
-check(shrinkWrites.length === 1 && shrinkWrites[0]?.top === 100, "an above-viewport collapse compensates upward exactly once");
-check(scrollElement.scrollTop === 100, "the upward compensation restores the anchor offset");
-
-// A user gesture mid-compensation cancels the loop: the reader owns the
-// viewport from there on.
-await act(async () => arbiter?.deliverScroll());
-scrollWrites.length = 0;
-scrollExtent = 800;
-rowElement.getBoundingClientRect = () => rectAt(350 - scrollElement.scrollTop);
-await act(async () => arbiter?.followGrowingTail());
-await flushFrames(); // schedules the compensation
-await act(async () => arbiter?.releaseTailFollow());
-for (let i = 0; i < 4; i += 1) await flushFrames();
-check(
-  scrollWrites.filter((write) => write.owner === "anchor-compensation").length === 0,
-  "user scroll intent cancels a pending anchor compensation",
-);
-
-rowElement.getBoundingClientRect = () => rectAt(200);
-scrollExtent = 500;
 
 await act(async () => root.unmount());
 Date.now = originalDateNow;

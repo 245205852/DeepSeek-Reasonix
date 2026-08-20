@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/sync/errgroup"
+
 	"reasonix/internal/history"
 	"reasonix/internal/sessioncatalog"
 	"reasonix/internal/taskcatalog"
@@ -61,19 +63,27 @@ func (a *App) runSessionCatalog(ctx context.Context, rebuild bool) {
 	targets = a.sessionCatalogTargets()
 	history.RegisterCatalogRoots(historyCatalogRoots(targets))
 	a.indexRestoredSessionPaths(ctx, catalog)
+	// Directory scans are independent and internally resumable. Keep startup
+	// bounded so a project with many roots cannot monopolize the catalog worker.
+	var reconcileGroup errgroup.Group
+	reconcileGroup.SetLimit(4)
 	for _, target := range targets {
 		if ctx.Err() != nil || a.shuttingDown.Load() {
 			return
 		}
-		if !rebuild {
-			if migrated := migrateLegacySessionsIntoGlobalTopics(target.Path); len(migrated) > 0 {
-				_ = a.syncSessionCatalogMetadataBounded(ctx, catalog)
+		reconcileGroup.Go(func() error {
+			if !rebuild {
+				if migrated := migrateLegacySessionsIntoGlobalTopics(target.Path); len(migrated) > 0 {
+					_ = a.syncSessionCatalogMetadataBounded(ctx, catalog)
+				}
 			}
-		}
-		if err := catalog.ReconcileDirectory(ctx, target); err != nil && !errors.Is(err, context.Canceled) {
-			slog.Debug("desktop: reconcile session catalog directory", "dir", target.Path, "err", err)
-		}
+			if err := catalog.ReconcileDirectory(ctx, target); err != nil && !errors.Is(err, context.Canceled) {
+				slog.Debug("desktop: reconcile session catalog directory", "dir", target.Path, "err", err)
+			}
+			return nil
+		})
 	}
+	_ = reconcileGroup.Wait()
 	if rebuild {
 		catalog.MarkRepairReason("manual_rebuild")
 	} else if freshGeneration {
