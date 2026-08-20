@@ -191,7 +191,7 @@ func (e *HeartbeatEngine) writeTasks(tasks []HeartbeatTask, expected heartbeatCo
 			rollbackErr = removeErr
 		}
 		if rollbackErr != nil {
-			return fmt.Errorf("write heartbeat config: %w (restore run-history sidecar: %v)", err, rollbackErr)
+			return fmt.Errorf("write heartbeat config: %w (restore run-history sidecar: %w)", err, rollbackErr)
 		}
 		return err
 	}

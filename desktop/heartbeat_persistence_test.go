@@ -164,7 +164,7 @@ func TestMergeHeartbeatRunUpdatesCapsHistory(t *testing.T) {
 	tasks := []HeartbeatTask{{ID: "t1"}}
 	updates := map[string]HeartbeatTask{"t1": {ID: "t1"}}
 	history := make([]HeartbeatRun, 0, maxRunHistory+5)
-	for i := 0; i < maxRunHistory+5; i++ {
+	for i := range maxRunHistory + 5 {
 		history = append(history, HeartbeatRun{At: int64(i)})
 	}
 	updates["t1"] = HeartbeatTask{ID: "t1", RunHistory: history}

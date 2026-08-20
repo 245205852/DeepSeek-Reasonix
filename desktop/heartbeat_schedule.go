@@ -49,22 +49,22 @@ func isCronExpr(s string) bool {
 		}
 		// Reject out-of-range values in each field, plus zero/empty step
 		// values ("*/0" never fires) and descending ranges ("5-1" never matches).
-		for _, part := range strings.Split(f, ",") {
+		for part := range strings.SplitSeq(f, ",") {
 			part = strings.TrimSpace(part)
 			base := part
-			if idx := strings.Index(part, "/"); idx >= 0 {
-				step, err := strconv.Atoi(part[idx+1:])
+			if stepBase, stepText, ok := strings.Cut(part, "/"); ok {
+				step, err := strconv.Atoi(stepText)
 				if err != nil || step < 1 {
 					return false
 				}
-				base = part[:idx]
+				base = stepBase
 			}
 			if base == "*" {
 				continue
 			}
-			if idx := strings.Index(base, "-"); idx >= 0 {
-				lo, err1 := strconv.Atoi(base[:idx])
-				hi, err2 := strconv.Atoi(base[idx+1:])
+			if loText, hiText, ok := strings.Cut(base, "-"); ok {
+				lo, err1 := strconv.Atoi(loText)
+				hi, err2 := strconv.Atoi(hiText)
 				if err1 != nil || err2 != nil || lo < mins[i] || hi > limits[i] || lo > hi {
 					return false
 				}
@@ -82,7 +82,7 @@ func isCronExpr(s string) bool {
 // cronMatchField checks whether a single value matches a cron field pattern.
 func cronMatchField(pattern string, value, minValue, maxValue int) bool {
 	// Handle comma-separated lists
-	for _, part := range strings.Split(pattern, ",") {
+	for part := range strings.SplitSeq(pattern, ",") {
 		part = strings.TrimSpace(part)
 		if cronMatchSingle(part, value, minValue, maxValue) {
 			return true
@@ -94,20 +94,18 @@ func cronMatchField(pattern string, value, minValue, maxValue int) bool {
 func cronMatchSingle(pattern string, value, minValue, maxValue int) bool {
 	// Handle step values: */15, 1-10/2, 1/2. Wildcard steps are
 	// anchored at the field minimum, which matters for 1-based fields.
-	if idx := strings.Index(pattern, "/"); idx >= 0 {
-		stepStr := pattern[idx+1:]
+	if rangePart, stepStr, ok := strings.Cut(pattern, "/"); ok {
 		step, err := strconv.Atoi(stepStr)
 		if err != nil || step <= 0 {
 			return false
 		}
-		rangePart := pattern[:idx]
 		if rangePart == "*" {
 			return value >= minValue && value <= maxValue && (value-minValue)%step == 0
 		}
 		// Range with step: 1-10/2
-		if idx2 := strings.Index(rangePart, "-"); idx2 >= 0 {
-			low, _ := strconv.Atoi(rangePart[:idx2])
-			high, _ := strconv.Atoi(rangePart[idx2+1:])
+		if lowText, highText, ok := strings.Cut(rangePart, "-"); ok {
+			low, _ := strconv.Atoi(lowText)
+			high, _ := strconv.Atoi(highText)
 			if value < low || value > high {
 				return false
 			}
@@ -120,9 +118,9 @@ func cronMatchSingle(pattern string, value, minValue, maxValue int) bool {
 		return (value-low)%step == 0
 	}
 	// Handle ranges: 1-5
-	if idx := strings.Index(pattern, "-"); idx >= 0 {
-		low, err1 := strconv.Atoi(pattern[:idx])
-		high, err2 := strconv.Atoi(pattern[idx+1:])
+	if lowText, highText, ok := strings.Cut(pattern, "-"); ok {
+		low, err1 := strconv.Atoi(lowText)
+		high, err2 := strconv.Atoi(highText)
 		if err1 != nil || err2 != nil {
 			return false
 		}
