@@ -2,6 +2,8 @@ package taskcontract
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"reasonix/internal/evidence"
@@ -9,9 +11,13 @@ import (
 
 func deliveryWriteReceipt(t *testing.T, path string, floor PolicyFloor) evidence.Receipt {
 	t.Helper()
+	args, err := json.Marshal(map[string]string{"path": path})
+	if err != nil {
+		t.Fatalf("marshal path: %v", err)
+	}
 	return evidence.Receipt{
 		ToolName: "edit_file", Success: true, Write: true, Mutation: true,
-		Args: json.RawMessage(`{"path":"` + path + `"}`), Paths: []string{path},
+		Args: args, Paths: []string{path},
 		PolicyFloor: floor.String(),
 	}
 }
@@ -44,7 +50,7 @@ func TestDeliveryFloorWriteAddsStrictFullVerify(t *testing.T) {
 
 func TestDeliveryScratchWriteAddsNoFloorObligation(t *testing.T) {
 	c := New("")
-	c.AbsorbReceipt(1, deliveryWriteReceipt(t, "/tmp/btc_klines.py", PolicyFloorDelivery), "", false, false)
+	c.AbsorbReceipt(1, deliveryWriteReceipt(t, filepath.Join(os.TempDir(), "btc_klines.py"), PolicyFloorDelivery), "", false, false)
 	if hasObligationKind(c, ObligationFullVerify, 0, ReasonPolicyFloor) {
 		t.Fatalf("delivery scratch write must not create a floor obligation: %+v", c.Obligations)
 	}
