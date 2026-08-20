@@ -149,7 +149,16 @@ func directorySignature(dir string) (string, error) {
 
 func (c *Catalog) directoryScanCanSkip(ctx context.Context, path, signature string) (bool, error) {
 	var previous, state string
-	err := c.db.QueryRowContext(ctx, `SELECT signature,state FROM catalog_directories WHERE path=?`, path).Scan(&previous, &state)
+	var expected, present, unprojected int
+	err := c.db.QueryRowContext(ctx, `SELECT signature,state,total,
+		(SELECT COUNT(*) FROM catalog_sessions WHERE directory=? AND missing_since=0),
+		(SELECT COUNT(*) FROM catalog_sessions s
+		 WHERE s.directory=? AND s.missing_since=0 AND s.topic_id<>''
+		 AND NOT EXISTS (
+			 SELECT 1 FROM catalog_topics t
+			 WHERE t.scope=s.scope AND t.workspace_root=s.workspace_root AND t.topic_id=s.topic_id
+		 ))
+		FROM catalog_directories WHERE path=?`, path, path, path).Scan(&previous, &state, &expected, &present, &unprojected)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
@@ -157,6 +166,14 @@ func (c *Catalog) directoryScanCanSkip(ctx context.Context, path, signature stri
 		return false, err
 	}
 	if previous != signature || state != "ready" {
+		return false, nil
+	}
+	// The directory row and session rows are one disposable projection, but an
+	// interrupted cache replacement can preserve the ready marker while losing
+	// session or topic rows. A signature-only fast path would then keep an
+	// unchanged on-disk conversation invisible forever. Reconcile whenever the
+	// completed file count or its topic projection is inconsistent.
+	if present != expected || unprojected != 0 {
 		return false, nil
 	}
 	var missing int

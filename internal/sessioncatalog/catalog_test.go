@@ -93,6 +93,65 @@ func TestDirectoryScanReadyOnlyAfterFirstReconcile(t *testing.T) {
 	}
 }
 
+func TestReconcileRepairsReadyDirectoryMissingCatalogRows(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "chat.jsonl")
+	if err := os.WriteFile(path, []byte(`{"role":"user","content":"hi"}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := agent.SaveBranchMeta(path, agent.BranchMeta{
+		Scope: "global", TopicID: "topic", TopicTitle: "Existing conversation",
+		SchemaVersion: agent.BranchMetaCountsVersion, Turns: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	catalog, err := Open(ctx, Options{InMemory: true, DisableRepair: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = catalog.Close(context.Background()) })
+	target := DirectoryTarget{Path: dir, Scope: "global"}
+	if err := catalog.ReconcileDirectory(ctx, target); err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate an upgrade/cache replacement that retained the completed
+	// directory marker but lost the rows used to render the sidebar.
+	if _, err := catalog.db.ExecContext(ctx, `DELETE FROM catalog_sessions WHERE directory=?`, dir); err != nil {
+		t.Fatal(err)
+	}
+	if catalog.HasWorkspaceRecords(ctx, "global", "") {
+		t.Fatal("test setup still has catalog session rows")
+	}
+
+	if err := catalog.ReconcileDirectory(ctx, target); err != nil {
+		t.Fatal(err)
+	}
+	page, err := catalog.ListTopics(ctx, TopicPageRequest{Scope: "global", Limit: 50})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Items) != 1 || page.Items[0].TopicID != "topic" || len(page.Items[0].Sessions) != 1 {
+		t.Fatalf("repaired page = %#v, want the existing conversation restored", page)
+	}
+
+	if _, err := catalog.db.ExecContext(ctx, `DELETE FROM catalog_topics WHERE topic_id='topic'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := catalog.ReconcileDirectory(ctx, target); err != nil {
+		t.Fatal(err)
+	}
+	page, err = catalog.ListTopics(ctx, TopicPageRequest{Scope: "global", Limit: 50})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Items) != 1 || page.Items[0].TopicID != "topic" || len(page.Items[0].Sessions) != 1 {
+		t.Fatalf("repaired topic projection = %#v, want the existing conversation restored", page)
+	}
+}
+
 func TestListTopicsUsesStableKeysetCursor(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
