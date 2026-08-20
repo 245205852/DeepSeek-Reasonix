@@ -196,9 +196,8 @@ console.log("\ncomposer run strip");
   dom.window.close();
 }
 
-// Execution modes are gone. Composer keeps collaboration (direct/plan/goal)
-// and tool-approval controls; it must not render a Light/Balanced/Delivery
-// execution-setting trigger or menu.
+// Execution modes are gone. Composer keeps collaboration, tool approval, and
+// the independent quality floor, but no execution-setting trigger or menu.
 {
   const dom = installDom();
   const { root } = await renderComposer();
@@ -207,7 +206,6 @@ console.log("\ncomposer run strip");
   eq(document.querySelector(".composer-profile-menu"), null, "composer has no execution-setting menu");
   const chrome = document.body.textContent ?? "";
   eq(chrome.includes("Execution setting"), false, "composer chrome does not mention execution setting");
-  eq(chrome.includes("Delivery"), false, "composer chrome does not mention Delivery mode");
 
   const intentTrigger = document.querySelector(".composer-task-mode-trigger") as HTMLButtonElement | null;
   if (!intentTrigger) throw new Error("task intent trigger did not render");

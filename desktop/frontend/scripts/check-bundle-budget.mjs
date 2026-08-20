@@ -115,10 +115,9 @@ for (const path of localeChunks) {
   // measured at 23 B gzip for zh and 8 B for zh-TW. Completion receipts add
   // six short status labels in each locale, requiring another 0.2 KiB per
   // language. DingTalk setup and mention guidance add at most 0.2 KiB more
-  // (0.36%). Heartbeat suggestions and run history add the automation-page
-  // copy. The merged production build measures 57.71 KiB for zh-TW and
-  // 57.00 KiB for zh; retain 0.1 KiB of bounded minifier/hash headroom.
-  const budget = name.startsWith("zh-TW-") ? 57.8 * 1024 : 57.1 * 1024;
+  // (0.36%); retain the complete security and group-chat copy instead of
+  // abbreviating user-facing instructions to fit the old locale ratchet.
+  const budget = name.startsWith("zh-TW-") ? 56.6 * 1024 : 55.9 * 1024;
   assertBudget(`${name} gzip`, gzipBytes(path), budget);
 }
 
