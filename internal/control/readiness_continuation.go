@@ -16,6 +16,7 @@ import (
 const (
 	readinessGenericTurns        = 1
 	readinessHighConfidenceTurns = 2
+	readinessTaskProgressTurns   = 2
 )
 
 func readinessContinuationBudget(class agent.ReadinessContinuationClass) int {
@@ -24,6 +25,8 @@ func readinessContinuationBudget(class agent.ReadinessContinuationClass) int {
 		return readinessGenericTurns
 	case agent.ReadinessContinuationHighConfidence:
 		return readinessHighConfidenceTurns
+	case agent.ReadinessContinuationTaskProgress:
+		return readinessTaskProgressTurns
 	default:
 		return 0
 	}
@@ -124,7 +127,11 @@ func (o *turnOrchestrator) continueUntilReady(ctx context.Context, turnErr error
 		if automaticTurns > 0 && !readinessMadeProgress(previousProgress, readinessErr.ProgressKey) {
 			return finalReadinessWithAttempts(turnErr, initialAttempts+automaticTurns)
 		}
-		prompt := readinessContinuationPrompt(o.c.goalTodos(), readinessErr.Missing, readinessErr.Reason)
+		todos := o.c.goalTodos()
+		if readinessErr.ContinuationClass == agent.ReadinessContinuationTaskProgress && o.c.executor != nil {
+			todos = o.c.executor.CurrentTaskTodoState()
+		}
+		prompt := readinessContinuationPrompt(todos, readinessErr.Missing, readinessErr.Reason)
 		if prompt == "" {
 			return finalReadinessWithAttempts(turnErr, initialAttempts+automaticTurns)
 		}
@@ -162,12 +169,16 @@ func (o *turnOrchestrator) continueUntilReady(ctx context.Context, turnErr error
 // unchanged.
 func readinessContinuationPrompt(todos []evidence.TodoItem, missing []string, reason string) string {
 	var parts []string
+	if slices.Contains(missing, "mutation") {
+		parts = append(parts, "no successful state change has been observed for the requested modification; continue implementing it. If the requested state is already satisfied, verify that with tools and state the host-observed basis")
+	}
 	if incomplete := evidence.IncompleteTodos(todos); slices.Contains(missing, "todo") && len(incomplete) > 0 {
 		var b strings.Builder
 		b.WriteString("these tasks are still incomplete:")
 		for _, todo := range incomplete {
 			fmt.Fprintf(&b, "\n  - %s (%s)", todo.Content, todo.Status)
 		}
+		b.WriteString("\n  Reconcile work already completed with todo_write; otherwise continue the remaining items.")
 		parts = append(parts, b.String())
 	}
 	if reason = strings.TrimSpace(reason); reason != "" {

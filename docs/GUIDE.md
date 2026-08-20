@@ -1403,6 +1403,17 @@ Reasonix uses **fact-driven execution**. Ordinary requests always enter the
 executor. There is no automatic task mode. The one session role is the quality floor: standard (default) or delivery; facts can still raise it. Planner,
 Goal, permission, sandbox, and the task contract are independent states.
 
+For an explicit write request, Standard gives the executor up to two bounded
+follow-up turns when no successful mutation has been observed or when a
+`todo_write` created during the current task still has unfinished items after a
+mutation. The second follow-up requires new host-observed progress; repeating
+the same read, command, result, or prose does not qualify. Historical canonical
+todos remain visible but do not block a new ordinary task. Standard still treats
+verification, review, and sign-off gaps as completion attention rather than
+Delivery-strength automatic closure. If the bounded follow-ups are exhausted,
+Reasonix pauses with a recoverable "Task is not complete" result and preserves
+the current evidence for `/continue-checks`.
+
 Every task shares the same provider-visible core tool surface: direct
 read/bash/edit/write, background-shell lifecycle tools, `ask`/`compress` when
 registered, and the stable `use_capability` proxy for optional tools (search,
