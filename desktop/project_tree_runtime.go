@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"log/slog"
+	"maps"
 	"sort"
 	"strings"
 	"sync"
@@ -43,9 +44,7 @@ func (s *projectTreeRuntimeState) activityAtSnapshot() map[string]time.Time {
 	s.activityMu.Lock()
 	defer s.activityMu.Unlock()
 	out := make(map[string]time.Time, len(s.activityAt))
-	for id, at := range s.activityAt {
-		out[id] = at
-	}
+	maps.Copy(out, s.activityAt)
 	return out
 }
 
