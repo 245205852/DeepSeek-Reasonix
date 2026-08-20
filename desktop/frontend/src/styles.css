@@ -7113,6 +7113,17 @@ body > .mermaid-diagram--fullscreen {
   display: block;
   width: 6px;
 }
+.composer-card--auto-overflow .composer__input {
+  /* Autosize mode keeps the scrollbar hidden while content fits; once the
+     inline overflow-y flips to auto (content exceeds the max height) restore
+     the thin scrollbar so long drafts expose their scrollability
+     (#8494/#8742/#9019). */
+  scrollbar-width: thin;
+}
+.composer-card--auto-overflow .composer__input::-webkit-scrollbar {
+  display: block;
+  width: 6px;
+}
 .composer__input::placeholder {
   color: var(--fg-faint);
 }
@@ -31779,7 +31790,7 @@ body > .mermaid-diagram--fullscreen {
   flex: 1 1 auto !important;
   line-height: 1.25 !important;
   min-height: 20px !important;
-  max-height: 96px !important;
+  max-height: min(30vh, 160px) !important;
   padding: 4px 0 !important;
   overflow-y: auto !important;
   resize: none !important;
