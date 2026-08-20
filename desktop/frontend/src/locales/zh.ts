@@ -1289,6 +1289,7 @@ export const zh: Record<DictKey, string> = {
   "projectTree.removeFromGroup": "移出分组",
   "projectTree.pinTopic": "置顶对话",
   "projectTree.unpinTopic": "取消置顶",
+  "projectTree.recoveryCopies": "恢复副本 ×{count}",
   "projectTree.archiveTopic": "归档到回收站",
   "projectTree.archiveConversation": "归档对话",
   "projectTree.renameProject": "修改显示名称",

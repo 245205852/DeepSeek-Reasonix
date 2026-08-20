@@ -339,8 +339,8 @@ func (a *App) projectNodeFromCatalogTopic(topic sessioncatalog.TopicRecord, topi
 		CreatedAt: topic.CreatedAt, LastActivityAt: topic.LastActivityAt,
 		Pinned: topic.Pinned, SortOrder: topic.SortOrder,
 		Open: overlay.open, Running: overlay.running, Status: overlay.status,
-		// Ordinary tree is zero-config: never surface recovery counts, badges,
-		// or forced-handling status. History "other saved versions" owns that.
+		// Ordinary tree stays zero-config except one muted count of the recovery
+		// copies folded behind this row, so a converged lineage is visible (#8525).
 		Children: []ProjectNode{},
 	}
 	// Fall back to topic-local preference when the workspace map is unavailable
@@ -368,6 +368,9 @@ func (a *App) projectNodeFromCatalogTopic(topic sessioncatalog.TopicRecord, topi
 		// preferred conflict forks. Open/running recovery is still not a
 		// second row — status is already aggregated above.
 		if !sessioncatalog.OrdinaryTreeSession(session, false, false, localPreferred) {
+			if session.Recovered || session.RecoveryCopy {
+				node.RecoveryCopyCount++
+			}
 			continue
 		}
 		visible = append(visible, session)

@@ -123,6 +123,35 @@ func TestProjectNodeFromCatalogTopicCollapsesDivergedForksToOne(t *testing.T) {
 	if len(node.Children) != 0 {
 		t.Fatalf("children = %d, want collapsed parent-only row, children=%+v", len(node.Children), node.Children)
 	}
+	if node.RecoveryCopyCount != 2 {
+		t.Fatalf("recoveryCopyCount = %d, want 2 folded diverged forks", node.RecoveryCopyCount)
+	}
+}
+
+func TestProjectNodeFromCatalogTopicCountsFoldedCoveredCopies(t *testing.T) {
+	app := &App{tabs: map[string]*WorkspaceTab{}, detachedSessions: map[string]*WorkspaceTab{}}
+	topic := sessioncatalog.TopicRecord{
+		Scope: "global", TopicID: "t1", Title: "Topic", Turns: 3,
+		TurnsState: sessioncatalog.TurnsValid, Health: sessioncatalog.HealthOK,
+		LastActivityAt: 100, Sessions: []sessioncatalog.SessionRecord{
+			{Path: "/s/parent.jsonl", Turns: 3, TurnsState: sessioncatalog.TurnsValid, Health: sessioncatalog.HealthOK, LastActivityAt: 90},
+			{Path: "/s/copy-a.jsonl", Turns: 3, TurnsState: sessioncatalog.TurnsValid, Health: sessioncatalog.HealthOK,
+				Recovered: true, RecoveryCopy: true, LastActivityAt: 100},
+			{Path: "/s/copy-b.jsonl", Turns: 3, TurnsState: sessioncatalog.TurnsValid, Health: sessioncatalog.HealthOK,
+				Recovered: true, RecoveryCopy: true, LastActivityAt: 95},
+		},
+	}
+	node, ok := app.projectNodeFromCatalogTopic(topic, map[string]catalogRuntimeOverlay{}, map[string]catalogRuntimeOverlay{}, nil)
+	if !ok {
+		t.Fatal("topic with parent should stay visible")
+	}
+	if node.RecoveryCopyCount != 2 {
+		t.Fatalf("recoveryCopyCount = %d, want 2 folded covered copies", node.RecoveryCopyCount)
+	}
+	// The visible parent itself is never counted as a copy.
+	if node.SessionPath != "" && node.RecoveryCopyCount > 2 {
+		t.Fatalf("count inflated beyond folded copies: %+v", node)
+	}
 }
 
 func TestProjectNodeFromCatalogTopicHidesOrphanForkTopicsWhenPreferredElsewhere(t *testing.T) {

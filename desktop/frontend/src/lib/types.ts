@@ -524,6 +524,7 @@ export interface ProjectNode {
   recoveryBranchCount?: number;
   recoveryUnresolvedCount?: number;
   recoveryCleanupEligibleCount?: number;
+  recoveryCopyCount?: number; // folded recovery copies behind this row (badge only)
   isolatedWorktree?: boolean;
   runtimeOnly?: boolean;
   children?: ProjectNode[];

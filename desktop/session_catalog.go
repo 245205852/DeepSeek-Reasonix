@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/sync/errgroup"
+
 	"reasonix/internal/agent"
 	"reasonix/internal/config"
 	"reasonix/internal/history"
@@ -220,19 +222,20 @@ func (a *App) startSessionCatalog(rebuild bool) {
 			return
 		}
 		a.indexRestoredSessionPaths(ctx, catalog)
+		// Bounded-concurrency reconcile (limit 4): directory scans are
+		// independent and internally batched/resumable (#8530).
+		var reconcileGroup errgroup.Group
+		reconcileGroup.SetLimit(4)
 		for _, target := range targets {
 			if ctx.Err() != nil || a.shuttingDown.Load() {
 				return
 			}
-			// Legacy assignment is deliberately background-only. It can scan and
-			// repair old metadata, but no project-tree or controller request waits.
-			if migrated := migrateLegacySessionsIntoGlobalTopics(target.Path); len(migrated) > 0 {
-				_ = a.syncSessionCatalogMetadataBounded(ctx, catalog)
-			}
-			if err := catalog.ReconcileDirectory(ctx, target); err != nil && !errors.Is(err, context.Canceled) {
-				slog.Debug("desktop: reconcile session catalog directory", "dir", target.Path, "err", err)
-			}
+			reconcileGroup.Go(func() error {
+				a.reconcileSessionCatalogTarget(ctx, catalog, target)
+				return nil
+			})
 		}
+		_ = reconcileGroup.Wait()
 		a.retargetOpenTabsToContinuations()
 		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()
@@ -247,12 +250,31 @@ func (a *App) startSessionCatalog(rebuild bool) {
 						_ = a.syncSessionCatalogMetadataBounded(ctx, catalog)
 					}
 					catalog.RequestReconcile(target)
+					// Count sweep rides the periodic reconcile tick; it only moves
+					// provably redundant copies into the recoverable trash.
+					a.sweepExcessRecoveryCopies(catalog, target)
 				}
 			case <-ctx.Done():
 				return
 			}
 		}
 	}()
+}
+
+// reconcileSessionCatalogTarget runs one startup reconcile worker: legacy
+// migration, then the resumable catalog scan.
+func (a *App) reconcileSessionCatalogTarget(ctx context.Context, catalog *sessioncatalog.Catalog, target sessioncatalog.DirectoryTarget) {
+	if ctx.Err() != nil || a.shuttingDown.Load() {
+		return
+	}
+	// Legacy assignment is deliberately background-only. It can scan and
+	// repair old metadata, but no project-tree or controller request waits.
+	if migrated := migrateLegacySessionsIntoGlobalTopics(target.Path); len(migrated) > 0 {
+		_ = a.syncSessionCatalogMetadataBounded(ctx, catalog)
+	}
+	if err := catalog.ReconcileDirectory(ctx, target); err != nil && !errors.Is(err, context.Canceled) {
+		slog.Debug("desktop: reconcile session catalog directory", "dir", target.Path, "err", err)
+	}
 }
 
 func (a *App) stopSessionCatalog(timeout time.Duration) {
@@ -569,6 +591,9 @@ func (a *App) runSessionCatalogReconcile(key string, done chan struct{}) {
 		if err := catalog.ReconcileDirectory(a.bootContext(), target); err != nil && !errors.Is(err, context.Canceled) {
 			slog.Debug("desktop: reconcile session catalog", "path", target.Path, "err", err)
 		}
+		// The count sweep rides the reconcile worker; every move re-proves
+		// coverage from disk, so a stale projection after a failed scan is safe.
+		a.sweepExcessRecoveryCopies(catalog, target)
 
 		a.catalogReconcileMu.Lock()
 		job = a.catalogReconcileJobs[key]

@@ -5796,8 +5796,7 @@ button.reasoning-summary:focus-visible {
 }
 
 .mermaid-diagram__preview:active,
-.mermaid-diagram__preview svg:active,
-.mermaid-diagram__preview .svg-pan-zoom_viewport:active {
+.mermaid-diagram__preview svg:active {
   cursor: grabbing;
 }
 
@@ -5807,6 +5806,7 @@ button.reasoning-summary:focus-visible {
   height: 100%;
   max-width: none;
   cursor: grab;
+  touch-action: none;
 }
 
 .mermaid-diagram__preview a {
@@ -7110,6 +7110,17 @@ body > .mermaid-diagram--fullscreen {
   scrollbar-width: thin;           /* restore scrollbar when resized */
 }
 .composer-card--resized .composer__input::-webkit-scrollbar {
+  display: block;
+  width: 6px;
+}
+.composer-card--auto-overflow .composer__input {
+  /* Autosize mode keeps the scrollbar hidden while content fits; once the
+     inline overflow-y flips to auto (content exceeds the max height) restore
+     the thin scrollbar so long drafts expose their scrollability
+     (#8494/#8742/#9019). */
+  scrollbar-width: thin;
+}
+.composer-card--auto-overflow .composer__input::-webkit-scrollbar {
   display: block;
   width: 6px;
 }
@@ -24341,6 +24352,28 @@ body > .mermaid-diagram--fullscreen {
   user-select: none;
 }
 
+.project-tree__skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 6px;
+  padding-bottom: 6px;
+}
+
+.project-tree__skeleton-bar {
+  display: block;
+  height: 12px;
+  width: 72%;
+  border-radius: 4px;
+  background: var(--fg-faint);
+  opacity: 0.16;
+  animation: pulse 1.2s ease-in-out infinite;
+}
+
+.project-tree__skeleton-bar--short {
+  width: 48%;
+}
+
 .project-tree__header-actions .project-tree__add-project:focus-visible,
 .project-tree__header-actions .project-tree__collapse-all:focus-visible,
 .project-tree__header-actions .project-tree__header-action-btn:focus-visible {
@@ -24695,6 +24728,22 @@ body > .mermaid-diagram--fullscreen {
   border-radius: 5px;
   background: color-mix(in srgb, var(--project-accent, var(--accent)) 11%, transparent);
   color: color-mix(in srgb, var(--project-accent, var(--accent)) 72%, var(--fg-dim));
+  font-size: 10.5px;
+  font-weight: 620;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.project-tree__topic-recovery-copies {
+  flex: 0 0 auto;
+  height: 17px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 5px;
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--fg-faint) 10%, transparent);
+  color: var(--fg-faint);
   font-size: 10.5px;
   font-weight: 620;
   line-height: 1;
@@ -31746,7 +31795,7 @@ body > .mermaid-diagram--fullscreen {
   flex: 1 1 auto !important;
   line-height: 1.25 !important;
   min-height: 20px !important;
-  max-height: 96px !important;
+  max-height: min(30vh, 160px) !important;
   padding: 4px 0 !important;
   overflow-y: auto !important;
   resize: none !important;

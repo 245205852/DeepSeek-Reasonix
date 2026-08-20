@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	SchemaVersion = 7
+	SchemaVersion = 8
 	DefaultLimit  = 50
 	MaxLimit      = 200
 )
