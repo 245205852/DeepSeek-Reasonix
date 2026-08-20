@@ -23,6 +23,7 @@ const OWNED_ELSEWHERE = new Map(Object.entries({
   "terminal-theme.test.ts": "test:terminal",
   "task-monitor-navigation.test.ts": "test:task-monitor",
   "workspace-refresh-store.test.ts": "test:workspace",
+  "workspace-selection-isolation.test.tsx": "test:workspace",
   "workspace-changes-errors.test.tsx": "test:workspace",
   "workspace-preview-css.test.ts": "test:workspace",
   "workspace-context-menu.test.tsx": "test:workspace",

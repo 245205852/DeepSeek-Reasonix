@@ -11,7 +11,6 @@ import {
   ChevronDown,
   ChevronRight,
   FileText,
-  Folder,
   FolderTree,
   FolderX,
   GitBranch,
@@ -82,8 +81,9 @@ import { Markdown } from "./Markdown";
 import { Tooltip } from "./Tooltip";
 import { AnchoredPopover } from "./AnchoredPopover";
 import { MarkdownImageTabContext } from "./MarkdownImageContext";
-import { WorkspaceFileIcon } from "./WorkspaceFileIcon";
 import { WorkspaceMediaPreview } from "./WorkspaceMediaPreview";
+import { buildWorkspacePathBreadcrumbs, WorkspacePathBreadcrumbs } from "./WorkspacePathBreadcrumbs";
+import { WorkspaceTreeRow, type WorkspaceTreeRowData } from "./WorkspaceTreeRow";
 import { WorkspaceTreeMenu } from "./WorkspaceTreeMenu";
 import { WORKSPACE_TURN_VERIFICATION_ID, WorkspaceTurnVerification } from "./WorkspaceTurnVerification";
 import { useWorkspaceChangesResource } from "../lib/useWorkspaceChangesResource";
@@ -118,18 +118,6 @@ function clampWorkspaceTreeWidth(width: number, panelWidth?: number): number {
     treeMinWidth: WORKSPACE_TREE_MIN_WIDTH,
     previewMinWidth: WORKSPACE_PREVIEW_MIN_WIDTH,
   });
-}
-
-interface TreeRow {
-  key: string;
-  path: string;
-  depth: number;
-  entry: DirEntry;
-  active: boolean;
-  isOpen?: boolean;
-  isSearch?: boolean;
-  compactPaths?: string[];
-  displayName?: string;
 }
 
 export function WorkspacePanel({
@@ -1016,24 +1004,7 @@ export function WorkspacePanel({
     ? (cwd ? [{ label: basename(cwd), full: cwd }] : [])
     : [];
   const previewFullPath = activeSelectedPath || "";
-  // Breadcrumb segments plus each segment's full absolute path for hover:
-  // segment 0 is the project name (compact), segments 1..n are the file's
-  // directory chain. Hovering any segment shows the system absolute path.
-  const previewCrumbs = previewFullPath ? (() => {
-    const root = basename(cwd ?? "");
-    const dirParts = parentPath(previewFullPath).split("/").filter(Boolean);
-    const dirLabels: { label: string; full: string }[] = [];
-    let acc = "";
-    for (const part of dirParts) {
-      acc += (acc ? "/" : "") + part;
-      dirLabels.push({ label: part, full: `${cwd ?? ""}/${acc}` });
-    }
-    const crumbs = [{ label: root, full: cwd ?? "" }];
-    // Skip duplicate leading segment (root name repeats when the file sits
-    // directly under the project).
-    if (dirParts.length > 0 && dirParts[0] !== root) crumbs.push(...dirLabels);
-    return crumbs;
-  })() : [];
+  const previewCrumbs = buildWorkspacePathBreadcrumbs(cwd, previewFullPath);
   const recentFiles = useMemo(() => [...recentPaths].reverse(), [recentPaths]);
 
   const workspaceSearchFallbackSequence = workspaceRefreshFallbackSequence(workspaceRefresh);
@@ -1073,7 +1044,7 @@ export function WorkspacePanel({
       .sort((a, b) => a.path.localeCompare(b.path));
   }, [entriesByDir, filter, scopedFilePaths, searchResults]);
 
-  const treeRows = useMemo<TreeRow[]>(() => {
+  const treeRows = useMemo<WorkspaceTreeRowData[]>(() => {
     if (flattened) {
       return flattened.map(({ path, entry }) => ({
         key: path,
@@ -1084,7 +1055,7 @@ export function WorkspacePanel({
         isSearch: true,
       }));
     }
-    const acc: TreeRow[] = [];
+    const acc: WorkspaceTreeRowData[] = [];
     const build = (dir: string, depth: number) => {
       const entries = entriesByDir[dir] ?? [];
       for (const entry of entries) {
@@ -1185,7 +1156,7 @@ export function WorkspacePanel({
   const virtualTreeItems = virtualizer.getVirtualItems();
   const compactProbePaths = virtualTreeItems
     .map((item) => treeRows[item.index])
-    .filter((row): row is TreeRow => Boolean(row?.entry.isDir && entriesByDir[row.path] === undefined))
+    .filter((row): row is WorkspaceTreeRowData => Boolean(row?.entry.isDir && entriesByDir[row.path] === undefined))
     .map((row) => row.path);
   const compactProbeKey = compactProbePaths.join("\u0000");
 
@@ -1493,96 +1464,14 @@ export function WorkspacePanel({
     }
   };
 
-  const renderNormalRow = (row: TreeRow) => {
-    const { path, depth, entry, isOpen, active, compactPaths = [path], displayName = entry.name } = row;
-    return (
-      <button
-        key={path}
-        className={`workspace-tree__row${active ? " workspace-tree__row--active" : ""}`}
-        data-workspace-path={path}
-        draggable
-        onDragStart={(event) => startTreeDrag(event, path, entry.isDir)}
-        onClick={() => {
-          if (entry.isDir) {
-            toggleDir(path, compactPaths);
-          } else {
-            if (selectedPath === path) {
-              setSelectedFilePath(null);
-            } else {
-              selectFile(path);
-            }
-          }
-        }}
-        onContextMenu={(event) => openTreeMenu(event, path, entry.isDir)}
-        style={{ paddingLeft: 8 + depth * 14 }}
-      >
-        {depth > 0 && (
-          <span className="workspace-tree__guides" aria-hidden="true">
-            {Array.from({ length: depth }, (_, index) => (
-              <span
-                className="workspace-tree__guide"
-                key={index}
-                style={{ left: 14 + index * 14 }}
-              />
-            ))}
-          </span>
-        )}
-        {entry.isDir ? (
-          <ChevronRight
-            size={13}
-            className={`workspace-tree__chev ${isOpen ? "workspace-tree__chev--open" : ""}`}
-            style={{
-              transition: "transform 0.15s ease",
-              transform: isOpen ? "rotate(90deg)" : "rotate(0deg)",
-            }}
-          />
-        ) : (
-          <span className="workspace-tree__chev" />
-        )}
-        {entry.isDir ? (
-          <Folder size={14} className="workspace-tree__icon workspace-tree__icon--dir" />
-        ) : (
-          <WorkspaceFileIcon fileName={entry.name} />
-        )}
-        <span className="workspace-tree__name">{displayName}</span>
-      </button>
-    );
-  };
-
-  const renderSearchRow = (row: TreeRow) => {
-    const { path, entry, active } = row;
-    const dir = parentPath(path);
-    return (
-      <button
-        key={path}
-        className={`workspace-tree__row workspace-tree__row--search${active ? " workspace-tree__row--active" : ""}`}
-        data-workspace-path={path}
-        draggable
-        onDragStart={(event) => startTreeDrag(event, path, entry.isDir)}
-        onClick={() => {
-          if (entry.isDir) {
-            toggleDir(path);
-          } else {
-            if (selectedPath === path) {
-              setSelectedFilePath(null);
-            } else {
-              selectFile(path);
-            }
-          }
-        }}
-        onContextMenu={(event) => openTreeMenu(event, path, entry.isDir)}
-      >
-        {entry.isDir ? (
-          <Folder size={14} className="workspace-tree__icon workspace-tree__icon--dir" />
-        ) : (
-          <WorkspaceFileIcon fileName={entry.name} />
-        )}
-        <span className="workspace-tree__result">
-          <span className="workspace-tree__result-name">{basename(path)}</span>
-          {dir && <span className="workspace-tree__result-dir">{dir}</span>}
-        </span>
-      </button>
-    );
+  const activateTreeRow = (row: WorkspaceTreeRowData) => {
+    if (row.entry.isDir) {
+      toggleDir(row.path, row.compactPaths ?? [row.path]);
+    } else if (selectedPath === row.path) {
+      setSelectedFilePath(null);
+    } else {
+      selectFile(row.path);
+    }
   };
 
   const isMarkdown = selectedPath?.toLowerCase().endsWith(".md") ?? false;
@@ -1654,30 +1543,8 @@ export function WorkspacePanel({
               <Tooltip label={selectedPath ?? undefined}>
                 <span className="workspace-current-file__name">{previewTitle}</span>
               </Tooltip>
-              {previewSubtitleCrumbs.length > 0 && (
-                <span className="workspace-current-file__path">
-                  {previewSubtitleCrumbs.map((crumb, index) => (
-                    <span key={index} className="workspace-current-file__crumb">
-                      {index > 0 && <span className="workspace-current-file__crumb-sep" aria-hidden="true">›</span>}
-                      <Tooltip label={crumb.full}>
-                        <span>{crumb.label}</span>
-                      </Tooltip>
-                    </span>
-                  ))}
-                </span>
-              )}
-              {previewCrumbs.length > 0 && (
-                <span className="workspace-current-file__path">
-                  {previewCrumbs.map((crumb, index) => (
-                    <span key={index} className="workspace-current-file__crumb">
-                      {index > 0 && <span className="workspace-current-file__crumb-sep" aria-hidden="true">›</span>}
-                      <Tooltip label={crumb.full}>
-                        <span>{crumb.label}</span>
-                      </Tooltip>
-                    </span>
-                  ))}
-                </span>
-              )}
+              <WorkspacePathBreadcrumbs crumbs={previewSubtitleCrumbs} />
+              <WorkspacePathBreadcrumbs crumbs={previewCrumbs} />
             </div>
             <Tooltip label={t("workspace.recentFiles")}>
               <button
@@ -2291,7 +2158,12 @@ export function WorkspacePanel({
                       width: "100%",
                     }}
                   >
-                    {item.isSearch ? renderSearchRow(item) : renderNormalRow(item)}
+                    <WorkspaceTreeRow
+                      row={item}
+                      onActivate={activateTreeRow}
+                      onDragStart={startTreeDrag}
+                      onContextMenu={openTreeMenu}
+                    />
                   </div>
                 );
               })}
