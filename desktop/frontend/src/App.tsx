@@ -3178,8 +3178,12 @@ export default function App() {
   const tabSwitchSeqRef = useRef(0);
   const tabSwitchRunningRef = useRef(false);
   const tabSwitchPendingRef = useRef<PendingNavigationRequest<{ tabId: string; optimisticTab?: TabMeta; navigationIntentSeq: number }> | null>(null);
+  const enterChatViewForTabNavigation = useCallback(() => {
+    setMainView("chat");
+  }, [setMainView]);
   const enqueueTabSwitch = useCallback(
     (tabId: string, optimisticTab?: TabMeta): Promise<void> => {
+      enterChatViewForTabNavigation();
       // Claim the shared navigation epoch at click time, before this request
       // can wait behind an older tab switch. That immediately invalidates any
       // in-flight blank/topic completion from a previous user intent.
@@ -3203,10 +3207,11 @@ export default function App() {
         },
       );
     },
-    [beginNavigationSurface, isNavigationIntentCurrent, noteNavigationIntent, refreshTabMetas, settleNavigationSurface, switchTab],
+    [beginNavigationSurface, enterChatViewForTabNavigation, isNavigationIntentCurrent, noteNavigationIntent, refreshTabMetas, settleNavigationSurface, switchTab],
   );
 
   const revealBackgroundRuntime = useCallback(async (tabId: string): Promise<void> => {
+    enterChatViewForTabNavigation();
     const navigationIntentSeq = noteNavigationIntent();
     beginNavigationSurface(navigationIntentSeq);
     try {
@@ -3229,7 +3234,7 @@ export default function App() {
     } finally {
       settleNavigationSurface(navigationIntentSeq);
     }
-  }, [beginNavigationSurface, isNavigationIntentCurrent, noteNavigationIntent, reassertVisibleTabAfterStaleNavigation, refreshTabMetas, settleNavigationSurface, showToast, switchTab]);
+  }, [beginNavigationSurface, enterChatViewForTabNavigation, isNavigationIntentCurrent, noteNavigationIntent, reassertVisibleTabAfterStaleNavigation, refreshTabMetas, settleNavigationSurface, showToast, switchTab]);
 
   const handleTabChange = useCallback((id: string) => {
     closeTransientOverlays();
@@ -3296,6 +3301,7 @@ export default function App() {
 
   const revealWorkspaceWriter = useCallback(async () => {
     if (!activeTabId) return;
+    enterChatViewForTabNavigation();
     const navigationIntentSeq = noteNavigationIntent();
     beginNavigationSurface(navigationIntentSeq);
     try {
@@ -3319,7 +3325,7 @@ export default function App() {
     } finally {
       settleNavigationSurface(navigationIntentSeq);
     }
-  }, [activeTabId, beginNavigationSurface, isNavigationIntentCurrent, noteNavigationIntent, reassertVisibleTabAfterStaleNavigation, refreshTabMetas, settleNavigationSurface, showToast, switchTab]);
+  }, [activeTabId, beginNavigationSurface, enterChatViewForTabNavigation, isNavigationIntentCurrent, noteNavigationIntent, reassertVisibleTabAfterStaleNavigation, refreshTabMetas, settleNavigationSurface, showToast, switchTab]);
 
   const continueInDeliveryWorktree = useCallback(async () => {
     const root = state.meta?.workspaceRoot || state.meta?.workspacePath || state.meta?.cwd;

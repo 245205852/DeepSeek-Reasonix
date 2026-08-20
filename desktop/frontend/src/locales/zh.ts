@@ -938,6 +938,8 @@ export const zh: Record<DictKey, string> = {
   "heartbeat.optional": "可选",
   "heartbeat.disable": "禁用",
   "heartbeat.save": "保存",
+  "heartbeat.saveFailed": "自动化配置已在其他位置更改，本次保存失败。草稿仍已保留，请确认后重试。",
+  "heartbeat.frequencyConversionFailed": "该调度无法在不改变运行时间的前提下转换。",
   "heartbeat.add": "添加",
   "heartbeat.neverRun": "从未执行",
   "heartbeat.untitled": "（无标题）",

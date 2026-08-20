@@ -21,7 +21,7 @@ export function heartbeatListTasks(): Promise<HeartbeatTask[]> {
   });
 }
 
-export async function heartbeatSaveTasks(tasks: HeartbeatTask[]): Promise<void> {
+export async function heartbeatSaveTasks(tasks: HeartbeatTask[]): Promise<HeartbeatTask[]> {
   if (!loadedConfigToken) await heartbeatListTasks();
   const view = await app.HeartbeatSaveConfig({
     revision: loadedConfigToken?.revision || 0,
@@ -30,6 +30,7 @@ export async function heartbeatSaveTasks(tasks: HeartbeatTask[]): Promise<void> 
   });
   const saved = (view ?? { revision: 0, etag: "" }) as HeartbeatConfigView;
   loadedConfigToken = { revision: saved.revision || 0, etag: saved.etag || "" };
+  return Array.isArray(saved.tasks) ? saved.tasks : tasks;
 }
 
 export function heartbeatTriggerNow(id: string): Promise<void> {

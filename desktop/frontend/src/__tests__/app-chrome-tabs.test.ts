@@ -566,6 +566,14 @@ ok(
 );
 
 ok(
+  /const enterChatViewForTabNavigation = useCallback\(\(\) => \{\s*setMainView\("chat"\);/.test(appSource) &&
+    /const enqueueTabSwitch = useCallback\([\s\S]*?enterChatViewForTabNavigation\(\);[\s\S]*?enqueueNavigationRequest/.test(appSource) &&
+    /const revealBackgroundRuntime = useCallback[\s\S]*?enterChatViewForTabNavigation\(\);[\s\S]*?RevealBackgroundRuntime/.test(appSource) &&
+    /const revealWorkspaceWriter = useCallback[\s\S]*?enterChatViewForTabNavigation\(\);[\s\S]*?RevealWorkspaceWriterForTab/.test(appSource),
+  "every direct tab activation returns overlay pages to the chat view",
+);
+
+ok(
   !/await resumeSession\(session\.path, targetTab\.id\);/.test(navigationBlock),
   "history navigation does not re-resume a session that OpenTopicSession already pinned",
 );

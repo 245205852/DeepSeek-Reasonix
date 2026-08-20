@@ -707,6 +707,8 @@ export const zhTW: Record<DictKey, string> = {
   "heartbeat.optional": "可選",
   "heartbeat.disable": "停用",
   "heartbeat.save": "保存",
+  "heartbeat.saveFailed": "自動化設定已在其他位置變更，本次儲存失敗。草稿仍已保留，請確認後重試。",
+  "heartbeat.frequencyConversionFailed": "該排程無法在不改變執行時間的前提下轉換。",
   "heartbeat.add": "添加",
   "heartbeat.neverRun": "從未執行",
   "heartbeat.untitled": "（無標題）",

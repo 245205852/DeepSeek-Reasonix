@@ -1454,6 +1454,20 @@
   padding-top: 6px;
 }
 
+.heartbeat-editor__inline-error,
+.heartbeat-editor__save-error {
+  color: var(--danger);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.heartbeat-editor__save-notice {
+  padding: 9px 16px;
+  border-top: 1px solid var(--border);
+  background: color-mix(in srgb, var(--danger) 7%, transparent);
+  flex-shrink: 0;
+}
+
 /* 保存/取消操作条（仅脏状态显示） */
 .heartbeat-editor__actions {
   display: flex;

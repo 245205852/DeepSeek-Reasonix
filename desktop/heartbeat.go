@@ -210,9 +210,6 @@ func (e *HeartbeatEngine) readRunHistorySidecar() map[string][]HeartbeatRun {
 // The engine owns run state; a frontend full-table save of heartbeat-tasks.json
 // must never be able to clear it.
 func (e *HeartbeatEngine) writeRunHistorySidecar(runs map[string][]HeartbeatRun) error {
-	if len(runs) == 0 {
-		return nil
-	}
 	b, err := json.MarshalIndent(struct {
 		Runs map[string][]HeartbeatRun `json:"runs"`
 	}{Runs: runs}, "", "  ")
@@ -357,10 +354,31 @@ func (e *HeartbeatEngine) writeTasks(tasks []HeartbeatTask, expected heartbeatCo
 	if err != nil {
 		return err
 	}
-	if err := fileutil.AtomicWriteFile(path, b, 0o644); err != nil {
+	// Publish the sidecar before the main config, which acts as the commit
+	// marker for this two-file update. This avoids returning an error after the
+	// config revision has already advanced. If the config write fails, restore
+	// the exact previous sidecar while the config lock is still held.
+	previousSidecar, sidecarReadErr := os.ReadFile(e.runHistoryPath())
+	previousSidecarExists := sidecarReadErr == nil
+	if sidecarReadErr != nil && !os.IsNotExist(sidecarReadErr) {
+		return sidecarReadErr
+	}
+	if err := e.writeRunHistorySidecar(sidecar); err != nil {
 		return err
 	}
-	return e.writeRunHistorySidecar(sidecar)
+	if err := fileutil.AtomicWriteFile(path, b, 0o644); err != nil {
+		var rollbackErr error
+		if previousSidecarExists {
+			rollbackErr = fileutil.AtomicWriteFile(e.runHistoryPath(), previousSidecar, 0o644)
+		} else if removeErr := os.Remove(e.runHistoryPath()); removeErr != nil && !os.IsNotExist(removeErr) {
+			rollbackErr = removeErr
+		}
+		if rollbackErr != nil {
+			return fmt.Errorf("write heartbeat config: %w (restore run-history sidecar: %v)", err, rollbackErr)
+		}
+		return err
+	}
+	return nil
 }
 
 // Start launches the scheduler goroutine.
@@ -891,37 +909,31 @@ func mergeRunHistory(base, extra []HeartbeatRun) []HeartbeatRun {
 	return merged
 }
 
-// mergeHeartbeatDiskRunHistory protects engine-owned run history during a
-// frontend full-list save (ReplaceTasks/ReplaceConfig). The frontend snapshot
-// may predate an execution the engine persisted after the panel loaded; for
-// each task, union the on-disk runHistory into the submitted task so a stale
-// save never clears execution history it simply hadn't seen yet. Runs that
-// originated from this same save are kept; duplicates are deduped by At.
+// mergeHeartbeatDiskRunHistory protects engine-owned execution state during a
+// frontend full-list save. A stale snapshot must not roll back TopicID or
+// LastRunAt, and run history is unioned by timestamp so both snapshots survive.
 func mergeHeartbeatDiskRunHistory(submitted, disk []HeartbeatTask) []HeartbeatTask {
 	if len(disk) == 0 {
 		return submitted
 	}
-	diskByID := make(map[string][]HeartbeatRun, len(disk))
+	diskByID := make(map[string]HeartbeatTask, len(disk))
 	for _, d := range disk {
-		if len(d.RunHistory) > 0 {
-			diskByID[d.ID] = d.RunHistory
-		}
-	}
-	if len(diskByID) == 0 {
-		return submitted
+		diskByID[d.ID] = d
 	}
 	out := make([]HeartbeatTask, len(submitted))
 	copy(out, submitted)
 	for i := range out {
-		diskHistory, ok := diskByID[out[i].ID]
+		diskTask, ok := diskByID[out[i].ID]
 		if !ok {
 			continue
 		}
+		out[i].TopicID = diskTask.TopicID
+		out[i].LastRunAt = diskTask.LastRunAt
 		// 总是按 At 做 union 合并，而不是按长度跳过：
 		// 历史满 maxRunHistory 封顶时，磁盘新 run 会挤掉最旧一条，
 		// 长度不变但内容已更新——按长度比较会误判"前端已是最新"，
 		// 把引擎刚写入的 run 丢弃。
-		out[i].RunHistory = mergeRunHistory(out[i].RunHistory, diskHistory)
+		out[i].RunHistory = mergeRunHistory(out[i].RunHistory, diskTask.RunHistory)
 	}
 	return out
 }
@@ -1000,19 +1012,20 @@ func isCronExpr(s string) bool {
 }
 
 // cronMatchField checks whether a single value matches a cron field pattern.
-func cronMatchField(pattern string, value int) bool {
+func cronMatchField(pattern string, value, minValue, maxValue int) bool {
 	// Handle comma-separated lists
 	for _, part := range strings.Split(pattern, ",") {
 		part = strings.TrimSpace(part)
-		if cronMatchSingle(part, value) {
+		if cronMatchSingle(part, value, minValue, maxValue) {
 			return true
 		}
 	}
 	return false
 }
 
-func cronMatchSingle(pattern string, value int) bool {
-	// Handle step values: */15, 1-10/2
+func cronMatchSingle(pattern string, value, minValue, maxValue int) bool {
+	// Handle step values: */15, 1-10/2, 1/2. Wildcard steps are
+	// anchored at the field minimum, which matters for 1-based fields.
 	if idx := strings.Index(pattern, "/"); idx >= 0 {
 		stepStr := pattern[idx+1:]
 		step, err := strconv.Atoi(stepStr)
@@ -1021,7 +1034,7 @@ func cronMatchSingle(pattern string, value int) bool {
 		}
 		rangePart := pattern[:idx]
 		if rangePart == "*" {
-			return value%step == 0
+			return value >= minValue && value <= maxValue && (value-minValue)%step == 0
 		}
 		// Range with step: 1-10/2
 		if idx2 := strings.Index(rangePart, "-"); idx2 >= 0 {
@@ -1032,7 +1045,11 @@ func cronMatchSingle(pattern string, value int) bool {
 			}
 			return (value-low)%step == 0
 		}
-		return false
+		low, err := strconv.Atoi(rangePart)
+		if err != nil || value < low || value > maxValue {
+			return false
+		}
+		return (value-low)%step == 0
 	}
 	// Handle ranges: 1-5
 	if idx := strings.Index(pattern, "-"); idx >= 0 {
@@ -1057,6 +1074,9 @@ func cronMatchSingle(pattern string, value int) bool {
 
 // cronDue checks whether a 5-field cron expression should fire at the given time.
 func cronDue(expr string, t time.Time) bool {
+	if !isCronExpr(expr) {
+		return false
+	}
 	fields := strings.Fields(expr)
 	if len(fields) != 5 {
 		return false
@@ -1067,11 +1087,11 @@ func cronDue(expr string, t time.Time) bool {
 	// when the 1st happens to be a Monday.
 	domRestricted := fields[2] != "*"
 	dowRestricted := fields[4] != "*"
-	domMatch := cronMatchField(fields[2], t.Day())
+	domMatch := cronMatchField(fields[2], t.Day(), 1, 31)
 	// Standard cron allows 7 as a Sunday alias in the dow field (weekday is
 	// 0-6 in Go); a pattern like "0 9 * * 7" must still fire on Sundays.
 	weekday := int(t.Weekday())
-	dowMatch := cronMatchField(fields[4], weekday) || (weekday == 0 && cronMatchField(fields[4], 7))
+	dowMatch := cronMatchField(fields[4], weekday, 0, 7) || (weekday == 0 && cronMatchField(fields[4], 7, 0, 7))
 	dayMatch := !domRestricted || !dowRestricted
 	if domRestricted && dowRestricted {
 		dayMatch = domMatch || dowMatch
@@ -1080,10 +1100,10 @@ func cronDue(expr string, t time.Time) bool {
 	} else if dowRestricted {
 		dayMatch = dowMatch
 	}
-	return cronMatchField(fields[0], t.Minute()) &&
-		cronMatchField(fields[1], t.Hour()) &&
+	return cronMatchField(fields[0], t.Minute(), 0, 59) &&
+		cronMatchField(fields[1], t.Hour(), 0, 23) &&
 		dayMatch &&
-		cronMatchField(fields[3], int(t.Month()))
+		cronMatchField(fields[3], int(t.Month()), 1, 12)
 }
 
 func heartbeatTaskDueAt(t HeartbeatTask, now time.Time) bool {
@@ -1395,10 +1415,15 @@ func weekStart(t time.Time) time.Time {
 }
 
 func weeksBetween(a, b time.Time) int {
-	if b.Before(a) {
-		a, b = b, a
+	// Compare civil dates in UTC rather than elapsed local hours. Local Monday
+	// midnights spanning DST can be 167 or 169 hours apart despite being exactly
+	// one calendar week apart.
+	aDay := time.Date(a.Year(), a.Month(), a.Day(), 0, 0, 0, 0, time.UTC)
+	bDay := time.Date(b.Year(), b.Month(), b.Day(), 0, 0, 0, 0, time.UTC)
+	if bDay.Before(aDay) {
+		aDay, bDay = bDay, aDay
 	}
-	return int(b.Sub(a).Hours() / 24 / 7)
+	return int(bDay.Sub(aDay) / (7 * 24 * time.Hour))
 }
 
 // ── Wails bindings on App ───────────────────────────────────────────────────

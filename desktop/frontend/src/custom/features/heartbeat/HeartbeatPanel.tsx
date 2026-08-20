@@ -193,7 +193,7 @@ function isCronExpr(s: string): boolean {
   );
 }
 
-function cronFieldMatch(pattern: string, value: number): boolean {
+function cronFieldMatch(pattern: string, value: number, minValue: number, maxValue: number): boolean {
   for (const part of pattern.split(",")) {
     const p = part.trim();
     let base = p;
@@ -205,7 +205,7 @@ function cronFieldMatch(pattern: string, value: number): boolean {
     }
     if (step <= 0) continue;
     if (base === "*") {
-      if (value % step === 0) return true;
+      if (value >= minValue && value <= maxValue && (value - minValue) % step === 0) return true;
       continue;
     }
     const dashIdx = base.indexOf("-");
@@ -214,6 +214,8 @@ function cronFieldMatch(pattern: string, value: number): boolean {
     if (dashIdx >= 0) {
       low = parseInt(base.slice(0, dashIdx));
       high = parseInt(base.slice(dashIdx + 1));
+    } else if (slashIdx >= 0) {
+      high = maxValue;
     }
     if (isNaN(low) || isNaN(high)) continue;
     if (value < low || value > high) continue;
@@ -226,22 +228,23 @@ function cronFieldMatch(pattern: string, value: number): boolean {
 // expression matches, starting from `from` (default now). Returns null when
 // the expression is invalid or nothing matches within the search horizon.
 function nextCronRunAt(expr: string, from = Date.now()): number | null {
+  if (!isCronExpr(expr)) return null;
   const fields = expr.trim().split(/\s+/);
   if (fields.length !== 5) return null;
   const [minP, hourP, domP, monP, dowP] = fields;
   if (![minP, hourP, domP, monP, dowP].every((f) => /^[0-9*/\-,]+$/.test(f))) return null;
   const base = new Date(from);
   base.setSeconds(0, 0);
-  for (let day = 0; day <= 366; day++) {
+  for (let day = 0; day <= 366 * 8; day++) {
     const d = new Date(base);
     d.setDate(d.getDate() + day);
-    if (!cronFieldMatch(monP, d.getMonth() + 1)) continue;
+    if (!cronFieldMatch(monP, d.getMonth() + 1, 1, 12)) continue;
     // Standard cron: dom & dow are OR-ed when both are restricted.
     const domRestricted = domP !== "*";
     const dowRestricted = dowP !== "*";
-    const domMatch = cronFieldMatch(domP, d.getDate());
+    const domMatch = cronFieldMatch(domP, d.getDate(), 1, 31);
     // 7 is the standard Sunday alias in the dow field (getDay() is 0-6).
-    const dowMatch = cronFieldMatch(dowP, d.getDay()) || (d.getDay() === 0 && cronFieldMatch(dowP, 7));
+    const dowMatch = cronFieldMatch(dowP, d.getDay(), 0, 7) || (d.getDay() === 0 && cronFieldMatch(dowP, 7, 0, 7));
     const dayMatch = domRestricted && dowRestricted ? domMatch || dowMatch
       : domRestricted ? domMatch
       : dowRestricted ? dowMatch
@@ -249,10 +252,10 @@ function nextCronRunAt(expr: string, from = Date.now()): number | null {
     if (!dayMatch) continue;
     const hStart = day === 0 ? d.getHours() : 0;
     for (let h = hStart; h < 24; h++) {
-      if (!cronFieldMatch(hourP, h)) continue;
+      if (!cronFieldMatch(hourP, h, 0, 23)) continue;
       const mStart = day === 0 && h === hStart ? d.getMinutes() + 1 : 0;
       for (let m = mStart; m < 60; m++) {
-        if (!cronFieldMatch(minP, m)) continue;
+        if (!cronFieldMatch(minP, m, 0, 59)) continue;
         return new Date(d.getFullYear(), d.getMonth(), d.getDate(), h, m, 0, 0).getTime();
       }
     }
@@ -348,6 +351,28 @@ export function cronToInterval(cron: string): string | null {
   if (min.startsWith("*/") && hour === "*") return `${min.slice(2)}m`;
   if (min === "0" && hour.startsWith("*/")) return `${hour.slice(2)}h`;
   return null;
+}
+
+export type HeartbeatFrequencyType = "interval" | "daily" | "weekly" | "biweekly" | "monthly" | "yearly" | "cron";
+
+export function changeHeartbeatFrequency(task: HeartbeatTask, frequency: HeartbeatFrequencyType): HeartbeatTask | null {
+  const current = task.interval || "";
+  if (frequency === "daily") return { ...task, interval: "24h|daily:mon,tue,wed,thu,fri,sat,sun@09:00" };
+  if (frequency === "weekly") return { ...task, interval: "168h|weekly:mon@09:00" };
+  if (frequency === "biweekly") return { ...task, interval: "336h|biweekly:mon@09:00" };
+  if (frequency === "monthly") return { ...task, interval: "720h|monthly:1@09:00" };
+  if (frequency === "yearly") return { ...task, interval: "8760h|yearly:1-1@09:00" };
+  if (frequency === "cron") {
+    if (isCronExpr(current)) return task;
+    const converted = intervalToCron(current, task.timeWindowStart, task.timeWindowEnd);
+    return converted === null ? null : { ...task, interval: converted };
+  }
+  if (isCronExpr(current)) {
+    const converted = cronToInterval(current);
+    return converted === null ? null : { ...task, interval: converted };
+  }
+  if (current.includes("|")) return { ...task, interval: current.replace(/\|.*$/, "") };
+  return task;
 }
 
 // describeCron renders a human-readable description of a 5-field cron
@@ -639,18 +664,27 @@ export function HeartbeatView({ onOpenTopic }: HeartbeatPanelProps) {
   }, [tasks, editing?.id, statusFilter, searchQuery, scopeFilter, t]);
 
   const save = useCallback(
-    async (next: HeartbeatTask[]) => {
-      setTasks(next);
+    async (next: HeartbeatTask[]): Promise<HeartbeatTask[] | null> => {
       try {
-        await heartbeatSaveTasks(next);
+        const persisted = await heartbeatSaveTasks(next);
+        setTasks(persisted);
+        return persisted;
       } catch {
         // A concurrent external edit wins; reload the authoritative config so
-        // the panel cannot continue editing a stale task list.
+        // the list cannot continue from a stale baseline. The editor keeps its
+        // local draft and reports the failure instead of pretending it saved.
         await loadTasks();
+        return null;
       }
     },
     [loadTasks],
   );
+
+  const openUnsavedDraft = useCallback((task: HeartbeatTask) => {
+    unsavedDraftIdsRef.current.add(task.id);
+    setEditing(task);
+    setDetailOpen(true);
+  }, []);
 
   const handleAdd = useCallback(async () => {
     let id = `hb-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -659,9 +693,8 @@ export function HeartbeatView({ onOpenTopic }: HeartbeatPanelProps) {
     } catch {
       // 生成失败时使用本地 fallback id，仍可正常打开新建详情
     }
-    unsavedDraftIdsRef.current.add(id);
     // 不设 createdAt：isNew=true，详情显示项目字段、删除按钮禁用
-    setEditing({
+    openUnsavedDraft({
       id,
       title: "",
       prompt: "",
@@ -671,8 +704,7 @@ export function HeartbeatView({ onOpenTopic }: HeartbeatPanelProps) {
       newConversationEachRun: false,
       notifyChannels: false,
     });
-    setDetailOpen(true);
-  }, []);
+  }, [openUnsavedDraft]);
 
   const handleAddToScope = useCallback(async (scopeKey: string) => {
     let id = `hb-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -681,8 +713,7 @@ export function HeartbeatView({ onOpenTopic }: HeartbeatPanelProps) {
     } catch {      // 生成失败时使用本地 fallback id
     }
     const isProject = scopeKey !== "global";
-    unsavedDraftIdsRef.current.add(id);
-    setEditing({
+    openUnsavedDraft({
       id,
       title: "",
       prompt: "",
@@ -691,10 +722,9 @@ export function HeartbeatView({ onOpenTopic }: HeartbeatPanelProps) {
       scope: isProject ? "project" : "global",
       workspaceRoot: isProject ? scopeKey : "",
     });
-    setDetailOpen(true);
-  }, []);
+  }, [openUnsavedDraft]);
 
-  // 建议区：一键创建预设自动化任务（直接生成，不打开详情）。
+  // 建议区：用预设内容打开未保存草稿，由用户确认后再创建。
   // 动态推荐：建议只在"对应标题的任务不存在"时显示——添加后消失，删除后恢复。
   const handleAddSuggestion = useCallback(
     async (sug: Suggestion) => {
@@ -718,12 +748,10 @@ export function HeartbeatView({ onOpenTopic }: HeartbeatPanelProps) {
         notifyChannels: false,
         scope: "global",
         workspaceRoot: "",
-        createdAt: Date.now(),
       };
-      setEditing(task);
-      setDetailOpen(true);
+      openUnsavedDraft(task);
     },
-    [],
+    [openUnsavedDraft],
   );
 
   const handleEdit = useCallback((task: HeartbeatTask) => {
@@ -735,21 +763,23 @@ export function HeartbeatView({ onOpenTopic }: HeartbeatPanelProps) {
   }, []);
 
   // 列表行点击状态图标切换任务启用/暂停（即时保存）
-  const handleToggle = useCallback((task: HeartbeatTask) => {
+  const handleToggle = useCallback(async (task: HeartbeatTask) => {
     const idx = tasks.findIndex((t) => t.id === task.id);
     if (idx < 0) return;
     const toggled = { ...task, enabled: !task.enabled };
     const next = [...tasks];
     next[idx] = toggled;
-    // 详情页正在编辑该任务时同步 enabled，避免列表开关后详情状态不变。
-    setEditing((prev) => (prev && prev.id === task.id ? { ...prev, enabled: toggled.enabled } : prev));
-    void save(next);
+    const saved = await save(next);
+    if (saved) {
+      const authoritative = saved.find((item) => item.id === task.id) ?? toggled;
+      setEditing((prev) => (prev && prev.id === task.id ? mergeEngineRunState({ ...prev, enabled: authoritative.enabled }, authoritative) : prev));
+    }
   }, [tasks, save]);
 
   const handleDelete = useCallback(
     async (id: string) => {
       const next = tasks.filter((t) => t.id !== id);
-      await save(next);
+      return (await save(next)) !== null;
     },
     [tasks, save],
   );
@@ -792,10 +822,12 @@ export function HeartbeatView({ onOpenTopic }: HeartbeatPanelProps) {
       } else {
         next.push(persisted);
       }
-      await save(next);
+      const saved = await save(next);
+      if (!saved) return false;
       // The draft is now persisted; stop treating it as an unsaved draft.
       unsavedDraftIdsRef.current.delete(task.id);
-      setEditing({ ...persisted });
+      setEditing({ ...(saved.find((item) => item.id === task.id) ?? persisted) });
+      return true;
     },
     [tasks, save],
   );
@@ -1072,7 +1104,7 @@ export function HeartbeatView({ onOpenTopic }: HeartbeatPanelProps) {
                                 <button
                                   className={`worktree-node__toggle${task.enabled ? " worktree-node__toggle--on" : ""}`}
                                   type="button"
-                                  onClick={(e) => { e.stopPropagation(); handleToggle(task); }}
+                                  onClick={(e) => { e.stopPropagation(); void handleToggle(task); }}
                                 >
                                   {task.enabled ? (
                                     <>
@@ -1177,7 +1209,7 @@ export function HeartbeatView({ onOpenTopic }: HeartbeatPanelProps) {
                                       <button
                                         className={`worktree-node__toggle${task.enabled ? " worktree-node__toggle--on" : ""}`}
                                         type="button"
-                                        onClick={(e) => { e.stopPropagation(); handleToggle(task); }}
+                                        onClick={(e) => { e.stopPropagation(); void handleToggle(task); }}
                                       >
                                         {task.enabled ? (
                                           <>
@@ -1305,7 +1337,14 @@ export function HeartbeatView({ onOpenTopic }: HeartbeatPanelProps) {
           {detailOpen && (
             <div className="heartbeat-split__right">
               {editing ? (
-                <TaskEditor key={editing.id} task={editing} onSave={handleSaveEdit} onDelete={() => { handleDelete(editing.id); setEditing(null); setDetailOpen(false); }} onCloseDetail={() => { setDetailOpen(false); }} onDirtyChange={(d) => { dirtyRef.current = d; }} onOpenTopic={onOpenTopic} onTrigger={handleTrigger} />
+                <TaskEditor key={editing.id} task={editing} onSave={handleSaveEdit} onDelete={async () => {
+                  const deleted = await handleDelete(editing.id);
+                  if (deleted) {
+                    setEditing(null);
+                    setDetailOpen(false);
+                  }
+                  return deleted;
+                }} onCloseDetail={() => { setDetailOpen(false); }} onDirtyChange={(d) => { dirtyRef.current = d; }} onOpenTopic={onOpenTopic} onTrigger={handleTrigger} />
               ) : (
                 <div className="heartbeat-split__empty">
                   <div className="heartbeat-split__empty-inner">
@@ -1337,8 +1376,7 @@ const WEEKDAYS = [
 const ALL_WEEKDAYS = WEEKDAYS.map(w => w.key);
 const DEFAULT_WEEKLY_DAY = "mon";
 
-// ── 建议区：一键创建的预设自动化任务（ChatGPT 自动化页同款） ──
-// 点击卡片直接生成正式任务（enabled=true、已补 createdAt），不打开详情。
+// ── 建议区：预填的自动化任务草稿 ──
 interface Suggestion {
   id: string;
   title: string;
@@ -1574,7 +1612,7 @@ function normalizeMode(mode: "ask" | "auto" | "yolo" | undefined): "ask" | "auto
   return "yolo"; // default
 }
 
-function TaskEditor({
+export function TaskEditor({
   task,
   onSave,
   onDelete,
@@ -1584,8 +1622,8 @@ function TaskEditor({
   onTrigger,
 }: {
   task: HeartbeatTask;
-  onSave: (t: HeartbeatTask) => void;
-  onDelete: () => void;
+  onSave: (t: HeartbeatTask) => Promise<boolean>;
+  onDelete: () => Promise<boolean>;
   onCloseDetail: () => void;
   onDirtyChange?: (dirty: boolean) => void;
   onOpenTopic?: (scope: string, workspaceRoot: string, topicId: string) => void;
@@ -1596,6 +1634,9 @@ function TaskEditor({
   const [workspaces, setWorkspaces] = useState<WorkspaceView[]>([]);
   const [projectOpen, setProjectOpen] = useState(false);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState(false);
+  const [frequencyError, setFrequencyError] = useState(false);
   const projectRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -1620,13 +1661,13 @@ function TaskEditor({
   useEffect(() => {
     initialTaskRef.current = task;
   }, [task]);
-  // enabled 是即时保存字段（列表开关 / 详情头开关都会立即持久化），
-  // 父组件更新 editing（如列表页切换启用/暂停后同步）时 draft 必须跟随，
-  // 否则详情页状态停留在旧快照。其他字段走 draft 编辑流，不自动同步
-  // （避免覆盖用户未保存的输入）。
+  // Sync fields owned outside this editor without replacing user-owned draft
+  // input. In particular, TriggerNow may advance topicId/lastRunAt/runHistory
+  // while the user is editing title, prompt, or schedule.
   useEffect(() => {
-    setDraft((d) => (d.enabled === task.enabled ? d : { ...d, enabled: task.enabled }));
-  }, [task.enabled]);
+    setDraft((current) => mergeEngineRunState({ ...current, enabled: task.enabled }, task));
+  }, [task.enabled, task.lastRunAt, task.runHistory, task.topicId]);
+  const isNew = !task.createdAt;
   const isDirty = draft.title !== initialTaskRef.current.title
     || draft.prompt !== initialTaskRef.current.prompt
     || draft.interval !== initialTaskRef.current.interval
@@ -1663,9 +1704,12 @@ function TaskEditor({
     setDraft(initialTaskRef.current);
   }, []);
 
-  const handleSave = useCallback(() => {
+  const handleSave = useCallback(async () => {
     if (!draft.title.trim() || !draft.prompt.trim()) return;
-    onSave(draft);
+    setSaving(true);
+    const saved = await onSave(draft);
+    setSaving(false);
+    setSaveError(!saved);
   }, [draft, onSave]);
   const set = useCallback((field: keyof HeartbeatTask, value: string | boolean) => {
     setDraft((prev) => ({ ...prev, [field]: value }));
@@ -1675,17 +1719,22 @@ function TaskEditor({
   // 只持久化 enabled 变更，基于最近保存基线（initialTaskRef）翻转，
   // 不携带 draft 中尚未保存的 title/prompt/schedule 编辑；同时保留草稿，
   // 等待中的用户输入不被基线快照覆盖。
-  const toggleEnabled = useCallback(() => {
+  const toggleEnabled = useCallback(async () => {
     const saved = initialTaskRef.current;
     const updated = { ...saved, enabled: !saved.enabled };
-    onSave(updated);
-    // 只同步 enabled（磁盘已持久化），title/prompt/interval 等草稿编辑保留。
-    setDraft((prev) => ({ ...prev, enabled: updated.enabled }));
-    initialTaskRef.current = { ...saved, enabled: updated.enabled };
+    setSaving(true);
+    const persisted = await onSave(updated);
+    setSaving(false);
+    setSaveError(!persisted);
+    if (persisted) {
+      // 只同步 enabled（磁盘已持久化），title/prompt/interval 等草稿编辑保留。
+      setDraft((prev) => ({ ...prev, enabled: updated.enabled }));
+      initialTaskRef.current = { ...saved, enabled: updated.enabled };
+    }
   }, [onSave]);
 
   // Detect frequency type from interval value
-  const [freqType, setFreqType] = useState<"interval" | "daily" | "weekly" | "biweekly" | "monthly" | "yearly" | "cron">(
+  const [freqType, setFreqType] = useState<HeartbeatFrequencyType>(
     (() => {
       const iv = task.interval || "";
       if (isCronExpr(iv)) return "cron";
@@ -1696,33 +1745,17 @@ function TaskEditor({
   );
 
   // 切换频率类型时重建 interval（摊开的 7 个选项）
-  const onFreqSelect = useCallback((ft: "interval" | "daily" | "weekly" | "biweekly" | "monthly" | "yearly" | "cron") => {
+  const onFreqSelect = useCallback((ft: HeartbeatFrequencyType) => {
+    const converted = changeHeartbeatFrequency(draft, ft);
+    if (converted === null) {
+      setFrequencyError(true);
+      return;
+    }
+    setFrequencyError(false);
+    setDraft(converted);
     setFreqType(ft);
-    setDraft((prev) => {
-      const cur = prev.interval || "";
-      if (ft === "daily") return { ...prev, interval: "24h|daily:mon,tue,wed,thu,fri,sat,sun@09:00" };
-      if (ft === "weekly") return { ...prev, interval: "168h|weekly:mon@09:00" };
-      if (ft === "biweekly") return { ...prev, interval: "336h|biweekly:mon@09:00" };
-      if (ft === "monthly") return { ...prev, interval: "720h|monthly:1@09:00" };
-      if (ft === "yearly") return { ...prev, interval: "8760h|yearly:1-1@09:00" };
-      if (ft === "cron") {
-        if (isCronExpr(cur)) return prev;
-        const converted = intervalToCron(cur, prev.timeWindowStart, prev.timeWindowEnd);
-        // biweekly / seconds / cross-midnight windows cannot be losslessly
-        // expressed in cron — keep the current interval instead of corrupting it.
-        return converted === null ? prev : { ...prev, interval: converted };
-      }
-      // interval：从周期/自定义还原为简单间隔；不可无损表达的 cron 保持原样
-      if (isCronExpr(cur)) {
-        const converted = cronToInterval(cur);
-        return converted === null ? prev : { ...prev, interval: converted };
-      }
-      if (cur.includes("|")) return { ...prev, interval: cur.replace(/\|.*$/, "") };
-      return prev;
-    });
-  }, [setDraft]);
+  }, [draft]);
 
-  const isNew = !task.createdAt;
   const selectedWorkspace = draft.scope === "project" && draft.workspaceRoot
     ? workspaces.find((w) => w.path === draft.workspaceRoot)
     : null;
@@ -1738,7 +1771,8 @@ function TaskEditor({
             className={`heartbeat-editor__status${draft.enabled ? " heartbeat-editor__status--on" : ""}`}
             type="button"
             title={draft.enabled ? t("heartbeat.statusDisabled") : t("heartbeat.statusEnabled")}
-            onClick={toggleEnabled}
+            disabled={saving}
+            onClick={() => void toggleEnabled()}
           >
             {draft.enabled ? t("heartbeat.statusEnabled") : t("heartbeat.statusDisabled")}
           </button>
@@ -1769,7 +1803,8 @@ function TaskEditor({
             <button
               className={`heartbeat-editor__header-action${draft.enabled ? " heartbeat-editor__header-action--on" : ""}`}
               type="button"
-              onClick={toggleEnabled}
+              disabled={saving}
+              onClick={() => void toggleEnabled()}
             >
               {draft.enabled ? (
                 <CirclePause size={14} strokeWidth={2.4} />
@@ -1789,9 +1824,10 @@ function TaskEditor({
             <button
               className={`heartbeat-editor__header-action heartbeat-editor__header-action--danger${confirmingDelete ? " heartbeat-editor__header-action--confirm" : ""}`}
               type="button"
+              disabled={saving}
               onClick={() => {
                 if (confirmingDelete) {
-                  onDelete();
+                  void onDelete().then((deleted) => setSaveError(!deleted));
                 } else {
                   setConfirmingDelete(true);
                   window.setTimeout(() => setConfirmingDelete(false), 3000);
@@ -1980,6 +2016,9 @@ function TaskEditor({
             </button>
           ))}
         </div>
+        {frequencyError && (
+          <span className="heartbeat-editor__inline-error" role="status">{t("heartbeat.frequencyConversionFailed")}</span>
+        )}
 
         {freqType === "cron" ? (
           <div className="heartbeat-editor__freq-interval">
@@ -2131,7 +2170,12 @@ function TaskEditor({
       </div>
 
       {/* 保存/取消：仅在有未保存修改时显示（ChatGPT 式），固定在面板底部 */}
-      {isDirty && (
+      {saveError && (
+        <div className="heartbeat-editor__save-notice">
+          <span className="heartbeat-editor__save-error" role="alert">{t("heartbeat.saveFailed")}</span>
+        </div>
+      )}
+      {(isNew || isDirty) && (
         <div className="heartbeat-editor__actions">
           <button
             className="heartbeat-editor__action-btn"
@@ -2143,8 +2187,8 @@ function TaskEditor({
           <button
             className="heartbeat-editor__action-btn heartbeat-editor__action-btn--primary"
             type="button"
-            disabled={!draft.title.trim() || !draft.prompt.trim()}
-            onClick={handleSave}
+            disabled={saving || !draft.title.trim() || !draft.prompt.trim()}
+            onClick={() => void handleSave()}
           >
             {t("common.save")}
           </button>

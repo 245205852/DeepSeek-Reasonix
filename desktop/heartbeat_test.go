@@ -896,6 +896,34 @@ func TestHeartbeatReplaceConfigPreservesRunHistory(t *testing.T) {
 	}
 }
 
+func TestMergeHeartbeatDiskRunHistoryPreservesAllEngineRunState(t *testing.T) {
+	submitted := []HeartbeatTask{{
+		ID:         "t1",
+		Title:      "edited title",
+		TopicID:    "stale-topic",
+		LastRunAt:  100,
+		RunHistory: []HeartbeatRun{{At: 100, TopicID: "stale-topic"}},
+	}}
+	disk := []HeartbeatTask{{
+		ID:         "t1",
+		Title:      "old title",
+		TopicID:    "fresh-topic",
+		LastRunAt:  200,
+		RunHistory: []HeartbeatRun{{At: 200, TopicID: "fresh-topic"}},
+	}}
+
+	got := mergeHeartbeatDiskRunHistory(submitted, disk)
+	if got[0].Title != "edited title" {
+		t.Fatalf("user-owned title=%q, want edited title", got[0].Title)
+	}
+	if got[0].TopicID != "fresh-topic" || got[0].LastRunAt != 200 {
+		t.Fatalf("engine run state rolled back: topic=%q lastRunAt=%d", got[0].TopicID, got[0].LastRunAt)
+	}
+	if len(got[0].RunHistory) != 2 {
+		t.Fatalf("run history len=%d, want union of both snapshots", len(got[0].RunHistory))
+	}
+}
+
 // TestHeartbeatMergeRunUpdatesPersistsRunHistory: 模拟 TriggerNow 的完整写盘链路——
 // executeTask 返回含 runHistory 的 t → mergeRunUpdatesLocked → 磁盘。验证 runHistory 真实落盘。
 func TestHeartbeatMergeRunUpdatesPersistsRunHistory(t *testing.T) {
@@ -964,6 +992,49 @@ func TestCronDueDomDowOrSemantics(t *testing.T) {
 	// "0 9 1 * *": only dom restricted → 1st only
 	if cronDue("0 9 1 * *", mon) {
 		t.Fatalf("Monday (not 1st) should not match dom-only")
+	}
+}
+
+func TestCronStepAnchorsAndSingleValueSteps(t *testing.T) {
+	loc := time.UTC
+	if !cronDue("0 0 * */2 *", time.Date(2026, time.January, 1, 0, 0, 0, 0, loc)) {
+		t.Fatal("*/2 month step must anchor at January, the field minimum")
+	}
+	if cronDue("0 0 * */2 *", time.Date(2026, time.February, 1, 0, 0, 0, 0, loc)) {
+		t.Fatal("*/2 month step must skip February")
+	}
+	if !cronDue("0 0 */2 * *", time.Date(2026, time.January, 1, 0, 0, 0, 0, loc)) {
+		t.Fatal("*/2 day-of-month step must anchor at day 1")
+	}
+	if !isCronExpr("1/2 * * * *") {
+		t.Fatal("single-value step should be accepted consistently")
+	}
+	if !cronDue("1/2 * * * *", time.Date(2026, time.January, 1, 0, 3, 0, 0, loc)) {
+		t.Fatal("1/2 minute step should match 1, 3, 5, ...")
+	}
+	if cronDue("1/2 * * * *", time.Date(2026, time.January, 1, 0, 2, 0, 0, loc)) {
+		t.Fatal("1/2 minute step must not match minute 2")
+	}
+}
+
+func TestWeeksBetweenUsesCivilDatesAcrossDST(t *testing.T) {
+	loc, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name string
+		a    time.Time
+		b    time.Time
+	}{
+		{"spring forward", time.Date(2026, time.March, 2, 0, 0, 0, 0, loc), time.Date(2026, time.March, 16, 0, 0, 0, 0, loc)},
+		{"fall back", time.Date(2026, time.October, 26, 0, 0, 0, 0, loc), time.Date(2026, time.November, 9, 0, 0, 0, 0, loc)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := weeksBetween(weekStart(tc.a), weekStart(tc.b)); got != 2 {
+				t.Fatalf("weeksBetween=%d, want 2", got)
+			}
+		})
 	}
 }
 
@@ -1164,5 +1235,41 @@ func TestHeartbeatRunHistorySidecarTrimmedOnSave(t *testing.T) {
 	}
 	if runs, _ := os.ReadFile(engine.runHistoryPath()); len(runs) == 0 {
 		t.Fatal("runHistory sidecar file must exist after save")
+	}
+}
+
+func TestHeartbeatRunHistorySidecarClearsAfterLastTaskDeletion(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	engine := &HeartbeatEngine{}
+	if err := engine.ReplaceTasks([]HeartbeatTask{{
+		ID:         "reused",
+		Title:      "old task",
+		RunHistory: []HeartbeatRun{{At: 100, TopicID: "old-topic"}},
+	}}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if err := engine.ReplaceTasks([]HeartbeatTask{}); err != nil {
+		t.Fatalf("delete last task: %v", err)
+	}
+	raw, err := os.ReadFile(engine.runHistoryPath())
+	if err != nil {
+		t.Fatalf("read empty sidecar: %v", err)
+	}
+	var sidecar struct {
+		Runs map[string][]HeartbeatRun `json:"runs"`
+	}
+	if err := json.Unmarshal(raw, &sidecar); err != nil {
+		t.Fatalf("decode empty sidecar: %v", err)
+	}
+	if len(sidecar.Runs) != 0 {
+		t.Fatalf("sidecar runs=%v, want empty", sidecar.Runs)
+	}
+
+	if err := engine.ReplaceTasks([]HeartbeatTask{{ID: "reused", Title: "new task"}}); err != nil {
+		t.Fatalf("reuse task ID: %v", err)
+	}
+	got := engine.ListTasks()
+	if len(got) != 1 || len(got[0].RunHistory) != 0 {
+		t.Fatalf("deleted task history resurrected after ID reuse: %+v", got)
 	}
 }

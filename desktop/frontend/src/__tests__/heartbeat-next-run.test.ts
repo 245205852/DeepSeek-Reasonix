@@ -1,6 +1,6 @@
 // Run: tsx src/__tests__/heartbeat-next-run.test.ts
 
-import { cronToInterval, heartbeatBuildCycleInterval, heartbeatNextRunAt, intervalToCron, mergeEngineRunState, nextCycleRunAt } from "../custom/features/heartbeat/HeartbeatPanel";
+import { changeHeartbeatFrequency, cronToInterval, heartbeatBuildCycleInterval, heartbeatNextRunAt, intervalToCron, mergeEngineRunState, nextCycleRunAt } from "../custom/features/heartbeat/HeartbeatPanel";
 
 let passed = 0;
 let failed = 0;
@@ -147,10 +147,6 @@ eq(
   { id: "t1", title: "草稿标题", prompt: "p", interval: "30m", enabled: true, runHistory: [{ at: 50, topicId: "t" }], lastRunAt: 110 },
   "trigger merge adopts fresh lastRunAt without dropping draft runHistory",
 );
-
-console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);
-if (failed > 0) process.exit(1);
-
 
 // ── 周期转 cron / 周期 next-run 语义（SivanCola review 回归） ──
 
@@ -362,3 +358,53 @@ eq(
   localMs(2026, 9, 1, 0, 0),
   "valid dom expression still computes a next run",
 );
+
+console.log("cron steps use field minima and retain long-horizon matches");
+
+eq(
+  heartbeatNextRunAt({ interval: "0 0 * */2 *", lastRunAt: 0 }, localMs(2025, 12, 31, 12, 0)),
+  localMs(2026, 1, 1, 0, 0),
+  "wildcard month step starts from January",
+);
+eq(
+  heartbeatNextRunAt({ interval: "0 0 * */2 *", lastRunAt: 0 }, localMs(2026, 1, 31, 0, 0)),
+  localMs(2026, 3, 1, 0, 0),
+  "wildcard month step skips February",
+);
+eq(
+  heartbeatNextRunAt({ interval: "1/2 * * * *", lastRunAt: 0 }, localMs(2026, 1, 1, 0, 1)),
+  localMs(2026, 1, 1, 0, 3),
+  "single-value step continues from its explicit start",
+);
+eq(
+  heartbeatNextRunAt({ interval: "0 0 29 2 *", lastRunAt: 0 }, localMs(2028, 3, 1, 0, 0)),
+  localMs(2032, 2, 29, 0, 0),
+  "leap-day cron searches beyond one year",
+);
+
+console.log("frequency conversion keeps the selected editor on lossy paths");
+
+eq(changeHeartbeatFrequency({ id: "t", title: "t", prompt: "p", enabled: true, interval: "0 9 * * 1" }, "interval"), null, "weekly cron cannot switch to interval");
+eq(changeHeartbeatFrequency({ id: "t", title: "t", prompt: "p", enabled: true, interval: "30s" }, "cron"), null, "seconds cannot switch to cron");
+eq(changeHeartbeatFrequency({ id: "t", title: "t", prompt: "p", enabled: true, interval: "336h|biweekly:mon@09:00" }, "cron"), null, "biweekly cannot switch to cron");
+eq(changeHeartbeatFrequency({ id: "t", title: "t", prompt: "p", enabled: true, interval: "1h", timeWindowStart: "22:00", timeWindowEnd: "06:00" }, "cron"), null, "cross-midnight interval cannot switch to cron");
+
+console.log("biweekly parity uses civil dates across DST");
+
+const originalTZ = process.env.TZ;
+process.env.TZ = "America/New_York";
+eq(
+  nextCycleRunAt("336h|biweekly:mon@09:00", localMs(2026, 3, 9, 10, 0), localMs(2026, 3, 2, 9, 0)),
+  localMs(2026, 3, 16, 9, 0),
+  "spring-forward keeps the even-week Monday",
+);
+eq(
+  nextCycleRunAt("336h|biweekly:mon@09:00", localMs(2026, 11, 2, 10, 0), localMs(2026, 10, 26, 9, 0)),
+  localMs(2026, 11, 9, 9, 0),
+  "fall-back keeps the even-week Monday",
+);
+if (originalTZ === undefined) delete process.env.TZ;
+else process.env.TZ = originalTZ;
+
+console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);
+if (failed > 0) process.exit(1);

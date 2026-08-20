@@ -937,6 +937,8 @@ export const en = {
   "heartbeat.optional": "Optional",
   "heartbeat.disable": "Disable",
   "heartbeat.save": "Save",
+  "heartbeat.saveFailed": "Could not save because automations changed elsewhere. Your draft is still here; review it and try again.",
+  "heartbeat.frequencyConversionFailed": "This schedule cannot be converted without changing when it runs.",
   "heartbeat.add": "Add",
   "heartbeat.neverRun": "Never run",
   "heartbeat.untitled": "(untitled)",

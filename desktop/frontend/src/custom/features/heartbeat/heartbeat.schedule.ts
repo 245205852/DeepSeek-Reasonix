@@ -125,6 +125,10 @@ function weekStart(date: Date): Date {
   return start;
 }
 
+function civilDayNumber(date: Date): number {
+  return Math.floor(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()) / 86_400_000);
+}
+
 // Exported for the panel's cycle interval math (nextCycleRunAt) so both frontend
 // paths share one calendar implementation and cannot drift from each other.
 export function parseCalendarSchedule(interval?: string): CalendarSchedule | null {
@@ -154,7 +158,7 @@ function nextCalendarRun(schedule: CalendarSchedule, after: Date, anchor: Date):
       const candidate = calendarDate(day.getFullYear(), day.getMonth(), day.getDate(), schedule);
       if (candidate.getTime() <= after.getTime()) continue;
       if (schedule.kind === "biweekly") {
-        const weeks = Math.floor(Math.abs(weekStart(candidate).getTime() - weekStart(anchor).getTime()) / (7 * 86_400_000));
+        const weeks = Math.floor(Math.abs(civilDayNumber(weekStart(candidate)) - civilDayNumber(weekStart(anchor))) / 7);
         if (weeks % 2 !== 0) continue;
       }
       return candidate;
