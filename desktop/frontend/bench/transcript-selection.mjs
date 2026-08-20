@@ -374,8 +374,11 @@ try {
     transcript.dispatchEvent(new Event("scroll"));
   }, settled.scrollTop);
   await page.waitForTimeout(250);
-  const restoredRects = await page.locator(".transcript-selection-overlay__rect").count();
-  assert(restoredRects > 0, "logical overlay restores after selected rows scroll out and back in");
+  const beforeCopy = await page.evaluate(() => ({
+    overlayRects: document.querySelectorAll(".transcript-selection-overlay__rect").length,
+    scrollTop: document.querySelector(".transcript")?.scrollTop ?? 0,
+  }));
+  assert(beforeCopy.overlayRects > 0, "logical overlay restores after selected rows scroll out and back in");
 
   await page.evaluate(() => {
     window.__logicalClipboardText = null;
@@ -403,7 +406,10 @@ try {
   });
   assert(after.collapsed, "logical copy leaves no synthetic browser Range behind");
   assert(after.overlayRects === 0, "successful copy clears the logical overlay");
-  assert(Math.abs(after.scrollTop - settled.scrollTop) <= 1, "copy cleanup preserves the selection viewport");
+  assert(
+    Math.abs(after.scrollTop - beforeCopy.scrollTop) <= 1,
+    `copy cleanup preserves the selection viewport (${beforeCopy.scrollTop} -> ${after.scrollTop})`,
+  );
   assert(
     during.rows <= Math.ceil(after.rows * 1.1) + 2,
     `logical selection keeps the virtual DOM bounded (${after.rows} normal → ${during.rows} selecting)`,
