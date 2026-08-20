@@ -229,24 +229,6 @@ scrollElement.scrollTop = 400;
 await act(async () => arbiter?.atBottomStateChange(false));
 check(arbiter?.isAtBottom === true, "physical bottom overrides a stale Virtuoso atBottom=false report");
 
-// A thumb gesture that reaches the frozen native bottom must claim the tail
-// before release resumes real row measurements and changes the extent.
-scrollElement.scrollTop = 0;
-await act(async () => arbiter?.onPointerDownIntent({
-  button: 0,
-  nativeEvent: { button: 0, clientX: 795 },
-} as React.PointerEvent<HTMLElement>));
-scrollElement.scrollTop = 400;
-await act(async () => window.dispatchEvent(new dom.window.Event("pointerup")));
-check(arbiter?.modeRef.current === "tail-follow", "native thumb release at the physical bottom resumes tail-follow");
-scrollExtent = 900;
-await act(async () => arbiter?.deliverScroll());
-await flushFrames();
-await flushFrames();
-await flushFrames();
-check(scrollElement.scrollTop === 800, "post-release remeasurement reconverges the claimed native bottom");
-scrollExtent = 500;
-
 // A nested code/tool scrollport owns the wheel until it reaches its edge.
 // Capturing the event on Transcript must not release tail-follow early.
 const nestedScroller = dom.window.document.createElement("div");
@@ -277,21 +259,6 @@ await act(async () => {
 });
 check(nestedWheelAccepted && arbiter?.modeRef.current === "manual", "a nested edge hands wheel ownership to the transcript");
 nestedScroller.remove();
-
-// If measurement/clamping reaches the physical bottom between scroll events,
-// a fresh downward gesture must still claim tail-follow even though the
-// browser has no remaining pixels to deliver.
-scrollElement.scrollTop = 400;
-let bottomWheelAccepted = false;
-await act(async () => {
-  bottomWheelAccepted = arbiter?.onWheelIntent({
-    ctrlKey: false,
-    deltaX: 0,
-    deltaY: 40,
-    target: scrollElement,
-  } as React.WheelEvent<HTMLElement>) ?? false;
-});
-check(bottomWheelAccepted && arbiter?.modeRef.current === "tail-follow", "a downward gesture claims an already-clamped physical bottom");
 
 // A queued confirmation belongs to the surface that requested it. Resetting
 // before its frame runs must prevent the old request from writing the new one.

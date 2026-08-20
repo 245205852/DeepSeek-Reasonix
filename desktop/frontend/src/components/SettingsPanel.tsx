@@ -5282,7 +5282,7 @@ const OFFICIAL_PROVIDER_CHOICES: Array<{ kind: OfficialProviderKind; labelKey: D
 
 type ProviderTemplateChoice =
   | { id: string; source: "official"; kind: OfficialProviderKind; label: string; description: string; keyEnv: string; added: boolean; keySet: boolean }
-  | { id: string; source: "preset"; presetID: string; label: string; description: string; keyEnv: string; added: boolean; status: ProviderPresetStatus; statusProviderNames: string[]; keySet: boolean };
+  | { id: string; source: "preset"; presetID: string; label: string; description: string; keyEnv: string; added: boolean; status: ProviderPresetStatus; statusProviderNames: string[]; keySet: boolean; recommended: boolean; billingMode: string };
 
 function providerTemplateCanAdd(choice: ProviderTemplateChoice | undefined): boolean {
   if (!choice) return false;
@@ -5368,7 +5368,7 @@ function providerPresetDescription(preset: ProviderPresetView, t: ReturnType<typ
       return t("settings.addProvider.preset.zaiCodingPlanGlobalDesc");
     case "zai-coding-plan-global-anthropic":
       return t("settings.addProvider.preset.zaiCodingPlanGlobalAnthropicDesc");
-    case "opencode-go": case "opencode-go-anthropic":
+    case "opencode-go-recommended": case "opencode-go": case "opencode-go-anthropic": case "opencode-go-responses":
     case "opencode-go-deepseek-anthropic": case "opencode-go-deepseek-responses":
       return t(opencodeGoPresetDescriptionKeys[preset.id]);
     case "opencode-zen-anthropic":
@@ -5487,11 +5487,16 @@ export function AddProviderPanel({
       status: normalizeProviderPresetStatus(preset.status, preset.added),
       statusProviderNames: asArray(preset.statusProviderNames),
       keySet: preset.keySet,
+      recommended: Boolean(preset.recommended),
+      billingMode: String(preset.billingMode ?? ""),
     })),
   ], [officialProviders, providerPresets, t]);
   const [templateID, setTemplateID] = useState("official:deepseek");
   const [key, setKey] = useState("");
-  const firstAvailableTemplateID = templateChoices.find(providerTemplateCanAdd)?.id ?? templateChoices[0]?.id ?? "";
+  const firstAvailableTemplateID = templateChoices.find((choice) => choice.source === "preset" && choice.recommended && providerTemplateCanAdd(choice))?.id
+    ?? templateChoices.find(providerTemplateCanAdd)?.id
+    ?? templateChoices[0]?.id
+    ?? "";
   const selected = templateChoices.find((choice) => choice.id === templateID) ?? templateChoices.find((choice) => choice.id === firstAvailableTemplateID) ?? templateChoices[0];
   useEffect(() => {
     const current = templateChoices.find((choice) => choice.id === templateID);
@@ -5546,6 +5551,7 @@ export function AddProviderPanel({
           {templateChoices.map((choice) => {
             const canAdd = providerTemplateCanAdd(choice);
             const badge = providerTemplateStatusBadge(choice, t);
+            const recommendationBadge = choice.source === "preset" && choice.recommended ? t("settings.recommended") : "";
             const conflictProviderName = providerTemplateConflictProviderName(choice);
             if (choice.source === "preset" && (choice.status === "name_conflict" || choice.status === "installed_modified")) {
               return (
@@ -5555,6 +5561,7 @@ export function AddProviderPanel({
                 >
                   <strong>
                     {choice.label}
+                    {recommendationBadge ? ` · ${recommendationBadge}` : ""}
                     {badge ? ` · ${badge}` : ""}
                   </strong>
                   <span>{choice.description}</span>
@@ -5589,6 +5596,7 @@ export function AddProviderPanel({
               >
                 <strong>
                   {choice.label}
+                  {recommendationBadge ? ` · ${recommendationBadge}` : ""}
                   {badge ? ` · ${badge}` : ""}
                 </strong>
                 <span>{choice.description}</span>
