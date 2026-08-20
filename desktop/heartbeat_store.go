@@ -47,7 +47,11 @@ func (e *HeartbeatEngine) readConfigSnapshot() (heartbeatConfigSnapshot, error) 
 	// Merge the run-history sidecar (execution journal kept outside the main
 	// config so an older binary cannot drop it on a full-table save). Union by
 	// execution timestamp and keep the newest maxRunHistory entries.
-	if runs := e.readRunHistorySidecar(cfg); len(runs) > 0 {
+	runs, err := e.readRunHistorySidecar(cfg)
+	if err != nil {
+		return heartbeatConfigSnapshot{}, err
+	}
+	if len(runs) > 0 {
 		for i := range cfg.Tasks {
 			if hist, ok := runs[cfg.Tasks[i].ID]; ok && len(hist) > 0 {
 				cfg.Tasks[i].RunHistory = mergeRunHistory(cfg.Tasks[i].RunHistory, hist)

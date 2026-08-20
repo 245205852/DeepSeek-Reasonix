@@ -600,7 +600,19 @@ func (e *HeartbeatEngine) TriggerNow(id string) {
 	e.mu.Unlock()
 	for _, t := range tasks {
 		if t.ID == id {
-			e.executeTask(t)
+			e.executeTaskWithLease(t, func(task HeartbeatTask) (HeartbeatTask, bool) {
+				snapshot, err := e.readConfigSnapshot()
+				if err != nil {
+					log.Printf("[heartbeat] cannot revalidate task %q before manual execution: %v", task.Title, err)
+					return task, false
+				}
+				for _, current := range snapshot.cfg.Tasks {
+					if current.ID == task.ID {
+						return current, true
+					}
+				}
+				return task, false
+			})
 			return
 		}
 	}

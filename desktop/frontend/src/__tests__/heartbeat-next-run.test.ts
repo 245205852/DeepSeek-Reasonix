@@ -1,6 +1,6 @@
 // Run: tsx src/__tests__/heartbeat-next-run.test.ts
 
-import { changeHeartbeatFrequency, cronToInterval, heartbeatBuildCycleInterval, heartbeatNextRunAt, intervalToCron, mergeEngineRunState, nextCycleRunAt } from "../custom/features/heartbeat/HeartbeatPanel";
+import { changeHeartbeatFrequency, cronToInterval, heartbeatBuildCycleInterval, heartbeatNextRunAt, intervalToCron, mergeEngineRunState, nextCycleRunAt, prepareTasksByNextRun } from "../custom/features/heartbeat/HeartbeatPanel";
 
 let passed = 0;
 let failed = 0;
@@ -381,6 +381,23 @@ eq(
   localMs(2032, 2, 29, 0, 0),
   "leap-day cron searches beyond one year",
 );
+
+console.log("task list computes each next run once");
+
+const listNow = localMs(2026, 8, 10, 10, 0);
+const listTasks = [
+  { id: "late", title: "late", prompt: "", interval: "0 0 29 2 *", enabled: true, lastRunAt: 1 },
+  { id: "new", title: "new", prompt: "", interval: "0 0 31 2 *", enabled: true },
+  { id: "paused", title: "paused", prompt: "", interval: "0 0 31 2 *", enabled: false, lastRunAt: 1 },
+];
+let nextRunCalls = 0;
+const preparedTasks = prepareTasksByNextRun(listTasks, listNow, (task) => {
+  nextRunCalls += 1;
+  return task.id === "late" ? listNow + 60000 : null;
+});
+eq(nextRunCalls, listTasks.length, "list preparation resolves each task exactly once");
+eq(preparedTasks.map(({ task }) => task.id).join(","), "new,late,paused", "list preparation preserves next-run ordering");
+eq(preparedTasks[1].nextRunAt, listNow + 60000, "list rows reuse the precomputed next-run value");
 
 console.log("frequency conversion keeps the selected editor on lossy paths");
 

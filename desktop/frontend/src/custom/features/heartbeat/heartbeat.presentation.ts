@@ -33,14 +33,6 @@ export function nextCycleRunAt(interval: string, from = Date.now(), createdAt?: 
   return nextCalendarRunImpl(schedule, after, anchor).getTime();
 }
 
-// 列表排序：启用在前、禁用在后；同组按下次触发时间升序（越近越靠前，未运行视为立即）。
-export function sortTasksByNextRun(a: HeartbeatTask, b: HeartbeatTask): number {
-  if (a.enabled !== b.enabled) return a.enabled ? -1 : 1;
-  const now = Date.now();
-  const nr = (t: HeartbeatTask) => (t.enabled && !t.lastRunAt ? now : heartbeatNextRunAt(t, now)) ?? Number.POSITIVE_INFINITY;
-  return nr(a) - nr(b);
-}
-
 export function formatInterval(interval: string, t: HeartbeatTranslator): string {
   const cycleMatch = interval.match(/^(\d+)[smh]\|(daily|weekly|biweekly|monthly|yearly)(?::([^@]*))?(?:@(\d{2}:\d{2}))?$/);
   if (cycleMatch) {
@@ -367,7 +359,7 @@ export function describeCron(expr: string, t: HeartbeatTranslator): string {
 // 与新实现的意图一致：镜像后端 previousHeartbeatScheduleAt 语义、月末
 // clamp、周一制双周锚点。此处不再保留旧的行内实现。
 
-export function taskNextRun(task: HeartbeatTask, t: HeartbeatTranslator): string | null {
+export function taskNextRunAt(task: HeartbeatTask, now = Date.now()): number | null {
   if (!task.enabled) return null;
   const interval = task.interval || "";
   let next: number | null = null;
@@ -380,8 +372,8 @@ export function taskNextRun(task: HeartbeatTask, t: HeartbeatTranslator): string
   const cycleMatch = interval.match(/^\d+[smh]\|(daily|weekly|biweekly|monthly|yearly)(?::([^@]*))?(?:@(\d{2}:\d{2}))?$/);
   if (cycleMatch) {
     next = task.lastRunAt
-      ? heartbeatNextRunAt(task)
-      : nextCycleRunAt(interval, task.createdAt || Date.now(), task.createdAt);
+      ? heartbeatNextRunAt(task, now)
+      : nextCycleRunAt(interval, task.createdAt || now, task.createdAt);
   } else {
     const cleaned = interval.replace(/\|.*$/, "");
     const m = cleaned.match(/^(\d+)([smh])$/);
@@ -390,21 +382,50 @@ export function taskNextRun(task: HeartbeatTask, t: HeartbeatTranslator): string
       // displayed next run matches the backend (defers to the next opening
       // instead of naively showing lastRunAt + interval outside the window).
       if (task.timeWindowStart || task.timeWindowEnd) {
-        next = heartbeatNextRunAt(task);
+        next = heartbeatNextRunAt(task, now);
       } else {
         if (!task.lastRunAt) return null;
         const ms = parseInt(m[1]) * { s: 1000, m: 60000, h: 3600000 }[m[2] as "s" | "m" | "h"];
         next = task.lastRunAt + ms;
       }
     } else if (isCronExpr(cleaned)) {
-      next = nextCronRunAt(cleaned);
+      next = nextCronRunAt(cleaned, now);
     } else {
       return null;
     }
   }
+  return next;
+}
+
+export interface HeartbeatTaskNextRun {
+  task: HeartbeatTask;
+  nextRunAt: number | null;
+}
+
+type TaskNextRunResolver = (task: HeartbeatTask, now: number) => number | null;
+
+// Compute each task's next run once so an eight-year cron search never runs
+// repeatedly inside Array.sort or again while rendering the same row.
+export function prepareTasksByNextRun(
+  tasks: HeartbeatTask[],
+  now = Date.now(),
+  resolveNextRun: TaskNextRunResolver = taskNextRunAt,
+): HeartbeatTaskNextRun[] {
+  return tasks
+    .map((task) => ({ task, nextRunAt: resolveNextRun(task, now) }))
+    .sort((a, b) => {
+      if (a.task.enabled !== b.task.enabled) return a.task.enabled ? -1 : 1;
+      const sortAt = (entry: HeartbeatTaskNextRun) => (
+        entry.task.enabled && !entry.task.lastRunAt ? now : entry.nextRunAt
+      ) ?? Number.POSITIVE_INFINITY;
+      return sortAt(a) - sortAt(b);
+    });
+}
+
+export function formatTaskNextRun(next: number | null, now: number, t: HeartbeatTranslator): string | null {
   if (next === null) return null;
-  if (next <= Date.now()) return t("heartbeat.dueSoon");
-  const diff = next - Date.now();
+  if (next <= now) return t("heartbeat.dueSoon");
+  const diff = next - now;
   // 剩余时间：如「下次运行 26 分钟后」/「下次运行 2 小时后」/「下次运行 2天3小时后」/「即将触发」
   const days = Math.floor(diff / 86400000);
   const hours = Math.floor((diff % 86400000) / 3600000);
@@ -414,4 +435,9 @@ export function taskNextRun(task: HeartbeatTask, t: HeartbeatTranslator): string
   if (hours > 0) return `${prefix} ${hours}${t("heartbeat.unitHour")}${minutes}${t("heartbeat.unitMin")}${t("heartbeat.later")}`;
   if (minutes > 0) return `${prefix} ${minutes}${t("heartbeat.unitMin")}${t("heartbeat.later")}`;
   return t("heartbeat.dueSoon");
+}
+
+export function taskNextRun(task: HeartbeatTask, t: HeartbeatTranslator): string | null {
+  const now = Date.now();
+  return formatTaskNextRun(taskNextRunAt(task, now), now, t);
 }

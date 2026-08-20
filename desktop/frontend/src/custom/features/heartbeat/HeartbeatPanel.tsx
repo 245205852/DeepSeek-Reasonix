@@ -39,14 +39,10 @@ import { useHeartbeatT, type HeartbeatTranslator } from "./heartbeat.i18n";
 // 静态导入：Vite 保证 CSS 在模块 evaluate 前注入 DOM，避免首次访问自动化页
 // 无样式闪烁（FOUC）。node 单测通过 css-stub-register.mjs 的 loader hook 解析。
 import "./heartbeat.css";
-import {
-  formatInterval,
-  sortTasksByNextRun,
-  taskNextRun,
-} from "./heartbeat.presentation";
+import { formatInterval, formatTaskNextRun, prepareTasksByNextRun } from "./heartbeat.presentation";
 import { TaskEditor } from "./HeartbeatTaskEditor";
 import { CirclePlaySolid, mergeEngineRunState } from "./HeartbeatShared";
-export { changeHeartbeatFrequency, cronToInterval, heartbeatNextRunAt, intervalToCron, nextCycleRunAt } from "./heartbeat.presentation";
+export { changeHeartbeatFrequency, cronToInterval, heartbeatNextRunAt, intervalToCron, nextCycleRunAt, prepareTasksByNextRun } from "./heartbeat.presentation";
 export { heartbeatBuildCycleInterval } from "./HeartbeatCycleEditor";
 export { TaskEditor } from "./HeartbeatTaskEditor";
 export { mergeEngineRunState } from "./HeartbeatShared";
@@ -573,9 +569,11 @@ export function HeartbeatView({ onOpenTopic }: HeartbeatPanelProps) {
                   </button>
                 )}
               </div>
-              <div className="heartbeat-split__list" ref={listRef}>              {(() => {
-                const filtered = tasks
-                  .filter((task) => {
+              <div className="heartbeat-split__list" ref={listRef}>
+                {(() => {
+                const now = Date.now();
+                const filtered = prepareTasksByNextRun(
+                  tasks.filter((task) => {
                     if (statusFilter === "enabled" && !task.enabled) return false;
                     if (statusFilter === "disabled" && task.enabled) return false;
                     if (searchQuery && !task.title.toLowerCase().includes(searchQuery.toLowerCase())) return false;
@@ -584,16 +582,18 @@ export function HeartbeatView({ onOpenTopic }: HeartbeatPanelProps) {
                       if (task.scope !== "project" || task.workspaceRoot !== scopeFilter) return false;
                     }
                     return true;
-                  })
-                  .sort(sortTasksByNextRun);
+                  }),
+                  now,
+                );
 
                 // Group tasks by scope
-                const groups = new Map<string, HeartbeatTask[]>();
-                for (const task of filtered) {
+                const groups = new Map<string, (typeof filtered)[number][]>();
+                for (const entry of filtered) {
+                  const { task } = entry;
                   const key = task.scope === "project" && task.workspaceRoot
                     ? task.workspaceRoot : "global";
                   if (!groups.has(key)) groups.set(key, []);
-                  groups.get(key)!.push(task);
+                  groups.get(key)!.push(entry);
                 }
 
                 const sortedGroups = Array.from(groups.entries()).sort(([a], [b]) => {
@@ -650,9 +650,9 @@ export function HeartbeatView({ onOpenTopic }: HeartbeatPanelProps) {
                   )
                 ) : listView === "flat" ? (
                   <div className="worktree-tree heartbeat-flat">
-                    {filtered.map((task) => {
+                    {filtered.map(({ task, nextRunAt }) => {
                       const isSelected = detailOpen && editing?.id === task.id;
-                      const nextRun = taskNextRun(task, t);
+                      const nextRun = formatTaskNextRun(nextRunAt, now, t);
                       const scopeLabel = task.scope === "project" && task.workspaceRoot
                         ? (workspaceMap[task.workspaceRoot] || task.workspaceRoot.split("/").pop() || task.workspaceRoot)
                         : t("heartbeat.scopeGlobal");
@@ -758,9 +758,9 @@ export function HeartbeatView({ onOpenTopic }: HeartbeatPanelProps) {
                           </div>
 
                           {/* ── Tasks under group (depth 1: 14 + 16 = 30px indent) ── */}
-                          {isExpanded && groupTasks.map((task) => {
+                          {isExpanded && groupTasks.map(({ task, nextRunAt }) => {
                             const isSelected = detailOpen && editing?.id === task.id;
-                            const nextRun = taskNextRun(task, t);
+                            const nextRun = formatTaskNextRun(nextRunAt, now, t);
                             return (
                               <div
                                 key={task.id}

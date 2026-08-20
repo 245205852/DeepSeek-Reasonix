@@ -206,6 +206,18 @@ func TestHeartbeatRunHistorySidecarForwardProtection(t *testing.T) {
 	if err := os.WriteFile(engine.runHistoryPath(), future, 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := engine.readConfigSnapshot(); err == nil {
+		t.Fatal("read should reject a future run-history sidecar schemaVersion")
+	}
+	// A running older process may still have the task in memory. Manual runs
+	// must revalidate the persisted schemas before touching the app runtime.
+	engine.TriggerNow("t1")
+	restarted := newHeartbeatEngine(nil)
+	restarted.Start()
+	t.Cleanup(restarted.Stop)
+	if tasks := restarted.ListTasks(); len(tasks) != 0 {
+		t.Fatalf("startup loaded tasks beside a future sidecar schema: %+v", tasks)
+	}
 	if err := engine.ReplaceTasks([]HeartbeatTask{{ID: "t1", Title: "edited"}}); err == nil {
 		t.Fatal("write should reject a future run-history sidecar schemaVersion")
 	}
