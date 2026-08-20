@@ -5796,8 +5796,7 @@ button.reasoning-summary:focus-visible {
 }
 
 .mermaid-diagram__preview:active,
-.mermaid-diagram__preview svg:active,
-.mermaid-diagram__preview .svg-pan-zoom_viewport:active {
+.mermaid-diagram__preview svg:active {
   cursor: grabbing;
 }
 
@@ -5807,6 +5806,7 @@ button.reasoning-summary:focus-visible {
   height: 100%;
   max-width: none;
   cursor: grab;
+  touch-action: none;
 }
 
 .mermaid-diagram__preview a {
