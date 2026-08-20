@@ -7,7 +7,10 @@ import { fileURLToPath } from "node:url";
 
 const testDir = dirname(fileURLToPath(import.meta.url));
 const appSource = readFileSync(resolve(testDir, "../App.tsx"), "utf8");
-const moreMenuSource = readFileSync(resolve(testDir, "../components/TopicbarMoreMenu.tsx"), "utf8");
+const moreMenuSource = [
+  readFileSync(resolve(testDir, "../components/TopicbarMoreMenu.tsx"), "utf8"),
+  readFileSync(resolve(testDir, "../components/TopicbarMoreMenuContent.tsx"), "utf8"),
+].join("\n");
 
 assert.doesNotMatch(appSource, /t\("shortcuts\.cheatsheetTitle"\)|t\("topicBar\.command"\)/);
 
