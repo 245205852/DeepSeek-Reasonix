@@ -2,6 +2,8 @@ package taskcontract
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"reasonix/internal/evidence"
@@ -111,12 +113,20 @@ func TestMapWriterMatrix(t *testing.T) {
 	}
 
 	scratch := evidence.ClassifyEffect(evidence.EffectInput{
-		ToolName: "write_file", Args: json.RawMessage(`{"path":"/tmp/btc_klines.py"}`),
+		ToolName: "write_file", Args: mustJSONPath(filepath.Join(os.TempDir(), "btc_klines.py")),
 	})
 	got = MapWriter(scratch, 12, "", false)
 	if len(got.Preconditions) != 0 || len(got.PostSuccess) != 0 {
 		t.Fatalf("scratch write must not create duties: %+v", got)
 	}
+}
+
+func mustJSONPath(path string) json.RawMessage {
+	value, err := json.Marshal(map[string]string{"path": path})
+	if err != nil {
+		panic(err)
+	}
+	return value
 }
 
 func TestRebuildIsDeterministicAndInvalidates(t *testing.T) {

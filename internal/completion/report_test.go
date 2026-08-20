@@ -3,6 +3,7 @@ package completion
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -213,7 +214,8 @@ func TestBuildRewritingAPathAfterReviewReopensIt(t *testing.T) {
 }
 
 func TestBuildIgnoresScratchWrites(t *testing.T) {
-	rep := Build(nil, ledgerOf(wrote("/tmp/btc_klines.py"), read("/tmp/btc_klines.py")))
+	scratchPath := filepath.Join(os.TempDir(), "btc_klines.py")
+	rep := Build(nil, ledgerOf(wrote(scratchPath), read(scratchPath)))
 	if rep.Mutations != 0 || len(rep.Changes) != 0 {
 		t.Fatalf("scratch write counted as a project mutation: mutations=%d changes=%+v", rep.Mutations, rep.Changes)
 	}
@@ -227,7 +229,11 @@ func TestBuildKeepsOutsideWrites(t *testing.T) {
 	workspace := filepath.Join(volumeRoot, "reasonix-project")
 	outside := filepath.Join(volumeRoot, "reasonix-external", "config.json")
 	rep := BuildAt(nil, ledgerOf(wrote(outside)), workspace, nil)
-	if rep.Mutations != 1 || len(rep.Changes) != 1 || rep.Changes[0].Path != outside {
+	expectedPath := outside
+	if runtime.GOOS == "windows" {
+		expectedPath = strings.ToLower(expectedPath)
+	}
+	if rep.Mutations != 1 || len(rep.Changes) != 1 || rep.Changes[0].Path != expectedPath {
 		t.Fatalf("outside write report = %+v, want one delivery mutation and named change", rep)
 	}
 	if got := gapKinds(rep); !slices.Equal(got, []string{"unverified_change", "unreviewed_change"}) {
