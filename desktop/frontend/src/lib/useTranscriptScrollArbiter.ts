@@ -38,7 +38,7 @@ import {
   transcriptScrollEventCancelsReaderExtentGuard,
   transcriptKeyboardScrollDelta,
 } from "./transcriptReaderExtentStability";
-import { hasTranscriptScrollableRange, nativeTranscriptBottomTop, nativeTranscriptDistanceFromBottom, TRANSCRIPT_AT_BOTTOM_THRESHOLD_PX } from "./transcriptScrollGeometry";
+import { hasTranscriptScrollableRange, nativeTranscriptBottomTop, nativeTranscriptDistanceFromBottom, pinTranscriptScrollerToNativeTail, TRANSCRIPT_AT_BOTTOM_THRESHOLD_PX } from "./transcriptScrollGeometry";
 import type { TranscriptRow } from "./transcriptRows";
 import { captureTranscriptVirtuosoState } from "./transcriptStateSnapshot";
 import { captureTranscriptLayoutAnchor, type TranscriptLayoutAnchor } from "./transcriptVirtuosoRecovery";
@@ -48,7 +48,7 @@ export type {
   TranscriptRecoveryTerminal,
   TranscriptScrollArbiterRecoveryApi,
 } from "./transcriptScrollRecovery";
-export { hasTranscriptScrollableRange, nativeTranscriptBottomTop, nativeTranscriptDistanceFromBottom, TRANSCRIPT_AT_BOTTOM_THRESHOLD_PX };
+export { hasTranscriptScrollableRange, nativeTranscriptBottomTop, nativeTranscriptDistanceFromBottom, pinTranscriptScrollerToNativeTail, TRANSCRIPT_AT_BOTTOM_THRESHOLD_PX };
 
 const TAIL_STAGNANT_FRAME_LIMIT = 2;
 // Ignore one-frame extent oscillation; real growth remains displaced and
@@ -97,6 +97,7 @@ export function useTranscriptScrollArbiter({
   const resizeSettleFrameRef = useRef<number | null>(null);
   const readerIntentTimerRef = useRef<number | null>(null);
   const lastFollowExtentRef = useRef<number | null>(null);
+  const lastFollowViewportRef = useRef<number | null>(null);
   const recoveryRef = useRef<ActiveTranscriptRecovery | null>(null);
   const nextRecoveryIdRef = useRef(0);
   // Last known-good viewport anchor: updated on every completed recovery, on
@@ -277,7 +278,9 @@ export function useTranscriptScrollArbiter({
     stateRef.current = state;
     modeRef.current = state.mode;
     pinnedRef.current = state.mode === "tail-follow";
-    setIsAtBottom(state.atBottom);
+    // Jump-bottom is a manual-reading control. Composer/footer resize can
+    // displace the native bottom for a frame while tail-follow still owns it.
+    setIsAtBottom(state.atBottom || state.mode === "tail-follow");
     if (scrollRef.current) scrollRef.current.dataset.scrollMode = state.mode;
   }, []);
 
@@ -498,6 +501,7 @@ export function useTranscriptScrollArbiter({
     invalidateAsyncFrames();
     endReaderIntent();
     lastFollowExtentRef.current = null;
+    lastFollowViewportRef.current = null;
     dispatch({ type: "RESET" });
   }, [dispatch, endReaderIntent, invalidateAsyncFrames]);
 
@@ -589,8 +593,11 @@ export function useTranscriptScrollArbiter({
     }
     scrollRef.current = element;
     if (element) {
+      lastFollowViewportRef.current = element.clientHeight;
       element.dataset.scrollMode = stateRef.current.mode;
       deliverScroll(element);
+    } else {
+      lastFollowViewportRef.current = null;
     }
     setScrollElement((current) => current === element ? current : element);
   }, [deliverScroll, finishNativeScrollbarDrag, invalidateAsyncFrames]);
@@ -617,6 +624,28 @@ export function useTranscriptScrollArbiter({
     layoutTransientRef.current = true;
     armLayoutTransientIdle();
     readerExtent.observe();
+    const liveElement = scrollRef.current;
+    if (liveElement) {
+      const previousViewport = lastFollowViewportRef.current;
+      const viewport = liveElement.clientHeight;
+      lastFollowViewportRef.current = viewport;
+      const viewportShrunk = previousViewport != null
+        && previousViewport - viewport > TRANSCRIPT_AT_BOTTOM_THRESHOLD_PX;
+      const previousExtent = lastFollowExtentRef.current;
+      const contentShrunk = previousExtent != null
+        && isTranscriptContentShrink(liveElement.scrollHeight - previousExtent);
+      if (pinnedRef.current && viewportShrunk && !contentShrunk) {
+        // Pin before the coalesced rAF so an in-flow composer wrap cannot
+        // paint one frame off-bottom (jump-bottom flash).
+        if (pinTranscriptScrollerToNativeTail(liveElement)) {
+          noteTranscriptScrollWrite({
+            owner: "tail-follow",
+            kind: "scrollTo",
+            top: nativeTranscriptBottomTop(liveElement),
+          });
+        }
+      }
+    }
     if (followFrameRef.current !== null) return;
     const generation = generationRef.current;
     const scrollElement = scrollRef.current;

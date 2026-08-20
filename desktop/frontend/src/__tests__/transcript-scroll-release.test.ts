@@ -8,6 +8,7 @@ import {
   type TranscriptScrollEvent,
   type TranscriptScrollState,
 } from "../lib/transcriptScrollArbiter";
+import { pinTranscriptScrollerToNativeTail } from "../lib/transcriptScrollGeometry";
 
 let passed = 0;
 let failed = 0;
@@ -206,6 +207,11 @@ check(
   strandedAfterMisreadShrink.commands.join(",") === "AUTOSCROLL_TO_BOTTOM,AUTOSCROLL_TO_BOTTOM,AUTOSCROLL_TO_BOTTOM",
   "substantial displacements keep reconverging after a misread shrink",
 );
+
+const wrapScroller = { scrollHeight: 500, scrollTop: 400, clientHeight: 80 };
+check(pinTranscriptScrollerToNativeTail(wrapScroller) === true, "a composer-wrap viewport shrink is off-bottom and gets pinned");
+check(wrapScroller.scrollTop === 420, "pin writes the native tail top");
+check(pinTranscriptScrollerToNativeTail(wrapScroller) === false, "an already-pinned scroller is left alone");
 
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);

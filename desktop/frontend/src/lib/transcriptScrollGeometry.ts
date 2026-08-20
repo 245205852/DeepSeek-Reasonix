@@ -18,3 +18,14 @@ export function hasTranscriptScrollableRange(
 ) {
   return nativeTranscriptBottomTop(element) > threshold;
 }
+
+/** Returns true when the scroller was off-bottom and is now pinned. */
+export function pinTranscriptScrollerToNativeTail(
+  element: { scrollHeight: number; scrollTop: number; clientHeight: number },
+  threshold = TRANSCRIPT_AT_BOTTOM_THRESHOLD_PX,
+): boolean {
+  const bottom = nativeTranscriptBottomTop(element);
+  if (bottom - element.scrollTop <= threshold) return false;
+  element.scrollTop = bottom;
+  return true;
+}
