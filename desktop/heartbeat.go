@@ -166,19 +166,6 @@ func (e *HeartbeatEngine) configPath() string {
 	return filepath.Join(dir, "heartbeat-tasks.json")
 }
 
-// runHistoryPath returns the sidecar file that holds per-task run history.
-// runHistory lives outside the main config on purpose: an older binary that
-// does not know the field would drop it on a full-table save of the main file,
-// but it can never touch this sidecar, so an upgrade/downgrade cycle keeps the
-// execution history intact.
-func (e *HeartbeatEngine) runHistoryPath() string {
-	dir := config.MemoryUserDir()
-	if dir == "" {
-		dir = "."
-	}
-	return filepath.Join(dir, "heartbeat-tasks.runs.json")
-}
-
 // loadTasks reads tasks from disk.
 func (e *HeartbeatEngine) loadTasks() []HeartbeatTask {
 	snapshot, err := e.readConfigSnapshot()
@@ -186,37 +173,6 @@ func (e *HeartbeatEngine) loadTasks() []HeartbeatTask {
 		return nil
 	}
 	return snapshot.cfg.Tasks
-}
-
-// readRunHistorySidecar loads the per-task run-history sidecar file. Absent or
-// malformed sidecars yield nil so the main config's own runHistory (if any,
-// written by an earlier version that still embedded it) remains authoritative.
-func (e *HeartbeatEngine) readRunHistorySidecar() map[string][]HeartbeatRun {
-	b, err := readFileUTF8(e.runHistoryPath())
-	if err != nil {
-		return nil
-	}
-	var sidecar struct {
-		Runs map[string][]HeartbeatRun `json:"runs"`
-	}
-	if err := json.Unmarshal(b, &sidecar); err != nil {
-		log.Printf("[heartbeat] invalid run-history sidecar: %v", err)
-		return nil
-	}
-	return sidecar.Runs
-}
-
-// writeRunHistorySidecar persists per-task run history outside the main config.
-// The engine owns run state; a frontend full-table save of heartbeat-tasks.json
-// must never be able to clear it.
-func (e *HeartbeatEngine) writeRunHistorySidecar(runs map[string][]HeartbeatRun) error {
-	b, err := json.MarshalIndent(struct {
-		Runs map[string][]HeartbeatRun `json:"runs"`
-	}{Runs: runs}, "", "  ")
-	if err != nil {
-		return err
-	}
-	return fileutil.AtomicWriteFile(e.runHistoryPath(), b, 0o644)
 }
 
 func (e *HeartbeatEngine) readConfigSnapshot() (heartbeatConfigSnapshot, error) {
@@ -242,7 +198,7 @@ func (e *HeartbeatEngine) readConfigSnapshot() (heartbeatConfigSnapshot, error) 
 	// Merge the run-history sidecar (execution journal kept outside the main
 	// config so an older binary cannot drop it on a full-table save). Union by
 	// execution timestamp and keep the newest maxRunHistory entries.
-	if runs := e.readRunHistorySidecar(); len(runs) > 0 {
+	if runs := e.readRunHistorySidecar(cfg); len(runs) > 0 {
 		for i := range cfg.Tasks {
 			if hist, ok := runs[cfg.Tasks[i].ID]; ok && len(hist) > 0 {
 				cfg.Tasks[i].RunHistory = mergeRunHistory(cfg.Tasks[i].RunHistory, hist)
@@ -363,7 +319,20 @@ func (e *HeartbeatEngine) writeTasks(tasks []HeartbeatTask, expected heartbeatCo
 	if sidecarReadErr != nil && !os.IsNotExist(sidecarReadErr) {
 		return sidecarReadErr
 	}
-	if err := e.writeRunHistorySidecar(sidecar); err != nil {
+	if previousSidecarExists {
+		var persistedSidecar heartbeatRunHistorySidecar
+		if err := json.Unmarshal(previousSidecar, &persistedSidecar); err == nil && persistedSidecar.SchemaVersion > heartbeatRunHistorySchemaVersion {
+			return fmt.Errorf("heartbeat run-history sidecar schemaVersion %d is newer than this binary supports (%d); upgrade Reasonix before editing", persistedSidecar.SchemaVersion, heartbeatRunHistorySchemaVersion)
+		}
+	}
+	var previousGeneration *heartbeatRunHistoryGeneration
+	if current.exists {
+		previousGeneration = &heartbeatRunHistoryGeneration{
+			Revision: current.cfg.Revision,
+			Runs:     heartbeatRunHistoryByTask(current.cfg.Tasks),
+		}
+	}
+	if err := e.writeRunHistorySidecar(revision, sidecar, previousGeneration); err != nil {
 		return err
 	}
 	if err := fileutil.AtomicWriteFile(path, b, 0o644); err != nil {
