@@ -2107,7 +2107,10 @@ export function ProjectTree({
               <>
                 {pinnedTreeSections.pinned.length > 0 && (
                   <div className="project-tree__section project-tree__section--pinned">
-                    <div className="project-tree__section-title">{t("projectTree.pinnedTitle")}</div>
+                    <div className="project-tree__section-title project-tree__section-title--pinned">
+                      <Pin size={14} className="project-tree__section-title-icon" aria-hidden="true" />
+                      <span>{t("projectTree.pinnedTitle")}</span>
+                    </div>
                     {pinnedTreeSections.pinned.map((node) => renderNode(node, 0, "pinned"))}
                   </div>
                 )}
