@@ -258,7 +258,6 @@ export function ProjectTree({
     state: "opening", revision: 0, indexed: 0, total: 0, repairPending: 0,
   });
   const rebuildingCatalogRef = useRef(false);
-  const repairNoticeRef = useRef("");
   const [topicPageState, setTopicPageState] = useState<Record<string, { nextCursor?: string; loading: boolean }>>({});
   const topicPageStateRef = useRef(topicPageState);
   const updateTopicPageState = useCallback((key: string, next: { nextCursor?: string; loading: boolean }) => {
@@ -462,16 +461,6 @@ export function ProjectTree({
   }, [applyRuntimeProjection]);
   refreshRef.current = refresh;
 
-  useEffect(() => {
-    if (catalogStatus.state !== "ready" || !catalogStatus.repairReason) return;
-    const noticeKey = `${catalogStatus.repairReason}:${catalogStatus.lastRepairAt ?? 0}`;
-    if (repairNoticeRef.current === noticeKey) return;
-    repairNoticeRef.current = noticeKey;
-    showToast(t("projectTree.catalogRepairCompleted", {
-      count: catalogStatus.sourceCount ?? catalogStatus.total,
-    }), "info");
-  }, [catalogStatus.lastRepairAt, catalogStatus.repairReason, catalogStatus.sourceCount, catalogStatus.state, catalogStatus.total, showToast, t]);
-
   const { addingProject, handleAddProject, openBlankProjectFlow, blankProjectFlow } = useProjectCreation({
     onAddProject,
     onRefresh: refresh,
@@ -483,7 +472,7 @@ export function ProjectTree({
     rebuildingCatalogRef.current = true;
     try {
       await app.RebuildSessionCatalog();
-      showToast(t("projectTree.catalogRepairStarted"), "info");
+      showToast(t("projectTree.rebuildCatalog"), "info");
       void refresh();
     } catch (error) {
       showToast(error instanceof Error ? error.message : String(error), "error", { durationMs: 6000 });
@@ -2128,7 +2117,7 @@ export function ProjectTree({
       {(catalogStatus.state === "opening" || catalogStatus.state === "rebuilding" || catalogStatus.repairPending > 0 || (catalogStatus.unindexedTargetCount ?? 0) > 0 || Boolean(catalogStatus.lastError)) && (
         <div className="project-tree__catalog-progress" role="status">
           <span>{catalogStatus.lastError
-            ? t("projectTree.catalogRepairFailed")
+            ? t("projectTree.rebuildCatalog")
             : t("projectTree.indexingProgress", { done: catalogStatus.indexed, total: catalogStatus.total || "?" })}</span>
           {catalogStatus.canRebuild !== false && catalogStatus.state !== "rebuilding" && (
             <button type="button" className="project-tree__catalog-rebuild" onClick={() => void rebuildSessionCatalog()}>
