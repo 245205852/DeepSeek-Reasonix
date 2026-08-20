@@ -1350,6 +1350,7 @@ export function WorkspacePanel({
           railWidth: WORKSPACE_TREE_RAIL_WIDTH,
           treeMinWidth: WORKSPACE_TREE_MIN_WIDTH,
           previewMinWidth: WORKSPACE_PREVIEW_MIN_WIDTH,
+          treeOnRight: true,
         });
         liveResize.schedule(nextWidth);
       };
@@ -1376,7 +1377,7 @@ export function WorkspacePanel({
     (event: KeyboardEvent<HTMLButtonElement>) => {
       if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
         event.preventDefault();
-        setSavedTreeWidth(effectiveTreeWidth + (event.key === "ArrowRight" ? 16 : -16));
+        setSavedTreeWidth(effectiveTreeWidth + (event.key === "ArrowLeft" ? 16 : -16));
       } else if (event.key === "Home") {
         event.preventDefault();
         setSavedTreeWidth(WORKSPACE_TREE_MIN_WIDTH);

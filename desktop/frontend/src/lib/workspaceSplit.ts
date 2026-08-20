@@ -123,12 +123,12 @@ export function workspaceSplitTreeWidthFromPointer({
   treeOnRight?: boolean;
 }): number {
   if (treeOnRight && typeof panelWidth === "number") {
-    // Tree sits on the right edge with no rail column; its width is the
-    // distance from the pointer to the panel's right edge.
+    // Tree width is the distance from the pointer to the panel's right edge.
+    // The rail still occupies its own column on the opposite side.
     return clampWorkspaceSplitTreeWidth({
       width: panelLeft + panelWidth - clientX,
       panelWidth,
-      railWidth: 0,
+      railWidth,
       treeMinWidth,
       previewMinWidth,
     });
