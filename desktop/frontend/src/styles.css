@@ -35390,6 +35390,15 @@ body > .mermaid-diagram--fullscreen {
   pointer-events: none;
 }
 
+/* Workbench keeps its workspace toggle in the fixed top-right dock-toggle
+   instead of an AppChrome rail; shift it left of the Windows caption strip
+   (min/max/close) so it never sits under the window controls. Same safe inset
+   as the classic-mode panel toggle. */
+.app--windows-frameless.app--workbench .app__dock-toggle,
+:root[data-theme-style] .app--windows-frameless.app--workbench .app__dock-toggle {
+  right: calc(var(--windows-window-controls-safe) + 8px);
+}
+
 /* Creation sets tools padding via shorthand; re-assert the Windows safe
    inset with higher specificity so 「文件 / 改动」 cannot sit under min/max/close.
    Tabs fill this free strip; each tab is an equal column that self-centers. */
