@@ -9,8 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"golang.org/x/sync/errgroup"
-
 	"reasonix/internal/agent"
 	"reasonix/internal/history"
 	"reasonix/internal/sessioncatalog"
@@ -182,98 +180,8 @@ func (a *App) startSessionCatalog(rebuild bool) {
 	go func() {
 		defer close(done)
 		defer a.catalogRebuilding.Store(false)
-		path := sessioncatalog.DefaultPath()
-		targets := a.sessionCatalogTargets()
-		history.RegisterCatalogRoots(historyCatalogRoots(targets))
-		projects := loadProjectsFile()
-		taskcatalog.RegisterSharedProject(globalWorkspaceRoot(), projects.GlobalTitle)
-		for _, project := range projects.Projects {
-			taskcatalog.RegisterSharedProject(project.Root, projectDisplayName(project))
-		}
-		if rebuild {
-			if _, err := sessioncatalog.Rebuild(ctx, path, targets); err != nil && !errors.Is(err, context.Canceled) {
-				slog.Warn("desktop: rebuild session catalog", "err", err)
-			}
-		}
-		catalog, err := sessioncatalog.Open(ctx, sessioncatalog.Options{
-			Path: path,
-			OnRevision: func(revision uint64, roots []string, reason string) {
-				a.emitProjectTreeChangedV2(revision, roots, reason)
-			},
-		})
-		if err != nil {
-			slog.Warn("desktop: open session catalog", "err", err)
-			return
-		}
-		if ctx.Err() != nil || a.shuttingDown.Load() {
-			closeCtx, closeCancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
-			_ = catalog.Close(closeCtx)
-			closeCancel()
-			return
-		}
-		a.sessionCatalog.Store(catalog)
-		if err := a.syncSessionCatalogMetadataBounded(ctx, catalog); err != nil && !errors.Is(err, context.Canceled) {
-			slog.Warn("desktop: sync session catalog metadata", "err", err)
-		}
-		select {
-		case <-a.tabsRestoredSignal():
-		case <-ctx.Done():
-			return
-		}
-		a.indexRestoredSessionPaths(ctx, catalog)
-		// Bounded-concurrency reconcile (limit 4): directory scans are
-		// independent and internally batched/resumable (#8530).
-		var reconcileGroup errgroup.Group
-		reconcileGroup.SetLimit(4)
-		for _, target := range targets {
-			if ctx.Err() != nil || a.shuttingDown.Load() {
-				return
-			}
-			reconcileGroup.Go(func() error {
-				a.reconcileSessionCatalogTarget(ctx, catalog, target)
-				return nil
-			})
-		}
-		_ = reconcileGroup.Wait()
-		a.retargetOpenTabsToContinuations()
-		ticker := time.NewTicker(30 * time.Second)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ticker.C:
-				if err := a.syncSessionCatalogMetadataBounded(ctx, catalog); err != nil && !errors.Is(err, context.Canceled) {
-					slog.Debug("desktop: refresh session catalog metadata", "err", err)
-				}
-				for _, target := range a.sessionCatalogTargets() {
-					if migrated := migrateLegacySessionsIntoGlobalTopics(target.Path); len(migrated) > 0 {
-						_ = a.syncSessionCatalogMetadataBounded(ctx, catalog)
-					}
-					catalog.RequestReconcile(target)
-					// Count sweep rides the periodic reconcile tick; it only moves
-					// provably redundant copies into the recoverable trash.
-					a.sweepExcessRecoveryCopies(catalog, target)
-				}
-			case <-ctx.Done():
-				return
-			}
-		}
+		a.runSessionCatalog(ctx, rebuild)
 	}()
-}
-
-// reconcileSessionCatalogTarget runs one startup reconcile worker: legacy
-// migration, then the resumable catalog scan.
-func (a *App) reconcileSessionCatalogTarget(ctx context.Context, catalog *sessioncatalog.Catalog, target sessioncatalog.DirectoryTarget) {
-	if ctx.Err() != nil || a.shuttingDown.Load() {
-		return
-	}
-	// Legacy assignment is deliberately background-only. It can scan and
-	// repair old metadata, but no project-tree or controller request waits.
-	if migrated := migrateLegacySessionsIntoGlobalTopics(target.Path); len(migrated) > 0 {
-		_ = a.syncSessionCatalogMetadataBounded(ctx, catalog)
-	}
-	if err := catalog.ReconcileDirectory(ctx, target); err != nil && !errors.Is(err, context.Canceled) {
-		slog.Debug("desktop: reconcile session catalog directory", "dir", target.Path, "err", err)
-	}
 }
 
 func (a *App) stopSessionCatalog(timeout time.Duration) {
