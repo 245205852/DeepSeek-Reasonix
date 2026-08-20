@@ -27,7 +27,6 @@ import {
   CAPTURE_TRANSCRIPT_SCROLL_DIAGNOSTICS,
   recordTranscriptScrollTransition,
   type TranscriptScrollDiagnosticSource,
-  type TranscriptTailWriteDiagnostic,
 } from "./transcriptScrollDiagnosticProbe";
 import type {
   ActiveTranscriptRecovery,
@@ -41,7 +40,9 @@ import {
 import { hasTranscriptScrollableRange, nativeTranscriptBottomTop, nativeTranscriptDistanceFromBottom, pinTranscriptTailAfterViewportShrink, TRANSCRIPT_AT_BOTTOM_THRESHOLD_PX, type TranscriptFollowGeometry } from "./transcriptScrollGeometry";
 import type { TranscriptRow } from "./transcriptRows";
 import { captureTranscriptVirtuosoState } from "./transcriptStateSnapshot";
-import { captureTranscriptLayoutAnchor, captureVisibleTranscriptLayoutAnchor, type TranscriptLayoutAnchor } from "./transcriptVirtuosoRecovery";
+import { captureTranscriptLayoutAnchor, type TranscriptLayoutAnchor } from "./transcriptVirtuosoRecovery";
+import { createTranscriptAnchorCompensation, type TranscriptAnchorCompensation } from "./transcriptAnchorCompensation";
+import { createTranscriptTailSettle, type TranscriptTailSettle } from "./transcriptTailSettle";
 import { useTranscriptReaderExtentStability } from "./useTranscriptReaderExtentStability";
 export type {
   TranscriptRecoveryRequestSpec,
@@ -50,12 +51,6 @@ export type {
 } from "./transcriptScrollRecovery";
 export { hasTranscriptScrollableRange, nativeTranscriptBottomTop, nativeTranscriptDistanceFromBottom, TRANSCRIPT_AT_BOTTOM_THRESHOLD_PX };
 
-const TAIL_STAGNANT_FRAME_LIMIT = 2;
-// Ignore one-frame extent oscillation; real growth remains displaced and
-// converges on the following frame (#9028/#9089).
-const TAIL_CONFIRM_OFF_BOTTOM_FRAMES = 2;
-const JUMP_TAIL_TRANSACTION_MS = 240;
-const LAYOUT_TRANSIENT_IDLE_MS = 160;
 const READER_INTENT_IDLE_MS = 180;
 // Slow WebView2 rows need a wall-clock mount budget. Expiry suspends without
 // an intermediate scrollBy, then retries after a bounded quiet window.
@@ -85,15 +80,7 @@ export function useTranscriptScrollArbiter({
   const middlePointerScrollRef = useRef(false);
   const generationRef = useRef(0);
   const followFrameRef = useRef<number | null>(null);
-  const tailSettleFrameRef = useRef<number | null>(null);
-  const tailSettleProgressRef = useRef<{
-    distance: number;
-    stagnantFrames: number;
-    offBottomFrames: number;
-  } | null>(null);
-  const jumpTailTimerRef = useRef<number | null>(null);
   const layoutTransientRef = useRef(false);
-  const layoutTransientIdleTimerRef = useRef<number | null>(null);
   const resizeSettleFrameRef = useRef<number | null>(null);
   const readerIntentTimerRef = useRef<number | null>(null);
   const followGeometryRef = useRef<TranscriptFollowGeometry>({ contentExtent: null, viewportExtent: null });
@@ -103,20 +90,9 @@ export function useTranscriptScrollArbiter({
   // every user-takeover, and sampled on user scroll intent. The blank
   // watchdog restores from it instead of a nearest-mounted-row guess (#8657).
   const lastGoodAnchorRef = useRef<TranscriptLayoutAnchor | null>(null);
-  // Steady-state manual-mode anchor: re-sampled from live geometry on every
-  // delivered scroll while the user owns the viewport. An above-viewport
-  // height change (fold auto-collapse, history patch) is then measurable as
-  // anchor drift and compensated through the arbiter's offset channel
-  // (#8438/#8488/#8897).
-  const manualAnchorRef = useRef<Extract<TranscriptLayoutAnchor, { mode: "manual" }> | null>(null);
-  // At most one anchor-compensation loop at a time; bounded like a recovery
-  // (2 stable frames or the shared wall-clock budget).
-  const anchorCompensationRef = useRef<{
-    anchor: Extract<TranscriptLayoutAnchor, { mode: "manual" }>;
-    frame: number | null;
-    stableFrames: number;
-    deadline: number;
-  } | null>(null);
+  // Steady-state manual-mode anchor compensation (#8438/#8488/#8897) lives in
+  // its own controller; lazy-created once dispatch exists (below).
+  const anchorCompensationRef = useRef<TranscriptAnchorCompensation | null>(null);
   const onRecoveryTerminalRef = useRef(onRecoveryTerminal);
   onRecoveryTerminalRef.current = onRecoveryTerminal;
   const onItemMeasuredRef = useRef(onItemMeasured);
@@ -132,138 +108,13 @@ export function useTranscriptScrollArbiter({
   }, []);
   const readerExtent = useTranscriptReaderExtentStability({ generationRef, modeRef, scrollRef, writeCorrection: writeReaderCorrection });
 
-  // Native-extent writes converge against real DOM geometry and avoid
-  // scrollToIndex("LAST") retries against a stale Virtuoso size tree (#9028).
-  const scrollToTail = useCallback((
-    behavior: "auto" | "smooth",
-    diagnostic?: TranscriptTailWriteDiagnostic,
-  ) => {
-    const element = scrollRef.current;
-    if (!element) return;
-    const top = element.scrollHeight;
-    if (CAPTURE_TRANSCRIPT_SCROLL_DIAGNOSTICS && diagnostic) {
-      noteTranscriptScrollWrite({
-        owner: "tail-follow",
-        kind: "scrollTo",
-        top,
-        source: diagnostic.source,
-        phase: diagnostic.phase,
-        scrollTop: element.scrollTop,
-        scrollHeight: element.scrollHeight,
-        clientHeight: element.clientHeight,
-        bottomDistance: nativeTranscriptDistanceFromBottom(element),
-        mode: modeRef.current,
-        settleFrame: diagnostic.settle?.frame,
-        offBottomFrames: diagnostic.settle?.offBottomFrames,
-        stagnantFrames: diagnostic.settle?.stagnantFrames,
-      });
-    } else {
-      noteTranscriptScrollWrite({ owner: "tail-follow", kind: "scrollTo", top });
-    }
-    virtuosoRef.current?.scrollTo({ top, behavior });
-  }, []);
-
-  const cancelTailSettle = useCallback(() => {
-    if (tailSettleFrameRef.current !== null) cancelAnimationFrame(tailSettleFrameRef.current);
-    tailSettleFrameRef.current = null;
-    tailSettleProgressRef.current = null;
-    if (jumpTailTimerRef.current !== null) window.clearTimeout(jumpTailTimerRef.current);
-    jumpTailTimerRef.current = null;
-    if (layoutTransientIdleTimerRef.current !== null) window.clearTimeout(layoutTransientIdleTimerRef.current);
-    layoutTransientIdleTimerRef.current = null;
-    layoutTransientRef.current = false;
-  }, []);
-
-  const cancelAnchorCompensation = useCallback(() => {
-    const compensation = anchorCompensationRef.current;
-    anchorCompensationRef.current = null;
-    if (compensation?.frame !== null && compensation?.frame !== undefined) {
-      cancelAnimationFrame(compensation.frame);
-    }
-  }, []);
-
-  const armLayoutTransientIdle = useCallback(() => {
-    if (layoutTransientIdleTimerRef.current !== null) window.clearTimeout(layoutTransientIdleTimerRef.current);
-    layoutTransientIdleTimerRef.current = window.setTimeout(() => {
-      layoutTransientIdleTimerRef.current = null;
-      if (tailSettleFrameRef.current !== null) return;
-      layoutTransientRef.current = false;
-      tailSettleProgressRef.current = null;
-    }, LAYOUT_TRANSIENT_IDLE_MS);
-  }, []);
-
-  const scheduleTailSettle = useCallback((jump: boolean, source?: TranscriptScrollDiagnosticSource) => {
-    const scrollElement = scrollRef.current;
-    if (!scrollElement) {
-      layoutTransientRef.current = false;
-      tailSettleProgressRef.current = null;
-      return;
-    }
-    layoutTransientRef.current = true;
-    if (layoutTransientIdleTimerRef.current !== null) {
-      window.clearTimeout(layoutTransientIdleTimerRef.current);
-      layoutTransientIdleTimerRef.current = null;
-    }
-    if (jump) {
-      if (jumpTailTimerRef.current !== null) window.clearTimeout(jumpTailTimerRef.current);
-      const transactionElement = scrollElement;
-      jumpTailTimerRef.current = window.setTimeout(() => {
-        jumpTailTimerRef.current = null;
-        const element = scrollRef.current;
-        if (element && element === transactionElement && modeRef.current === "tail-follow") {
-          const distance = nativeTranscriptDistanceFromBottom(element);
-          if (distance > TRANSCRIPT_AT_BOTTOM_THRESHOLD_PX) {
-            scrollToTail("auto", CAPTURE_TRANSCRIPT_SCROLL_DIAGNOSTICS && source
-              ? { source, phase: "settle", settle: { frame: 0, offBottomFrames: 0, stagnantFrames: 0 } }
-              : undefined);
-          }
-          armLayoutTransientIdle();
-        } else {
-          layoutTransientRef.current = false;
-        }
-      }, JUMP_TAIL_TRANSACTION_MS);
-    }
-    if (jumpTailTimerRef.current !== null) return;
-    if (tailSettleFrameRef.current !== null) return;
-    const generation = generationRef.current;
-    const tick = () => {
-      tailSettleFrameRef.current = null;
-      if (
-        generationRef.current !== generation
-        || scrollRef.current !== scrollElement
-        || modeRef.current !== "tail-follow"
-      ) {
-        tailSettleProgressRef.current = null;
-        layoutTransientRef.current = false;
-        return;
-      }
-      const element = scrollRef.current;
-      if (!element) return;
-      const distance = nativeTranscriptDistanceFromBottom(element);
-      if (distance <= TRANSCRIPT_AT_BOTTOM_THRESHOLD_PX) {
-        tailSettleProgressRef.current = null;
-        armLayoutTransientIdle();
-        return;
-      }
-      const previous = tailSettleProgressRef.current;
-      const offBottomFrames = (previous?.offBottomFrames ?? 0) + 1;
-      if (offBottomFrames < TAIL_CONFIRM_OFF_BOTTOM_FRAMES) {
-        tailSettleProgressRef.current = { distance, stagnantFrames: 0, offBottomFrames };
-        tailSettleFrameRef.current = requestAnimationFrame(tick);
-        return;
-      }
-      const stagnantFrames = previous && Math.abs(previous.distance - distance) <= 0.5
-        ? previous.stagnantFrames + 1
-        : 0;
-      scrollToTail("auto", CAPTURE_TRANSCRIPT_SCROLL_DIAGNOSTICS && source
-        ? { source, phase: "settle", settle: { frame: offBottomFrames, offBottomFrames, stagnantFrames } }
-        : undefined);
-      tailSettleProgressRef.current = { distance, stagnantFrames, offBottomFrames };
-      if (stagnantFrames < TAIL_STAGNANT_FRAME_LIMIT) tailSettleFrameRef.current = requestAnimationFrame(tick);
-      else armLayoutTransientIdle();
-    };
-    tailSettleFrameRef.current = requestAnimationFrame(tick);
-  }, [armLayoutTransientIdle, scrollToTail]);
+  // The tail writer and its bounded settle loop live in their own controller
+  // (file-size budget); all inputs are stable refs, so it is created once.
+  const tailSettleRef = useRef<TranscriptTailSettle | null>(null);
+  tailSettleRef.current ??= createTranscriptTailSettle({
+    virtuosoRef, scrollRef, modeRef, generationRef, layoutTransientRef,
+  });
+  const tailSettle = tailSettleRef.current;
 
   const invalidateAsyncFrames = useCallback(() => {
     generationRef.current += 1;
@@ -271,11 +122,10 @@ export function useTranscriptScrollArbiter({
     if (resizeSettleFrameRef.current !== null) cancelAnimationFrame(resizeSettleFrameRef.current);
     followFrameRef.current = null;
     resizeSettleFrameRef.current = null;
-    cancelTailSettle();
-    cancelAnchorCompensation();
-    manualAnchorRef.current = null;
+    tailSettle.cancel();
+    anchorCompensationRef.current?.reset();
     readerExtent.cancel();
-  }, [cancelAnchorCompensation, cancelTailSettle, readerExtent]);
+  }, [readerExtent, tailSettle]);
 
   // Executes the reducer's CANCEL_RECOVERY command. The cancelling event
   // already cleared recoveryId in the published state, so no RECOVERY_END
@@ -313,16 +163,16 @@ export function useTranscriptScrollArbiter({
         // Virtuoso's autoscrollToBottom() is inert without the followOutput
         // prop (never passed here), so the rAF settle loop is the real
         // follow mechanism.
-        scheduleTailSettle(false, source);
+        tailSettle.schedule(false, source);
         return;
       case "SCROLL_TO_LAST":
-        scrollToTail(command.behavior, CAPTURE_TRANSCRIPT_SCROLL_DIAGNOSTICS && source
+        tailSettle.scrollToTail(command.behavior, CAPTURE_TRANSCRIPT_SCROLL_DIAGNOSTICS && source
           ? { source, phase: "initial" }
           : undefined);
         // Re-aim across a bounded number of frames: the first LAST request
         // can use Virtuoso's pre-measurement size tree, and late tail-row
         // measurements would otherwise park the view above the real bottom.
-        scheduleTailSettle(true, source);
+        tailSettle.schedule(true, source);
         return;
       case "SCROLL_TO_INDEX":
         noteTranscriptScrollWrite({ owner: "jump", kind: "scrollToIndex", index: command.index });
@@ -335,7 +185,7 @@ export function useTranscriptScrollArbiter({
       case "CANCEL_RECOVERY":
         cancelInFlightRecovery(command.id, command.reason);
     }
-  }, [cancelInFlightRecovery, scheduleTailSettle, scrollToTail]);
+  }, [cancelInFlightRecovery, tailSettle]);
 
   const dispatch = useCallback((event: TranscriptScrollEvent) => {
     if (
@@ -348,30 +198,10 @@ export function useTranscriptScrollArbiter({
       || event.type === "SCROLL_TO_OFFSET"
       || event.type === "CONTENT_SHRANK"
     ) {
-      cancelTailSettle();
+      tailSettle.cancel();
     }
     if (transcriptScrollEventCancelsReaderExtentGuard(event.type)) readerExtent.cancel();
-    // Ownership-changing events end an in-flight anchor compensation. The
-    // steady-state offset owners (anchor-compensation, block-window-prepend)
-    // are the loop's own writes and must not cancel it.
-    if (
-      event.type === "RESET"
-      || event.type === "USER_SCROLL_INTENT"
-      || event.type === "MANUAL_READING"
-      || event.type === "USER_RESIZE_BEGIN"
-      || event.type === "SELECTION_BEGIN"
-      || event.type === "PROGRAMMATIC_BEGIN"
-      || event.type === "JUMP_TO_BOTTOM"
-      || event.type === "JUMP_TO_INDEX"
-      || event.type === "RECOVERY_BEGIN"
-      || (event.type === "SCROLL_TO_OFFSET" && event.owner !== "anchor-compensation" && event.owner !== "block-window-prepend")
-    ) {
-      cancelAnchorCompensation();
-    }
-    if (event.type === "RESET") {
-      lastGoodAnchorRef.current = null;
-      manualAnchorRef.current = null;
-    }
+    if (event.type === "RESET") lastGoodAnchorRef.current = null;
     if (event.type === "USER_SCROLL_INTENT") {
       const element = scrollRef.current;
       const anchor = element ? captureTranscriptLayoutAnchor(element, false) : undefined;
@@ -382,76 +212,19 @@ export function useTranscriptScrollArbiter({
     const source = recordTranscriptScrollTransition(event, previousState, result.state, result.commands, scrollRef.current);
     publishState(result.state);
     for (const command of result.commands) runCommand(command, source);
+    // Post-publish so the controller's SCROLL_DELIVERED anchor sampling sees
+    // the new state.
+    anchorCompensationRef.current?.noteEvent(event);
     return result;
-  }, [cancelAnchorCompensation, cancelTailSettle, publishState, readerExtent, runCommand]);
+  }, [publishState, readerExtent, runCommand, tailSettle]);
 
-  // Steady-state viewport anchoring for manual reading: when content ABOVE
-  // the viewport changes height (fold auto-collapse, history patch), the
-  // anchor row's measured drift is compensated through the arbiter's offset
-  // channel instead of pushing the viewport (#8438/#8488/#8897). Changes
-  // below the viewport (streaming footer growth) leave the anchor row put,
-  // so they measure zero drift and earn no write. Bounded like a recovery:
-  // two stable frames or the shared wall-clock budget, whichever comes first.
-  const scheduleAnchorCompensation = useCallback(() => {
-    if (anchorCompensationRef.current !== null) return;
-    const element = scrollRef.current;
-    if (!element) return;
-    if (modeRef.current !== "manual") return;
-    // Never fight an active gesture, an in-flight recovery, or an armed
-    // reader-extent guard: the reader's own scrolling continuously re-samples
-    // the anchor, and the recovery/guard already owns viewport corrections.
-    if (stateRef.current.readerIntent || stateRef.current.recoveryId !== null || readerExtent.isActive()) return;
-    const anchor = manualAnchorRef.current;
-    if (!anchor) return;
-    const generation = generationRef.current;
-    const compensation = {
-      anchor,
-      frame: null as number | null,
-      stableFrames: 0,
-      deadline: Date.now() + ANCHOR_RESTORE_BUDGET_MS,
-    };
-    const tick = () => {
-      compensation.frame = null;
-      if (anchorCompensationRef.current !== compensation) return;
-      if (
-        generationRef.current !== generation
-        || modeRef.current !== "manual"
-        || stateRef.current.readerIntent
-        || stateRef.current.recoveryId !== null
-        || readerExtent.isActive()
-      ) {
-        anchorCompensationRef.current = null;
-        return;
-      }
-      const current = scrollRef.current;
-      if (!current) {
-        anchorCompensationRef.current = null;
-        return;
-      }
-      const row = Array.from(current.querySelectorAll<HTMLElement>(".transcript__row[data-row-key]"))
-        .find((candidate) => candidate.dataset.rowKey === compensation.anchor.rowKey);
-      if (!row) {
-        // The anchor row is unmounted: without a measurement there is no
-        // trustworthy correction, so the compensation simply stops.
-        anchorCompensationRef.current = null;
-        return;
-      }
-      const correction = row.getBoundingClientRect().top - current.getBoundingClientRect().top - compensation.anchor.offset;
-      if (Math.abs(correction) > RECOVERY_CORRECTION_TOLERANCE_PX) {
-        compensation.stableFrames = 0;
-        dispatch({ type: "SCROLL_TO_OFFSET", owner: "anchor-compensation", top: current.scrollTop + correction, behavior: "auto" });
-      } else {
-        compensation.stableFrames += 1;
-      }
-      if (compensation.stableFrames >= RECOVERY_STABLE_FRAMES || Date.now() >= compensation.deadline) {
-        anchorCompensationRef.current = null;
-        return;
-      }
-      compensation.frame = requestAnimationFrame(tick);
-    };
-    anchorCompensationRef.current = compensation;
-    compensation.frame = requestAnimationFrame(tick);
-  }, [dispatch, readerExtent]);
+  // All controller inputs are stable refs plus dispatch (itself stable: every
+  // dep is a ref-closing useCallback), so this runs once per hook instance.
+  anchorCompensationRef.current ??= createTranscriptAnchorCompensation({
+    scrollRef, modeRef, stateRef, generationRef, dispatch,
+    readerExtentIsActive: readerExtent.isActive,
+  });
+  const anchorCompensation = anchorCompensationRef.current;
 
   const endReaderIntent = useCallback(() => {
     if (readerIntentTimerRef.current !== null) window.clearTimeout(readerIntentTimerRef.current);
@@ -478,12 +251,6 @@ export function useTranscriptScrollArbiter({
       substantial: isSubstantialTranscriptDisplacement(distance),
     });
     if (stateRef.current.readerIntent) armReaderIntentIdle();
-    // Keep the steady-state manual anchor fresh from live geometry. Sampling
-    // is skipped while a compensation loop owns the reference so its own
-    // writes cannot move the goalposts mid-flight.
-    if (stateRef.current.mode === "manual" && anchorCompensationRef.current === null) {
-      manualAnchorRef.current = captureVisibleTranscriptLayoutAnchor(element) ?? null;
-    }
   }, [armReaderIntentIdle, dispatch, readerExtent]);
 
   const scrollToBottom = useCallback((behavior: ScrollBehavior = "auto") => {
@@ -641,11 +408,11 @@ export function useTranscriptScrollArbiter({
     endReaderIntent();
     nativeScrollbarDragRef.current = false;
     setNativeScrollbarDragging(false);
-    if (modeRef.current === "tail-follow") scheduleTailSettle(
+    if (modeRef.current === "tail-follow") tailSettle.schedule(
       false,
       CAPTURE_TRANSCRIPT_SCROLL_DIAGNOSTICS ? "native-scrollbar-release" : undefined,
     );
-  }, [deliverScroll, dispatch, endReaderIntent, scheduleTailSettle]);
+  }, [deliverScroll, dispatch, endReaderIntent, tailSettle]);
 
   const finishPointerIntent = useCallback(() => {
     if (nativeScrollbarDragRef.current) finishNativeScrollbarDrag();
@@ -673,19 +440,14 @@ export function useTranscriptScrollArbiter({
 
   useEffect(() => () => {
     if (followFrameRef.current !== null) cancelAnimationFrame(followFrameRef.current);
-    if (tailSettleFrameRef.current !== null) cancelAnimationFrame(tailSettleFrameRef.current);
     if (resizeSettleFrameRef.current !== null) cancelAnimationFrame(resizeSettleFrameRef.current);
     if (readerIntentTimerRef.current !== null) window.clearTimeout(readerIntentTimerRef.current);
-    if (layoutTransientIdleTimerRef.current !== null) window.clearTimeout(layoutTransientIdleTimerRef.current);
-    if (jumpTailTimerRef.current !== null) window.clearTimeout(jumpTailTimerRef.current);
     if (recoveryRef.current?.frame != null) cancelAnimationFrame(recoveryRef.current.frame);
-    if (anchorCompensationRef.current?.frame != null) cancelAnimationFrame(anchorCompensationRef.current.frame);
+    tailSettle.cancel();
+    anchorCompensationRef.current?.reset();
     generationRef.current += 1;
     recoveryRef.current = null;
-    anchorCompensationRef.current = null;
-    layoutTransientRef.current = false;
-    jumpTailTimerRef.current = null;
-  }, []);
+  }, [tailSettle]);
 
   const itemSize = useCallback<SizeFunction>((element, field) => {
     const frozen = nativeScrollbarDragRef.current || nativeScrollbarDragging;
@@ -735,8 +497,7 @@ export function useTranscriptScrollArbiter({
     armReaderIntentIdle();
   }, [armReaderIntentIdle, deliverScroll, dispatch, readerExtent]);
   const followGrowingTail = useCallback(() => {
-    layoutTransientRef.current = true;
-    armLayoutTransientIdle();
+    tailSettle.noteLayoutTransient();
     readerExtent.observe();
     const pinnedTop = scrollRef.current && pinTranscriptTailAfterViewportShrink(scrollRef.current, followGeometryRef.current, pinnedRef.current);
     if (pinnedTop !== null) noteTranscriptScrollWrite({ owner: "tail-follow", kind: "scrollTo", top: pinnedTop });
@@ -753,14 +514,14 @@ export function useTranscriptScrollArbiter({
         followGeometryRef.current.contentExtent = scrollHeight;
         if (previous != null && isTranscriptContentShrink(scrollHeight - previous)) {
           dispatch({ type: "CONTENT_SHRANK" });
-          scheduleAnchorCompensation();
+          anchorCompensation.schedule();
           return;
         }
       }
       dispatch({ type: "LAYOUT_HEIGHT_CHANGED" });
-      scheduleAnchorCompensation();
+      anchorCompensation.schedule();
     });
-  }, [armLayoutTransientIdle, dispatch, readerExtent, scheduleAnchorCompensation]);
+  }, [anchorCompensation, dispatch, readerExtent, tailSettle]);
 
   const beginUserResize = useCallback(() => {
     dispatch({ type: "USER_RESIZE_BEGIN" });
@@ -776,23 +537,18 @@ export function useTranscriptScrollArbiter({
         resizeSettleFrameRef.current = null;
         if (generationRef.current !== generation || scrollRef.current !== scrollElement) return;
         dispatch({ type: "USER_RESIZE_END" });
-        // A user-initiated in-row resize (fold toggle) may have pushed the
-        // viewport; once ownership settles back to manual, anchor it again.
-        scheduleAnchorCompensation();
+        // An in-row resize (fold toggle) may have pushed the viewport.
+        anchorCompensation.schedule();
       });
     });
-  }, [dispatch, scheduleAnchorCompensation]);
+  }, [anchorCompensation, dispatch]);
 
   const atBottomStateChange = useCallback((_atBottom: boolean) => deliverScroll(), [deliverScroll]);
 
   const writeOffset = useCallback((owner: TranscriptScrollOwner, top: number, behavior: ScrollBehavior = "auto") => {
-    // Selection mode only accepts writes that keep the selection stable: its
-    // own edge scrolls and the in-row block-window prepend compensation.
-    if (
-      isTranscriptSelectionMode(modeRef.current)
-      && owner !== "selection-edge-scroll"
-      && owner !== "block-window-prepend"
-    ) return false;
+    // Selection mode accepts only selection-stabilizing writes (its own edge
+    // scrolls and the in-row block-window prepend compensation).
+    if (isTranscriptSelectionMode(modeRef.current) && owner !== "selection-edge-scroll" && owner !== "block-window-prepend") return false;
     if (!scrollRef.current) return false;
     dispatch({ type: "SCROLL_TO_OFFSET", owner, top, behavior });
     return true;
