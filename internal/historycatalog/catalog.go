@@ -109,11 +109,9 @@ func Open(ctx context.Context, opts Options) (*Catalog, error) {
 	// blocks. Registered roots rescan afterwards and re-index truncated.
 	if !opts.InMemory && strings.TrimSpace(opts.Path) != "" &&
 		historyDBFileSize(opts.Path) > rebuildOversizeFactor*opts.MaxBytes {
-		c.wg.Add(1)
-		go func() {
-			defer c.wg.Done()
+		c.wg.Go(func() {
 			c.wipeForRebuild(c.ctx)
-		}()
+		})
 	}
 	return c, nil
 }

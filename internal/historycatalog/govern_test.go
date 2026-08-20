@@ -45,7 +45,7 @@ func TestResolveMaxBytes(t *testing.T) {
 func saveToolSession(t *testing.T, path, marker string, exchanges int) {
 	t.Helper()
 	messages := []provider.Message{{Role: provider.RoleUser, Content: "question about " + marker}}
-	for i := 0; i < exchanges; i++ {
+	for i := range exchanges {
 		id := fmt.Sprintf("call-%d", i)
 		content := id + " " + strings.Repeat("payload ", 4096)
 		if i == 0 {
@@ -226,7 +226,7 @@ func TestGovernSizeEvictsDownToTarget(t *testing.T) {
 		path := filepath.Join(root, marker+".jsonl")
 		if sourceHealth(t, catalog, path) == "evicted" {
 			// Eviction must be a prefix of the last-activity-ascending order.
-			for j := 0; j < i; j++ {
+			for j := range i {
 				prev := filepath.Join(root, markers[j]+".jsonl")
 				if sourceHealth(t, catalog, prev) != "evicted" {
 					t.Fatalf("%s evicted while older %s survived", marker, markers[j])
