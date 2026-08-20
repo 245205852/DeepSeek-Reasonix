@@ -166,6 +166,19 @@
             "refs": [
               5899
             ]
+          },
+          {
+            "title": {
+              "en": "Issue reporting lines updated",
+              "zh": "问题报告渠道更新"
+            },
+            "body": {
+              "en": "Issue forms now list v2 and v3 Studio version lines, with v1 removed and automatic labeling updated.",
+              "zh": "问题表单现在列出 v2 和 v3 Studio 版本线，移除了 v1 并更新了自动标签。"
+            },
+            "refs": [
+              9151
+            ]
           }
         ],
         "fixed": [
@@ -188,7 +201,6 @@
       "risks": [],
       "contributors": [
         "SivanCola",
-        "github-actions[bot]",
         "ttmouse"
       ],
       "links": {
