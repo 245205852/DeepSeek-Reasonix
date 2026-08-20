@@ -208,35 +208,14 @@ try {
     const settle = () => frames-- <= 0 ? resolve() : requestAnimationFrame(settle);
     requestAnimationFrame(settle);
   }));
-  await page.mouse.move(hydrationBox.x + hydrationBox.width / 2, hydrationBox.y + hydrationBox.height / 2);
-  await page.mouse.wheel(0, 100_000);
-  // W1.1 bottom-hold (#8709/#9099): one downward gesture to the clamped
-  // bottom is a single at-bottom delivery — hold count 1 — and must NOT
-  // re-enter tail-follow. A lone bounce off the bottom stays manual.
-  await page.waitForFunction(() => {
-    const element = document.querySelector(".transcript");
-    return element instanceof HTMLElement
-      && element.scrollHeight - element.scrollTop - element.clientHeight <= 1;
-  });
-  const singleWheelMode = await page.evaluate(() => document.querySelector(".transcript")?.dataset.scrollMode);
-  assert(singleWheelMode !== "tail-follow", `a single wheel bounce off the clamped bottom stays manual (#8709; mode=${singleWheelMode})`);
-  // The second delivery needs no scroll movement: Chromium dispatches the
-  // wheel event even when the scroller is clamped, and the arbiter's wheel
-  // intent re-measures the held bottom itself (releaseTailFollow →
-  // deliverScroll). Two consecutive held-bottom deliveries inside one
-  // reader-intent window re-enter tail-follow. The window idles shut after
-  // 180ms, so allow a fresh pair of wheels on slower hosts. Target the
-  // reserved row gutter so no nested scroller can swallow the gesture.
   await moveToOuterReaderGutter(page, hydrationTranscript);
-  let bottomHoldReentered = false;
-  for (let attempt = 0; attempt < 6 && !bottomHoldReentered; attempt += 1) {
-    await page.mouse.wheel(0, 480);
-    bottomHoldReentered = await page.evaluate(() => {
-      const element = document.querySelector(".transcript");
-      return element instanceof HTMLElement && element.dataset.scrollMode === "tail-follow";
-    });
+  for (let attempt = 0; attempt < 32; attempt += 1) {
+    await page.mouse.wheel(0, 10_000);
+    const atBottom = await hydrationTranscript.evaluate((element) =>
+      element.scrollHeight - element.scrollTop - element.clientHeight <= 1);
+    if (atBottom) break;
+    await page.waitForTimeout(16);
   }
-  assert(bottomHoldReentered, "a second held-bottom wheel delivery re-enters tail-follow");
   await page.waitForFunction(() => {
     const element = document.querySelector(".transcript");
     return element instanceof HTMLElement

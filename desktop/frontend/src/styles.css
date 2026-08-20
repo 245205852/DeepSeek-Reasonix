@@ -5796,8 +5796,7 @@ button.reasoning-summary:focus-visible {
 }
 
 .mermaid-diagram__preview:active,
-.mermaid-diagram__preview svg:active,
-.mermaid-diagram__preview .svg-pan-zoom_viewport:active {
+.mermaid-diagram__preview svg:active {
   cursor: grabbing;
 }
 
@@ -5807,6 +5806,7 @@ button.reasoning-summary:focus-visible {
   height: 100%;
   max-width: none;
   cursor: grab;
+  touch-action: none;
 }
 
 .mermaid-diagram__preview a {
@@ -7110,6 +7110,17 @@ body > .mermaid-diagram--fullscreen {
   scrollbar-width: thin;           /* restore scrollbar when resized */
 }
 .composer-card--resized .composer__input::-webkit-scrollbar {
+  display: block;
+  width: 6px;
+}
+.composer-card--auto-overflow .composer__input {
+  /* Autosize mode keeps the scrollbar hidden while content fits; once the
+     inline overflow-y flips to auto (content exceeds the max height) restore
+     the thin scrollbar so long drafts expose their scrollability
+     (#8494/#8742/#9019). */
+  scrollbar-width: thin;
+}
+.composer-card--auto-overflow .composer__input::-webkit-scrollbar {
   display: block;
   width: 6px;
 }
@@ -24645,6 +24656,36 @@ body > .mermaid-diagram--fullscreen {
   white-space: nowrap;
 }
 
+.project-tree__topic-recovery {
+  flex: none;
+  max-width: 72px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--accent);
+  font-size: 10px;
+  line-height: 16px;
+  padding: 0 4px;
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  border-radius: 4px;
+}
+
+.project-tree__catalog-rebuild {
+  flex: none;
+  border: 0;
+  padding: 2px 6px;
+  border-radius: 4px;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.project-tree__catalog-rebuild:hover {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
 .project-tree__topic-im {
   flex: 0 1 auto;
   min-width: 0;
@@ -25220,6 +25261,9 @@ body > .mermaid-diagram--fullscreen {
 }
 
 .project-tree__catalog-progress {
+	display: flex;
+	align-items: center;
+	gap: 8px;
   padding: 4px 10px 6px;
   color: var(--fg-muted);
   font-size: 11px;
@@ -31746,7 +31790,7 @@ body > .mermaid-diagram--fullscreen {
   flex: 1 1 auto !important;
   line-height: 1.25 !important;
   min-height: 20px !important;
-  max-height: 96px !important;
+  max-height: min(30vh, 160px) !important;
   padding: 4px 0 !important;
   overflow-y: auto !important;
   resize: none !important;

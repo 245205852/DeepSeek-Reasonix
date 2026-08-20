@@ -96,6 +96,9 @@
     "desktop/frontend/src/__tests__/tab-switch-hydration.test.tsx": {
       "test-file-size": 162
     },
+    "desktop/frontend/src/__tests__/transcript-recovery-race.test.tsx": {
+      "test-file-size": 129
+    },
     "desktop/frontend/src/__tests__/workspace-changes-errors.test.tsx": {
       "test-file-size": 137
     },
@@ -164,6 +167,9 @@
     },
     "desktop/frontend/src/lib/useController.ts": {
       "file-size": 4035
+    },
+    "desktop/frontend/src/lib/useTranscriptScrollArbiter.ts": {
+      "file-size": 138
     },
     "desktop/heartbeat.go": {
       "essay": 7
