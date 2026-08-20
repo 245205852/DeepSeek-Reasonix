@@ -7148,12 +7148,10 @@ type runtimeSessionStatus struct {
 	running bool
 }
 
-// topicHiddenAsRecoveryOnly hides topics whose only on-disk sessions are
-// conflict-recovery copies: they stay reachable from History, but must not sit
-// in the tree as regular conversations. Pinned topics and topics with any
-// open or running runtime session remain visible — note topicRuntimeStatus
-// reports open/running only for single-session topics, so it must not gate
-// topic existence.
+// topicHiddenAsRecoveryOnly keeps the legacy runtime fallback from creating a
+// duplicate row for an idle recovery-only topic. The catalog-backed tree now
+// supplies one logical row for recovery-only topics, and physical branches
+// remain available from History.
 func topicHiddenAsRecoveryOnly(summary topicSummary, pinned bool, runtimeSessions []runtimeSessionStatus) bool {
 	if !summary.hasRecoveryOnly || summary.hasNormalSession || summary.hasAdoptedRecovery || pinned {
 		return false

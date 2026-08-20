@@ -12,7 +12,6 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"reasonix/internal/agent"
-	"reasonix/internal/config"
 	"reasonix/internal/history"
 	"reasonix/internal/sessioncatalog"
 	"reasonix/internal/stats"
@@ -355,26 +354,6 @@ func (a *App) cancelAllTabBuilds() {
 	a.mu.Unlock()
 }
 
-func (a *App) sessionCatalogTargets() []sessioncatalog.DirectoryTarget {
-	f := loadProjectsFile()
-	seen := map[string]bool{}
-	out := []sessioncatalog.DirectoryTarget{}
-	add := func(target sessioncatalog.DirectoryTarget) {
-		target.Path = filepath.Clean(strings.TrimSpace(target.Path))
-		if target.Path == "." || target.Path == "" || seen[target.Path] {
-			return
-		}
-		seen[target.Path] = true
-		out = append(out, target)
-	}
-	add(sessioncatalog.DirectoryTarget{Path: config.SessionDir(), Scope: "global"})
-	add(sessioncatalog.DirectoryTarget{Path: desktopSessionDir(globalWorkspaceRoot()), Scope: "global"})
-	for _, project := range f.Projects {
-		add(sessioncatalog.DirectoryTarget{Path: desktopSessionDir(project.Root), Scope: "project", WorkspaceRoot: project.Root})
-	}
-	return out
-}
-
 func listCatalogSessionsForDirectory(ctx context.Context, catalog *sessioncatalog.Catalog,
 	target sessioncatalog.DirectoryTarget, directory string) ([]sessioncatalog.SessionRecord, error) {
 	for range 2 {
@@ -397,37 +376,6 @@ func listCatalogSessionsForDirectory(ctx context.Context, catalog *sessioncatalo
 		}
 	}
 	return []sessioncatalog.SessionRecord{}, nil
-}
-
-func (a *App) indexRestoredSessionPaths(ctx context.Context, catalog *sessioncatalog.Catalog) {
-	type restored struct {
-		target sessioncatalog.DirectoryTarget
-		path   string
-	}
-	a.mu.RLock()
-	items := make([]restored, 0, len(a.tabs)+len(a.detachedSessions))
-	collect := func(tab *WorkspaceTab) {
-		if tab == nil || strings.TrimSpace(tab.SessionPath) == "" {
-			return
-		}
-		items = append(items, restored{
-			target: sessioncatalog.DirectoryTarget{Path: filepath.Dir(tab.SessionPath), Scope: tab.Scope, WorkspaceRoot: tab.WorkspaceRoot},
-			path:   tab.SessionPath,
-		})
-	}
-	for _, tab := range a.tabs {
-		collect(tab)
-	}
-	for _, tab := range a.detachedSessions {
-		collect(tab)
-	}
-	a.mu.RUnlock()
-	for _, item := range items {
-		if ctx.Err() != nil {
-			return
-		}
-		_ = catalog.IndexSessionPath(ctx, item.target, item.path)
-	}
 }
 
 // syncSessionCatalogMetadataBounded is the only form the long-lived catalog

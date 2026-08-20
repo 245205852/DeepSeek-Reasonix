@@ -192,8 +192,33 @@ func (c *Catalog) refreshCounts(ctx context.Context) {
 	c.status.RecoveryBranches = branches
 	c.status.RecoveryDiverged = diverged
 	c.status.CleanupEligible = cleanup
+	c.status.SourceCount = total
 	c.status.Revision = c.revision.Load()
 	c.statusMu.Unlock()
+}
+
+func (c *Catalog) markRepair(reason string, at int64) {
+	if c == nil || strings.TrimSpace(reason) == "" {
+		return
+	}
+	if at <= 0 {
+		at = time.Now().UnixMilli()
+	}
+	c.statusMu.Lock()
+	c.status.RepairReason = strings.TrimSpace(reason)
+	c.status.LastRepairAt = at
+	c.statusMu.Unlock()
+}
+
+// MarkRepairReason records a lifecycle-level repair cause (for example, a
+// clean index-generation cutover) without touching the authoritative session
+// files. Integrity checks use the internal helper so they can attach their
+// timestamp at the point of detection.
+func (c *Catalog) MarkRepairReason(reason string) {
+	if c == nil {
+		return
+	}
+	c.markRepair(reason, c.opts.Now().UnixMilli())
 }
 
 func normalizeScope(scope, root string) (string, string) {

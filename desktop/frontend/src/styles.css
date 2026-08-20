@@ -24678,6 +24678,36 @@ body > .mermaid-diagram--fullscreen {
   white-space: nowrap;
 }
 
+.project-tree__topic-recovery {
+  flex: none;
+  max-width: 72px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--accent);
+  font-size: 10px;
+  line-height: 16px;
+  padding: 0 4px;
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  border-radius: 4px;
+}
+
+.project-tree__catalog-rebuild {
+  flex: none;
+  border: 0;
+  padding: 2px 6px;
+  border-radius: 4px;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.project-tree__catalog-rebuild:hover {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
 .project-tree__topic-im {
   flex: 0 1 auto;
   min-width: 0;
@@ -25269,6 +25299,9 @@ body > .mermaid-diagram--fullscreen {
 }
 
 .project-tree__catalog-progress {
+	display: flex;
+	align-items: center;
+	gap: 8px;
   padding: 4px 10px 6px;
   color: var(--fg-muted);
   font-size: 11px;
