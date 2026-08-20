@@ -208,8 +208,14 @@ try {
     const settle = () => frames-- <= 0 ? resolve() : requestAnimationFrame(settle);
     requestAnimationFrame(settle);
   }));
-  await page.mouse.move(hydrationBox.x + hydrationBox.width / 2, hydrationBox.y + hydrationBox.height / 2);
-  await page.mouse.wheel(0, 100_000);
+  await moveToOuterReaderGutter(page, hydrationTranscript);
+  for (let attempt = 0; attempt < 32; attempt += 1) {
+    await page.mouse.wheel(0, 10_000);
+    const atBottom = await hydrationTranscript.evaluate((element) =>
+      element.scrollHeight - element.scrollTop - element.clientHeight <= 1);
+    if (atBottom) break;
+    await page.waitForTimeout(16);
+  }
   await page.waitForFunction(() => {
     const element = document.querySelector(".transcript");
     return element instanceof HTMLElement
