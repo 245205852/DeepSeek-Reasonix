@@ -71,8 +71,6 @@ import { dismissOnboarding, shouldOpenOnboarding } from "./lib/onboarding";
 import { AppChrome } from "./components/AppChrome";
 import { ShortcutsCheatsheet } from "./components/ShortcutsCheatsheet";
 import { WorktreeBadge } from "./components/WorktreeBadge";
-import { HeartbeatPanel } from "./custom/features/heartbeat/HeartbeatPanel";
-import "./custom/features/heartbeat/heartbeat.css";
 import { CopyButton } from "./components/CopyButton";
 import { ExternalOpener, shouldMountExternalOpener } from "./components/ExternalOpener";
 import { startTerminalEventBridge } from "./lib/terminalEvents";
@@ -287,6 +285,7 @@ function NoticePreviewPanel() {
 const TranscriptSelectionMenu = lazy(() => import("./components/TranscriptSelectionMenu").then((module) => ({ default: module.TranscriptSelectionMenu })));
 const ContextPanel = lazy(() => import("./components/ContextPanel").then((module) => ({ default: module.ContextPanel })));
 const HistoryPanel = lazy(() => import("./components/HistoryPanel").then((module) => ({ default: module.HistoryPanel })));
+const HeartbeatView = lazy(() => import("./custom/features/heartbeat/HeartbeatPanel").then((module) => ({ default: module.HeartbeatView })));
 const SettingsPanel = lazy(() => import("./components/SettingsPanelEntry").then((module) => ({ default: module.SettingsPanel })));
 const RemotePanel = lazy(() => import("./components/RemotePanel").then((module) => ({ default: module.RemotePanel })));
 const TerminalPanel = lazy(() => import("./components/TerminalPanel").then((module) => ({ default: module.TerminalPanel })));
@@ -1179,8 +1178,8 @@ export default function App() {
   const [sidebarImDetailConnectionId, setSidebarImDetailConnectionId] = useState("");
   const sidebarCollapsed = useLayoutStore((s) => s.sidebarCollapsed);
   const setSidebarCollapsed = useLayoutStore((s) => s.setSidebarCollapsed);
-  const heartbeatOpen = useOverlayStore((s) => s.heartbeatOpen);
-  const setHeartbeatOpen = useOverlayStore((s) => s.setHeartbeatOpen);
+  const mainView = useOverlayStore((s) => s.mainView);
+  const setMainView = useOverlayStore((s) => s.setMainView);
   type TimeFilter = "all" | "10" | "20" | "1h" | "3h" | "5h" | "1d";
   const [topicTimeFilter, setTopicTimeFilter] = useState<TimeFilter>(() => {
     try {
@@ -1294,6 +1293,21 @@ export default function App() {
   const setTopicExportOpen = useOverlayStore((s) => s.setTopicExportOpen);
   const sidebarSearchOpen = useOverlayStore((s) => s.sidebarSearchOpen);
   const setSidebarSearchOpen = useOverlayStore((s) => s.setSidebarSearchOpen);
+
+  // Leaving the automation view: any overlay/sidebar surface that signals the
+  // user is returning to the chat workspace switches mainView back to "chat".
+  // Navigation paths (open topic / new session / resume) are covered by
+  // enqueueNavigation.
+  useEffect(() => {
+    if (mainView !== "automation") return;
+    // Any chat-side overlay/surface counts as "returning to the chat
+    // workspace": settings, palette, sidebar search, history, the shortcuts
+    // cheatsheet and the topic export menu all switch mainView back to chat.
+    if (settingsTarget !== null || paletteOpen || sidebarSearchOpen || histView !== null
+      || shortcutsOpen || topicExportOpen) {
+      setMainView("chat");
+    }
+  }, [mainView, settingsTarget, paletteOpen, sidebarSearchOpen, histView, shortcutsOpen, topicExportOpen, setMainView]);
   const sidebarSearchFocusSignal = useOverlayStore((s) => s.sidebarSearchFocusSignal);
   const setSidebarSearchFocusSignal = useOverlayStore((s) => s.setSidebarSearchFocusSignal);
   const [sidebarTogglePressed, setSidebarTogglePressed] = useState(false);
@@ -1603,6 +1617,9 @@ export default function App() {
   const {
     renderWidth: workspacePanelRenderWidth,
     overlay: workspacePanelOverlay,
+    // The automation page fills the main content area; the workbench dock must
+    // not overlay it. main-v2 keeps automation as a popup so its placement
+    // helper has no view concept — apply the exclusion here on top.
     renderable: workspacePanelRenderable,
     gridOpen: workspacePanelGridOpen,
   } = resolveWorkspacePanelPlacement({
@@ -1612,6 +1629,9 @@ export default function App() {
     minWidth: workspacePanelMinWidth, minRenderWidth: rightDockMinRenderWidth,
     liveWidth: liveWorkspacePanelRenderWidth,
   });
+  const automationView = mainView === "automation";
+  const effectiveWorkspacePanelRenderable = automationView ? false : workspacePanelRenderable;
+  const effectiveWorkspacePanelGridOpen = automationView ? false : workspacePanelGridOpen;
   const resolveLiveWorkspacePanelRenderWidth = useCallback(
     (preferredWidth: number, nextSidebarWidth = sidebarWidth) =>
       resolveLiveWorkspacePanelWidth({
@@ -2915,7 +2935,7 @@ export default function App() {
 
   const toggleWorkspacePanel = useCallback(() => {
     pulseWorkspaceToggle();
-    if (workspacePanelRenderable) {
+    if (effectiveWorkspacePanelRenderable) {
       closeWorkspacePanel();
       return;
     }
@@ -2926,7 +2946,7 @@ export default function App() {
       return;
     }
     openWorkspacePanel("context");
-  }, [closeWorkspacePanel, desktopLayoutStyle, openWorkspacePanel, pulseWorkspaceToggle, rightDockMode, workspacePanelRenderable]);
+  }, [closeWorkspacePanel, desktopLayoutStyle, openWorkspacePanel, pulseWorkspaceToggle, rightDockMode, effectiveWorkspacePanelRenderable]);
 
   const openRightDockMode = useCallback(
     (mode: RightDockMode) => {
@@ -3806,6 +3826,9 @@ export default function App() {
   }, [beginNavigationSurface, runNavigationRequest, settleNavigationSurface]);
 
   const enqueueNavigation = useCallback((input: DesktopNavigationIntent): Promise<void> => {
+    // Any navigation (open topic / new session / resume) leaves the automation
+    // view and returns to the chat workspace.
+    setMainView("chat");
     // Invalidate any in-flight activation's stale apply at ENQUEUE time. The
     // queue serializes requests, so a click made while another request runs
     // only advances the controller's navigation epoch when it eventually
@@ -3814,7 +3837,7 @@ export default function App() {
     // newer surface's cached state (#6613 review).
     const navigationIntentSeq = noteNavigationIntent();
     return enqueueNavigationWithIntent(input, navigationIntentSeq);
-  }, [enqueueNavigationWithIntent, noteNavigationIntent]);
+  }, [enqueueNavigationWithIntent, noteNavigationIntent, setMainView]);
 
   const openBlankSession = useCallback((scope: string, workspaceRoot: string): Promise<void> =>
     enqueueNavigation({ kind: "blank", scope, workspaceRoot: scope === "project" ? workspaceRoot : "" }),
@@ -4299,7 +4322,7 @@ export default function App() {
           sidebarImDetailConnection ? "layout--statusbar-hidden" : "",
           sidebarCollapsed ? "layout--sidebar-collapsed" : "",
           sidebarResizing ? "layout--resizing layout--sidebar-resizing" : "",
-          workspacePanelGridOpen ? "layout--workspace-open" : "",
+          effectiveWorkspacePanelGridOpen ? "layout--workspace-open" : "",
           workspacePanelOverlay ? "layout--workspace-overlay" : "",
           "layout--terminal-drawer-open",
           terminalPanelOpen ? "layout--terminal-drawer-expanded" : "",
@@ -4325,9 +4348,9 @@ export default function App() {
             sidebarCollapsed={sidebarCollapsed}
             sidebarToggleTitle={sidebarToggleTitle}
             workspacePanelMaximized={workspacePanelMaximized}
-            workspacePanelRenderable={workspacePanelRenderable}
+            workspacePanelRenderable={effectiveWorkspacePanelRenderable}
             workspaceTogglePressed={workspaceTogglePressed}
-            workspacePanelLabel={workspacePanelRenderable ? t("rightDock.collapse") : t("rightDock.expand")}
+            workspacePanelLabel={effectiveWorkspacePanelRenderable ? t("rightDock.collapse") : t("rightDock.expand")}
             onToggleSidebar={toggleSidebar}
             onToggleWorkspacePanel={toggleWorkspacePanel}
             onTabChange={(id) => void handleTabChange(id)}
@@ -4422,7 +4445,7 @@ export default function App() {
                 <button
                   className="sidebar-feature-zone__item"
                   type="button"
-                  onClick={() => setHeartbeatOpen(true)}
+                  onClick={() => setMainView("automation")}
                 >
                   <AlarmClock size={14} aria-hidden="true" />
                   <span>{t("sidebar.automation")}</span>
@@ -4475,7 +4498,7 @@ export default function App() {
                   <button
                     className="sidebar__utility-button"
                     type="button"
-                    onClick={() => setHeartbeatOpen(true)}
+                    onClick={() => setMainView("automation")}
                   >
                     <AlarmClock size={16} aria-hidden="true" />
                     <span className="sr-only">{t("sidebar.automation")}</span>
@@ -4528,7 +4551,7 @@ export default function App() {
                 <Tooltip label={t("heartbeat.scheduler")} fill side="right" disabled={sidebarNavTooltipDisabled}>
                   <button
                     className="sidebar__navitem"
-                    onClick={() => setHeartbeatOpen(true)}
+                    onClick={() => setMainView("automation")}
                   >
                     <AlarmClock size={15} />
                     <span>{t("sidebar.automation")}</span>
@@ -4578,6 +4601,13 @@ export default function App() {
         )}
 
         <section className={`chat-pane${creationEmptyHero ? " chat-pane--creation-empty" : ""}`}>
+          {mainView === "automation" ? (
+            <Suspense fallback={<div className="heartbeat-page" />}>
+              <HeartbeatView onOpenTopic={(scope, workspaceRoot, topicId) => {
+                void handleOpenTopic(scope, workspaceRoot, topicId);
+              }} />
+            </Suspense>
+          ) : (
           <>
           <header className="topicbar">
             {workbenchChromeHidden && (
@@ -4720,7 +4750,7 @@ export default function App() {
                     className="topicbar__action-btn topicbar__action-btn--label"
                     type="button"
                     aria-label={t("workspace.changedTab")}
-                    aria-pressed={workspacePanelRenderable && rightDockMode === "changed"}
+                    aria-pressed={effectiveWorkspacePanelRenderable && rightDockMode === "changed"}
                     onClick={() => openRightDockMode("changed")}
                   >
                     <GitBranch size={14} />
@@ -4757,18 +4787,18 @@ export default function App() {
                 </button>
               </Tooltip>
               {(sidebarCreation || workbenchChromeHidden) && (
-                <Tooltip label={workspacePanelRenderable ? t("rightDock.collapse") : t("rightDock.expand")}>
+                <Tooltip label={effectiveWorkspacePanelRenderable ? t("rightDock.collapse") : t("rightDock.expand")}>
                   <button
                     className={[
                       "topicbar__chrome-btn",
                       "topicbar__chrome-btn--workspace",
-                      workspacePanelRenderable ? "topicbar__chrome-btn--active" : "",
+                      effectiveWorkspacePanelRenderable ? "topicbar__chrome-btn--active" : "",
                       workspaceTogglePressed ? "topicbar__chrome-btn--pressed" : "",
                     ].filter(Boolean).join(" ")}
                     type="button"
                     onClick={toggleWorkspacePanel}
-                    aria-label={workspacePanelRenderable ? t("rightDock.collapse") : t("rightDock.expand")}
-                    aria-pressed={workspacePanelRenderable}
+                    aria-label={effectiveWorkspacePanelRenderable ? t("rightDock.collapse") : t("rightDock.expand")}
+                    aria-pressed={effectiveWorkspacePanelRenderable}
                   >
                     <PanelRight size={15} />
                   </button>
@@ -5152,9 +5182,10 @@ export default function App() {
           </footer>
           )}
           </>
+          )}
         </section>
 
-        {workspacePanelGridOpen && (
+        {effectiveWorkspacePanelGridOpen && (
           <button
             className="workspace-panel-resizer"
             type="button"
@@ -5170,7 +5201,7 @@ export default function App() {
           />
         )}
 
-        {workspacePanelRenderable && (
+        {effectiveWorkspacePanelRenderable && (
           <aside
             className={[
               "workbench-dock",
@@ -5254,7 +5285,7 @@ export default function App() {
               ) : (
                 <Suspense fallback={null}>
                   <WorkspacePanel
-                    open={workspacePanelRenderable}
+                    open={effectiveWorkspacePanelRenderable}
                     tabId={activeTabId}
                     cwd={state.meta?.cwd}
                     workspaceScopeKey={workspaceScopeKey}
@@ -5461,14 +5492,12 @@ export default function App() {
         />
       )}
 
-      <HeartbeatPanel open={heartbeatOpen} onClose={() => setHeartbeatOpen(false)} onOpenTopic={(scope, workspaceRoot, topicId) => {
-        void handleOpenTopic(scope, workspaceRoot, topicId);
-      }} />
-      <Suspense fallback={null}><TranscriptSelectionMenu
-        enabled={Boolean(activeTabId && !activeTab?.readOnly && !decisionSurface && !sidebarImDetailConnection && !hydratePlaceholderActive)}
-        resetKey={activeTabId ?? ""}
-        onAddToChat={addSelectedTextToComposer}
-      />
+      <Suspense fallback={null}>
+        <TranscriptSelectionMenu
+          enabled={Boolean(activeTabId && !activeTab?.readOnly && !decisionSurface && !sidebarImDetailConnection && !hydratePlaceholderActive)}
+          resetKey={activeTabId ?? ""}
+          onAddToChat={addSelectedTextToComposer}
+        />
       </Suspense>
       {windowsFramelessChrome && (
         <WindowsWindowControls

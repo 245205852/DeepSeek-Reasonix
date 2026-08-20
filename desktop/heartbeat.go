@@ -21,6 +21,8 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -37,27 +39,53 @@ import (
 
 // HeartbeatTask defines a single scheduled prompt.
 type HeartbeatTask struct {
-	ID                     string `json:"id"`
-	Title                  string `json:"title"`    // user-visible label
-	Prompt                 string `json:"prompt"`   // the prompt to submit
-	Interval               string `json:"interval"` // e.g. "5m", "1h", "30s"
-	Enabled                bool   `json:"enabled"`
-	Scope                  string `json:"scope,omitempty"`                  // "global" or "project"
-	WorkspaceRoot          string `json:"workspaceRoot,omitempty"`          // project root path when scope="project"
-	TopicID                string `json:"topicId,omitempty"`                // created topic, reused on re-run
-	LastRunAt              int64  `json:"lastRunAt,omitempty"`              // unix millis
-	NewConversationEachRun bool   `json:"newConversationEachRun,omitempty"` // true = create new topic every run
-	CreatedAt              int64  `json:"createdAt,omitempty"`
-	ApprovalMode           string `json:"approvalMode"`              // "ask" | "auto" | "yolo"; empty defaults to "yolo"
-	TimeWindowStart        string `json:"timeWindowStart,omitempty"` // "HH:MM" — interval tasks only run after this time (inclusive)
-	TimeWindowEnd          string `json:"timeWindowEnd,omitempty"`   // "HH:MM" — interval tasks only run before this time (exclusive)
-	NotifyChannels         *bool  `json:"notifyChannels,omitempty"`  // true = push to bot channels; nil/false = skip
+	ID                     string         `json:"id"`
+	Title                  string         `json:"title"`    // user-visible label
+	Prompt                 string         `json:"prompt"`   // the prompt to submit
+	Interval               string         `json:"interval"` // e.g. "5m", "1h", "30s"
+	Enabled                bool           `json:"enabled"`
+	Scope                  string         `json:"scope,omitempty"`                  // "global" or "project"
+	WorkspaceRoot          string         `json:"workspaceRoot,omitempty"`          // project root path when scope="project"
+	TopicID                string         `json:"topicId,omitempty"`                // created topic, reused on re-run
+	LastRunAt              int64          `json:"lastRunAt,omitempty"`              // unix millis
+	NewConversationEachRun bool           `json:"newConversationEachRun,omitempty"` // true = create new topic every run
+	RunHistory             []HeartbeatRun `json:"runHistory,omitempty"`             // recent executions (oldest first, capped)
+	CreatedAt              int64          `json:"createdAt,omitempty"`
+	ApprovalMode           string         `json:"approvalMode"`              // "ask" | "auto" | "yolo"; empty defaults to "yolo"
+	TimeWindowStart        string         `json:"timeWindowStart,omitempty"` // "HH:MM" — interval tasks only run after this time (inclusive)
+	TimeWindowEnd          string         `json:"timeWindowEnd,omitempty"`   // "HH:MM" — interval tasks only run before this time (exclusive)
+	NotifyChannels         *bool          `json:"notifyChannels,omitempty"`  // true = push to bot channels; nil/false = skip
 }
+
+// HeartbeatRun records a single successful execution of a heartbeat task.
+// TopicID is the conversation created/reused by that run (may be empty if
+// the run produced no topic).
+type HeartbeatRun struct {
+	At      int64  `json:"at"`      // unix millis execution time
+	TopicID string `json:"topicId"` // topic used/created by this run
+}
+
+// maxRunHistory caps how many recent executions are kept per task.
+const maxRunHistory = 20
+
+// heartbeatSchemaVersion is the current on-disk config schema version.
+// v1 (schemaVersion absent/0): interval-only tasks, no runHistory.
+// v2: adds runHistory per task (execution history, capped at maxRunHistory).
+//
+// Migration boundary: configs written by v2+ binaries are read fine by older
+// binaries (unknown fields are ignored by json.Unmarshal), but an older
+// binary doing a full-table save (ReplaceTasks/ReplaceConfig) will silently
+// drop runHistory because it doesn't know the field. This is a one-way
+// upgrade — once a v2+ binary has saved, do not run an older binary that
+// writes the config. writeTasks refuses to overwrite a config with a
+// schemaVersion newer than this binary understands (forward protection).
+const heartbeatSchemaVersion = 2
 
 // heartbeatConfig is the on-disk format.
 type heartbeatConfig struct {
-	Revision uint64          `json:"revision,omitempty"`
-	Tasks    []HeartbeatTask `json:"tasks"`
+	SchemaVersion int             `json:"schemaVersion,omitempty"`
+	Revision      uint64          `json:"revision,omitempty"`
+	Tasks         []HeartbeatTask `json:"tasks"`
 }
 
 // ErrHeartbeatConfigConflict means another writer changed the config after
@@ -138,6 +166,19 @@ func (e *HeartbeatEngine) configPath() string {
 	return filepath.Join(dir, "heartbeat-tasks.json")
 }
 
+// runHistoryPath returns the sidecar file that holds per-task run history.
+// runHistory lives outside the main config on purpose: an older binary that
+// does not know the field would drop it on a full-table save of the main file,
+// but it can never touch this sidecar, so an upgrade/downgrade cycle keeps the
+// execution history intact.
+func (e *HeartbeatEngine) runHistoryPath() string {
+	dir := config.MemoryUserDir()
+	if dir == "" {
+		dir = "."
+	}
+	return filepath.Join(dir, "heartbeat-tasks.runs.json")
+}
+
 // loadTasks reads tasks from disk.
 func (e *HeartbeatEngine) loadTasks() []HeartbeatTask {
 	snapshot, err := e.readConfigSnapshot()
@@ -145,6 +186,40 @@ func (e *HeartbeatEngine) loadTasks() []HeartbeatTask {
 		return nil
 	}
 	return snapshot.cfg.Tasks
+}
+
+// readRunHistorySidecar loads the per-task run-history sidecar file. Absent or
+// malformed sidecars yield nil so the main config's own runHistory (if any,
+// written by an earlier version that still embedded it) remains authoritative.
+func (e *HeartbeatEngine) readRunHistorySidecar() map[string][]HeartbeatRun {
+	b, err := readFileUTF8(e.runHistoryPath())
+	if err != nil {
+		return nil
+	}
+	var sidecar struct {
+		Runs map[string][]HeartbeatRun `json:"runs"`
+	}
+	if err := json.Unmarshal(b, &sidecar); err != nil {
+		log.Printf("[heartbeat] invalid run-history sidecar: %v", err)
+		return nil
+	}
+	return sidecar.Runs
+}
+
+// writeRunHistorySidecar persists per-task run history outside the main config.
+// The engine owns run state; a frontend full-table save of heartbeat-tasks.json
+// must never be able to clear it.
+func (e *HeartbeatEngine) writeRunHistorySidecar(runs map[string][]HeartbeatRun) error {
+	if len(runs) == 0 {
+		return nil
+	}
+	b, err := json.MarshalIndent(struct {
+		Runs map[string][]HeartbeatRun `json:"runs"`
+	}{Runs: runs}, "", "  ")
+	if err != nil {
+		return err
+	}
+	return fileutil.AtomicWriteFile(e.runHistoryPath(), b, 0o644)
 }
 
 func (e *HeartbeatEngine) readConfigSnapshot() (heartbeatConfigSnapshot, error) {
@@ -159,6 +234,23 @@ func (e *HeartbeatEngine) readConfigSnapshot() (heartbeatConfigSnapshot, error) 
 	var cfg heartbeatConfig
 	if err := json.Unmarshal(b, &cfg); err != nil {
 		return heartbeatConfigSnapshot{}, fmt.Errorf("invalid config: %w", err)
+	}
+	// Forward protection on read too: a config written by a future binary
+	// carries a schemaVersion this binary does not understand. Refuse to load
+	// it for execution — the scheduler must not run tasks under stale
+	// scheduling/approval semantics introduced by a newer schema.
+	if cfg.SchemaVersion > heartbeatSchemaVersion {
+		return heartbeatConfigSnapshot{}, fmt.Errorf("heartbeat config schemaVersion %d is newer than this binary supports (%d); upgrade Reasonix", cfg.SchemaVersion, heartbeatSchemaVersion)
+	}
+	// Merge the run-history sidecar (execution journal kept outside the main
+	// config so an older binary cannot drop it on a full-table save). Union by
+	// execution timestamp and keep the newest maxRunHistory entries.
+	if runs := e.readRunHistorySidecar(); len(runs) > 0 {
+		for i := range cfg.Tasks {
+			if hist, ok := runs[cfg.Tasks[i].ID]; ok && len(hist) > 0 {
+				cfg.Tasks[i].RunHistory = mergeRunHistory(cfg.Tasks[i].RunHistory, hist)
+			}
+		}
 	}
 	snapshot := heartbeatConfigSnapshot{
 		cfg:    cfg,
@@ -232,6 +324,12 @@ func (e *HeartbeatEngine) writeTasks(tasks []HeartbeatTask, expected heartbeatCo
 	if err != nil {
 		return err
 	}
+	// Forward protection: a config written by a future binary carries a
+	// schemaVersion this binary does not understand. Refuse to overwrite it
+	// with a full-table save instead of silently downgrading the schema.
+	if current.exists && current.cfg.SchemaVersion > heartbeatSchemaVersion {
+		return fmt.Errorf("heartbeat config schemaVersion %d is newer than this binary supports (%d); upgrade Reasonix before editing", current.cfg.SchemaVersion, heartbeatSchemaVersion)
+	}
 	if compare && (current.exists != expected.exists || current.digest != expected.digest || current.cfg.Revision != expected.cfg.Revision) {
 		return ErrHeartbeatConfigConflict
 	}
@@ -239,12 +337,30 @@ func (e *HeartbeatEngine) writeTasks(tasks []HeartbeatTask, expected heartbeatCo
 	if !current.exists {
 		revision = 1
 	}
-	cfg := heartbeatConfig{Revision: revision, Tasks: tasks}
+	// Persist run history in the sidecar and strip it from the main config.
+	// A future/old binary that does not know the runHistory field would drop it
+	// on a full-table save of heartbeat-tasks.json; because the field never
+	// lives there, its whole-table write can only ever touch the task
+	// definitions. The engine owns run state and writes it back through
+	// writeRunHistorySidecar on its own writes.
+	sidecar := make(map[string][]HeartbeatRun, len(tasks))
+	mainTasks := make([]HeartbeatTask, len(tasks))
+	for i, t := range tasks {
+		mainTasks[i] = t
+		mainTasks[i].RunHistory = nil
+		if len(t.RunHistory) > 0 {
+			sidecar[t.ID] = t.RunHistory
+		}
+	}
+	cfg := heartbeatConfig{SchemaVersion: heartbeatSchemaVersion, Revision: revision, Tasks: mainTasks}
 	b, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
 		return err
 	}
-	return fileutil.AtomicWriteFile(path, b, 0o644)
+	if err := fileutil.AtomicWriteFile(path, b, 0o644); err != nil {
+		return err
+	}
+	return e.writeRunHistorySidecar(sidecar)
 }
 
 // Start launches the scheduler goroutine.
@@ -541,6 +657,11 @@ func (e *HeartbeatEngine) executeTaskOwned(t HeartbeatTask) HeartbeatTask {
 	if t.CreatedAt == 0 {
 		t.CreatedAt = t.LastRunAt
 	}
+	// 追加本次成功执行记录（最新追加到尾部，前端倒序展示；最多保留 20 条）
+	t.RunHistory = append(t.RunHistory, HeartbeatRun{At: t.LastRunAt, TopicID: topicID})
+	if len(t.RunHistory) > maxRunHistory {
+		t.RunHistory = t.RunHistory[len(t.RunHistory)-maxRunHistory:]
+	}
 	return t
 }
 
@@ -583,6 +704,10 @@ func (e *HeartbeatEngine) ReplaceTasks(tasks []HeartbeatTask) error {
 	if e.cfgInitialized && (expected.exists != e.cfgKnown || expected.digest != e.cfgDigest || expected.cfg.Revision != e.cfgRevision) {
 		return ErrHeartbeatConfigConflict
 	}
+	// Protect run-state written by the engine since the frontend snapshot was
+	// loaded: a stale panel save (e.g. toggling enabled) must not clear the
+	// runHistory that a background execution persisted meanwhile.
+	tasks = mergeHeartbeatDiskRunHistory(tasks, expected.cfg.Tasks)
 	if err := e.writeTasks(tasks, expected, true); err != nil {
 		return err
 	}
@@ -609,7 +734,8 @@ func (e *HeartbeatEngine) ReplaceConfig(update HeartbeatConfigUpdate) (Heartbeat
 	if expected.cfg.Revision != update.Revision || expected.view().ETag != update.ETag {
 		return expected.view(), ErrHeartbeatConfigConflict
 	}
-	if err := e.writeTasks(update.Tasks, expected, true); err != nil {
+	tasks := mergeHeartbeatDiskRunHistory(update.Tasks, expected.cfg.Tasks)
+	if err := e.writeTasks(tasks, expected, true); err != nil {
 		return expected.view(), err
 	}
 	latest, err := e.readConfigSnapshot()
@@ -735,7 +861,69 @@ func mergeHeartbeatRunUpdates(tasks []HeartbeatTask, updates map[string]Heartbea
 		if tasks[i].CreatedAt == 0 && update.CreatedAt != 0 {
 			tasks[i].CreatedAt = update.CreatedAt
 		}
+		// Merge run history: the on-disk list may be a stale snapshot (external
+		// edits or a tick that raced), so union by execution timestamp and keep
+		// the most recent maxRunHistory entries.
+		if len(update.RunHistory) > 0 {
+			tasks[i].RunHistory = mergeRunHistory(tasks[i].RunHistory, update.RunHistory)
+		}
 	}
+}
+
+// mergeRunHistory unions two run-history lists by execution timestamp (At),
+// dedupes, sorts oldest-first and keeps the newest maxRunHistory entries. Used
+// by both the update-merge and the disk-protection paths below.
+func mergeRunHistory(base, extra []HeartbeatRun) []HeartbeatRun {
+	merged := append([]HeartbeatRun(nil), base...)
+	seen := make(map[int64]bool, len(merged))
+	for _, r := range merged {
+		seen[r.At] = true
+	}
+	for _, r := range extra {
+		if !seen[r.At] {
+			merged = append(merged, r)
+		}
+	}
+	sort.Slice(merged, func(a, b int) bool { return merged[a].At < merged[b].At })
+	if len(merged) > maxRunHistory {
+		merged = merged[len(merged)-maxRunHistory:]
+	}
+	return merged
+}
+
+// mergeHeartbeatDiskRunHistory protects engine-owned run history during a
+// frontend full-list save (ReplaceTasks/ReplaceConfig). The frontend snapshot
+// may predate an execution the engine persisted after the panel loaded; for
+// each task, union the on-disk runHistory into the submitted task so a stale
+// save never clears execution history it simply hadn't seen yet. Runs that
+// originated from this same save are kept; duplicates are deduped by At.
+func mergeHeartbeatDiskRunHistory(submitted, disk []HeartbeatTask) []HeartbeatTask {
+	if len(disk) == 0 {
+		return submitted
+	}
+	diskByID := make(map[string][]HeartbeatRun, len(disk))
+	for _, d := range disk {
+		if len(d.RunHistory) > 0 {
+			diskByID[d.ID] = d.RunHistory
+		}
+	}
+	if len(diskByID) == 0 {
+		return submitted
+	}
+	out := make([]HeartbeatTask, len(submitted))
+	copy(out, submitted)
+	for i := range out {
+		diskHistory, ok := diskByID[out[i].ID]
+		if !ok {
+			continue
+		}
+		// 总是按 At 做 union 合并，而不是按长度跳过：
+		// 历史满 maxRunHistory 封顶时，磁盘新 run 会挤掉最旧一条，
+		// 长度不变但内容已更新——按长度比较会误判"前端已是最新"，
+		// 把引擎刚写入的 run 丢弃。
+		out[i].RunHistory = mergeRunHistory(out[i].RunHistory, diskHistory)
+	}
+	return out
 }
 
 // parseInterval converts a string like "5m", "1h", "30s" to time.Duration.
@@ -758,7 +946,157 @@ func parseInterval(s string) (time.Duration, error) {
 	}
 }
 
+// isCronExpr returns true when s looks like a valid 5-field cron expression
+// (e.g. "0 * * * *", "*/15 * * * *", "0 9 * * 1-5"). Rejects expressions with
+// out-of-range values (e.g. "99 * * * *") that would never match.
+func isCronExpr(s string) bool {
+	fields := strings.Fields(s)
+	if len(fields) != 5 {
+		return false
+	}
+	// min, hour, dom, month, dow — dom/month are 1-based (0 can never match
+	// time.Day()/time.Month()), dow is 0-7 (7 = Sunday alias, matched in cronDue).
+	limits := []int{59, 23, 31, 12, 7}
+	mins := []int{0, 0, 1, 1, 0}
+	for i, f := range fields {
+		if f == "" {
+			return false
+		}
+		for _, c := range f {
+			if !strings.ContainsRune("0123456789*/-,", c) {
+				return false
+			}
+		}
+		// Reject out-of-range values in each field, plus zero/empty step
+		// values ("*/0" never fires) and descending ranges ("5-1" never matches).
+		for _, part := range strings.Split(f, ",") {
+			part = strings.TrimSpace(part)
+			base := part
+			if idx := strings.Index(part, "/"); idx >= 0 {
+				step, err := strconv.Atoi(part[idx+1:])
+				if err != nil || step < 1 {
+					return false
+				}
+				base = part[:idx]
+			}
+			if base == "*" {
+				continue
+			}
+			if idx := strings.Index(base, "-"); idx >= 0 {
+				lo, err1 := strconv.Atoi(base[:idx])
+				hi, err2 := strconv.Atoi(base[idx+1:])
+				if err1 != nil || err2 != nil || lo < mins[i] || hi > limits[i] || lo > hi {
+					return false
+				}
+			} else {
+				v, err := strconv.Atoi(base)
+				if err != nil || v < mins[i] || v > limits[i] {
+					return false
+				}
+			}
+		}
+	}
+	return true
+}
+
+// cronMatchField checks whether a single value matches a cron field pattern.
+func cronMatchField(pattern string, value int) bool {
+	// Handle comma-separated lists
+	for _, part := range strings.Split(pattern, ",") {
+		part = strings.TrimSpace(part)
+		if cronMatchSingle(part, value) {
+			return true
+		}
+	}
+	return false
+}
+
+func cronMatchSingle(pattern string, value int) bool {
+	// Handle step values: */15, 1-10/2
+	if idx := strings.Index(pattern, "/"); idx >= 0 {
+		stepStr := pattern[idx+1:]
+		step, err := strconv.Atoi(stepStr)
+		if err != nil || step <= 0 {
+			return false
+		}
+		rangePart := pattern[:idx]
+		if rangePart == "*" {
+			return value%step == 0
+		}
+		// Range with step: 1-10/2
+		if idx2 := strings.Index(rangePart, "-"); idx2 >= 0 {
+			low, _ := strconv.Atoi(rangePart[:idx2])
+			high, _ := strconv.Atoi(rangePart[idx2+1:])
+			if value < low || value > high {
+				return false
+			}
+			return (value-low)%step == 0
+		}
+		return false
+	}
+	// Handle ranges: 1-5
+	if idx := strings.Index(pattern, "-"); idx >= 0 {
+		low, err1 := strconv.Atoi(pattern[:idx])
+		high, err2 := strconv.Atoi(pattern[idx+1:])
+		if err1 != nil || err2 != nil {
+			return false
+		}
+		return value >= low && value <= high
+	}
+	// Handle wildcard
+	if pattern == "*" {
+		return true
+	}
+	// Handle literal value
+	v, err := strconv.Atoi(pattern)
+	if err != nil {
+		return false
+	}
+	return v == value
+}
+
+// cronDue checks whether a 5-field cron expression should fire at the given time.
+func cronDue(expr string, t time.Time) bool {
+	fields := strings.Fields(expr)
+	if len(fields) != 5 {
+		return false
+	}
+	// Standard cron semantics: minute/hour/month must all match; day-of-month
+	// and day-of-week are OR-ed when BOTH are restricted (neither is "*").
+	// E.g. "0 9 1 * 1" fires on the 1st of the month OR on Mondays, not only
+	// when the 1st happens to be a Monday.
+	domRestricted := fields[2] != "*"
+	dowRestricted := fields[4] != "*"
+	domMatch := cronMatchField(fields[2], t.Day())
+	// Standard cron allows 7 as a Sunday alias in the dow field (weekday is
+	// 0-6 in Go); a pattern like "0 9 * * 7" must still fire on Sundays.
+	weekday := int(t.Weekday())
+	dowMatch := cronMatchField(fields[4], weekday) || (weekday == 0 && cronMatchField(fields[4], 7))
+	dayMatch := !domRestricted || !dowRestricted
+	if domRestricted && dowRestricted {
+		dayMatch = domMatch || dowMatch
+	} else if domRestricted {
+		dayMatch = domMatch
+	} else if dowRestricted {
+		dayMatch = dowMatch
+	}
+	return cronMatchField(fields[0], t.Minute()) &&
+		cronMatchField(fields[1], t.Hour()) &&
+		dayMatch &&
+		cronMatchField(fields[3], int(t.Month()))
+}
+
 func heartbeatTaskDueAt(t HeartbeatTask, now time.Time) bool {
+	// Try cron expression first
+	if isCronExpr(t.Interval) {
+		if cronDue(t.Interval, now) {
+			if t.LastRunAt == 0 || now.Sub(time.UnixMilli(t.LastRunAt)) > time.Minute {
+				return true
+			}
+		}
+		return false
+	}
+
 	if scheduled, ok := previousHeartbeatScheduleAt(t, now); ok {
 		if t.CreatedAt != 0 && scheduled.Before(time.UnixMilli(t.CreatedAt)) {
 			return false

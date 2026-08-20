@@ -502,7 +502,7 @@ ok(
 
 ok(
   /const transcriptHydrating = state\.hydrating && !state\.hydrateHistoryLoaded;/.test(appSource) &&
-    /hydrating=\{transcriptHydrating\}/.test(appSource),
+    /hydrating=\{runtimeTransitioning \|\| transcriptHydrating\}/.test(appSource),
   "Welcome is suppressed only until transcript history has loaded",
 );
 
@@ -571,7 +571,7 @@ ok(
 );
 
 ok(
-  /<HeartbeatPanel[\s\S]*onOpenTopic=\{\(scope, workspaceRoot, topicId\) => \{[\s\S]*void handleOpenTopic\(scope, workspaceRoot, topicId\);[\s\S]*\}\}/.test(appSource),
+  /<HeartbeatView[\s\S]*onOpenTopic=\{\(scope, workspaceRoot, topicId\) => \{[\s\S]*void handleOpenTopic\(scope, workspaceRoot, topicId\);[\s\S]*\}\}/.test(appSource),
   "heartbeat topic navigation uses the guarded open-topic path",
 );
 
