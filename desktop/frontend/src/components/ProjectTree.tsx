@@ -257,6 +257,8 @@ export function ProjectTree({
   const [catalogStatus, setCatalogStatus] = useState<SessionCatalogStatus>({
     state: "opening", revision: 0, indexed: 0, total: 0, repairPending: 0,
   });
+  const rebuildingCatalogRef = useRef(false);
+  const repairNoticeRef = useRef("");
   const [topicPageState, setTopicPageState] = useState<Record<string, { nextCursor?: string; loading: boolean }>>({});
   const topicPageStateRef = useRef(topicPageState);
   const updateTopicPageState = useCallback((key: string, next: { nextCursor?: string; loading: boolean }) => {
@@ -459,11 +461,36 @@ export function ProjectTree({
     }
   }, [applyRuntimeProjection]);
   refreshRef.current = refresh;
+
+  useEffect(() => {
+    if (catalogStatus.state !== "ready" || !catalogStatus.repairReason) return;
+    const noticeKey = `${catalogStatus.repairReason}:${catalogStatus.lastRepairAt ?? 0}`;
+    if (repairNoticeRef.current === noticeKey) return;
+    repairNoticeRef.current = noticeKey;
+    showToast(t("projectTree.catalogRepairCompleted", {
+      count: catalogStatus.sourceCount ?? catalogStatus.total,
+    }), "info");
+  }, [catalogStatus.lastRepairAt, catalogStatus.repairReason, catalogStatus.sourceCount, catalogStatus.state, catalogStatus.total, showToast, t]);
+
   const { addingProject, handleAddProject, openBlankProjectFlow, blankProjectFlow } = useProjectCreation({
     onAddProject,
     onRefresh: refresh,
     showToast,
   });
+
+  const rebuildSessionCatalog = useCallback(async () => {
+    if (rebuildingCatalogRef.current || catalogStatus.canRebuild === false) return;
+    rebuildingCatalogRef.current = true;
+    try {
+      await app.RebuildSessionCatalog();
+      showToast(t("projectTree.catalogRepairStarted"), "info");
+      void refresh();
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : String(error), "error", { durationMs: 6000 });
+    } finally {
+      rebuildingCatalogRef.current = false;
+    }
+  }, [catalogStatus.canRebuild, refresh, showToast, t]);
 
   useEffect(() => {
     treeRef.current = tree;
@@ -1076,7 +1103,12 @@ export function ProjectTree({
       const imSourceLabel = imSource?.label || "";
       const imSourceTitle = imSourceLabel ? t("msg.fromIm", { source: imSourceLabel }) : "";
       const imSourcePlatform = (imSource?.platform || "im").replace(/[^a-z0-9_-]/gi, "").toLowerCase() || "im";
-      const title = [node.preview || "", label, imSourceTitle, statusLabel, metaFull, projectTreeDedupedExactTime(metaFull, exactTimeLabel)].filter(Boolean).join(" · ");
+      const recoveryLabel = node.recoveryState === "recovery_only"
+        ? t("projectTree.recoveryOnly")
+        : node.recovered
+          ? t("projectTree.recovered")
+          : "";
+      const title = [node.preview || "", label, recoveryLabel, imSourceTitle, statusLabel, metaFull, projectTreeDedupedExactTime(metaFull, exactTimeLabel)].filter(Boolean).join(" · ");
       const topicMenuOpen = !isSessionNode && menuTopic === topicId;
       const pinned = Boolean(node.pinned);
       const pinLabel = t(pinned ? "projectTree.unpinTopic" : "projectTree.pinTopic");
@@ -1211,6 +1243,7 @@ export function ProjectTree({
             <span className="project-tree__topic-copy">
               <span className="project-tree__topic-heading">
                 <span className="project-tree__topic-label">{label}</span>
+                {recoveryLabel && <span className="project-tree__topic-recovery" title={recoveryLabel}>{recoveryLabel}</span>}
                 {imSource && (
                   <span
                     className={`project-tree__topic-im project-tree__topic-im--${imSourcePlatform}`}
@@ -2092,9 +2125,16 @@ export function ProjectTree({
           />
         </label>
       )}
-      {(catalogStatus.state === "opening" || catalogStatus.state === "rebuilding" || catalogStatus.repairPending > 0) && (
+      {(catalogStatus.state === "opening" || catalogStatus.state === "rebuilding" || catalogStatus.repairPending > 0 || (catalogStatus.unindexedTargetCount ?? 0) > 0 || Boolean(catalogStatus.lastError)) && (
         <div className="project-tree__catalog-progress" role="status">
-          {t("projectTree.indexingProgress", { done: catalogStatus.indexed, total: catalogStatus.total || "?" })}
+          <span>{catalogStatus.lastError
+            ? t("projectTree.catalogRepairFailed")
+            : t("projectTree.indexingProgress", { done: catalogStatus.indexed, total: catalogStatus.total || "?" })}</span>
+          {catalogStatus.canRebuild !== false && catalogStatus.state !== "rebuilding" && (
+            <button type="button" className="project-tree__catalog-rebuild" onClick={() => void rebuildSessionCatalog()}>
+              {t("projectTree.rebuildCatalog")}
+            </button>
+          )}
         </div>
       )}
       {compactTopics ? (
