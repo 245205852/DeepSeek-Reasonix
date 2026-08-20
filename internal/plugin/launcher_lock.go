@@ -9,15 +9,13 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
 
-	"golang.org/x/mod/semver"
-
-	"reasonix/internal/mcptrust"
+	"reasonix/internal/mcplaunch"
+	"reasonix/internal/proc"
 	"reasonix/internal/secrets"
 )
 
@@ -34,8 +32,7 @@ var (
 	// fullGitCommit accepts exactly a complete SHA-1 (40 hex) or SHA-256
 	// (64 hex) object name. Intermediate lengths are abbreviations or custom
 	// refs, never a verified commit: they must resolve through git ls-remote.
-	// Official catalog validation and mutable launcher locks share this single
-	// exact-commit predicate.
+	// Mutable launcher locks require a complete immutable commit predicate.
 	fullGitCommit = regexp.MustCompile(`^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$`)
 	pypiBaseURL   = "https://pypi.org/pypi"
 )
@@ -56,9 +53,6 @@ func effectiveLaunchArgs(spec Spec) []string {
 }
 
 func mutableLauncherLocator(spec Spec) (launcherLocator, bool) {
-	if strings.TrimSpace(spec.OfficialCatalogEntryID) != "" {
-		return launcherLocator{}, false
-	}
 	return launcherLocatorForSpec(spec)
 }
 
@@ -77,8 +71,8 @@ func launcherLocatorForSpec(spec Spec) (launcherLocator, bool) {
 			if arg == "--from" && i+1 < len(args) {
 				return launcherLocator{kind: kind, value: args[i+1], arg: i + 1, command: command}, true
 			}
-			if strings.HasPrefix(arg, "--from=") {
-				return launcherLocator{kind: kind, value: strings.TrimPrefix(arg, "--from="), arg: i, prefix: "--from=", command: command}, true
+			if after, ok := strings.CutPrefix(arg, "--from="); ok {
+				return launcherLocator{kind: kind, value: after, arg: i, prefix: "--from=", command: command}, true
 			}
 		}
 	}
@@ -91,47 +85,12 @@ func launcherLocatorForSpec(spec Spec) (launcherLocator, bool) {
 				continue
 			}
 			// Unknown flags may consume the following token. Refuse persistent
-			// trust rather than accidentally pinning a flag value as the package.
+			// authorization rather than accidentally pinning a flag value as the package.
 			return launcherLocator{kind: kind, command: command}, true
 		}
 		return launcherLocator{kind: kind, value: arg, arg: i, command: command}, true
 	}
 	return launcherLocator{kind: kind, command: command}, true
-}
-
-func validateOfficialLauncher(spec Spec) error {
-	if strings.TrimSpace(spec.OfficialCatalogEntryID) == "" {
-		return nil
-	}
-	locator, launcher := launcherLocatorForSpec(spec)
-	if !launcher {
-		return nil
-	}
-	if strings.TrimSpace(locator.value) == "" || !immutableLauncherLocator(locator) {
-		return fmt.Errorf("official MCP server %q uses mutable %s package locator %q; catalog packages must pin an exact version or Git commit", spec.Name, locator.kind, locator.value)
-	}
-	return nil
-}
-
-func immutableLauncherLocator(locator launcherLocator) bool {
-	value := strings.TrimSpace(locator.value)
-	if strings.HasPrefix(value, "git+") {
-		at := strings.LastIndex(value, "@")
-		return at > len("git+https://") && fullGitCommit.MatchString(value[at+1:])
-	}
-	switch locator.kind {
-	case "npx", "bunx":
-		name := npmPackageName(value)
-		if name == "" || len(value) <= len(name)+1 || value[len(name)] != '@' {
-			return false
-		}
-		return semver.IsValid("v" + value[len(name)+1:])
-	case "uvx":
-		match := pep508Package.FindStringSubmatch(value)
-		return match != nil && exactPEP440Version(match[3])
-	default:
-		return false
-	}
 }
 
 func safeLauncherFlag(kind, flag string) bool {
@@ -147,7 +106,7 @@ func safeLauncherFlag(kind, flag string) bool {
 	}
 }
 
-func preparePersistentLauncher(ctx context.Context, spec Spec) (Spec, *mcptrust.LauncherLock, error) {
+func preparePersistentLauncher(ctx context.Context, spec Spec) (Spec, *mcplaunch.LauncherLock, error) {
 	locator, mutable := mutableLauncherLocator(spec)
 	if !mutable {
 		return spec, nil, nil
@@ -159,23 +118,23 @@ func preparePersistentLauncher(ctx context.Context, spec Spec) (Spec, *mcptrust.
 	if err != nil {
 		return spec, nil, err
 	}
-	lock := &mcptrust.LauncherLock{
+	lock := &mcplaunch.LauncherLock{
 		Server: spec.Name, Locator: digestText(locator.value), ResolvedVersion: resolved, ContentSHA256: digest,
 	}
-	lock.Workspace = spec.TrustManager.WorkspaceFingerprint()
+	lock.Workspace = spec.LaunchManager.WorkspaceFingerprint()
 	applyLauncherResolution(&spec, locator, *lock, false)
 	return spec, lock, nil
 }
 
 func applyStoredLauncherLock(spec Spec) (Spec, error) {
-	if strings.TrimSpace(spec.LauncherDigest) != "" || spec.TrustManager == nil {
+	if strings.TrimSpace(spec.LauncherDigest) != "" || spec.LaunchManager == nil {
 		return spec, nil
 	}
 	locator, mutable := mutableLauncherLocator(spec)
 	if !mutable || strings.TrimSpace(locator.value) == "" {
 		return spec, nil
 	}
-	lock, ok, err := spec.TrustManager.GetLauncherLock(spec.Name, digestText(locator.value))
+	lock, ok, err := spec.LaunchManager.GetLauncherLock(spec.Name, digestText(locator.value))
 	if err != nil || !ok {
 		return spec, err
 	}
@@ -183,7 +142,7 @@ func applyStoredLauncherLock(spec Spec) (Spec, error) {
 	return spec, nil
 }
 
-func applyLauncherResolution(spec *Spec, locator launcherLocator, lock mcptrust.LauncherLock, offline bool) {
+func applyLauncherResolution(spec *Spec, locator launcherLocator, lock mcplaunch.LauncherLock, offline bool) {
 	args := append([]string(nil), spec.Args...)
 	resolved := lock.ResolvedVersion
 	if strings.HasPrefix(locator.value, "git+") && fullGitCommit.MatchString(resolved) {
@@ -192,17 +151,33 @@ func applyLauncherResolution(spec *Spec, locator launcherLocator, lock mcptrust.
 		}
 	}
 	args[locator.arg] = locator.prefix + resolved
+	// Authorization is granted against the exact resolved package and its verified
+	// digest. The stored-lock start additionally injects --offline/--no-install
+	// to force that cached artifact, but this Reasonix-owned enforcement flag is
+	// not a change in the server the user approved. Preserve the canonical
+	// identity args before adding it so preflight and subsequent starts compare
+	// equal while the actual process still runs offline.
+	spec.LauncherIdentityArgs = append([]string(nil), args...)
 	if offline && !hasLauncherOfflineFlag(locator.kind, args) {
 		flag := "--offline"
 		if locator.kind == "bunx" {
 			flag = "--no-install"
 		}
-		args = append(args[:locator.arg], append([]string{flag}, args[locator.arg:]...)...)
+		insertAt := locator.arg
+		// For `uvx --from package command`, locator.arg points at the value of
+		// --from. Inserting there would split the option from its value and produce
+		// `--from --offline package`. Keep the pair adjacent by placing the
+		// enforcement flag before --from. The --from=package form already points at
+		// the whole option and needs no adjustment.
+		if locator.kind == "uvx" && insertAt > 0 && args[insertAt-1] == "--from" {
+			insertAt--
+		}
+		args = append(args[:insertAt], append([]string{flag}, args[insertAt:]...)...)
 	}
 	spec.LaunchArgs = args
 	spec.LauncherLocator = lock.Locator
 	spec.LauncherResolvedVersion = lock.ResolvedVersion
-	spec.LauncherDigest = mcptrust.LauncherLockFingerprint(lock)
+	spec.LauncherDigest = mcplaunch.LauncherLockFingerprint(lock)
 }
 
 func hasLauncherOfflineFlag(kind string, args []string) bool {
@@ -239,7 +214,7 @@ func resolveNPMPackage(ctx context.Context, spec Spec, locator string) (string, 
 	if !ok {
 		return "", "", fmt.Errorf("npm is required to lock %q", locator)
 	}
-	cmd := exec.CommandContext(ctx, npm, "view", locator, "version", "dist.integrity", "--json")
+	cmd := proc.CommandContext(ctx, npm, "view", locator, "version", "dist.integrity", "--json")
 	cmd.Env = env
 	out, err := cmd.Output()
 	if err != nil {
@@ -360,7 +335,7 @@ func resolveGitLocator(ctx context.Context, spec Spec, locator string) (string, 
 		return "", "", fmt.Errorf("git is required to resolve %q", locator)
 	}
 	remote := strings.TrimPrefix(repo, "git+")
-	cmd := exec.CommandContext(ctx, git, "ls-remote", remote, ref)
+	cmd := proc.CommandContext(ctx, git, "ls-remote", remote, ref)
 	cmd.Env = env
 	out, err := cmd.Output()
 	if err != nil {

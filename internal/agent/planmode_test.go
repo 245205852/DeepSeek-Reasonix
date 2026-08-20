@@ -26,9 +26,16 @@ type permissionCall struct {
 }
 
 type recordingPermissionGate struct {
-	allow  bool
-	reason string
-	calls  []permissionCall
+	allow     bool
+	reason    string
+	calls     []permissionCall
+	denied    bool
+	denyCalls []string
+}
+
+func (g *recordingPermissionGate) ExplicitlyDenies(name string, _ json.RawMessage) bool {
+	g.denyCalls = append(g.denyCalls, name)
+	return g.denied
 }
 
 func (g *recordingPermissionGate) Check(_ context.Context, name string, _ json.RawMessage, readOnly bool) (bool, string, error) {
@@ -45,38 +52,28 @@ func (g *legacyPlanTrustGate) CheckPlanModeReadOnlyTrust(context.Context, PlanMo
 
 type annotatedMCPTool struct {
 	fakeTool
-	server            string
-	raw               string
-	destructive       bool
-	untrustedReadOnly bool
+	server           string
+	raw              string
+	destructive      bool
+	serverAuthorized bool
 }
 
-func (t annotatedMCPTool) MCPServerName() string           { return t.server }
-func (t annotatedMCPTool) MCPRawToolName() string          { return t.raw }
-func (t annotatedMCPTool) MCPDestructiveHint() bool        { return t.destructive }
-func (t annotatedMCPTool) PlanModeUntrustedReadOnly() bool { return t.untrustedReadOnly }
+func (t annotatedMCPTool) MCPServerName() string     { return t.server }
+func (t annotatedMCPTool) MCPRawToolName() string    { return t.raw }
+func (t annotatedMCPTool) MCPDestructiveHint() bool  { return t.destructive }
+func (t annotatedMCPTool) MCPServerAuthorized() bool { return t.serverAuthorized }
 
 type mcpPermissionRecordingGate struct {
 	normalCalls int
-	freshCalls  int
 	readOnly    []bool
 	allowNormal bool
-	allowFresh  bool
 	reason      string
-	subject     string
 }
 
 func (g *mcpPermissionRecordingGate) Check(_ context.Context, _ string, _ json.RawMessage, readOnly bool) (bool, string, error) {
 	g.normalCalls++
 	g.readOnly = append(g.readOnly, readOnly)
 	return g.allowNormal, g.reason, nil
-}
-
-func (g *mcpPermissionRecordingGate) CheckFresh(_ context.Context, _ string, subject string, _ json.RawMessage, readOnly bool) (bool, string, error) {
-	g.freshCalls++
-	g.subject = subject
-	g.readOnly = append(g.readOnly, readOnly)
-	return g.allowFresh, g.reason, nil
 }
 
 func TestPlanModeRoutesOrdinaryToolsThroughPermissionGate(t *testing.T) {
@@ -90,12 +87,12 @@ func TestPlanModeRoutesOrdinaryToolsThroughPermissionGate(t *testing.T) {
 		{name: "shell writer", tool: fakeTool{name: "bash"}, args: `{"command":"rm -rf build"}`},
 		{name: "reader", tool: fakeTool{name: "read_file", readOnly: true}, readOnly: true},
 		{
-			name: "host-trusted MCP reader",
+			name: "authorized MCP reader",
 			tool: annotatedMCPTool{
-				fakeTool:          fakeTool{name: "mcp__srv__query", readOnly: true},
-				server:            "srv",
-				raw:               "query",
-				untrustedReadOnly: false,
+				fakeTool:         fakeTool{name: "mcp__srv__query", readOnly: true},
+				server:           "srv",
+				raw:              "query",
+				serverAuthorized: true,
 			},
 			readOnly: true,
 		},
@@ -108,11 +105,15 @@ func TestPlanModeRoutesOrdinaryToolsThroughPermissionGate(t *testing.T) {
 			a := New(nil, reg, NewSession(""), Options{Gate: gate}, event.Discard)
 			a.SetPlanMode(true)
 
-			out := a.executeOne(context.Background(), provider.ToolCall{Name: tc.tool.Name(), Arguments: tc.args})
+			out := a.executeOne(context.Background(), &a.turn, provider.ToolCall{Name: tc.tool.Name(), Arguments: tc.args})
 			if out.blocked || out.errMsg != "" || !strings.Contains(out.output, "done") {
 				t.Fatalf("ordinary Plan call did not execute after permission approval: %+v", out)
 			}
-			if len(gate.calls) != 1 || gate.calls[0].name != tc.tool.Name() || gate.calls[0].readOnly != tc.readOnly {
+			if isInstalledMCPTool(tc.tool) {
+				if len(gate.calls) != 0 || len(gate.denyCalls) != 1 || gate.denyCalls[0] != tc.tool.Name() {
+					t.Fatalf("authorized MCP permission calls=%+v deny checks=%+v", gate.calls, gate.denyCalls)
+				}
+			} else if len(gate.calls) != 1 || gate.calls[0].name != tc.tool.Name() || gate.calls[0].readOnly != tc.readOnly {
 				t.Fatalf("permission calls = %+v, want %q readOnly=%v", gate.calls, tc.tool.Name(), tc.readOnly)
 			}
 		})
@@ -127,12 +128,38 @@ func TestPlanModePermissionDenialStopsWriterBeforeExecution(t *testing.T) {
 	a := New(nil, reg, NewSession(""), Options{Gate: gate}, event.Discard)
 	a.SetPlanMode(true)
 
-	out := a.executeOne(context.Background(), provider.ToolCall{Name: "write_file"})
+	out := a.executeOne(context.Background(), &a.turn, provider.ToolCall{Name: "write_file"})
 	if !out.blocked || !strings.Contains(out.output, gate.reason) || out.errMsg == "" {
 		t.Fatalf("permission denial outcome = %+v", out)
 	}
 	if executions != 0 {
 		t.Fatalf("denied writer executed %d times", executions)
+	}
+}
+
+func TestAuthorizedMCPUsesInstallAuthorizationAndExplicitDenyOnly(t *testing.T) {
+	var executions int32
+	reg := tool.NewRegistry()
+	reg.Add(annotatedMCPTool{
+		fakeTool:         fakeTool{name: "mcp__srv__write", calls: &executions},
+		server:           "srv",
+		raw:              "write",
+		serverAuthorized: true,
+	})
+
+	// The ordinary writer fallback would deny, but an authorized MCP server must
+	// not re-enter that per-call approval path.
+	gate := &recordingPermissionGate{allow: false, reason: "ordinary ask declined"}
+	a := New(nil, reg, NewSession(""), Options{Gate: gate}, event.Discard)
+	out := a.executeOne(context.Background(), &a.turn, provider.ToolCall{Name: "mcp__srv__write"})
+	if out.blocked || out.errMsg != "" || executions != 1 || len(gate.calls) != 0 || len(gate.denyCalls) != 1 {
+		t.Fatalf("authorized MCP outcome=%+v gate=%+v executions=%d", out, gate, executions)
+	}
+
+	gate.denied = true
+	out = a.executeOne(context.Background(), &a.turn, provider.ToolCall{Name: "mcp__srv__write"})
+	if !out.blocked || !strings.Contains(out.output, "deny list") || executions != 1 {
+		t.Fatalf("explicitly denied MCP outcome=%+v executions=%d", out, executions)
 	}
 }
 
@@ -144,7 +171,7 @@ func TestPlanModeUnsafePhaseToolStopsBeforePermission(t *testing.T) {
 	a := New(nil, reg, NewSession(""), Options{Gate: gate}, event.Discard)
 	a.SetPlanMode(true)
 
-	out := a.executeOne(context.Background(), provider.ToolCall{Name: "complete_step"})
+	out := a.executeOne(context.Background(), &a.turn, provider.ToolCall{Name: "complete_step"})
 	if !out.blocked || !strings.Contains(out.output, "only available after plan approval") {
 		t.Fatalf("phase opt-out outcome = %+v", out)
 	}
@@ -160,7 +187,7 @@ func TestPlanModeSafeWriterStillUsesWriterPermission(t *testing.T) {
 	a := New(nil, reg, NewSession(""), Options{Gate: gate}, event.Discard)
 	a.SetPlanMode(true)
 
-	out := a.executeOne(context.Background(), provider.ToolCall{Name: "phase_safe_writer"})
+	out := a.executeOne(context.Background(), &a.turn, provider.ToolCall{Name: "phase_safe_writer"})
 	if out.blocked || out.errMsg != "" {
 		t.Fatalf("phase-safe writer outcome = %+v", out)
 	}
@@ -180,7 +207,7 @@ func TestPlanModeDoesNotInvokeLegacyBashTrustPrompt(t *testing.T) {
 	}, event.Discard)
 	a.SetPlanMode(true)
 
-	out := a.executeOne(context.Background(), provider.ToolCall{
+	out := a.executeOne(context.Background(), &a.turn, provider.ToolCall{
 		Name:      "bash",
 		Arguments: `{"command":"gh issue view 6482"}`,
 	})
@@ -201,12 +228,11 @@ func TestPlanModeLegacyOverridesDoNotBypassPermissions(t *testing.T) {
 	gate := &recordingPermissionGate{reason: "denied"}
 	a := New(nil, reg, NewSession(""), Options{
 		Gate:                     gate,
-		PlanModeAllowedTools:     []string{"write_file"},
 		PlanModeReadOnlyCommands: []string{"gh issue view"},
 	}, event.Discard)
 	a.SetPlanMode(true)
 
-	out := a.executeOne(context.Background(), provider.ToolCall{Name: "write_file"})
+	out := a.executeOne(context.Background(), &a.turn, provider.ToolCall{Name: "write_file"})
 	if !out.blocked || len(gate.calls) != 1 {
 		t.Fatalf("legacy Plan config bypassed permissions: outcome=%+v calls=%+v", out, gate.calls)
 	}
@@ -216,10 +242,12 @@ func TestPlanModeCanReplacePriorExecutionTodoState(t *testing.T) {
 	reg := tool.NewRegistry()
 	reg.Add(mustBuiltinTool(t, "todo_write"))
 	a := New(nil, reg, NewSession(""), Options{}, event.Discard)
+	recoveryGate := &recordingRecoveryGate{decision: RecoveryDecision{Allow: true}}
+	a.SetRecoveryGate(recoveryGate)
 	a.SeedTodoState([]evidence.TodoItem{{Content: "old execution step", Status: "in_progress"}})
 	a.SetPlanMode(true)
 
-	out := a.executeOne(context.Background(), provider.ToolCall{
+	out := a.executeOne(context.Background(), &a.turn, provider.ToolCall{
 		ID:   "new-plan",
 		Name: "todo_write",
 		Arguments: `{"todos":[
@@ -233,6 +261,113 @@ func TestPlanModeCanReplacePriorExecutionTodoState(t *testing.T) {
 	got := a.CanonicalTodoState()
 	if len(got) != 2 || got[0].Content != "inspect the new request" {
 		t.Fatalf("plan-mode todo state = %+v, want revised plan", got)
+	}
+	if len(recoveryGate.proposals) != 0 {
+		t.Fatalf("Plan mode sent duplicate Auto plan review proposals: %+v", recoveryGate.proposals)
+	}
+}
+
+func TestPlanModeTodoWriteCanCompleteCurrentItem(t *testing.T) {
+	reg := tool.NewRegistry()
+	reg.Add(mustBuiltinTool(t, "todo_write"))
+	a := New(nil, reg, NewSession(""), Options{}, event.Discard)
+	a.SeedTodoState([]evidence.TodoItem{
+		{Content: "inspect the request", Status: "in_progress"},
+		{Content: "draft a plan", Status: "pending"},
+	})
+	a.SetPlanMode(true)
+
+	out := a.executeOne(context.Background(), &a.turn, provider.ToolCall{
+		ID:   "mark-done",
+		Name: "todo_write",
+		Arguments: `{"todos":[
+			{"content":"inspect the request","status":"completed"},
+			{"content":"draft a plan","status":"in_progress"}
+		]}`,
+	})
+	if out.errMsg != "" {
+		t.Fatalf("plan-mode todo completion was blocked: %s", out.errMsg)
+	}
+	got := a.CanonicalTodoState()
+	if len(got) != 2 || got[0].Status != "completed" || got[1].Status != "in_progress" {
+		t.Fatalf("plan-mode todo state = %+v, want first item completed", got)
+	}
+}
+
+func TestPlanModeTodoCreatedInTurnUsesTodoWriteRecovery(t *testing.T) {
+	reg := tool.NewRegistry()
+	reg.Add(mustBuiltinTool(t, "todo_write"))
+	reg.Add(mustBuiltinTool(t, "complete_step"))
+	a := New(nil, reg, NewSession(""), Options{}, event.Discard)
+	a.SetPlanMode(true)
+
+	created := a.executeOne(context.Background(), &a.turn, provider.ToolCall{
+		ID:   "todo",
+		Name: "todo_write",
+		Arguments: `{"todos":[
+			{"content":"finish the cleanup","status":"in_progress","step_id":"cleanup_step_01"}
+		]}`,
+	})
+	if created.blocked || created.errMsg != "" {
+		t.Fatalf("create Plan todo outcome = %+v", created)
+	}
+
+	signoff := a.executeOne(context.Background(), &a.turn, provider.ToolCall{
+		ID:   "sign-off",
+		Name: "complete_step",
+		Arguments: `{
+			"step_id":"cleanup_step_01",
+			"result":"cleanup finished",
+			"evidence":[{"kind":"manual","summary":"confirmed the cleanup output"}]
+		}`,
+	})
+	if !signoff.blocked || !strings.Contains(signoff.output, "only available after plan approval") {
+		t.Fatalf("Plan complete_step outcome = %+v, want phase block", signoff)
+	}
+	if got := a.CanonicalTodoState(); len(got) != 1 || got[0].Status != "in_progress" {
+		t.Fatalf("blocked sign-off changed canonical todos = %+v", got)
+	}
+
+	completed := a.executeOne(context.Background(), &a.turn, provider.ToolCall{
+		ID:   "complete-todo",
+		Name: "todo_write",
+		Arguments: `{"todos":[
+			{"content":"finish the cleanup","status":"completed","step_id":"cleanup_step_01"}
+		]}`,
+	})
+	if completed.blocked || completed.errMsg != "" {
+		t.Fatalf("todo_write recovery outcome = %+v", completed)
+	}
+	if got := a.CanonicalTodoState(); len(got) != 1 || got[0].Status != "completed" {
+		t.Fatalf("todo_write recovery state = %+v, want completed", got)
+	}
+}
+
+func TestPlanModeKeepsCompleteStepUnavailable(t *testing.T) {
+	reg := tool.NewRegistry()
+	reg.Add(mustBuiltinTool(t, "complete_step"))
+	a := New(nil, reg, NewSession(""), Options{}, event.Discard)
+	a.SeedTodoState([]evidence.TodoItem{{Content: "inspect the request", Status: "in_progress"}})
+	a.SetPlanMode(true)
+
+	out := a.executeOne(context.Background(), &a.turn, provider.ToolCall{
+		ID:   "sign-off",
+		Name: "complete_step",
+		Arguments: `{
+			"step":"inspect the request",
+			"result":"inspected",
+			"evidence":[{"kind":"manual","summary":"checked"}]
+		}`,
+	})
+	if !out.blocked {
+		t.Fatalf("plan-mode complete_step outcome = %+v, want blocked", out)
+	}
+	if !strings.Contains(out.output, "plan approval") && !strings.Contains(out.output, "unavailable during planning") && !strings.Contains(out.errMsg, "unavailable") {
+		t.Fatalf("plan-mode complete_step = %+v, want a planning-phase unavailability", out)
+	}
+	got := a.CanonicalTodoState()
+	if len(got) != 1 || got[0].Status != "in_progress" {
+		t.Fatalf("blocked complete_step advanced canonical todos: %+v", got)
 	}
 }
 
@@ -281,20 +416,20 @@ func serializeToolSchemas(t *testing.T, schemas []provider.ToolSchema) string {
 	return string(b)
 }
 
-func TestUntrustedMCPReaderBlockedInMainPlanAndExcludedFromReadOnlyAgents(t *testing.T) {
+func TestUnauthorizedMCPReaderBlockedInMainPlanAndExcludedFromReadOnlyAgents(t *testing.T) {
 	parent := tool.NewRegistry()
 	parent.Add(fakeTool{name: "read_file", readOnly: true})
 	parent.Add(annotatedMCPTool{
-		fakeTool:          fakeTool{name: "mcp__srv__query", readOnly: true},
-		server:            "srv",
-		raw:               "query",
-		untrustedReadOnly: true,
+		fakeTool:         fakeTool{name: "mcp__srv__query", readOnly: true},
+		server:           "srv",
+		raw:              "query",
+		serverAuthorized: false,
 	})
 	gate := &recordingPermissionGate{allow: true}
 	a := New(nil, parent, NewSession(""), Options{Gate: gate}, event.Discard)
 	a.SetPlanMode(true)
 
-	out := a.executeOne(context.Background(), provider.ToolCall{Name: "mcp__srv__query"})
+	out := a.executeOne(context.Background(), &a.turn, provider.ToolCall{Name: "mcp__srv__query"})
 	if !out.blocked || len(gate.calls) != 0 {
 		t.Fatalf("main Plan MCP reader outcome=%+v calls=%+v", out, gate.calls)
 	}
@@ -307,7 +442,7 @@ func TestUntrustedMCPReaderBlockedInMainPlanAndExcludedFromReadOnlyAgents(t *tes
 			t.Fatalf("%s registry lost local reader", name)
 		}
 		if _, ok := filtered.Get("mcp__srv__query"); ok {
-			t.Fatalf("%s registry admitted externally asserted reader", name)
+			t.Fatalf("%s registry admitted reader from unauthorized server", name)
 		}
 	}
 }
@@ -319,8 +454,8 @@ func TestPlanModeMCPWriterIsHardBlockedBeforePermission(t *testing.T) {
 	a := New(nil, reg, NewSession(""), Options{Gate: gate}, event.Discard)
 	a.SetPlanMode(true)
 
-	out := a.executeOne(context.Background(), provider.ToolCall{Name: "mcp__srv__write"})
-	if !out.blocked || gate.normalCalls != 0 || gate.freshCalls != 0 {
+	out := a.executeOne(context.Background(), &a.turn, provider.ToolCall{Name: "mcp__srv__write"})
+	if !out.blocked || gate.normalCalls != 0 {
 		t.Fatalf("MCP writer outcome=%+v gate=%+v", out, gate)
 	}
 }
@@ -337,7 +472,7 @@ func TestPlanModeMCPWriterHonorsPermissionDenial(t *testing.T) {
 	a := New(nil, reg, NewSession(""), Options{Gate: gate}, event.Discard)
 	a.SetPlanMode(true)
 
-	out := a.executeOne(context.Background(), provider.ToolCall{Name: "mcp__srv__write"})
+	out := a.executeOne(context.Background(), &a.turn, provider.ToolCall{Name: "mcp__srv__write"})
 	if !out.blocked || !strings.Contains(out.output, "Plan mode") || gate.normalCalls != 0 || executions != 0 {
 		t.Fatalf("denied MCP writer outcome=%+v gate=%+v executions=%d", out, gate, executions)
 	}
@@ -351,12 +486,12 @@ func TestDestructiveMCPUsesFreshApprovalInPlanEvenWhenReadOnly(t *testing.T) {
 		raw:         "danger/raw",
 		destructive: true,
 	})
-	gate := &mcpPermissionRecordingGate{allowNormal: true, allowFresh: true}
+	gate := &mcpPermissionRecordingGate{allowNormal: true}
 	a := New(nil, reg, NewSession(""), Options{Gate: gate}, event.Discard)
 	a.SetPlanMode(true)
 
-	out := a.executeOne(context.Background(), provider.ToolCall{Name: "mcp__srv__danger"})
-	if !out.blocked || gate.normalCalls != 0 || gate.freshCalls != 0 {
+	out := a.executeOne(context.Background(), &a.turn, provider.ToolCall{Name: "mcp__srv__danger"})
+	if !out.blocked || gate.normalCalls != 0 {
 		t.Fatalf("destructive MCP outcome=%+v gate=%+v", out, gate)
 	}
 }
@@ -373,7 +508,7 @@ func TestDestructiveMCPFailsClosedWithoutFreshApprovalGate(t *testing.T) {
 	a := New(nil, reg, NewSession(""), Options{Gate: ordinary}, event.Discard)
 	a.SetPlanMode(true)
 
-	out := a.executeOne(context.Background(), provider.ToolCall{Name: "mcp__srv__danger"})
+	out := a.executeOne(context.Background(), &a.turn, provider.ToolCall{Name: "mcp__srv__danger"})
 	if !out.blocked || !strings.Contains(out.output, "Plan mode") {
 		t.Fatalf("destructive MCP fail-closed outcome = %+v", out)
 	}
@@ -388,7 +523,7 @@ func TestPlanModeOffStillUsesSamePermissionGate(t *testing.T) {
 	gate := &recordingPermissionGate{allow: true}
 	a := New(nil, reg, NewSession(""), Options{Gate: gate}, event.Discard)
 
-	out := a.executeOne(context.Background(), provider.ToolCall{Name: "write_file"})
+	out := a.executeOne(context.Background(), &a.turn, provider.ToolCall{Name: "write_file"})
 	if out.blocked || len(gate.calls) != 1 {
 		t.Fatalf("standard mode outcome=%+v calls=%+v", out, gate.calls)
 	}

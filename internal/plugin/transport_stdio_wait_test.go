@@ -1,6 +1,8 @@
 package plugin
 
 import (
+	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -39,5 +41,25 @@ func TestWaitWithBudgetReturnsEarlyWhenWaitCompletes(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("waitWithBudget blocked on a wait that already completed")
+	}
+}
+
+func TestWaitFinishedWithinBudgetReportsGracefulExit(t *testing.T) {
+	if !waitFinishedWithinBudget(func() {}, time.Second) {
+		t.Fatal("completed wait should be reported as graceful")
+	}
+	blocked := make(chan struct{})
+	t.Cleanup(func() { close(blocked) })
+	if waitFinishedWithinBudget(func() { <-blocked }, 10*time.Millisecond) {
+		t.Fatal("blocked wait should require forced process cleanup")
+	}
+}
+
+func TestWithStderrRedactsCredentials(t *testing.T) {
+	tr := &stdioTransport{stderr: &tailBuffer{limit: 1024}}
+	_, _ = tr.stderr.Write([]byte("Authorization: Bearer transport-secret-value"))
+	got := tr.withStderr(errors.New("child exited")).Error()
+	if strings.Contains(got, "transport-secret-value") || !strings.Contains(got, "Bearer [redacted]") {
+		t.Fatalf("stderr error was not redacted: %q", got)
 	}
 }

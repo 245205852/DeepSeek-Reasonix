@@ -4,9 +4,45 @@ import (
 	"encoding/json"
 	"regexp"
 	"strings"
+
+	"reasonix/internal/provider"
 )
 
-var reTransientUserBlock = regexp.MustCompile(`(?s)^\s*<(?:response-language|reasoning-language|memory-update|background-jobs|active-goal|hook-context|capability-route)(?:\s+[^>]*)?>.*?</(?:response-language|reasoning-language|memory-update|background-jobs|active-goal|hook-context|capability-route)>\s*\n?`)
+// TransientUserBlockTags names every block the host prepends to a user turn as
+// runtime context rather than something the user typed. Previews, titles, and
+// the rewind picker strip them; a tag missing from this list leaks raw markup
+// into the UI, which is how <autoresearch-runtime> surfaced in session titles.
+//
+// This is the single source of truth: the strip regex is built from it, and
+// hasLeadingInjectedBlock walks it. Anything that starts prepending a new block
+// to user turns belongs here.
+var TransientUserBlockTags = []string{
+	"response-language",
+	"reasoning-language",
+	"memory-update",
+	"background-jobs",
+	"active-goal",
+	"autoresearch-runtime",
+	"hook-context",
+	"capability-route",
+	"interrupted-turn-recovery",
+	"execution-policy",
+}
+
+// reTrailingExecutionPolicy matches the host-appended execution-policy block at
+// the end of a user turn (attributes allowed on the open tag).
+var reTrailingExecutionPolicy = regexp.MustCompile(`(?s)\n*<execution-policy(?:\s+[^>]*)?>.*?</execution-policy>\s*$`)
+
+var reTransientUserBlock = buildTransientUserBlockRE(TransientUserBlockTags)
+
+// buildTransientUserBlockRE matches one leading transient block: an open tag
+// (with optional attributes), its content, and its own closing tag. The
+// alternation is generated so the open and close lists cannot drift apart —
+// spelling them out twice by hand is what let tags go missing from one side.
+func buildTransientUserBlockRE(tags []string) *regexp.Regexp {
+	alt := strings.Join(tags, "|")
+	return regexp.MustCompile(`(?s)^\s*<(?:` + alt + `)(?:\s+[^>]*)?>.*?</(?:` + alt + `)>\s*\n?`)
+}
 
 // stripTrailingDeliveryRuntime removes the exact delivery-runtime marker the
 // agent appends to user turns in delivery mode (agent.go DeliveryRuntimeMarker).
@@ -30,8 +66,11 @@ const memoryCompilerExecutionOpen = "<memory-compiler-execution>"
 var reMemoryCompilerExecution = regexp.MustCompile(`(?s)<memory-compiler-execution>\s*(.*?)\s*</memory-compiler-execution>`)
 
 // ContainsMemoryCompilerExecution reports whether content includes a Memory v5
-// execution contract. Callers that prepare user-facing or replayable text should
-// unwrap it before display and avoid treating the raw contract as user-authored.
+// execution contract. The Memory v5 compiler was removed, but transcripts
+// recorded by releases up to v1.17.x may still carry injected contracts in
+// persisted user messages, so display paths keep unwrapping them. Callers that
+// prepare user-facing or replayable text should unwrap the block before display
+// and avoid treating the raw contract as user-authored.
 func ContainsMemoryCompilerExecution(content string) bool {
 	return strings.Contains(content, memoryCompilerExecutionOpen)
 }
@@ -41,13 +80,14 @@ func ContainsMemoryCompilerExecution(content string) bool {
 // titles. The blocks are sent in user turns so they never affect the stable
 // prompt prefix, but they should not become user-facing text later.
 //
-// The Memory v5 <memory-compiler-execution> block is handled differently from
-// the prepended transient blocks: it does not prefix the user's prompt, it
-// REPLACES the whole turn (Agent.Run swaps the compiled contract in for the
-// original input, keeping the user's text only in the contract's source_event
-// field). Dropping it like a prefix block would leave an empty string, so we
-// unwrap it to the original prompt instead — otherwise sessions whose first
-// turn was compiled would show a blank history/sidebar preview (#5307).
+// The legacy Memory v5 <memory-compiler-execution> block (written by releases
+// up to v1.17.x before the compiler was removed) is handled differently from
+// the prepended transient blocks: it did not prefix the user's prompt, it
+// REPLACED the whole turn, keeping the user's text only in the contract's
+// source_event field. Dropping it like a prefix block would leave an empty
+// string, so we unwrap it to the original prompt instead — otherwise old
+// sessions whose first turn was compiled would show a blank history/sidebar
+// preview (#5307).
 func StripTransientUserBlocks(content string) string {
 	s := unwrapMemoryCompilerExecution(content)
 	for {
@@ -60,7 +100,22 @@ func StripTransientUserBlocks(content string) string {
 		s = next
 	}
 	s = stripTrailingDeliveryRuntime(s)
+	s = reTrailingExecutionPolicy.ReplaceAllString(s, "")
+	s = stripTrailingMemoryRecall(s)
 	return strings.TrimLeft(s, " \t\r\n")
+}
+
+func stripTrailingMemoryRecall(s string) string {
+	trimmed := strings.TrimRight(s, " \t\r\n")
+	const open = "<memory-recall>"
+	const close = "</memory-recall>"
+	if !strings.HasSuffix(trimmed, close) {
+		return s
+	}
+	if index := strings.LastIndex(trimmed, open); index >= 0 {
+		return strings.TrimRight(trimmed[:index], " \t\r\n")
+	}
+	return s
 }
 
 // unwrapMemoryCompilerExecution replaces a <memory-compiler-execution> contract
@@ -129,6 +184,81 @@ func UserPreviewText(content string) string {
 	return strings.TrimSpace(s)
 }
 
+// pasteDisplayLabelPattern matches the standalone label desktop prepends to a
+// pasted-text turn. It is UI chrome rather than user intent, so title and
+// preview derivation may remove it without touching inline label mentions.
+var pasteDisplayLabelPattern = regexp.MustCompile(`^\[(?:已粘贴文本|已貼上文字|Pasted text) #[0-9]+ · [0-9]+ (?:行|lines)\][ \t]*(?:\r?\n)?`)
+
+// StripPasteDisplayLabel removes one leading desktop pasted-text label while
+// preserving the remainder byte-for-byte.
+func StripPasteDisplayLabel(content string) string {
+	return pasteDisplayLabelPattern.ReplaceAllString(content, "")
+}
+
+// UserMessageText returns the best user-authored view of a persisted user turn.
+// New sessions carry the exact raw text explicitly; older sessions fall back to
+// deterministic wrapper stripping.
+func UserMessageText(msg provider.Message) string {
+	if msg.RawContent != "" {
+		return strings.TrimSpace(msg.RawContent)
+	}
+	return UserPreviewText(msg.Content)
+}
+
+// migrateLegacyProviderContent canonicalizes both historical user-turn shapes:
+// legacy turns kept provider-visible text only in Content, while early Context
+// Engine v2 builds inverted Content and ProviderContent. Canonical sessions
+// keep provider-visible bytes in Content so previous releases replay them
+// safely, with user-authored text in RawContent for current display/search.
+func migrateLegacyProviderContent(msgs []provider.Message) []provider.Message {
+	var upgraded []provider.Message
+	for i, msg := range msgs {
+		if msg.Role != provider.RoleUser {
+			continue
+		}
+		switch {
+		case msg.ProviderContent != "":
+			if upgraded == nil {
+				upgraded = append([]provider.Message(nil), msgs...)
+			}
+			if upgraded[i].RawContent == "" {
+				upgraded[i].RawContent = msg.Content
+			}
+			upgraded[i].Content = msg.ProviderContent
+			upgraded[i].ProviderContent = ""
+		case msg.RawContent == "" && hasLegacyProviderWrapper(msg.Content):
+			if upgraded == nil {
+				upgraded = append([]provider.Message(nil), msgs...)
+			}
+			upgraded[i].RawContent = UserPreviewText(msg.Content)
+		}
+	}
+	if upgraded != nil {
+		return upgraded
+	}
+	return msgs
+}
+
+func hasLegacyProviderWrapper(content string) bool {
+	if ContainsMemoryCompilerExecution(content) || reTransientUserBlock.MatchString(content) {
+		return true
+	}
+	if stripTrailingDeliveryRuntime(content) != content {
+		return true
+	}
+	stripped := StripTransientUserBlocks(content)
+	return HandoffTask(stripped) != stripped
+}
+
+// Auto Guard writes these onto the failed tool result for the model. Older
+// sessions may still have them persisted as mid-turn user steers; display
+// paths must hide those so they never appear as the user's own words.
+const (
+	HostRecoveryGuidanceToolFailedPrefix = "A tool failed. Use read-only diagnosis as needed"
+	HostRecoveryGuidanceTransientPrefix  = "The tool timed out or hit a transient execution limit."
+	ReadinessContinuationPrefix          = "This turn ended with work still outstanding:"
+)
+
 // SyntheticUserPrefixes lists the openings of host-injected user-role messages
 // (readiness retries, stream recovery, goal-loop nudges, compaction folds).
 // They are persisted with role "user" for provider-contract reasons but are not
@@ -137,8 +267,10 @@ func UserPreviewText(content string) string {
 // sites in internal/agent/agent.go, internal/agent/compact.go, and
 // internal/control (plan approval, goal loop).
 var SyntheticUserPrefixes = []string{
+	"<reasoning-language>",
 	"Plan approved — plan mode is off",
 	"Host final-answer readiness check failed",
+	ReadinessContinuationPrefix,
 	"You are already in the executor phase",
 	"The previous assistant response was interrupted while a tool call",
 	"The previous assistant response was interrupted during streaming",
@@ -151,12 +283,56 @@ var SyntheticUserPrefixes = []string{
 	"The agent signaled goal completion and all tasks are marked done.",
 	"Goal signaled complete but issues remain:",
 	"No tool calls in recent turns.",
+	HostRecoveryGuidanceToolFailedPrefix,
+	HostRecoveryGuidanceTransientPrefix,
+}
+
+// IsHostRecoveryGuidance reports model-facing Auto Guard policy text.
+func IsHostRecoveryGuidance(text string) bool {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return false
+	}
+	if after, ok := strings.CutPrefix(trimmed, "↪ "); ok {
+		trimmed = strings.TrimSpace(after)
+	}
+	return strings.HasPrefix(trimmed, HostRecoveryGuidanceToolFailedPrefix) ||
+		strings.HasPrefix(trimmed, HostRecoveryGuidanceTransientPrefix)
+}
+
+// VisibleSteerText is the user-authored mid-turn steer the transcript may
+// show. Host Auto Guard policy is not user-authored and must stay hidden.
+func VisibleSteerText(content string) (string, bool) {
+	text, handled := ReplaySteerText(content)
+	if !handled || text == "" {
+		return "", false
+	}
+	return text, true
+}
+
+// ReplaySteerText reports a persisted steer for display replay. handled is
+// true for any steer; text is empty when host Auto Guard policy must be omitted.
+func ReplaySteerText(content string) (text string, handled bool) {
+	text, isSteer := SteerText(content)
+	if !isSteer {
+		return "", false
+	}
+	if IsHostRecoveryGuidance(text) {
+		return "", true
+	}
+	return text, true
 }
 
 // IsSyntheticUserText reports whether a persisted user-role message is a
 // host-injected synthetic turn rather than user-authored input.
 func IsSyntheticUserText(content string) bool {
 	trimmed := strings.TrimSpace(StripTransientUserBlocks(content))
+	if IsHostRecoveryGuidance(trimmed) {
+		return true
+	}
+	if text, ok := SteerText(content); ok && IsHostRecoveryGuidance(text) {
+		return true
+	}
 	for _, prefix := range SyntheticUserPrefixes {
 		if strings.HasPrefix(trimmed, prefix) {
 			return true
@@ -170,6 +346,9 @@ func IsSyntheticUserText(content string) bool {
 // steer. Preview/title/turn-count derivations share this so a delivery
 // readiness nudge can never become a session title or inflate turn counts.
 func IsUserAuthoredTurn(content string) bool {
+	if strings.TrimSpace(StripTransientUserBlocks(content)) == "" {
+		return false
+	}
 	if IsSyntheticUserText(content) {
 		return false
 	}

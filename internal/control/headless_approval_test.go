@@ -2,12 +2,14 @@ package control
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
 
 	"reasonix/internal/agent"
 	"reasonix/internal/event"
+	"reasonix/internal/memory"
 	"reasonix/internal/permission"
 	"reasonix/internal/provider"
 	"reasonix/internal/tool"
@@ -85,6 +87,16 @@ func TestApplyHeadlessApprovalModeAutoAllowsWriterFallback(t *testing.T) {
 	}
 }
 
+func TestApplyHeadlessApprovalModeAskDeniesWriterFallback(t *testing.T) {
+	prompts, written := runHeadlessWriteOnce(t, ToolApprovalAsk, nil)
+	if prompts != 0 {
+		t.Fatalf("approval prompts = %d, want 0 (headless run has no UI to answer)", prompts)
+	}
+	if len(written) != 0 {
+		t.Fatalf("executed writes = %v, want none (default headless ask must fail closed)", written)
+	}
+}
+
 // TestApplyHeadlessApprovalModeYoloBypassesAskRule confirms only bypass runs an
 // explicitly ask-gated command unattended.
 func TestApplyHeadlessApprovalModeYoloBypassesAskRule(t *testing.T) {
@@ -94,27 +106,6 @@ func TestApplyHeadlessApprovalModeYoloBypassesAskRule(t *testing.T) {
 	}
 	if len(written) != 1 || written[0] != "a.txt" {
 		t.Fatalf("executed writes = %v, want a.txt (bypass runs even explicit ask rules)", written)
-	}
-}
-
-func TestHeadlessYoloOnlyBypassesAutoMCPPolicy(t *testing.T) {
-	policy := permission.New("ask", nil, []string{"mcp__srv__write"}, nil)
-	yolo := BuildHeadlessApprovalGate(policy, ToolApprovalYolo)
-	allow, _, err := yolo.CheckMCP(context.Background(), "mcp__srv__write", "srv/write", nil, false, false, "auto", "auto_review")
-	if err != nil || !allow {
-		t.Fatalf("YOLO auto MCP result = (%v,%v), want bypass", allow, err)
-	}
-	for _, tc := range []struct {
-		mode        string
-		destructive bool
-	}{
-		{mode: "prompt"},
-		{mode: "approve", destructive: true},
-	} {
-		allow, reason, err := yolo.CheckMCP(context.Background(), "mcp__srv__write", "srv/write", nil, false, tc.destructive, tc.mode, "auto_review")
-		if err != nil || allow || !strings.Contains(reason, "non-interactive") {
-			t.Fatalf("mode=%s destructive=%v result=(%v,%q,%v), want fail closed", tc.mode, tc.destructive, allow, reason, err)
-		}
 	}
 }
 
@@ -165,12 +156,81 @@ func TestApplyHeadlessApprovalModeDontAskDeniesWithoutPrompting(t *testing.T) {
 	}
 }
 
+func TestApplyHeadlessApprovalModeAllowsOnlyLowRiskProjectMemoryCreate(t *testing.T) {
+	safeArgs := `{"name":"release-target","description":"Project release target","type":"reference","scope":"project","body":"Release from main-v2."}`
+	for _, tc := range []struct {
+		name       string
+		args       string
+		policy     permission.Policy
+		wantMemory bool
+	}{
+		{name: "safe project create", args: safeArgs, policy: permission.New("ask", nil, nil, nil), wantMemory: true},
+		{name: "explicit deny wins", args: safeArgs, policy: permission.New("ask", nil, nil, []string{"remember"})},
+		{name: "global create", args: `{"name":"release-target","description":"Release target","type":"reference","scope":"global","body":"Release from main-v2."}`, policy: permission.New("ask", nil, nil, nil)},
+		{name: "user preference", args: `{"name":"preferred-editor","description":"Preferred editor","type":"user","scope":"project","body":"Use Vim."}`, policy: permission.New("ask", nil, nil, nil)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := memory.Store{Dir: t.TempDir(), GlobalDir: t.TempDir()}
+			reg := tool.NewRegistry()
+			reg.Add(memory.NewRememberTool(store))
+			prov := &scriptedTurns{turns: [][]provider.Chunk{
+				toolCallTurn("c1", "remember", tc.args),
+				textTurn("Done."),
+			}}
+			ag := agent.New(prov, reg, agent.NewSession(""), agent.Options{}, event.Discard)
+			prompts := 0
+			c := New(Options{
+				Runner:   ag,
+				Executor: ag,
+				Memory:   &memory.Set{Store: store},
+				Policy:   tc.policy,
+				Sink: event.FuncSink(func(e event.Event) {
+					if e.Kind == event.ApprovalRequest {
+						prompts++
+					}
+				}),
+			})
+			c.ApplyHeadlessApprovalMode(ToolApprovalAsk)
+			if err := c.runTurnWithRaw(context.Background(), "remember", "remember"); err != nil {
+				t.Fatalf("runTurnWithRaw: %v", err)
+			}
+			if prompts != 0 {
+				t.Fatalf("approval prompts = %d, want 0 for headless run", prompts)
+			}
+			_, saved := store.Read("release-target")
+			if saved != tc.wantMemory {
+				t.Fatalf("saved = %v, want %v", saved, tc.wantMemory)
+			}
+		})
+	}
+}
+
+func TestHeadlessAutoAndYoloKeepFreshMemoryBoundary(t *testing.T) {
+	for _, mode := range []string{ToolApprovalAuto, ToolApprovalYolo} {
+		t.Run(mode, func(t *testing.T) {
+			gate := BuildHeadlessApprovalGate(permission.New("ask", nil, nil, nil), mode)
+			for _, name := range []string{memoryRememberTool, memoryForgetTool} {
+				allow, reason, err := gate.Check(context.Background(), name, json.RawMessage(`{}`), false)
+				if err != nil {
+					t.Fatalf("Check(%s): %v", name, err)
+				}
+				if allow {
+					t.Fatalf("%s under headless %s must require a fresh interactive approval", name, mode)
+				}
+				if !strings.Contains(reason, "fresh human approval") {
+					t.Fatalf("%s under headless %s reason = %q, want fresh-human boundary", name, mode, reason)
+				}
+			}
+		})
+	}
+}
+
 // TestBuildHeadlessApprovalGateMatchesParentExecutorContract pins boot's single
 // construction point for every headless-only sub-agent gate (task,
 // writer-capable skill runners, the planner) to the identical mode contract
 // ApplyHeadlessApprovalMode installs on the parent executor. Before this fix,
-// boot always built the mode-unaware default gate (nil approver, ask resolves
-// to allow) for those surfaces regardless of the CLI-selected headless
+// boot always built the mode-unaware default gate for those surfaces
+// regardless of the CLI-selected headless
 // approval mode, so a task sub-agent could run a write_file call an explicit
 // ask rule was supposed to deny under auto. runSubagentGateWriteOnce drives a
 // write_file tool call through a gate exactly the way TaskTool.runSubSession
@@ -216,8 +276,8 @@ func TestBuildHeadlessApprovalGateMatchesParentExecutorContract(t *testing.T) {
 // counterpart of the boot.Build sub-agent gate fix: a runtime mode switch
 // (Shift+Tab -> SetToolApprovalMode) must reach sub-agents too, not just
 // refreshInteractiveGate's parent executor gate. Before this fix, boot
-// captured the sub-agent gate once at construction (mode-unaware default:
-// ask resolves to allow) and SetToolApprovalMode never touched it, so a task
+// captured the sub-agent gate once at construction (mode-unaware default)
+// and SetToolApprovalMode never touched it, so a task
 // sub-agent stayed on the boot-time default even after the user switched to
 // auto. subagentGate here stands in for what a task/skill/planner sub-agent
 // actually reads (boot wires the same *SharedHeadlessGate into all of them).
@@ -251,11 +311,10 @@ func TestSetToolApprovalModePropagatesToSubagentGate(t *testing.T) {
 		return append([]string(nil), writer.paths...)
 	}
 
-	// Fresh sub-agent gate at the default Ask posture: no UI to prompt
-	// through, so the explicit ask rule resolves to allow — the existing,
-	// intentional headless contract for a never-switched session.
-	if got := runSubagentWriteOnce(t); len(got) != 1 || got[0] != "a.txt" {
-		t.Fatalf("ask (initial): executed writes = %v, want [a.txt]", got)
+	// Fresh sub-agent gate at the default Ask posture: no UI can answer, so an
+	// explicit ask rule must fail closed instead of granting itself.
+	if got := runSubagentWriteOnce(t); len(got) != 0 {
+		t.Fatalf("ask (initial): executed writes = %v, want none", got)
 	}
 
 	c.SetToolApprovalMode(ToolApprovalAuto)
@@ -287,5 +346,35 @@ func TestInteractiveGateIgnoresSessionAllowForFreshHumanTools(t *testing.T) {
 	// An ordinary tool in the allowlist is still honored.
 	if got := gate.Policy.DecideSubject("write_file", false, ""); got != permission.Allow {
 		t.Fatalf("write_file decision = %v, want Allow (SessionAllow still applies to ordinary tools)", got)
+	}
+}
+
+// A blocked inline interpreter must tell a headless agent what it CAN do in
+// this session. The old message only offered "interactive session or YOLO
+// mode", which a non-interactive run cannot act on — benchmark agents burned
+// dozens of calls retrying python -c variants before stumbling onto the
+// script-file workaround on their own.
+func TestHeadlessAutoDynamicShellBlockNamesTheAuditableWorkaround(t *testing.T) {
+	gate := BuildHeadlessApprovalGate(permission.New("ask", nil, nil, nil), ToolApprovalAuto)
+
+	allow, reason, err := gate.Check(context.Background(), "bash",
+		json.RawMessage(`{"command":"cd /testbed && python -c \"print(1)\""}`), false)
+	if err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+	if allow {
+		t.Fatal("python -c must stay blocked in headless auto (inline code is not auditable)")
+	}
+	for _, want := range []string{"write_file", "python repro.py", "read_file"} {
+		if !strings.Contains(reason, want) {
+			t.Errorf("block reason must name the in-session workaround %q: %s", want, reason)
+		}
+	}
+
+	// The workaround the message advertises must actually pass the same gate.
+	allow, reason, err = gate.Check(context.Background(), "bash",
+		json.RawMessage(`{"command":"cd /testbed && python repro.py"}`), false)
+	if err != nil || !allow {
+		t.Fatalf("script-file execution must be allowed in auto: allow=%v reason=%q err=%v", allow, reason, err)
 	}
 }

@@ -14,7 +14,7 @@ import { createRoot } from "react-dom/client";
 import { Composer } from "../components/Composer";
 import { LocaleProvider } from "../lib/i18n";
 import { ToastProvider } from "../lib/toast";
-import type { CollaborationMode, ToolApprovalMode, TokenMode } from "../lib/types";
+import type { CollaborationMode, ToolApprovalMode } from "../lib/types";
 
 let passed = 0;
 let failed = 0;
@@ -91,12 +91,11 @@ async function renderComposer(props: Partial<Parameters<typeof Composer>[0]> = {
   const rootEl = document.getElementById("root");
   if (!rootEl) throw new Error("missing root");
   const root = createRoot(rootEl);
-  const calls = { cancel: 0, tokenModes: [] as TokenMode[] };
+  const calls = { cancel: 0, approvalModes: [] as ToolApprovalMode[] };
   let currentProps: Parameters<typeof Composer>[0] = {
     running: false,
     collaborationMode: "normal" as CollaborationMode,
     toolApprovalMode: "ask" as ToolApprovalMode,
-    tokenMode: "full" as TokenMode,
     goal: "",
     cwd: "/repo",
     modelLabel: "DeepSeek-R1",
@@ -108,14 +107,13 @@ async function renderComposer(props: Partial<Parameters<typeof Composer>[0]> = {
     onCycleMode: () => {},
     onSetMode: () => {},
     onSetCollaborationMode: () => {},
-    onSetToolApprovalMode: () => {},
+    onSetToolApprovalMode: (mode) => {
+      calls.approvalModes.push(mode);
+    },
     onToggleYoloApprovalMode: () => {},
     onClearGoal: () => {},
     onSwitchModel: () => {},
     onSetEffort: () => {},
-    onSetTokenMode: (mode) => {
-      calls.tokenModes.push(mode);
-    },
     ready: true,
     ...props,
   };
@@ -136,17 +134,61 @@ async function renderComposer(props: Partial<Parameters<typeof Composer>[0]> = {
   return { root, calls, rerender: paint };
 }
 
+function installWindowTimerQueue() {
+  let clock = 0;
+  let nextId = 1;
+  const tasks = new Map<number, { at: number; callback: () => void }>();
+  const originalSetTimeout = window.setTimeout;
+  const originalClearTimeout = window.clearTimeout;
+
+  window.setTimeout = ((handler: TimerHandler, delay = 0, ...args: unknown[]) => {
+    if (typeof handler !== "function") throw new Error("string timers are unsupported in tests");
+    const id = nextId++;
+    tasks.set(id, { at: clock + Number(delay), callback: () => handler(...args) });
+    return id;
+  }) as typeof window.setTimeout;
+  window.clearTimeout = ((id?: number) => {
+    if (id !== undefined) tasks.delete(id);
+  }) as typeof window.clearTimeout;
+
+  return {
+    advance(ms: number) {
+      clock += ms;
+      while (true) {
+        const next = [...tasks.entries()]
+          .filter(([, task]) => task.at <= clock)
+          .sort((a, b) => a[1].at - b[1].at || a[0] - b[0])[0];
+        if (!next) break;
+        tasks.delete(next[0]);
+        next[1].callback();
+      }
+    },
+    restore() {
+      tasks.clear();
+      window.setTimeout = originalSetTimeout;
+      window.clearTimeout = originalClearTimeout;
+    },
+  };
+}
+
 console.log("\ncomposer run strip");
 
 // Idle: no strip, no stop button, plain send arrow.
 {
   const dom = installDom();
-  const { root } = await renderComposer();
+  const { root, calls } = await renderComposer();
 
   eq(document.querySelector(".composer-run-strip"), null, "idle composer renders no run strip");
   eq(document.querySelector(".composer__btn--stop"), null, "idle composer renders no stop button");
   ok(document.querySelector(".composer__btn--send") !== null, "idle composer keeps the send button");
   eq(document.querySelector(".composer-toolbar--status-only"), null, "floating status pill is gone");
+  const yolo = document.querySelector<HTMLButtonElement>(".composer-modebar__item--yolo");
+  ok(yolo !== null, "approval bar always exposes Yolo alongside Ask and Auto");
+  await act(async () => {
+    yolo?.click();
+    await flushTimers();
+  });
+  eq(calls.approvalModes.at(-1), "yolo", "the visible Yolo option selects Yolo approval");
 
   await act(async () => {
     root.unmount();
@@ -154,45 +196,18 @@ console.log("\ncomposer run strip");
   dom.window.close();
 }
 
-// Work mode is a first-class, always-visible selector. Its three profiles live
-// in their own menu instead of the task-intent menu, and selecting a profile
-// preserves the existing token-mode callback contract.
+// Execution modes are gone. Composer keeps collaboration (direct/plan/goal)
+// and tool-approval controls; it must not render a Light/Balanced/Delivery
+// execution-setting trigger or menu.
 {
   const dom = installDom();
-  const { root, calls } = await renderComposer();
+  const { root } = await renderComposer();
 
-  const profileTrigger = document.querySelector(".composer-profile-trigger") as HTMLButtonElement | null;
-  if (!profileTrigger) throw new Error("work mode trigger did not render");
-  eq(profileTrigger.textContent?.trim(), "Balanced", "standalone control shows only the current profile");
-  eq(profileTrigger.getAttribute("aria-label"), "Work mode · Balanced", "work mode trigger keeps its full accessible name");
-  ok(profileTrigger.querySelector(".lucide-equal") !== null, "balanced work mode uses a simple equal icon");
-  await act(async () => {
-    profileTrigger.focus();
-    await flushTimers();
-  });
-  eq(document.querySelector('[role="tooltip"]')?.textContent, "Work mode · Balanced: Full tools, model-directed execution", "work mode tooltip combines category, value, and summary");
-  await act(async () => {
-    profileTrigger.blur();
-    await flushTimers();
-  });
-
-  await act(async () => {
-    profileTrigger.click();
-    await flushTimers();
-  });
-  const profileMenu = document.querySelector(".composer-profile-menu");
-  ok(profileMenu !== null, "standalone work mode trigger opens its own menu");
-  eq(profileMenu?.querySelectorAll('[role="menuitemradio"]').length, 3, "work mode menu exposes exactly three profiles");
-
-  const delivery = Array.from(profileMenu?.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]') ?? [])
-    .find((item) => item.textContent?.includes("Delivery"));
-  if (!delivery) throw new Error("delivery work mode option did not render");
-  ok(delivery.querySelector(".lucide-flag") !== null, "delivery work mode uses a simple completion flag");
-  await act(async () => {
-    delivery.click();
-    await flushTimers();
-  });
-  eq(calls.tokenModes.at(-1), "delivery", "selecting delivery keeps the token-mode callback contract");
+  eq(document.querySelector(".composer-profile-trigger"), null, "composer has no execution-setting trigger");
+  eq(document.querySelector(".composer-profile-menu"), null, "composer has no execution-setting menu");
+  const chrome = document.body.textContent ?? "";
+  eq(chrome.includes("Execution setting"), false, "composer chrome does not mention execution setting");
+  eq(chrome.includes("Delivery"), false, "composer chrome does not mention Delivery mode");
 
   const intentTrigger = document.querySelector(".composer-task-mode-trigger") as HTMLButtonElement | null;
   if (!intentTrigger) throw new Error("task intent trigger did not render");
@@ -200,7 +215,7 @@ console.log("\ncomposer run strip");
     intentTrigger.click();
     await flushTimers();
   });
-  eq(document.querySelector(".composer-intent-menu")?.textContent?.includes("Work mode"), false, "task-intent menu no longer owns work mode");
+  eq(document.querySelector(".composer-intent-menu")?.textContent?.includes("Work mode"), false, "task-intent menu does not own a work-mode section");
   eq(document.querySelectorAll('.composer-intent-menu [role="menuitemradio"]').length, 3, "task method menu exposes direct, plan, and goal");
 
   await act(async () => {
@@ -209,18 +224,59 @@ console.log("\ncomposer run strip");
   dom.window.close();
 }
 
-// Runtime controller transitions disable every mode axis and submit together,
-// so rapid Goal + Delivery + YOLO clicks cannot mutate a half-rebuilt runtime.
+// A short Creation hover must stay a no-op. In particular, leaving before the
+// 120ms open delay must not manufacture a closing-only popover or flash the
+// trigger's open styling 140ms later.
+{
+  const dom = installDom();
+  const timers = installWindowTimerQueue();
+  const { root } = await renderComposer({ showContextWindowRing: true });
+
+  for (const selector of [".composer-task-mode-trigger"]) {
+    const trigger = document.querySelector(selector) as HTMLButtonElement | null;
+    if (!trigger) throw new Error(`missing Creation hover trigger: ${selector}`);
+
+    await act(async () => {
+      trigger.dispatchEvent(new MouseEvent("mouseover", { bubbles: true, relatedTarget: null }));
+      timers.advance(119);
+      trigger.dispatchEvent(new MouseEvent("mouseout", { bubbles: true, relatedTarget: document.body }));
+      timers.advance(140);
+    });
+
+    ok(!trigger.classList.contains(`${selector.slice(1)}--open`), `${selector} stays visually closed after a short hover`);
+    ok(
+      document.querySelector(".composer-intent-menu") === null,
+      `${selector} does not render a closing-only menu`,
+    );
+  }
+
+  const intentTrigger = document.querySelector(".composer-task-mode-trigger") as HTMLButtonElement | null;
+  if (!intentTrigger) throw new Error("missing Creation intent trigger");
+  await act(async () => {
+    intentTrigger.dispatchEvent(new MouseEvent("mouseover", { bubbles: true, relatedTarget: null }));
+    timers.advance(120);
+  });
+  ok(intentTrigger.classList.contains("composer-task-mode-trigger--open"), "a sustained Creation hover still opens the trigger");
+  ok(document.querySelector(".composer-intent-menu") !== null, "a sustained Creation hover still renders the menu");
+
+  timers.restore();
+  await act(async () => {
+    root.unmount();
+  });
+  dom.window.close();
+}
+
+// Runtime controller transitions disable collaboration, approval, and submit
+// together, so rapid Goal + approval-mode clicks cannot mutate a half-rebuilt runtime.
 {
   const dom = installDom();
   const { root } = await renderComposer({ disabled: true, goal: "ship it", collaborationMode: "goal" });
-  const profile = document.querySelector<HTMLButtonElement>(".composer-profile-trigger");
   const task = document.querySelector<HTMLButtonElement>(".composer-task-mode-trigger");
   const approvals = Array.from(document.querySelectorAll<HTMLButtonElement>(".composer-modebar--approval button"));
   const send = document.querySelector<HTMLButtonElement>(".composer__btn--send");
-  ok(Boolean(profile?.disabled), "runtime transition disables Delivery profile changes");
+  eq(document.querySelector(".composer-profile-trigger"), null, "runtime transition has no execution-setting control");
   ok(Boolean(task?.disabled), "runtime transition disables Goal mode changes");
-  ok(approvals.length === 3 && approvals.every((button) => button.disabled), "runtime transition disables Ask/Auto/YOLO changes");
+  ok(approvals.length === 3 && approvals.every((button) => button.disabled), "runtime transition disables Ask/Auto/Yolo changes");
   ok(Boolean(send?.disabled), "runtime transition disables submit");
 
   await act(async () => {
@@ -420,6 +476,35 @@ console.log("\ncomposer run strip");
   ok(/ 4s| 5s| 6s/.test(ticker), `tab B excludes background user-wait from model clock (got "${ticker}")`);
   ok(!/ 7s| 8s| 9s| 10s| 11s/.test(ticker), "background suspension is not counted as model work");
   ok(!/ 5[5-9]s| 6[0-9]s/.test(ticker), "tab B does not show tab A's ~60s turn age as model time");
+
+  await act(async () => {
+    root.unmount();
+  });
+  dom.window.close();
+}
+
+// Streaming TPS combines completed usage with only the current request's live
+// character estimate, and divides by provider-output time rather than turn age.
+{
+  const dom = installDom();
+  const live = { id: "assistant-1", text: "x".repeat(40), reasoning: "", reasoningComplete: false };
+  const { root } = await renderComposer({
+    running: true,
+    tabId: "tab-tps",
+    turnStartAt: Date.now() - 60_000,
+    turnTokens: 8,
+    turnOutputTokens: 10,
+    turnOutputCharsAtUsage: 0,
+    turnModelActiveMs: 2_000,
+    liveStore: {
+      subscribe: () => () => {},
+      getSnapshot: () => live,
+    },
+  });
+
+  const ticker = document.querySelector(".composer-run-strip")?.textContent ?? "";
+  ok(ticker.includes("10 tokens/s"), "streaming TPS uses provider-output time instead of full turn age");
+  ok(ticker.includes("18 tokens"), "streaming token total adds the current request estimate to completed usage");
 
   await act(async () => {
     root.unmount();

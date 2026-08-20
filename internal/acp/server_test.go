@@ -1,9 +1,9 @@
 package acp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"reasonix/internal/agent"
+	"reasonix/internal/agent/testutil"
 	"reasonix/internal/command"
 	"reasonix/internal/control"
 	"reasonix/internal/event"
@@ -20,9 +21,10 @@ import (
 	"reasonix/internal/jobs"
 	"reasonix/internal/provider"
 	"reasonix/internal/skill"
+	"reasonix/internal/tool"
 )
 
-// --- fakes: a Factory wrapping a behavior-driven runner in a real Controller ---
+// fakes: a Factory wrapping a behavior-driven runner in a real Controller
 
 // fakeRunner stands in for an agent.Runner; it emits to the session's sink and
 // honors ctx cancellation, but runs no model.
@@ -46,11 +48,47 @@ func (f *fakeFactory) NewSession(_ context.Context, p SessionParams) (*control.C
 	return control.New(control.Options{Runner: runner, Sink: p.Sink}), nil
 }
 
+type steerBarrierTool struct {
+	started chan struct{}
+	release chan struct{}
+}
+
+func (t *steerBarrierTool) Name() string        { return "steer_barrier" }
+func (t *steerBarrierTool) Description() string { return "waits for a steer" }
+func (t *steerBarrierTool) Schema() json.RawMessage {
+	return json.RawMessage(`{"type":"object","properties":{}}`)
+}
+func (t *steerBarrierTool) ReadOnly() bool { return true }
+func (t *steerBarrierTool) Execute(ctx context.Context, _ json.RawMessage) (string, error) {
+	close(t.started)
+	select {
+	case <-t.release:
+		return "released", nil
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
+}
+
+type steerFactory struct {
+	provider *testutil.MockProvider
+	barrier  *steerBarrierTool
+}
+
+func (f *steerFactory) NewSession(_ context.Context, p SessionParams) (*control.Controller, error) {
+	tools := tool.NewRegistry()
+	tools.Add(f.barrier)
+	executor := agent.New(f.provider, tools, agent.NewSession(""), agent.Options{MaxSteps: 2}, p.Sink)
+	return control.New(control.Options{Runner: executor, Executor: executor, Sink: p.Sink}), nil
+}
+
 type commandFactory struct {
 	commands []command.Command
 	skills   []skill.Skill
 	seen     chan string
+	dir      string
 }
+
+func (f *commandFactory) SessionDir() string { return f.dir }
 
 func (f *commandFactory) NewSession(_ context.Context, p SessionParams) (*control.Controller, error) {
 	runner := &fakeRunner{
@@ -61,7 +99,7 @@ func (f *commandFactory) NewSession(_ context.Context, p SessionParams) (*contro
 			return nil
 		},
 	}
-	return control.New(control.Options{Runner: runner, Sink: p.Sink, Commands: f.commands, Skills: f.skills}), nil
+	return control.New(control.Options{Runner: runner, Sink: p.Sink, Commands: f.commands, Skills: f.skills, SessionDir: f.dir}), nil
 }
 
 type configurableFactory struct {
@@ -187,6 +225,9 @@ func (f *configurableFactory) SessionConfigState(_ context.Context, p SessionCon
 	if runtimeProfile == "" || runtimeProfile == "full" {
 		runtimeProfile = "balanced"
 	}
+	if runtimeProfile == "light" {
+		runtimeProfile = "economy"
+	}
 	if runtimeProfile != "economy" && runtimeProfile != "balanced" && runtimeProfile != "delivery" {
 		return SessionConfigState{}, os.ErrInvalid
 	}
@@ -201,11 +242,32 @@ func (f *configurableFactory) SessionConfigState(_ context.Context, p SessionCon
 		ConfigOptions: []SessionConfigOption{
 			{ID: "model", Name: "Model", Category: "model", Type: "select", CurrentValue: model, Options: modelOptions},
 			{ID: "effort", Name: "Effort", Category: "thought_level", Type: "select", CurrentValue: effort, Options: effortOptions},
-			{ID: "work_mode", Name: "Work Mode", Category: "work_mode", Type: "select", CurrentValue: runtimeProfile, Options: []SessionConfigSelectOption{
-				{Value: "economy", Name: "Economy"}, {Value: "balanced", Name: "Balanced"}, {Value: "delivery", Name: "Delivery"},
-			}},
 		},
 	}, nil
+}
+
+func requireNoExecutionModeOptions(t *testing.T, options []SessionConfigOption) {
+	t.Helper()
+	for _, id := range []string{"work_mode", "agent_preset"} {
+		if _, ok := findConfigOption(options, id); ok {
+			t.Fatalf("advertised %s", id)
+		}
+	}
+}
+func requireDeprecatedConfigNoop(t *testing.T, client *rpcClient, factory *configurableFactory, sessionID, configID, value string, buildsBefore int) SetSessionConfigOptionResult {
+	t.Helper()
+	resp := client.call(t, "session/set_config_option", SetSessionConfigOptionParams{SessionID: sessionID, ConfigID: configID, Value: value})
+	if resp.Error != nil {
+		t.Fatalf("set_config_option %s=%s: %+v", configID, value, resp.Error)
+	}
+	var set SetSessionConfigOptionResult
+	if err := json.Unmarshal(resp.Result, &set); err != nil {
+		t.Fatalf("set_config_option %s result err=%v", configID, err)
+	}
+	if got := factory.buildCount(); got != buildsBefore {
+		t.Fatalf("set_config_option %s rebuilt controller: builds=%d, want %d", configID, got, buildsBefore)
+	}
+	return set
 }
 
 func (f *configurableFactory) buildAt(t *testing.T, idx int) SessionParams {
@@ -258,7 +320,7 @@ func (f *configurableFactory) hookEventsSnapshot() []hook.Event {
 	return append([]hook.Event(nil), f.hookEvents...)
 }
 
-// --- a minimal JSON-RPC client over the wire, for integration tests ---
+// a minimal JSON-RPC client over the wire, for integration tests
 
 type frame struct {
 	ID     *json.RawMessage `json:"id"`
@@ -374,6 +436,97 @@ func startServer(t *testing.T, factory Factory) (*rpcClient, func()) {
 	}
 }
 
+type orderedRPCClient struct {
+	enc    *json.Encoder
+	frames chan frame
+}
+
+func newOrderedRPCClient(in io.Writer, out io.Reader) *orderedRPCClient {
+	c := &orderedRPCClient{enc: json.NewEncoder(in), frames: make(chan frame, 16)}
+	dec := json.NewDecoder(out)
+	go func() {
+		defer close(c.frames)
+		for {
+			var f frame
+			if err := dec.Decode(&f); err != nil {
+				return
+			}
+			c.frames <- f
+		}
+	}()
+	return c
+}
+
+func (c *orderedRPCClient) send(t *testing.T, id int, method string, params any) {
+	t.Helper()
+	if err := c.enc.Encode(map[string]any{"jsonrpc": "2.0", "id": id, "method": method, "params": params}); err != nil {
+		t.Fatalf("%s: send: %v", method, err)
+	}
+}
+
+func (c *orderedRPCClient) next(t *testing.T) frame {
+	t.Helper()
+	select {
+	case f, ok := <-c.frames:
+		if !ok {
+			t.Fatal("ACP output closed")
+		}
+		return f
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for ACP frame")
+		return frame{}
+	}
+}
+
+func startOrderedServer(t *testing.T, factory Factory) (*orderedRPCClient, func()) {
+	t.Helper()
+	inR, inW := io.Pipe()
+	outR, outW := io.Pipe()
+	done := make(chan struct{})
+	go func() {
+		_ = Serve(context.Background(), inR, outW, factory, AgentInfo{Name: "reasonix-test", Version: "0"})
+		close(done)
+	}()
+	client := newOrderedRPCClient(inW, outR)
+	return client, func() {
+		_ = inW.Close()
+		<-done
+		_ = outW.Close()
+	}
+}
+
+func requireResponseFrame(t *testing.T, f frame, id int) {
+	t.Helper()
+	if f.Method != "" || f.ID == nil {
+		t.Fatalf("first frame = %+v, want response %d", f, id)
+	}
+	if f.Error != nil {
+		t.Fatalf("response %d error = %+v", id, f.Error)
+	}
+	var gotID int
+	if err := json.Unmarshal(*f.ID, &gotID); err != nil || gotID != id {
+		t.Fatalf("response id = %d (%v), want %d", gotID, err, id)
+	}
+}
+
+func requireAvailableCommandsFrame(t *testing.T, f frame) {
+	t.Helper()
+	if f.Method != "session/update" || f.ID != nil {
+		t.Fatalf("second frame = %+v, want session/update notification", f)
+	}
+	var params map[string]any
+	if err := json.Unmarshal(f.Params, &params); err != nil {
+		t.Fatalf("available commands update: %v", err)
+	}
+	update, ok := params["update"].(map[string]any)
+	if !ok {
+		t.Fatalf("session update payload = %#v, want object", params["update"])
+	}
+	if got := update["sessionUpdate"]; got != "available_commands_update" {
+		t.Fatalf("session update = %v, want available_commands_update", got)
+	}
+}
+
 // drainPrompt collects session/update notifications until the prompt's response
 // arrives, then sweeps any notifications still buffered.
 func drainPrompt(t *testing.T, c *rpcClient, promptCh chan frame) ([]frame, frame) {
@@ -393,7 +546,11 @@ func drainPrompt(t *testing.T, c *rpcClient, promptCh chan frame) ([]frame, fram
 					return notifs, resp
 				}
 			}
-		case <-time.After(2 * time.Second):
+		// A full prompt crosses the ACP server, controller, agent, and transcript
+		// persistence path. Loaded Windows release runners can leave that
+		// asynchronous pipeline idle for more than two seconds, so keep a
+		// generous but bounded responsiveness limit for the end-to-end helper.
+		case <-time.After(5 * time.Second):
 			t.Fatal("session/prompt: timed out")
 		}
 	}
@@ -450,7 +607,7 @@ func messageChunkText(t *testing.T, f frame) (string, bool) {
 	return p.Update.Content.Text, true
 }
 
-// --- tests ---
+// tests
 
 func TestServeLifecycle(t *testing.T) {
 	factory := &fakeFactory{behavior: func(_ context.Context, sink event.Sink, input string) error {
@@ -481,6 +638,24 @@ func TestServeLifecycle(t *testing.T) {
 	}
 	if ir.AgentCapabilities.PromptCapabilities.Image {
 		t.Errorf("image must not be advertised")
+	}
+	var extensions struct {
+		AgentCapabilities struct {
+			Meta map[string]ReasonixExtensionCapabilities `json:"_meta"`
+		} `json:"agentCapabilities"`
+	}
+	if err := json.Unmarshal(initResp.Result, &extensions); err != nil {
+		t.Fatalf("initialize extensions: %v", err)
+	}
+	steer := extensions.AgentCapabilities.Meta["reasonix.io"].SessionSteer
+	if steer == nil || steer.Method != sessionSteerMethod {
+		t.Errorf("sessionSteer capability = %+v, want method %q", steer, sessionSteerMethod)
+	}
+	for _, method := range []string{sessionStatusMethod, sessionStatusUpdateMethod} {
+		capability, ok := ir.AgentCapabilities.Meta[method].(map[string]any)
+		if !ok || capability["schemaVersion"] != float64(reasonixStatusSchemaVersion) {
+			t.Errorf("%s capability = %#v, want schemaVersion %d", method, ir.AgentCapabilities.Meta[method], reasonixStatusSchemaVersion)
+		}
 	}
 	if len(ir.AuthMethods) != 1 || ir.AuthMethods[0].ID != "reasonix-setup" || ir.AuthMethods[0].Type != "terminal" {
 		t.Fatalf("authMethods = %+v, want terminal reasonix setup", ir.AuthMethods)
@@ -621,6 +796,89 @@ func TestServeAdvertisesAndExpandsCustomCommands(t *testing.T) {
 	}
 }
 
+func TestServeRequestRunsAfterResponseHookAfterWritingResult(t *testing.T) {
+	var buf bytes.Buffer
+	conn := NewConn(strings.NewReader(""), &buf)
+	conn.Handle("test/hook", func(context.Context, json.RawMessage) (any, error) {
+		return afterResponse{
+			result: map[string]string{"ok": "yes"},
+			after: func() {
+				_ = conn.Notify("test/notification", map[string]string{"after": "yes"})
+			},
+		}, nil
+	})
+
+	conn.serveRequest(context.Background(), json.RawMessage("1"), "test/hook", nil)
+
+	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("wrote %d frames, want 2: %q", len(lines), buf.String())
+	}
+	var response frame
+	if err := json.Unmarshal([]byte(lines[0]), &response); err != nil {
+		t.Fatalf("response frame: %v", err)
+	}
+	requireResponseFrame(t, response, 1)
+	var notification frame
+	if err := json.Unmarshal([]byte(lines[1]), &notification); err != nil {
+		t.Fatalf("notification frame: %v", err)
+	}
+	if notification.Method != "test/notification" || notification.ID != nil {
+		t.Fatalf("second frame = %+v, want notification", notification)
+	}
+}
+
+func TestServeAdvertisesCommandsAfterEverySessionOpenResponse(t *testing.T) {
+	sessionDir := t.TempDir()
+	factory := &commandFactory{
+		dir:      sessionDir,
+		commands: []command.Command{{Name: "review", Description: "Review the target"}},
+	}
+	client, stop := startOrderedServer(t, factory)
+	defer stop()
+
+	client.send(t, 1, "initialize", InitializeParams{ProtocolVersion: 1})
+	requireResponseFrame(t, client.next(t), 1)
+
+	client.send(t, 2, "session/new", SessionNewParams{Cwd: t.TempDir()})
+	newResponse := client.next(t)
+	requireResponseFrame(t, newResponse, 2)
+	requireAvailableCommandsFrame(t, client.next(t))
+	var created SessionNewResult
+	if err := json.Unmarshal(newResponse.Result, &created); err != nil || created.SessionID == "" {
+		t.Fatalf("session/new result: %v (%q)", err, created.SessionID)
+	}
+
+	client.send(t, 3, "session/close", SessionCloseParams{SessionID: created.SessionID})
+	requireResponseFrame(t, client.next(t), 3)
+
+	persistedID := "ordered-session-open"
+	path := transcriptPath(sessionDir, persistedID)
+	if err := agent.NewSession("").Save(path); err != nil {
+		t.Fatalf("save transcript: %v", err)
+	}
+	now := time.Now().UTC()
+	if err := saveACPMeta(path, acpSessionMeta{
+		SessionID: persistedID,
+		Cwd:       sessionDir,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("save ACP metadata: %v", err)
+	}
+
+	client.send(t, 4, "session/load", SessionLoadParams{SessionID: persistedID, Cwd: sessionDir})
+	requireResponseFrame(t, client.next(t), 4)
+	requireAvailableCommandsFrame(t, client.next(t))
+
+	client.send(t, 5, "session/close", SessionCloseParams{SessionID: persistedID})
+	requireResponseFrame(t, client.next(t), 5)
+
+	client.send(t, 6, "session/resume", SessionResumeParams{SessionID: persistedID, Cwd: sessionDir})
+	requireResponseFrame(t, client.next(t), 6)
+	requireAvailableCommandsFrame(t, client.next(t))
+}
+
 func TestServeSessionConfigSwitchesModelAndEffort(t *testing.T) {
 	factory := &configurableFactory{}
 	client, stop := startServer(t, factory)
@@ -639,6 +897,7 @@ func TestServeSessionConfigSwitchesModelAndEffort(t *testing.T) {
 	if !ok || modelOpt.CurrentValue != "fast" {
 		t.Fatalf("model config = %+v, want current fast", modelOpt)
 	}
+	requireNoExecutionModeOptions(t, nr.ConfigOptions)
 	if got := factory.buildAt(t, 0).Model; got != "fast" {
 		t.Fatalf("initial build model = %q, want fast", got)
 	}
@@ -689,16 +948,16 @@ func TestServeSessionConfigSwitchesModelAndEffort(t *testing.T) {
 
 func TestServeSessionAxesStayIndependent(t *testing.T) {
 	type observed struct {
-		profile  string
+		preset   string
 		approval string
 		plan     bool
 		goal     string
 	}
 	seen := make(chan observed, 2)
 	factory := &configurableFactory{
-		withCtrl: func(_ context.Context, sink event.Sink, input string, p SessionParams, ctrl *control.Controller) error {
+		withCtrl: func(_ context.Context, sink event.Sink, _ string, _ SessionParams, ctrl *control.Controller) error {
 			seen <- observed{
-				profile:  p.RuntimeProfile,
+				preset:   ctrl.AgentPreset(),
 				approval: ctrl.ToolApprovalMode(),
 				plan:     ctrl.PlanMode(),
 				goal:     ctrl.Goal(),
@@ -717,27 +976,42 @@ func TestServeSessionAxesStayIndependent(t *testing.T) {
 	if err := json.Unmarshal(newResp.Result, &nr); err != nil {
 		t.Fatalf("session/new result: %v", err)
 	}
-	work, ok := findConfigOption(nr.ConfigOptions, "work_mode")
-	if !ok || work.CurrentValue != "balanced" {
-		t.Fatalf("initial work mode = %+v, want balanced", work)
-	}
+	requireNoExecutionModeOptions(t, nr.ConfigOptions)
 	approval, ok := findConfigOption(nr.ConfigOptions, "tool_approval")
 	if !ok || approval.CurrentValue != control.ToolApprovalAsk {
 		t.Fatalf("initial tool approval = %+v, want ask", approval)
 	}
 
-	setWork := client.call(t, "session/set_config_option", SetSessionConfigOptionParams{
+	buildsBefore := factory.buildCount()
+	for _, tc := range []struct {
+		id    string
+		value string
+	}{
+		{id: "work_mode", value: "delivery"},
+		{id: "agent_preset", value: "delivery"},
+		{id: "profile", value: "economy"},
+		{id: "runtime_profile", value: "balanced"},
+		{id: "token_mode", value: "light"},
+	} {
+		set := requireDeprecatedConfigNoop(t, client, factory, nr.SessionID, tc.id, tc.value, buildsBefore)
+		requireNoExecutionModeOptions(t, set.ConfigOptions)
+		modelOpt, _ := findConfigOption(set.ConfigOptions, "model")
+		approvalOpt, _ := findConfigOption(set.ConfigOptions, "tool_approval")
+		if modelOpt.CurrentValue != "fast" || approvalOpt.CurrentValue != control.ToolApprovalAsk {
+			t.Fatalf("deprecated %s mutated live axes: model=%q approval=%q", tc.id, modelOpt.CurrentValue, approvalOpt.CurrentValue)
+		}
+	}
+	bad := client.call(t, "session/set_config_option", SetSessionConfigOptionParams{
 		SessionID: nr.SessionID,
 		ConfigID:  "work_mode",
-		Value:     "delivery",
+		Value:     "not-a-mode",
 	})
-	if setWork.Error != nil {
-		t.Fatalf("set work mode: %+v", setWork.Error)
+	if bad.Error == nil || bad.Error.Code != ErrInvalidParams {
+		t.Fatalf("invalid work_mode error = %+v, want invalid-params", bad.Error)
 	}
-	if got := factory.buildAt(t, 1).RuntimeProfile; got != "delivery" {
-		t.Fatalf("rebuilt runtime profile = %q, want delivery", got)
+	if got := factory.buildCount(); got != buildsBefore {
+		t.Fatalf("invalid work_mode rebuilt controller: builds=%d, want %d", got, buildsBefore)
 	}
-	buildsAfterWorkMode := factory.buildCount()
 
 	setApproval := client.call(t, "session/set_config_option", SetSessionConfigOptionParams{
 		SessionID: nr.SessionID,
@@ -747,8 +1021,8 @@ func TestServeSessionAxesStayIndependent(t *testing.T) {
 	if setApproval.Error != nil {
 		t.Fatalf("set tool approval: %+v", setApproval.Error)
 	}
-	if got := factory.buildCount(); got != buildsAfterWorkMode {
-		t.Fatalf("tool approval rebuilt controller: builds=%d, want %d", got, buildsAfterWorkMode)
+	if got := factory.buildCount(); got != buildsBefore {
+		t.Fatalf("tool approval rebuilt controller: builds=%d, want %d", got, buildsBefore)
 	}
 
 	setGoal := client.call(t, "session/set_mode", SessionSetModeParams{SessionID: nr.SessionID, ModeID: sessionModeGoal})
@@ -764,8 +1038,8 @@ func TestServeSessionAxesStayIndependent(t *testing.T) {
 		t.Fatalf("goal prompt: %+v", promptResp.Error)
 	}
 	goalObserved := <-seen
-	if goalObserved.profile != "delivery" || goalObserved.approval != control.ToolApprovalAuto || goalObserved.plan || goalObserved.goal != "ship the ACP profile switch" {
-		t.Fatalf("goal axes = %+v, want delivery + auto + goal", goalObserved)
+	if goalObserved.preset != "standard" || goalObserved.approval != control.ToolApprovalAuto || goalObserved.plan || goalObserved.goal != "ship the ACP profile switch" {
+		t.Fatalf("goal axes = %+v, want standard + auto + goal", goalObserved)
 	}
 
 	setPlan := client.call(t, "session/set_mode", SessionSetModeParams{SessionID: nr.SessionID, ModeID: sessionModePlan})
@@ -781,8 +1055,8 @@ func TestServeSessionAxesStayIndependent(t *testing.T) {
 		t.Fatalf("plan prompt: %+v", promptResp.Error)
 	}
 	planObserved := <-seen
-	if planObserved.profile != "delivery" || planObserved.approval != control.ToolApprovalAuto || !planObserved.plan || planObserved.goal != "" {
-		t.Fatalf("plan axes = %+v, want delivery + auto + plan", planObserved)
+	if planObserved.preset != "standard" || planObserved.approval != control.ToolApprovalAuto || !planObserved.plan || planObserved.goal != "" {
+		t.Fatalf("plan axes = %+v, want standard + auto + plan", planObserved)
 	}
 }
 
@@ -880,10 +1154,10 @@ func TestServeSessionAxesRestoreFromMetadata(t *testing.T) {
 	if err := json.Unmarshal(loadResp.Result, &lr); err != nil {
 		t.Fatalf("session/load result: %v", err)
 	}
-	work, _ := findConfigOption(lr.ConfigOptions, "work_mode")
+	requireNoExecutionModeOptions(t, lr.ConfigOptions)
 	approval, _ := findConfigOption(lr.ConfigOptions, "tool_approval")
-	if work.CurrentValue != "delivery" || approval.CurrentValue != control.ToolApprovalAuto || lr.Modes == nil || lr.Modes.CurrentModeID != sessionModePlan {
-		t.Fatalf("reloaded axes = work:%+v approval:%+v modes:%+v", work, approval, lr.Modes)
+	if approval.CurrentValue != control.ToolApprovalAuto || lr.Modes == nil || lr.Modes.CurrentModeID != sessionModePlan {
+		t.Fatalf("reloaded axes = approval:%+v modes:%+v", approval, lr.Modes)
 	}
 	if got := reloadedFactory.buildAt(t, 0).RuntimeProfile; got != "delivery" {
 		t.Fatalf("reloaded build profile = %q, want delivery", got)
@@ -1074,7 +1348,7 @@ func TestQueuedRebuildPreservesControllerSideAxisDrift(t *testing.T) {
 	started := make(chan struct{})
 	release := make(chan struct{})
 	seen := make(chan struct {
-		profile  string
+		model    string
 		approval string
 		plan     bool
 	}, 1)
@@ -1090,16 +1364,16 @@ func TestQueuedRebuildPreservesControllerSideAxisDrift(t *testing.T) {
 				case <-ctx.Done():
 					return ctx.Err()
 				}
-				// Simulate slash-command/controller-side state changes late in the
-				// turn, after the client has queued a work-mode rebuild.
+				// Controller-side state changes late in the turn, after the
+				// client has queued a model rebuild.
 				ctrl.SetPlanMode(false)
 				ctrl.SetToolApprovalMode(control.ToolApprovalAuto)
 			} else {
 				seen <- struct {
-					profile  string
+					model    string
 					approval string
 					plan     bool
-				}{p.RuntimeProfile, ctrl.ToolApprovalMode(), ctrl.PlanMode()}
+				}{p.Model, ctrl.ToolApprovalMode(), ctrl.PlanMode()}
 			}
 			sink.Emit(event.Event{Kind: event.Text, Text: "done"})
 			return nil
@@ -1125,16 +1399,23 @@ func TestQueuedRebuildPreservesControllerSideAxisDrift(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("first prompt did not start")
 	}
+	requireDeprecatedConfigNoop(t, client, factory, nr.SessionID, "work_mode", "delivery", 1)
 	if resp := client.call(t, "session/set_config_option", SetSessionConfigOptionParams{
 		SessionID: nr.SessionID,
-		ConfigID:  "work_mode",
-		Value:     "delivery",
+		ConfigID:  "model",
+		Value:     "pro",
 	}); resp.Error != nil {
-		t.Fatalf("queue work mode: %+v", resp.Error)
+		t.Fatalf("queue model switch: %+v", resp.Error)
+	}
+	if got := factory.buildCount(); got != 1 {
+		t.Fatalf("build count while prompt is active = %d, want only initial build", got)
 	}
 	close(release)
 	if _, resp := drainPrompt(t, client, firstPrompt); resp.Error != nil {
 		t.Fatalf("first prompt: %+v", resp.Error)
+	}
+	if got := factory.buildAt(t, 1).Model; got != "pro" {
+		t.Fatalf("queued rebuild model = %q, want pro", got)
 	}
 
 	secondPrompt := client.callAsync("session/prompt", SessionPromptParams{
@@ -1145,8 +1426,11 @@ func TestQueuedRebuildPreservesControllerSideAxisDrift(t *testing.T) {
 		t.Fatalf("second prompt: %+v", resp.Error)
 	}
 	got := <-seen
-	if got.profile != "delivery" || got.approval != control.ToolApprovalAuto || got.plan {
-		t.Fatalf("rebuilt axes = %+v, want delivery + auto + normal", got)
+	if got.approval != control.ToolApprovalAuto || got.plan {
+		t.Fatalf("axes = %+v, want auto + normal (plan cleared)", got)
+	}
+	if got.model != "pro" {
+		t.Fatalf("model = %q, want pro after queued rebuild", got.model)
 	}
 }
 
@@ -1502,29 +1786,74 @@ func TestServeCancel(t *testing.T) {
 	}
 }
 
-func TestServePromptErrorIsNotReportedAsCancelled(t *testing.T) {
-	factory := &fakeFactory{behavior: func(context.Context, event.Sink, string) error {
-		return errors.New("provider failed")
-	}}
-	client, stop := startServer(t, factory)
+func TestServeSteerInjectsIntoActivePrompt(t *testing.T) {
+	barrier := &steerBarrierTool{started: make(chan struct{}), release: make(chan struct{})}
+	prov := testutil.NewMock("steer",
+		testutil.Turn{ToolCalls: []provider.ToolCall{{ID: "call-1", Name: barrier.Name(), Arguments: `{}`}}},
+		testutil.Turn{Text: "done"},
+	)
+	client, stop := startServer(t, &steerFactory{provider: prov, barrier: barrier})
 	defer stop()
 
 	client.call(t, "initialize", InitializeParams{ProtocolVersion: 1})
 	newResp := client.call(t, "session/new", SessionNewParams{})
 	var nr SessionNewResult
-	json.Unmarshal(newResp.Result, &nr)
+	if err := json.Unmarshal(newResp.Result, &nr); err != nil {
+		t.Fatalf("session/new: %v", err)
+	}
 
 	promptCh := client.callAsync("session/prompt", SessionPromptParams{
 		SessionID: nr.SessionID,
-		Prompt:    []ContentBlock{{Type: "text", Text: "fail"}},
+		Prompt:    []ContentBlock{{Type: "text", Text: "start"}},
 	})
-	_, resp := drainPrompt(t, client, promptCh)
-	var pr SessionPromptResult
-	if err := json.Unmarshal(resp.Result, &pr); err != nil {
-		t.Fatalf("prompt result: %v", err)
+	select {
+	case <-barrier.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("prompt never reached the tool boundary")
 	}
-	if pr.StopReason != StopError {
-		t.Errorf("stopReason = %q, want error", pr.StopReason)
+
+	legacyResp := client.call(t, "session/steer", SessionSteerParams{
+		SessionID: nr.SessionID,
+		Prompt:    []ContentBlock{{Type: "text", Text: "legacy route"}},
+	})
+	if legacyResp.Error == nil || legacyResp.Error.Code != ErrMethodNotFound {
+		t.Fatalf("legacy session/steer = %+v, want method not found", legacyResp.Error)
+	}
+
+	steerResp := client.call(t, sessionSteerMethod, SessionSteerParams{
+		SessionID: nr.SessionID,
+		Prompt:    []ContentBlock{{Type: "text", Text: "use plan B"}},
+	})
+	if steerResp.Error != nil {
+		t.Fatalf("%s errored: %+v", sessionSteerMethod, steerResp.Error)
+	}
+	close(barrier.release)
+	_, promptResp := drainPrompt(t, client, promptCh)
+	if promptResp.Error != nil {
+		t.Fatalf("session/prompt errored: %+v", promptResp.Error)
+	}
+
+	reqs := prov.Requests()
+	if len(reqs) != 2 {
+		t.Fatalf("provider requests = %d, want 2", len(reqs))
+	}
+	found := false
+	for _, m := range reqs[1].Messages {
+		if text, ok := agent.SteerText(m.Content); ok && text == "use plan B" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("second provider request did not contain the steer: %+v", reqs[1].Messages)
+	}
+
+	idleResp := client.call(t, sessionSteerMethod, SessionSteerParams{
+		SessionID: nr.SessionID,
+		Prompt:    []ContentBlock{{Type: "text", Text: "too late"}},
+	})
+	if idleResp.Error == nil || idleResp.Error.Code != ErrInvalidRequest {
+		t.Fatalf("idle %s = %+v, want invalid request", sessionSteerMethod, idleResp.Error)
 	}
 }
 

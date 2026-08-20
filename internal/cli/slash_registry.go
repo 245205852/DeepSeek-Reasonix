@@ -1,8 +1,10 @@
 package cli
 
 import (
+	"slices"
 	"strings"
 
+	"reasonix/internal/control"
 	"reasonix/internal/i18n"
 )
 
@@ -16,11 +18,13 @@ type builtinSlashSpec struct {
 	hint       string
 	descend    bool
 	showInHelp bool
+	hidden     bool
 }
 
 func builtinSlashSpecs() []builtinSlashSpec {
 	return []builtinSlashSpec{
 		{name: "/compact", insert: "/compact ", hint: i18n.M.CmdCompact, showInHelp: true},
+		{name: "/context", insert: "/context", hint: i18n.M.CmdContext, showInHelp: true},
 		{name: "/new", insert: "/new ", hint: i18n.M.CmdNew, showInHelp: true},
 		{name: "/clear", insert: "/clear", hint: i18n.M.CmdClear, showInHelp: true},
 		{name: "/cls", insert: "/cls", hint: i18n.M.CmdCls, showInHelp: true},
@@ -32,13 +36,15 @@ func builtinSlashSpecs() []builtinSlashSpec {
 		{name: "/switch", insert: "/switch ", hint: i18n.M.CmdSwitchBranch, showInHelp: true},
 		{name: "/todo", insert: "/todo", hint: i18n.M.CmdTodo, showInHelp: true},
 		{name: "/mcp", insert: "/mcp", hint: i18n.M.CmdMcp, showInHelp: true},
+		{name: "/remote", insert: "/remote", hint: i18n.M.CmdRemote, showInHelp: true},
 		{name: "/plugins", aliases: []string{"/plugin"}, insert: "/plugins", hint: i18n.M.CmdPlugins, showInHelp: true},
 		{name: "/model", insert: "/model", hint: i18n.M.CmdModel, descend: true, showInHelp: true},
 		{name: "/status", insert: "/status", hint: i18n.M.CmdStatus, showInHelp: true},
-		{name: "/work-mode", aliases: []string{"/profile"}, insert: "/work-mode ", hint: i18n.M.CmdWorkMode, descend: true, showInHelp: true},
+		{name: "/preset", aliases: []string{"/work-mode", "/profile"}, insert: "/preset ", hint: i18n.M.CmdWorkMode, hidden: true},
 		{name: "/provider", insert: "/provider", hint: i18n.M.CmdProvider, descend: true, showInHelp: true},
 		{name: "/skills", aliases: []string{"/skill"}, insert: "/skills", hint: i18n.M.CmdSkill, showInHelp: true},
 		{name: "/reload-cmd", insert: "/reload-cmd", hint: i18n.M.CmdReloadCmd, showInHelp: true},
+		{name: "/reload", insert: "/reload", hint: i18n.M.CmdReload, showInHelp: true},
 		{name: "/hooks", insert: "/hooks ", hint: i18n.M.CmdHooks, descend: true, showInHelp: true},
 		{name: "/paste-image", insert: "/paste-image", hint: i18n.M.CmdPasteImage},
 		{name: "/output-style", aliases: []string{"/output-styles"}, insert: "/output-style", hint: i18n.M.CmdOutputStyle, showInHelp: true},
@@ -47,12 +53,13 @@ func builtinSlashSpecs() []builtinSlashSpec {
 		{name: "/diff-fold", insert: "/diff-fold", hint: i18n.M.CmdDiffFold, showInHelp: true},
 		{name: "/sandbox", insert: "/sandbox", hint: i18n.M.CmdSandbox, showInHelp: true},
 		{name: "/effort", insert: "/effort ", hint: i18n.M.CmdEffort, descend: true},
-		{name: "/auto-plan", insert: "/auto-plan ", hint: i18n.M.CmdAutoPlan, descend: true, showInHelp: true},
 		{name: "/reasoning-language", insert: "/reasoning-language ", hint: i18n.M.CmdReasonLang, descend: true, showInHelp: true},
-		{name: "/memory-v5", insert: "/memory-v5 ", hint: i18n.M.CmdMemoryV5, descend: true},
 		{name: "/theme", insert: "/theme ", hint: i18n.M.CmdTheme, descend: true},
 		{name: "/language", insert: "/language ", hint: i18n.M.CmdLanguage, descend: true, showInHelp: true},
+		{name: "/currency", insert: "/currency ", hint: i18n.M.CmdCurrency, descend: true, showInHelp: true},
 		{name: "/help", insert: "/help", hint: i18n.M.CmdHelp, showInHelp: true},
+		{name: "/web", insert: "/web", hint: i18n.M.CmdWeb, showInHelp: true},
+		{name: "/docs", aliases: []string{"/reasonix:docs"}, insert: "/docs ", hint: i18n.M.CmdDocs, showInHelp: true},
 		{name: "/memory", insert: "/memory ", hint: i18n.M.CmdMemory, showInHelp: true},
 		{name: "/migrate", aliases: []string{"/migration"}, insert: "/migrate", hint: i18n.M.CmdMigrate, showInHelp: true},
 		{name: "/goal", insert: "/goal ", hint: i18n.M.CmdGoal, descend: true},
@@ -60,6 +67,7 @@ func builtinSlashSpecs() []builtinSlashSpec {
 		{name: "/forget", insert: "/forget ", hint: i18n.M.CmdForget},
 		{name: "/quit", aliases: []string{"/exit"}, insert: "/quit", hint: i18n.M.CmdQuit},
 		{name: "/copy", insert: "/copy", hint: i18n.M.CmdCopy, showInHelp: true},
+		{name: control.ContinueChecksCommand, insert: control.ContinueChecksCommand, hint: i18n.M.CmdContinueChecks, showInHelp: true},
 		{name: "/export", insert: "/export", hint: i18n.M.CmdExport, showInHelp: true},
 	}
 }
@@ -68,6 +76,9 @@ func builtinSlashItems() []compItem {
 	specs := builtinSlashSpecs()
 	items := make([]compItem, 0, len(specs))
 	for _, spec := range specs {
+		if spec.hidden {
+			continue
+		}
 		items = append(items, compItem{
 			label: spec.name, insert: spec.insert, hint: spec.hint, descend: spec.descend,
 		})
@@ -91,10 +102,8 @@ func canonicalBuiltinSlashCommand(name string) string {
 		if name == spec.name {
 			return spec.name
 		}
-		for _, alias := range spec.aliases {
-			if name == alias {
-				return spec.name
-			}
+		if slices.Contains(spec.aliases, name) {
+			return spec.name
 		}
 	}
 	return name

@@ -2,8 +2,6 @@ package installsource
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,13 +12,9 @@ import (
 	"slices"
 	"sort"
 	"strings"
-	"time"
 
-	"reasonix/internal/config"
-	"reasonix/internal/mcpcatalog"
+	"reasonix/internal/gitcmd"
 	"reasonix/internal/pluginpkg"
-	"reasonix/internal/proc"
-	"reasonix/internal/secrets"
 )
 
 const (
@@ -375,6 +369,9 @@ func (t *installSourceTool) pluginPackageAction(req request, pkg pluginpkg.Packa
 		MappedCapabilities:  append([]string(nil), pkg.Compatibility.Mapped...),
 		SkippedCapabilities: append([]pluginpkg.CompatibilityIssue(nil), pkg.Compatibility.Skipped...),
 		Version:             pkg.Manifest.Version,
+		PromptCount:         pkg.PromptCount(),
+		ThemeCount:          pkg.ThemeCount(),
+		Runtime:             runtimePlanInfo(pkg.Manifest.Runtime),
 		RiskLevel:           RiskMedium,
 		RiskReasons:         []string{"installs a plugin package that can add skills, commands, hooks, and MCP servers"},
 	}
@@ -389,9 +386,29 @@ func (t *installSourceTool) pluginPackageAction(req request, pkg pluginpkg.Packa
 		a.RiskLevel = RiskHigh
 		a.RiskReasons = append(a.RiskReasons, "adds MCP servers that can change provider-visible tool schemas")
 	}
+	if a.Runtime != nil {
+		a.RiskLevel = RiskHigh
+		a.RiskReasons = append(a.RiskReasons, "FULL TRUST: declares a runtime process ("+pluginpkg.RuntimeCommandLine(pkg.Manifest.Runtime)+") that runs inside Reasonix — it can read the full session and environment, bypass permissions, and operate this machine directly")
+	}
 	sort.Strings(a.Skills)
 	sort.Strings(a.Agents)
 	return a, nil
+}
+
+// runtimePlanInfo converts a manifest runtime declaration into its plan
+// form. nil in, nil out: legacy packages carry no runtime field at all.
+func runtimePlanInfo(rt *pluginpkg.RuntimeSpec) *RuntimePlanInfo {
+	if rt == nil {
+		return nil
+	}
+	return &RuntimePlanInfo{
+		Command:      rt.Command,
+		Args:         append([]string(nil), rt.Args...),
+		Intercepts:   append([]string(nil), rt.Intercepts...),
+		Replaces:     append([]string(nil), rt.Replaces...),
+		Capabilities: append([]string(nil), rt.Capabilities...),
+		FullTrust:    true,
+	}
 }
 
 func modeForPlugin(mode string) string {
@@ -464,8 +481,6 @@ func (t *installSourceTool) applyInstallPluginPackage(ctx context.Context, req r
 	}
 	if act.Mode == "link" {
 		installed.Root = sourceRoot
-	} else if verification, ok := verifyInstalledPluginCatalog(ctx, installed, target, pkg.ManifestKind); ok {
-		installed.Verification = verification
 	}
 	if err := pluginpkg.Upsert(t.reasonixHome, installed); err != nil {
 		return err
@@ -475,47 +490,18 @@ func (t *installSourceTool) applyInstallPluginPackage(ctx context.Context, req r
 	act.Version = pkg.Manifest.Version
 	act.SkillCount, act.CommandCount, act.HookCount, act.ToolCount = pkg.CapabilityCounts()
 	act.AgentCount = pkg.AgentCount()
+	act.PromptCount, act.ThemeCount = pkg.PromptCount(), pkg.ThemeCount()
+	act.Runtime = runtimePlanInfo(pkg.Manifest.Runtime)
 	act.Compatibility = pkg.Compatibility.Status
 	act.MappedCapabilities = append([]string(nil), pkg.Compatibility.Mapped...)
 	act.SkippedCapabilities = append([]pluginpkg.CompatibilityIssue(nil), pkg.Compatibility.Skipped...)
 	return nil
 }
 
-func verifyInstalledPluginCatalog(ctx context.Context, installed pluginpkg.InstalledPlugin, root, manifestKind string) (*pluginpkg.Verification, bool) {
-	packageDigest, err := mcpcatalog.TreeSHA256(root)
-	if err != nil {
-		return nil, false
-	}
-	manifestPath := filepath.Join(root, pluginpkg.NativeManifest)
-	switch manifestKind {
-	case "codex":
-		manifestPath = filepath.Join(root, pluginpkg.CodexManifest)
-	case "claude":
-		manifestPath = filepath.Join(root, pluginpkg.ClaudeManifest)
-	}
-	manifestBody, err := os.ReadFile(manifestPath)
-	if err != nil {
-		return nil, false
-	}
-	manifestSum := sha256.Sum256(manifestBody)
-	result, err := (mcpcatalog.Loader{CacheDir: config.CacheDir()}).Load(ctx, false)
-	if err != nil {
-		return nil, false
-	}
-	entry, ok := result.Index.Match(installed.Name, installed.Version, installed.Source, installed.Commit, packageDigest)
-	if !ok || !strings.EqualFold(entry.ManifestSHA256, hex.EncodeToString(manifestSum[:])) {
-		return nil, false
-	}
-	return &pluginpkg.Verification{
-		CatalogEntryID: entry.ID, Commit: installed.Commit, PackageSHA256: packageDigest,
-		VerifiedAt: time.Now().UTC(), CatalogSequence: result.Index.Sequence,
-	}, true
-}
-
 func (t *installSourceTool) preparePluginSource(ctx context.Context, source, mode string) (string, string, func(), error) {
 	source = strings.TrimSpace(source)
-	if strings.HasPrefix(source, "git:github.com/") {
-		source = "https://github.com/" + strings.TrimPrefix(source, "git:github.com/")
+	if after, ok := strings.CutPrefix(source, "git:github.com/"); ok {
+		source = "https://github.com/" + after
 	}
 	if isURL(source) {
 		src, ok := parseGitHubRepoSource(source)
@@ -542,9 +528,10 @@ func (t *installSourceTool) preparePluginSource(ctx context.Context, source, mod
 		if out, err := rev.Output(); err == nil {
 			commit = strings.TrimSpace(string(out))
 		}
-		root := tmp
-		if src.Path != "" {
-			root = filepath.Join(tmp, filepath.FromSlash(src.Path))
+		root, err := pluginRootFromClone(tmp, src.Path)
+		if err != nil {
+			_ = os.RemoveAll(tmp)
+			return "", "", func() {}, err
 		}
 		return root, commit, func() { _ = os.RemoveAll(tmp) }, nil
 	}
@@ -553,6 +540,34 @@ func (t *installSourceTool) preparePluginSource(ctx context.Context, source, mod
 		return path, "", func() {}, nil
 	}
 	return path, "", func() {}, nil
+}
+
+func pluginRootFromClone(cloneRoot, repoPath string) (string, error) {
+	cloneRoot = filepath.Clean(cloneRoot)
+	if repoPath == "" {
+		return cloneRoot, nil
+	}
+	if strings.Contains(repoPath, "\\") {
+		return "", newErr(ErrUnsupportedKind, "plugin repository path %q is not a safe relative path", repoPath)
+	}
+	rel := filepath.FromSlash(repoPath)
+	if !filepath.IsLocal(rel) {
+		return "", newErr(ErrUnsupportedKind, "plugin repository path %q escapes the cloned repository", repoPath)
+	}
+	root := filepath.Join(cloneRoot, rel)
+	resolvedClone, err := filepath.EvalSymlinks(cloneRoot)
+	if err != nil {
+		return "", newErr(ErrSourceUnreadable, "cannot resolve cloned plugin repository: %v", err)
+	}
+	resolvedRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return "", newErr(ErrSourceUnreadable, "plugin repository path %q is not readable: %v", repoPath, err)
+	}
+	within, err := filepath.Rel(resolvedClone, resolvedRoot)
+	if err != nil || !filepath.IsLocal(within) {
+		return "", newErr(ErrUnsupportedKind, "plugin repository path %q escapes the cloned repository", repoPath)
+	}
+	return resolvedRoot, nil
 }
 
 // verifyCopiedCapabilities re-parses the installed copy and requires its
@@ -583,24 +598,20 @@ func verifyCopiedCapabilities(src pluginpkg.Package, target string) error {
 func checkoutPluginCommit(ctx context.Context, cloneRoot, commit string) error {
 	fetch := pluginGitCommand(ctx, "-C", cloneRoot, "fetch", "--depth=1", "origin", commit)
 	if out, err := fetch.CombinedOutput(); err != nil {
-		return fmt.Errorf("fetch approved commit %s: %v: %s", commit, err, strings.TrimSpace(string(out)))
+		return fmt.Errorf("fetch approved commit %s: %w: %s", commit, err, strings.TrimSpace(string(out)))
 	}
 	co := pluginGitCommand(ctx, "-C", cloneRoot, "checkout", "--detach", commit)
 	if out, err := co.CombinedOutput(); err != nil {
-		return fmt.Errorf("checkout approved commit %s: %v: %s", commit, err, strings.TrimSpace(string(out)))
+		return fmt.Errorf("checkout approved commit %s: %w: %s", commit, err, strings.TrimSpace(string(out)))
 	}
 	return nil
 }
 
 func pluginGitCommand(ctx context.Context, args ...string) *exec.Cmd {
 	// Preserve repository bytes across platforms. A user's global autocrlf
-	// setting must not rewrite JSON/scripts on Windows and make the installed
-	// tree differ from the catalog's signed package digest.
-	gitArgs := append([]string{"-c", "core.autocrlf=false"}, args...)
-	cmd := exec.CommandContext(ctx, "git", gitArgs...)
-	cmd.Env = secrets.ProcessEnv()
-	proc.HideWindow(cmd)
-	return cmd
+	// setting must not rewrite JSON/scripts on Windows after the user approved
+	// the exact source commit.
+	return gitcmd.CommandWithConfig(ctx, "", []string{"core.autocrlf=false"}, args...)
 }
 
 // installCopiedPlugin copies sourceRoot into a staging directory next to

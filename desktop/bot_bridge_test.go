@@ -155,7 +155,7 @@ func TestBridgeTakeoverSwitchAnnouncesReleaseToOldTab(t *testing.T) {
 		t.Fatalf("switch to B: %v", err)
 	}
 	seen := map[string]bool{}
-	for i := 0; i < 2; i++ {
+	for range 2 {
 		select {
 		case got := <-env.announced:
 			seen[got[0]] = true
@@ -354,6 +354,21 @@ func TestBridgeSuppressesCanceledTurnAndErrorsNotify(t *testing.T) {
 	call := env.waitNotification(t)
 	if !strings.Contains(call.msg.Text, "❌") || !strings.Contains(call.msg.Text, "boom") {
 		t.Fatalf("error text = %q", call.msg.Text)
+	}
+}
+
+func TestBridgeRecoveryPauseNotifiesAsControlledPause(t *testing.T) {
+	env := newBridgeTestEnv([]TabMeta{{ID: "tab-1", Label: "会话一"}})
+	env.hub.SetWatch(testWatchRoute(), true)
+
+	env.hub.observe("tab-1", event.Event{
+		Kind:    event.TurnDone,
+		Err:     errors.New("automatic recovery paused"),
+		Outcome: event.TurnOutcomeRecoveryPaused,
+	})
+	call := env.waitNotification(t)
+	if strings.Contains(call.msg.Text, "❌") || !strings.Contains(call.msg.Text, "已暂停自动重试") || !strings.Contains(call.msg.Text, "继续") {
+		t.Fatalf("recovery pause text = %q, want a neutral actionable pause notice", call.msg.Text)
 	}
 }
 

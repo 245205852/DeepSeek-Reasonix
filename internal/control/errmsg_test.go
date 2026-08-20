@@ -68,6 +68,17 @@ func TestExplainError(t *testing.T) {
 		t.Errorf("400 should append the provider reason from a JSON body, got %q", jsonBody.Error())
 	}
 
+	limit := explainError(&provider.ContextLimitError{
+		APIError:         &provider.APIError{Provider: "deepseek", Status: 400, Body: `{"error":{"message":"This model's maximum context length is 1048576 tokens. However, you requested 1165351 tokens (810882 in the messages, 354469 in the completion)."}}`},
+		WindowTokens:     1_048_576,
+		RequestedTokens:  1_165_351,
+		PromptTokens:     810_882,
+		CompletionTokens: 354_469,
+	})
+	if !strings.Contains(limit.Error(), "810882") || !strings.Contains(limit.Error(), "1048576") || !strings.Contains(limit.Error(), "Compact") {
+		t.Errorf("context overflow should name numbers and recovery, got %q", limit.Error())
+	}
+
 	toolSchema := explainError(&provider.APIError{
 		Provider:    "mimo",
 		Status:      400,
@@ -83,6 +94,37 @@ func TestExplainError(t *testing.T) {
 	rawBody := explainError(&provider.APIError{Provider: "deepseek", Status: 422, Body: "some unparseable detail"})
 	if !strings.Contains(rawBody.Error(), "some unparseable detail") {
 		t.Errorf("422 should fall back to the raw body, got %q", rawBody.Error())
+	}
+
+	miniMaxInput := explainError(&provider.APIError{
+		Provider: "custom-m3",
+		Status:   422,
+		Body:     `{"error":{"message":"input new_sensitive (1026)","code":"1026"}}`,
+		TraceID:  "minimax-trace-123",
+	})
+	for _, want := range []string{i18n.M.ProviderErrInputSensitive, "input new_sensitive", "Trace ID: minimax-trace-123"} {
+		if !strings.Contains(miniMaxInput.Error(), want) {
+			t.Errorf("MiniMax 1026 = %q, want %q", miniMaxInput.Error(), want)
+		}
+	}
+	if strings.Contains(miniMaxInput.Error(), i18n.M.ProviderErrUnprocessable) {
+		t.Errorf("MiniMax 1026 must not use the generic 422 message: %q", miniMaxInput.Error())
+	}
+
+	miniMaxOutput := explainError(&provider.APIError{
+		Provider: "minimax-cn-api",
+		Status:   422,
+		Body:     `{"base_resp":{"status_code":1027,"status_msg":"output new_sensitive"}}`,
+	})
+	for _, want := range []string{i18n.M.ProviderErrOutputSensitive, "output new_sensitive"} {
+		if !strings.Contains(miniMaxOutput.Error(), want) {
+			t.Errorf("MiniMax 1027 = %q, want %q", miniMaxOutput.Error(), want)
+		}
+	}
+
+	unrelated1026 := explainError(&provider.APIError{Provider: "other", Status: 422, Body: `{"code":1026,"message":"other meaning"}`})
+	if !strings.Contains(unrelated1026.Error(), i18n.M.ProviderErrUnprocessable) {
+		t.Errorf("another provider's numeric code 1026 must remain generic: %q", unrelated1026.Error())
 	}
 
 	rate := explainError(&provider.APIError{Provider: "deepseek", Status: 429, Body: `{"error":{"message":"slow down"}}`})
@@ -119,6 +161,7 @@ func TestExplainError(t *testing.T) {
 	}
 
 	plain := errors.New("some other failure")
+	//nolint:errorlint // identity check: explainError must return the same error, unwrapped.
 	if explainError(plain) != plain {
 		t.Error("unknown errors should pass through unchanged")
 	}

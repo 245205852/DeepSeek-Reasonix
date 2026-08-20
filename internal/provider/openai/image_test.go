@@ -1,6 +1,7 @@
 package openai
 
 import (
+	"bytes"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -40,6 +41,151 @@ func TestBuildRequestSkipsImagesWithoutVision(t *testing.T) {
 	})
 	if s, ok := req.Messages[0].Content.(string); !ok || s != "ignore the image" {
 		t.Fatalf("non-vision content = %#v, want plain string", req.Messages[0].Content)
+	}
+}
+
+func TestOfficialDeepSeekProviderWideVisionInputMatchesTextOnlyRequest(t *testing.T) {
+	p, err := New(provider.Config{
+		Name:    "deepseek",
+		BaseURL: "https://api.deepseek.com",
+		Model:   "deepseek-v4-pro",
+		Extra:   map[string]any{"vision": true},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	c := p.(*client)
+	if c.vision {
+		t.Fatal("official DeepSeek endpoint must ignore stale vision=true config")
+	}
+
+	textOnly := provider.Request{Messages: []provider.Message{{
+		Role: provider.RoleUser, Content: "describe this image",
+	}}}
+	withImage := provider.Request{Messages: []provider.Message{{
+		Role: provider.RoleUser, Content: "describe this image",
+		Images: []string{"data:image/png;base64," + strings.Repeat("QUFB", 20_000)},
+	}}}
+	textBody, err := json.Marshal(c.buildRequest(textOnly))
+	if err != nil {
+		t.Fatalf("marshal text request: %v", err)
+	}
+	imageBody, err := json.Marshal(c.buildRequest(withImage))
+	if err != nil {
+		t.Fatalf("marshal image request: %v", err)
+	}
+	if !bytes.Equal(imageBody, textBody) {
+		t.Fatalf("official DeepSeek image request changed provider-visible bytes:\ntext:  %s\nimage: %s", textBody, imageBody)
+	}
+}
+
+func TestOfficialDeepSeekExplicitModelVisionInputMatchesTextOnlyRequest(t *testing.T) {
+	p, err := New(provider.Config{
+		Name:    "deepseek",
+		BaseURL: "https://api.deepseek.com",
+		Model:   "deepseek-v5-vision",
+		Extra: map[string]any{
+			"vision":                true,
+			"vision_model_explicit": true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	c := p.(*client)
+	if c.vision {
+		t.Fatal("explicit model-scoped vision must not bypass the official DeepSeek endpoint guard")
+	}
+
+	textOnly := provider.Request{Messages: []provider.Message{{
+		Role: provider.RoleUser, Content: "describe",
+	}}}
+	withImage := provider.Request{Messages: []provider.Message{{
+		Role: provider.RoleUser, Content: "describe",
+		Images: []string{"data:image/png;base64,AAAA"},
+	}}}
+	textBody, err := json.Marshal(c.buildRequest(textOnly))
+	if err != nil {
+		t.Fatalf("marshal text request: %v", err)
+	}
+	imageBody, err := json.Marshal(c.buildRequest(withImage))
+	if err != nil {
+		t.Fatalf("marshal image request: %v", err)
+	}
+	if !bytes.Equal(imageBody, textBody) {
+		t.Fatalf("explicit official DeepSeek image request changed provider-visible bytes:\ntext:  %s\nimage: %s", textBody, imageBody)
+	}
+}
+
+func TestOfficialDeepSeekDoesNotInjectToolResultImages(t *testing.T) {
+	p, err := New(provider.Config{
+		Name:    "deepseek",
+		BaseURL: "https://api.deepseek.com/v1",
+		Model:   "deepseek-v4-pro",
+		Extra: map[string]any{
+			"vision":                true,
+			"vision_model_explicit": true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	plainMessages := []provider.Message{
+		{Role: provider.RoleUser, Content: "take a screenshot"},
+		{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{{
+			ID: "c1", Name: "shot", Arguments: "{}",
+		}}},
+		{
+			Role: provider.RoleTool, ToolCallID: "c1", Name: "shot",
+			Content: "[image: image/png]",
+		},
+	}
+	imageMessages := append([]provider.Message(nil), plainMessages...)
+	imageMessages[2].Images = []string{"data:image/png;base64,AAAA"}
+	req := p.(*client).buildRequest(provider.Request{Messages: imageMessages})
+	if len(req.Messages) != 3 {
+		t.Fatalf("messages = %d, want 3 without an injected image message", len(req.Messages))
+	}
+	body, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	if strings.Contains(string(body), "image_url") || strings.Contains(string(body), "base64,AAAA") {
+		t.Fatalf("official DeepSeek request leaked tool image payload: %s", body)
+	}
+	plainBody, err := json.Marshal(p.(*client).buildRequest(provider.Request{Messages: plainMessages}))
+	if err != nil {
+		t.Fatalf("marshal plain request: %v", err)
+	}
+	if !bytes.Equal(body, plainBody) {
+		t.Fatalf("official DeepSeek tool image metadata changed provider-visible bytes:\nplain: %s\nimage: %s", plainBody, body)
+	}
+}
+
+func TestCustomDeepSeekProtocolGatewayPreservesExplicitVision(t *testing.T) {
+	p, err := New(provider.Config{
+		Name:    "deepseek-gateway",
+		BaseURL: "https://gateway.example/v1",
+		Model:   "deepseek-v4-pro",
+		Extra: map[string]any{
+			"reasoning_protocol": "deepseek",
+			"vision":             true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	c := p.(*client)
+	if !c.deepseek || !c.vision {
+		t.Fatalf("deepseek=%v vision=%v, want both enabled", c.deepseek, c.vision)
+	}
+	req := c.buildRequest(provider.Request{Messages: []provider.Message{{
+		Role: provider.RoleUser, Content: "describe",
+		Images: []string{"data:image/png;base64,AAAA"},
+	}}})
+	parts, ok := req.Messages[0].Content.([]chatContentPart)
+	if !ok || len(parts) != 2 || parts[1].ImageURL == nil {
+		t.Fatalf("custom gateway content = %#v, want [text, image_url]", req.Messages[0].Content)
 	}
 }
 

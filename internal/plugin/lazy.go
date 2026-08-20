@@ -23,7 +23,6 @@ import (
 	"sync"
 	"time"
 
-	"reasonix/internal/mcptrust"
 	"reasonix/internal/tool"
 )
 
@@ -63,6 +62,12 @@ type lazySpawn struct {
 	real     map[string]tool.Tool // namespaced name → real tool, populated on success
 	spawnErr error
 	swapped  bool
+	// waitBudget bounds how long one tool call waits for a shared startup. The
+	// handshake itself uses spec.startupTimeout and continues in the background.
+	waitBudget time.Duration
+	// ready is closed when state leaves spawnInFlight so concurrent waiters can
+	// observe the result without killing a shared host process.
+	ready chan struct{}
 	// removePrefix is set for cache-miss placeholders so trySwap drops the
 	// single "<server>__connect" stub before re-registering the real tools
 	// under their actual namespaced names. Cache-hit placeholders use the
@@ -71,74 +76,70 @@ type lazySpawn struct {
 	removePrefix string
 }
 
-// kick starts the spawn if it has not yet started. Background registration calls
-// this immediately; tests may leave it idle to exercise the placeholder path.
+// beginInFlight transitions idle → inFlight and creates the waiter channel.
+// Caller must hold s.mu. Returns false when the host is closed.
+func (s *lazySpawn) beginInFlight() bool {
+	if !s.host.beginDeferredSpawn() {
+		s.state = spawnFailed
+		s.spawnErr = fmt.Errorf("plugin host is closed")
+		s.broadcastReady()
+		return false
+	}
+	s.state = spawnInFlight
+	s.ready = make(chan struct{})
+	return true
+}
+
+// broadcastReady closes the current ready channel if any. Caller holds s.mu.
+func (s *lazySpawn) broadcastReady() {
+	if s.ready != nil {
+		close(s.ready)
+		s.ready = nil
+	}
+}
+
+// kick starts the spawn if it has not yet started. Cache-miss catalog discovery
+// and tests may call this; cache-hit boot registration uses kick=false so the
+// process starts on first real tool call via EnsureConnected.
 func (s *lazySpawn) kick() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.state != spawnIdle {
 		return
 	}
-	if !s.host.beginDeferredSpawn() {
-		s.state = spawnFailed
-		s.spawnErr = fmt.Errorf("plugin host is closed")
+	if !s.beginInFlight() {
 		return
 	}
-	s.state = spawnInFlight
 	go func() {
 		defer s.host.endDeferredSpawn()
 		s.run()
 	}()
 }
 
-// run does the handshake without holding mu (host.Add can take seconds), then
-// reacquires mu to publish the result.
+// run does the handshake without holding mu (host.EnsureConnected can take
+// seconds), then reacquires mu to publish the result.
 func (s *lazySpawn) run() {
-	real, err := s.host.addDeferred(s.ctx, s.spec, s.generation)
+	started := time.Now()
+	startupCtx, cancel := context.WithTimeout(s.ctx, s.spec.startupTimeout())
+	real, err := s.host.EnsureConnectedWithLifecycle(s.ctx, startupCtx, s.spec, s.generation)
+	cancel()
+	if err != nil {
+		err = newStartupFailure("connect", started, "", err)
+	}
 	var cacheTools []tool.Tool
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	if err != nil {
 		if errors.Is(err, ErrDeferredSpawnCancelled) || errors.Is(err, context.Canceled) {
 			s.state = spawnFailed
 			s.spawnErr = err
-			s.mu.Unlock()
-			return
-		}
-		if errors.Is(err, ErrSpawningInFlight) {
-			// Another tab is already spawning this server; reset to idle so
-			// the next call retries instead of recording a spurious failure.
-			s.state = spawnIdle
-			s.spawnErr = nil
-			s.mu.Unlock()
-			return
-		}
-		if IsServerAlreadyConnected(err) {
-			// The server was already started by another controller sharing
-			// the same host. Fetch the tools from the existing client
-			// instead of entering the failed state.
-			if tools, err2 := s.host.ToolsFor(s.ctx, s.spec.Name); err2 == nil {
-				s.real = make(map[string]tool.Tool, len(tools))
-				for _, t := range tools {
-					s.real[t.Name()] = t
-				}
-				s.state = spawnReady
-				s.trySwap()
-				cacheTools = tools
-				s.mu.Unlock()
-				saveLazyCachedSchema(s.spec, cacheTools)
-				return
-			}
-			// ToolsFor failed — still not a real failure; just mark failed
-			// without recording it so /mcp status stays clean.
-			s.state = spawnFailed
-			s.spawnErr = err
-			s.mu.Unlock()
+			s.broadcastReady()
 			return
 		}
 		s.state = spawnFailed
 		s.spawnErr = err
 		s.host.RecordFailure(s.spec, err)
-		s.mu.Unlock()
+		s.broadcastReady()
 		return
 	}
 	s.real = make(map[string]tool.Tool, len(real))
@@ -148,13 +149,17 @@ func (s *lazySpawn) run() {
 	s.state = spawnReady
 	s.trySwap()
 	cacheTools = real
-	s.mu.Unlock()
-	saveLazyCachedSchema(s.spec, cacheTools)
+	s.broadcastReady()
+	// Save cache outside the critical path of tool dispatch. Register the write
+	// before this deferred spawn ends so Host.Close observes and drains it.
+	s.host.queueBackgroundWrite(func() {
+		saveLazyCachedSchema(s.spec, cacheTools)
+	})
 }
 
 func saveLazyCachedSchema(spec Spec, real []tool.Tool) {
 	_ = SaveCachedSchema(spec.Name, CachedSchema{
-		SpecHash:     SpecFingerprint(spec),
+		CacheKey:     SchemaCacheKey(spec),
 		Capabilities: map[string]bool{"tools": len(real) > 0},
 		Tools:        cacheableToolsOf(real),
 	})
@@ -195,21 +200,20 @@ func (s *lazySpawn) trySwap() {
 // sees cached metadata (or a stub when no cache exists); Execute consults the
 // state machine, kicking off the handshake on first call.
 type lazyTool struct {
-	shared                *lazySpawn
-	name                  string // namespaced "mcp__<server>__<tool>"
-	rawName               string // original server-local tool name, when cached
-	desc                  string
-	schema                json.RawMessage
-	capabilityFingerprint string
-	// readOnly/readOnlyTrusted are guarded by shared.mu because a live handshake
-	// can demote a stale cached reader before asking the model to retry.
-	readOnly        bool
-	readOnlyTrusted bool
+	shared      *lazySpawn
+	name        string // namespaced "mcp__<server>__<tool>"
+	rawName     string // original server-local tool name, when cached
+	visibleName string // raw name after configured prefix stripping
+	desc        string
+	schema      json.RawMessage
+	// readOnly is guarded by shared.mu because a live handshake can demote a
+	// stale cached reader before asking the model to retry.
+	readOnly bool
 	// destructive is guarded by shared.mu because a live handshake may promote
 	// a stale cached false value before asking the model to retry.
 	destructive bool
-	// hasCache true → schema is trusted, so Execute runs the handshake
-	// synchronously and forwards in one turn. false → schema is empty, so we
+	// hasCache true → schema is trusted, so Execute starts the shared handshake,
+	// waits briefly, and forwards in the same turn when ready. false → schema is empty, so we
 	// can't honour the model's call; we kick the spawn async and ask for a
 	// retry on the next turn, when the swap will have installed the real
 	// tools with real schemas.
@@ -232,30 +236,19 @@ func (lt *lazyTool) MCPServerName() string {
 	}
 	return lt.shared.spec.Name
 }
-func (lt *lazyTool) MCPRawToolName() string { return lt.rawName }
-
-// ReadOnlyExecutionTrustAuthority mirrors remoteTool: reader classification
-// counts for strict read-only execution only when a host trust store exists.
-func (lt *lazyTool) ReadOnlyExecutionTrustAuthority() bool {
-	return lt.shared != nil && lt.shared.spec.TrustManager != nil
-}
-
-func (lt *lazyTool) MCPCapabilityFingerprint() string {
+func (lt *lazyTool) MCPRawToolName() string     { return lt.rawName }
+func (lt *lazyTool) MCPVisibleToolName() string { return lt.visibleName }
+func (lt *lazyTool) MCPPackageName() string {
 	if lt.shared == nil {
-		return lt.capabilityFingerprint
+		return ""
 	}
-	lt.shared.mu.Lock()
-	defer lt.shared.mu.Unlock()
-	return lt.capabilityFingerprint
+	return lt.shared.spec.Package
 }
-func (lt *lazyTool) PlanModeUntrustedReadOnly() bool {
-	if lt.shared == nil {
-		return lt.readOnly && !lt.readOnlyTrusted
-	}
-	lt.shared.mu.Lock()
-	defer lt.shared.mu.Unlock()
-	return lt.readOnly && !lt.readOnlyTrusted
+
+func (lt *lazyTool) MCPServerAuthorized() bool {
+	return lt.shared != nil && lt.shared.spec.ServerAuthorized()
 }
+
 func (lt *lazyTool) MCPDestructiveHint() bool {
 	if lt.shared == nil {
 		return lt.destructive
@@ -263,18 +256,6 @@ func (lt *lazyTool) MCPDestructiveHint() bool {
 	lt.shared.mu.Lock()
 	defer lt.shared.mu.Unlock()
 	return lt.destructive
-}
-func (lt *lazyTool) MCPApprovalMode() string {
-	if lt.shared == nil {
-		return tool.MCPApprovalAuto
-	}
-	return lt.shared.spec.toolApprovalMode(lt.rawName)
-}
-func (lt *lazyTool) MCPApprovalReviewer() string {
-	if lt.shared == nil {
-		return ""
-	}
-	return lt.shared.spec.approvalReviewer()
 }
 func (lt *lazyTool) Schema() json.RawMessage {
 	if len(lt.schema) == 0 {
@@ -285,229 +266,160 @@ func (lt *lazyTool) Schema() json.RawMessage {
 
 func (lt *lazyTool) Execute(ctx context.Context, args json.RawMessage) (string, error) {
 	sp := lt.shared
-	sp.mu.Lock()
+	for {
+		sp.mu.Lock()
 
-	// Catch up on a background spawn that finished while we were idle.
-	if sp.state == spawnReady && !sp.swapped {
-		sp.trySwap()
-	}
-
-	switch sp.state {
-	case spawnReady:
-		real := sp.real[lt.name]
-		safetyErr := lt.reconcileLiveSafety(real)
-		sp.mu.Unlock()
-		if real == nil {
-			return "", fmt.Errorf("MCP server %q did not expose tool %q (the cached schema may be stale)", sp.spec.Name, lt.name)
+		// Catch up on a background spawn that finished while we were idle.
+		if sp.state == spawnReady && !sp.swapped {
+			sp.trySwap()
 		}
-		if safetyErr != nil {
-			return "", safetyErr
-		}
-		return real.Execute(ctx, args)
 
-	case spawnFailed:
-		err := sp.spawnErr
-		sp.mu.Unlock()
-		return "", fmt.Errorf("MCP server %q failed to start: %w", sp.spec.Name, err)
-
-	case spawnInFlight:
-		sp.mu.Unlock()
-		return "", fmt.Errorf("MCP server %q is still initializing — call this tool again on the next turn", sp.spec.Name)
-
-	case spawnIdle:
-		if !lt.hasCache {
-			// Cache-miss: we don't trust args to match a real schema, so
-			// drive the handshake async and ask the model to retry. By the
-			// next turn the swap will have installed the real tools with
-			// real schemas under different names.
-			if !sp.host.beginDeferredSpawn() {
-				sp.state = spawnFailed
-				sp.spawnErr = fmt.Errorf("plugin host is closed")
+		switch sp.state {
+		case spawnReady:
+			if !lt.hasCache {
 				sp.mu.Unlock()
-				return "", fmt.Errorf("MCP server %q failed to start: %w", sp.spec.Name, sp.spawnErr)
+				return fmt.Sprintf("MCP server %q is connected; its real tools are now available on the next turn", sp.spec.Name), nil
 			}
-			sp.state = spawnInFlight
+			real := sp.real[lt.name]
+			safetyErr := lt.reconcileLiveSafety(real)
+			sp.mu.Unlock()
+			if real == nil {
+				return "", fmt.Errorf("MCP server %q did not expose tool %q (the cached schema may be stale)", sp.spec.Name, lt.name)
+			}
+			if safetyErr != nil {
+				return "", safetyErr
+			}
+			return real.Execute(ctx, args)
+
+		case spawnFailed:
+			err := sp.spawnErr
+			sp.mu.Unlock()
+			return "", fmt.Errorf("MCP server %q failed to start: %w", sp.spec.Name, err)
+
+		case spawnInFlight:
+			// Wait for the in-flight handshake (same process for every waiter).
+			// Cancelling ctx only abandons this wait; the shared host spawn continues.
+			wait := sp.ready
+			sp.mu.Unlock()
+			if wait == nil {
+				continue
+			}
+			if err := waitForLazyStartup(ctx, sp.ctx, wait, sp.waitBudget, sp.spec.Name, sp.spec.startupTimeout()); err != nil {
+				return "", err
+			}
+			continue
+
+		case spawnIdle:
+			if !lt.hasCache {
+				// Cache-miss: we don't trust args to match a real schema, so
+				// drive the handshake async and ask the model to retry. By the
+				// next turn the swap will have installed the real tools with
+				// real schemas under different names.
+				if !sp.beginInFlight() {
+					err := sp.spawnErr
+					sp.mu.Unlock()
+					return "", fmt.Errorf("MCP server %q failed to start: %w", sp.spec.Name, err)
+				}
+				go func() {
+					defer sp.host.endDeferredSpawn()
+					sp.run()
+				}()
+				sp.mu.Unlock()
+				return "", fmt.Errorf("MCP server %q is initializing on first use — call again on the next turn for its real tools", sp.spec.Name)
+			}
+			// Cache-hit: start the shared handshake in the background. The current
+			// call waits briefly so healthy fast servers still complete in one turn;
+			// slow servers keep initializing under the session-owned lifecycle and
+			// become ready for a later retry instead of being killed and restarted.
+			if !sp.beginInFlight() {
+				err := sp.spawnErr
+				sp.mu.Unlock()
+				return "", fmt.Errorf("MCP server %q failed to start: %w", sp.spec.Name, err)
+			}
+			wait := sp.ready
 			go func() {
 				defer sp.host.endDeferredSpawn()
 				sp.run()
 			}()
 			sp.mu.Unlock()
-			return "", fmt.Errorf("MCP server %q is initializing on first use — call again on the next turn for its real tools", sp.spec.Name)
-		}
-		// Cache-hit: run the handshake synchronously so this one Execute can
-		// forward through. Bound it with a start timeout so a wedged or
-		// unreachable MCP server can't hang the whole turn indefinitely
-		// (#4806) — on timeout we fail this attempt and a later turn can retry.
-		sp.state = spawnInFlight
-		sp.mu.Unlock()
-		spawnCtx, cancel := context.WithTimeout(sp.ctx, defaultStartTimeout)
-		real, err := sp.host.AddWithLifecycle(sp.ctx, spawnCtx, sp.spec)
-		cancel()
-		sp.mu.Lock()
-		if err != nil {
-			if errors.Is(err, context.DeadlineExceeded) {
-				// A slow cold start can succeed on a later turn after npm/node
-				// caches warm up or a remote MCP endpoint responds. Do not pin
-				// the session into spawnFailed for a transient startup budget miss.
-				sp.state = spawnIdle
-				sp.spawnErr = nil
-				sp.mu.Unlock()
-				return "", fmt.Errorf("MCP server %q startup timed out — retry this tool on a later turn", sp.spec.Name)
+			if err := waitForLazyStartup(ctx, sp.ctx, wait, sp.waitBudget, sp.spec.Name, sp.spec.startupTimeout()); err != nil {
+				return "", err
 			}
-			if errors.Is(err, ErrSpawningInFlight) {
-				// Another tab is already spawning this server on the shared
-				// host, but this lazySpawn has no goroutine that can publish
-				// that result. Reset to idle so the next call can reuse the
-				// connected client once the other spawn finishes.
-				sp.state = spawnIdle
-				sp.spawnErr = nil
-				sp.mu.Unlock()
-				return "", fmt.Errorf("MCP server %q is being started by another tab — retry on next turn", sp.spec.Name)
-			}
-			if IsServerAlreadyConnected(err) {
-				// Another tab on the shared host already started the
-				// server. Fetch the tools from the existing client.
-				if tools, err2 := sp.host.ToolsFor(ctx, sp.spec.Name); err2 == nil {
-					sp.real = make(map[string]tool.Tool, len(tools))
-					for _, t := range tools {
-						sp.real[t.Name()] = t
-					}
-					sp.state = spawnReady
-					sp.trySwap()
-					r := sp.real[lt.name]
-					if r != nil {
-						safetyErr := lt.reconcileLiveSafety(r)
-						// Unlock before forwarding so the lock isn't held
-						// during Execute (matching the spawnReady pattern).
-						sp.mu.Unlock()
-						if safetyErr != nil {
-							return "", safetyErr
-						}
-						return r.Execute(ctx, args)
-					}
-				}
-				// ToolsFor failed — not our fault, don't record as failure.
-				sp.state = spawnFailed
-				sp.spawnErr = err
-				sp.mu.Unlock()
-				return "", fmt.Errorf("MCP server %q failed to start: %w", sp.spec.Name, err)
-			}
-			sp.state = spawnFailed
-			sp.spawnErr = err
-			sp.host.RecordFailure(sp.spec, err)
-			sp.mu.Unlock()
-			return "", fmt.Errorf("MCP server %q failed to start: %w", sp.spec.Name, err)
+			continue
 		}
-		sp.real = make(map[string]tool.Tool, len(real))
-		for _, t := range real {
-			sp.real[t.Name()] = t
-		}
-		sp.state = spawnReady
-		sp.trySwap()
-		r := sp.real[lt.name]
-		if r == nil {
-			sp.mu.Unlock()
-			return "", fmt.Errorf("MCP server %q did not expose tool %q (the cached schema may be stale)", sp.spec.Name, lt.name)
-		}
-		safetyErr := lt.reconcileLiveSafety(r)
-		sp.mu.Unlock()
-		if safetyErr != nil {
-			return "", safetyErr
-		}
-		return r.Execute(ctx, args)
-	}
 
-	sp.mu.Unlock()
-	return "", fmt.Errorf("deferred plugin %q in unexpected state", sp.spec.Name)
+		sp.mu.Unlock()
+		return "", fmt.Errorf("deferred plugin %q in unexpected state", sp.spec.Name)
+	}
+}
+
+func waitForLazyStartup(ctx, sessionCtx context.Context, ready <-chan struct{}, waitBudget time.Duration, server string, startupLimit time.Duration) error {
+	if waitBudget <= 0 {
+		waitBudget = defaultStartTimeout
+	}
+	timer := time.NewTimer(waitBudget)
+	defer timer.Stop()
+	select {
+	case <-ready:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-sessionCtx.Done():
+		return sessionCtx.Err()
+	case <-timer.C:
+		return fmt.Errorf("MCP server %q is still initializing after %s; startup continues in background (limit %s) — retry this tool on a later turn",
+			server, formatTimeout(waitBudget), formatTimeout(startupLimit))
+	}
 }
 
 // reconcileLiveSafety updates a pinned cache-hit placeholder when the live
 // server becomes stricter. Caller must hold shared.mu. The current call always
 // stops on a reader-to-writer demotion or destructive promotion so the next
-// attempt re-enters the agent's approval policy with current metadata.
+// attempt re-enters the agent's Plan/read-only safety checks with current metadata.
 func (lt *lazyTool) reconcileLiveSafety(real tool.Tool) error {
 	if real == nil {
 		return nil
 	}
-	if remote, ok := real.(*remoteTool); ok {
-		_, readOnly, trusted, destructive, fingerprint := remote.securitySnapshot()
-		if lt.capabilityFingerprint != "" && fingerprint != "" && lt.capabilityFingerprint != fingerprint {
-			lt.readOnly = readOnly
-			lt.readOnlyTrusted = trusted
-			lt.destructive = destructive
-			lt.capabilityFingerprint = fingerprint
-			return fmt.Errorf("MCP server %q changed the security schema for tool %q; the current call was blocked before execution, retry after the parent session reviews the change", lt.shared.spec.Name, lt.rawName)
-		}
-	}
-	if lt.readOnly && !real.ReadOnly() {
-		lt.readOnly = false
-		lt.readOnlyTrusted = false
-		return fmt.Errorf("MCP server %q no longer marks tool %q as read-only; retry so Reasonix can apply writer approval before execution", lt.shared.spec.Name, lt.rawName)
-	}
-	if lt.destructive {
-		return nil
-	}
-	annotations, ok := real.(tool.MCPAnnotations)
-	if !ok || !annotations.MCPDestructiveHint() {
-		return nil
-	}
-	lt.destructive = true
-	return destructiveHintChangedError(lt.shared.spec.Name, lt.rawName)
+	live, err := ReconcileCachedToolSafety(lt.shared.spec.Name, lt.rawName, CachedToolSafety{
+		ReadOnly:    lt.readOnly,
+		Destructive: lt.destructive,
+	}, real)
+	lt.readOnly = live.ReadOnly
+	lt.destructive = live.Destructive
+	return err
 }
 
-func destructiveHintChangedError(server, rawTool string) error {
-	return fmt.Errorf("MCP server %q now marks tool %q as destructive; retry so Reasonix can request fresh approval before execution", server, rawTool)
-}
-
-// LazyToolset returns the placeholder tools to register for one background spec.
-// The name is historical: when cs is non-nil (cache hit) the returned slice has
-// one lazyTool per cached tool, carrying the cached schema so the model can pass
-// real args. If the background handshake is still pending, Execute waits for it
-// and swaps in real tools. When cs is nil (cache miss) the returned slice has a
-// single stub named "mcp__<server>__connect": the model can call it to wait for
-// the spawn, and the real tools surface on the next turn.
+// LazyToolset returns the placeholder tools to register for one enabled MCP.
+// When cs is non-nil (cache hit) the returned slice has one lazyTool per cached
+// tool, carrying the cached schema so the model can pass real args. Execute
+// waits briefly for EnsureConnected and completes the call in the same turn
+// when startup is fast; slow startup continues in the background. When cs is
+// nil (cache miss) the returned slice has a single stub named
+// "mcp__<server>__connect": the model can call it to drive the handshake, and
+// the real tools surface on the next turn.
 //
-// kick=true (background tier) also fires off the spawn immediately, so an
-// idle session warms up without waiting for the first model call.
+// kick=true starts a one-shot catalog discovery immediately (used for cache-miss
+// servers at boot). kick=false leaves the process idle until the first real
+// tool call — the product default for cache-hit sessions.
 //
 // host is the Host that receives the real Client. reg is the registry where
 // real tools land after a successful spawn. sessionCtx must outlive any
 // single Execute (use the controller's PluginCtx) — a turn-scoped ctx would
 // kill the stdio child between turns.
 func LazyToolset(spec Spec, cs *CachedSchema, host *Host, reg *tool.Registry, sessionCtx context.Context, kick bool) []tool.Tool {
+	// Resolve an existing exact project grant before constructing cached
+	// placeholders. This is read-only host preparation; no MCP process or network
+	// connection starts here.
+	spec = ResolveStoredAuthorization(sessionCtx, spec)
 	spawnCtx, cancel := context.WithCancel(sessionCtx)
 	shared := &lazySpawn{
-		spec: spec,
-		host: host,
-		reg:  reg,
-		ctx:  spawnCtx,
+		spec:       spec,
+		host:       host,
+		reg:        reg,
+		ctx:        spawnCtx,
+		waitBudget: defaultStartTimeout,
 	}
 	shared.generation = host.registerDeferredCancel(spec.Name, cancel)
-
-	trustedReaders := map[string]bool{}
-	cachedCapabilities := map[string]mcptrust.Capability{}
-	if cs != nil && len(cs.Tools) > 0 {
-		caps := make([]mcptrust.Capability, 0, len(cs.Tools))
-		for _, ct := range cs.Tools {
-			visible := ct.Name
-			if spec.StripRawPrefix != "" {
-				visible = strings.TrimPrefix(visible, spec.StripRawPrefix)
-			}
-			cap := mcptrust.Capability{
-				RawName: ct.Name, ModelName: toolName(spec.Name, visible),
-				InputSchema: ct.Schema, OutputSchema: ct.OutputSchema,
-				ReadOnly:    ct.ReadOnly || spec.toolReadOnlyOverride(ct.Name, visible),
-				Destructive: ct.Destructive,
-			}
-			caps = append(caps, cap)
-			cachedCapabilities[ct.Name] = cap
-		}
-		if identity, err := specIdentityFingerprint(sessionCtx, spec); err == nil {
-			if eval, err := evaluateSpecTrust(spec, identity, caps); err == nil {
-				trustedReaders = eval.TrustedReaders
-			}
-		}
-	}
 
 	var out []tool.Tool
 	// A snapshot with zero tools presents nothing the model could call, so it
@@ -529,21 +441,16 @@ func LazyToolset(spec Spec, cs *CachedSchema, host *Host, reg *tool.Registry, se
 			if spec.StripRawPrefix != "" {
 				visibleName = strings.TrimPrefix(visibleName, spec.StripRawPrefix)
 			}
-			trusted := trustedReaders[ct.Name]
-			if spec.TrustManager == nil {
-				trusted = ct.ReadOnly || spec.toolReadOnlyOverride(ct.Name, visibleName)
-			}
 			out = append(out, &lazyTool{
-				shared:                shared,
-				name:                  toolName(spec.Name, visibleName),
-				rawName:               ct.Name,
-				desc:                  ct.Description,
-				schema:                ct.Schema,
-				capabilityFingerprint: capabilityFingerprint(cachedCapabilities[ct.Name]),
-				readOnly:              trusted,
-				readOnlyTrusted:       trusted,
-				destructive:           ct.Destructive,
-				hasCache:              true,
+				shared:      shared,
+				name:        toolName(spec.Name, visibleName),
+				rawName:     ct.Name,
+				visibleName: visibleName,
+				desc:        ct.Description,
+				schema:      ct.Schema,
+				readOnly:    ct.ReadOnly,
+				destructive: ct.Destructive,
+				hasCache:    true,
 			})
 		}
 	}

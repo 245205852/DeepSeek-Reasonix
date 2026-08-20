@@ -39,7 +39,7 @@ type ProfileResolver func(sk Skill) *event.Profile
 // refresh UI (e.g. a skills sidebar) without a reload. nil is fine.
 type InstalledHook func(name, path string, scope Scope)
 
-// --- run_skill ---
+// run_skill
 
 type runSkillTool struct {
 	store           *Store
@@ -101,6 +101,7 @@ func (t *runSkillTool) Execute(ctx context.Context, args json.RawMessage) (strin
 	if err := t.store.ValidateInvocation(sk); err != nil {
 		return "", fmt.Errorf("run_skill: %w", err)
 	}
+	sk = t.store.Prepare(sk)
 	rawArgs := strings.TrimSpace(p.Arguments)
 	opts := SubagentRunOptions{ContinueFrom: strings.TrimSpace(p.Continue), ForkFrom: strings.TrimSpace(p.Fork)}
 	if opts.ContinueFrom != "" && opts.ForkFrom != "" {
@@ -148,7 +149,7 @@ func (t *runSkillTool) profileForSkill(sk Skill) *event.Profile {
 	return profileForSkill(sk, t.profileResolver)
 }
 
-// --- read_only_skill ---
+// read_only_skill
 
 type readOnlySkillTool struct {
 	store           *Store
@@ -209,6 +210,7 @@ func (t *readOnlySkillTool) Execute(ctx context.Context, args json.RawMessage) (
 	if err := t.store.ValidateInvocation(sk); err != nil {
 		return "", fmt.Errorf("read_only_skill: %w", err)
 	}
+	sk = t.store.Prepare(sk)
 	rawArgs := strings.TrimSpace(p.Arguments)
 	if sk.RunAs == RunSubagent {
 		if t.runner == nil {
@@ -306,13 +308,14 @@ func (t *readSkillTool) Execute(_ context.Context, args json.RawMessage) (string
 	if err := t.store.ValidateInvocation(sk); err != nil {
 		return "", fmt.Errorf("read_skill: %w", err)
 	}
+	sk = t.store.Prepare(sk)
 	if sk.RunAs == RunSubagent {
 		return "", fmt.Errorf("read_skill: skill %q is a subagent and must be executed, not read — use run_skill (or the dedicated %s tool)", name, name)
 	}
 	return renderInline(sk, strings.TrimSpace(p.Arguments)), nil
 }
 
-// --- dedicated subagent wrappers (explore / research / review / security_review) ---
+// dedicated subagent wrappers (explore / research / review / security_review)
 
 type subagentSkillTool struct {
 	toolName    string
@@ -353,6 +356,7 @@ func (t *subagentSkillTool) Execute(ctx context.Context, args json.RawMessage) (
 	if err := t.store.ValidateInvocation(sk); err != nil {
 		return "", fmt.Errorf("%s: %w", t.toolName, err)
 	}
+	sk = t.store.Prepare(sk)
 	// A user file overriding the built-in name with runAs:inline would lose
 	// isolation if dispatched here — bounce to run_skill where inline is defined.
 	if sk.RunAs != RunSubagent {
@@ -416,8 +420,9 @@ func BuiltinSubagentTools(store *Store, runner SubagentRunner, profileResolver .
 	}
 	var out []tool.Tool
 	for _, s := range specs {
-		sk, ok := store.Read(s.skillName)
-		if !ok || store.runtimeProfile != "" && !AllowedInProfile(sk, store.runtimeProfile) {
+		// Skill profiles are diagnostic-only; do not hide builtin subagent
+		// entry points based on the session role setting.
+		if _, ok := store.Read(s.skillName); !ok {
 			continue
 		}
 		out = append(out, &subagentSkillTool{
@@ -433,7 +438,7 @@ func BuiltinSubagentTools(store *Store, runner SubagentRunner, profileResolver .
 	return out
 }
 
-// --- install_skill ---
+// install_skill
 
 type installSkillTool struct {
 	store       *Store
@@ -558,7 +563,11 @@ type SkillFileOptions struct {
 	Model        string // subagent-only; ignored when RunAs != RunSubagent
 	Effort       string // subagent-only; ignored when RunAs != RunSubagent
 	AllowedTools []string
-	Color        string // optional display tag; emitted regardless of RunAs
+	// ReadOnly, when true, emits frontmatter read-only: true so the profile
+	// runs against the read-only registry. Omitted/false keeps the legacy
+	// writable default for older profiles.
+	ReadOnly bool
+	Color    string // optional display tag; emitted regardless of RunAs
 	// Invocation, when "manual", keeps the written skill out of the pinned
 	// Skills index (see index.go) — invocable by name only, never
 	// model-discovered. Anything else (including empty) is the default "auto".
@@ -579,12 +588,13 @@ type skillFileFrontmatter struct {
 	RunAs        string   `yaml:"runAs,omitempty"`
 	Model        string   `yaml:"model,omitempty"`
 	Effort       string   `yaml:"effort,omitempty"`
+	ReadOnly     *bool    `yaml:"read-only,omitempty"`
 	AllowedTools []string `yaml:"allowed-tools,omitempty,flow"`
 }
 
 // RenderSkillFile assembles a skill file's frontmatter + body. Subagent-only
-// fields (model, effort, allowed-tools) are emitted only when RunAs=subagent;
-// color and invocation are independent of RunAs.
+// fields (model, effort, allowed-tools, read-only) are emitted only when
+// RunAs=subagent; color and invocation are independent of RunAs.
 func RenderSkillFile(opts SkillFileOptions) string {
 	fm := skillFileFrontmatter{
 		Name:        opts.Name,
@@ -598,6 +608,10 @@ func RenderSkillFile(opts SkillFileOptions) string {
 		fm.RunAs = string(RunSubagent)
 		fm.Model = strings.TrimSpace(opts.Model)
 		fm.Effort = strings.TrimSpace(opts.Effort)
+		if opts.ReadOnly {
+			v := true
+			fm.ReadOnly = &v
+		}
 		for _, t := range opts.AllowedTools {
 			if t = strings.TrimSpace(t); t != "" {
 				fm.AllowedTools = append(fm.AllowedTools, t)
@@ -609,7 +623,7 @@ func RenderSkillFile(opts SkillFileOptions) string {
 	return "---\n" + string(raw) + "---\n\n" + strings.TrimRight(opts.Body, " \t\r\n") + "\n"
 }
 
-// --- shared helpers ---
+// shared helpers
 
 // Render builds a skill's invocation text: a header (name, description, source)
 // followed by the body and any arguments. Used directly when a user invokes a
@@ -646,7 +660,7 @@ func cleanSkillName(raw string) string {
 		return ""
 	}
 	stripped := strings.TrimSpace(bracketTagRe.ReplaceAllString(raw, " "))
-	for _, tok := range strings.Fields(stripped) {
+	for tok := range strings.FieldsSeq(stripped) {
 		if c := tok[0]; (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') {
 			return tok
 		}

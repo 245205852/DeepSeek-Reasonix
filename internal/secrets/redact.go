@@ -16,15 +16,6 @@ var (
 	// only counts with a leading separator (DB_PWD, MYSQL-PWD), so the POSIX
 	// PWD / OLDPWD working-directory variables never match.
 	secretKeyNamePattern = regexp.MustCompile(`(?i)((^|[_-])(api[_-]?key|access[_-]?key|private[_-]?key|secret|token|password|passwd)([_-]|$)|[_-]pwd([_-]|$))`)
-	// keyValuePattern mirrors secretKeyNamePattern for KEY=value / key: value
-	// text: PWD requires a prefixed separator so "PWD=/home/user" stays intact.
-	// The optional auth-scheme group keeps schemes like "Basic"/"Digest" out of
-	// the value capture, so the credential after the scheme word is what gets
-	// masked (an uncaptured scheme would itself be swallowed as the value,
-	// leaving the real credential in the clear right behind it). The separator
-	// group tolerates quotes around the key and before the value so JSON bodies
-	// ("access_token":"...") match, not just env/header text.
-	keyValuePattern = regexp.MustCompile(`(?i)\b([A-Z0-9_.-]*(?:API[_-]?KEY|ACCESS[_-]?KEY|PRIVATE[_-]?KEY|SECRET|TOKEN|PASSWORD|PASSWD)[A-Z0-9_.-]*|[A-Z0-9_.-]+[_-]PWD[A-Z0-9_.-]*|AUTHORIZATION)\b(['"]?\s*[:=]\s*['"]?)((?:Bearer|Basic|Digest|Negotiate|NTLM|Token|Bot|ApiKey)\s+)?(['"]?)([^'"\s,;]+)(['"]?)`)
 	// cookieHeaderPattern captures Cookie/Set-Cookie header values so every
 	// name=value pair gets its value masked; attribute flags without a value
 	// (HttpOnly, Secure) pass through untouched.
@@ -36,6 +27,20 @@ var (
 	slackTokenPattern   = regexp.MustCompile(`\b(xox[baprs]-[A-Za-z0-9-]{16,})\b`)
 	awsAccessKeyPattern = regexp.MustCompile(`\b(AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16})\b`)
 	jwtPattern          = regexp.MustCompile(`\b(eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)\b`)
+	// Match through the final @ before a path/whitespace so raw @ characters
+	// inside userinfo cannot leave a password suffix visible.
+	urlUserInfoPattern = regexp.MustCompile(`(?i)\b([a-z][a-z0-9+.-]*://)([^/\s]+)@`)
+
+	// maskedCredentialPattern collapses partially masked credentials and any
+	// visible prefix/suffix around the stars ("****ae54", "sk-ab****").
+	maskedCredentialPattern = regexp.MustCompile(`[A-Za-z0-9._-]*\*{2,}[A-Za-z0-9._-]*`)
+	// credentialContextPattern catches prose forms such as
+	// "api key: relaykey..." that are not KEY=value pairs.
+	credentialContextPattern = regexp.MustCompile(`(?i)\b(api[ _-]?key|access[ _-]?key|secret|token|authorization|bearer|credential)s?\b(['"]?\s*[:=]?\s*['"]?)([A-Za-z0-9._~+/-]{12,})`)
+	// credentialTokenPattern is a conservative fallback for opaque key-shaped
+	// runs. Single-case, digit-free identifiers remain readable.
+	credentialTokenPattern = regexp.MustCompile(`[A-Za-z0-9_-]{16,}`)
+	digitPattern           = regexp.MustCompile(`[0-9]`)
 )
 
 const redactedValue = "[redacted]"
@@ -45,7 +50,6 @@ const redactedValue = "[redacted]"
 // globals are safe here because [secrets] cannot be overridden per-project:
 // every concurrent workspace in one process shares the same user setting.
 var (
-	redactToolOutputEnabled      atomic.Bool
 	filterSubprocessEnvEnabled   atomic.Bool
 	protectSensitiveFilesEnabled atomic.Bool
 	credentialEnvKeys            = struct {
@@ -53,19 +57,6 @@ var (
 		keys map[string]struct{}
 	}{keys: map[string]struct{}{}}
 )
-
-func init() {
-	// Tool-output redaction defaults on; subprocess env filtering defaults
-	// off because it breaks legitimate token-based workflows (gh, git push
-	// over HTTPS, npm publish) and needs an explicit user opt-in.
-	redactToolOutputEnabled.Store(true)
-}
-
-// SetRedactToolOutput enables or disables masking of tool output before it
-// enters model context and UI events ([secrets] redact_tool_output). Durable
-// surfaces — session transcripts and background-job artifacts — are always
-// redacted regardless of this toggle.
-func SetRedactToolOutput(enabled bool) { redactToolOutputEnabled.Store(enabled) }
 
 // SetFilterSubprocessEnv enables or disables stripping credential-like
 // variables from tool subprocess environments ([secrets]
@@ -159,42 +150,16 @@ func ProcessEnv() []string {
 	return FilterEnv(os.Environ())
 }
 
-// RedactToolOutput masks credential-like values in live tool output (model
-// context, UI events) unless the user disabled [secrets] redact_tool_output.
-// Durable writers (session save, job artifacts) call Redact directly instead:
-// disk logs stay redacted even when live output is not.
-func RedactToolOutput(s string) string {
-	if !redactToolOutputEnabled.Load() {
-		return s
-	}
-	return Redact(s)
-}
-
-// Redact masks credential-like values in text before the text enters durable
-// transcripts, job artifacts, or diagnostic records. It is deterministic and
-// idempotent: redacting already-redacted text is a byte-for-byte no-op, which
-// the session save path relies on for digest stability across load/save cycles
-// (see Session.save).
+// Redact masks credential-like values for explicit diagnostic, export, and
+// cleanup paths. Normal model content, tool output, session transcripts, and
+// background-job artifacts deliberately bypass this helper to retain v0.53's
+// byte-preserving behavior.
 func Redact(s string) string {
 	if s == "" {
 		return s
 	}
-	s = keyValuePattern.ReplaceAllStringFunc(s, func(match string) string {
-		parts := keyValuePattern.FindStringSubmatch(match)
-		if len(parts) != 7 {
-			return redactedValue
-		}
-		key := parts[1]
-		sep := parts[2]
-		scheme := parts[3]
-		quote := parts[4]
-		value := parts[5]
-		endQuote := parts[6]
-		if strings.EqualFold(key, "authorization") {
-			return key + sep + scheme + quote + redactedValue + endQuote
-		}
-		return key + sep + scheme + quote + mask(value) + endQuote
-	})
+	s = urlUserInfoPattern.ReplaceAllString(s, "$1"+redactedValue+"@")
+	s = redactKeyValues(s)
 	s = cookieHeaderPattern.ReplaceAllStringFunc(s, func(match string) string {
 		parts := cookieHeaderPattern.FindStringSubmatch(match)
 		if len(parts) != 4 {
@@ -213,6 +178,146 @@ func Redact(s string) string {
 		s = rx.ReplaceAllStringFunc(s, mask)
 	}
 	return s
+}
+
+// RedactCredentials applies the stronger credential scrub used at external
+// error and logging boundaries. In addition to known key shapes, it removes
+// partially masked credentials, prose-form credentials, and opaque tokens that
+// carry a digit or mixed case.
+func RedactCredentials(s string) string {
+	if s == "" {
+		return s
+	}
+	s = Redact(s)
+	s = credentialContextPattern.ReplaceAllString(s, "${1}${2}****")
+	s = maskedCredentialPattern.ReplaceAllString(s, "****")
+	return credentialTokenPattern.ReplaceAllStringFunc(s, func(token string) string {
+		mixedCase := strings.ToLower(token) != token && strings.ToUpper(token) != token
+		if digitPattern.MatchString(token) || mixedCase {
+			return "****"
+		}
+		return token
+	})
+}
+
+// RedactError returns an error string safe for an external log or diagnostic
+// boundary. A nil error produces an empty string.
+func RedactError(err error) string {
+	if err == nil {
+		return ""
+	}
+	return RedactCredentials(err.Error())
+}
+
+func redactKeyValues(s string) string {
+	var out strings.Builder
+	last := 0
+	for sep := 0; sep < len(s); sep++ {
+		if s[sep] != ':' && s[sep] != '=' {
+			continue
+		}
+		keyEnd := sep
+		for keyEnd > 0 && asciiSpace(s[keyEnd-1]) {
+			keyEnd--
+		}
+		if keyEnd > 0 && (s[keyEnd-1] == '\'' || s[keyEnd-1] == '"') {
+			keyEnd--
+		}
+		keyStart := keyEnd
+		for keyStart > 0 && credentialKeyByte(s[keyStart-1]) {
+			keyStart--
+		}
+		key := s[keyStart:keyEnd]
+		if !credentialTextKeySensitive(key) {
+			continue
+		}
+
+		valueStart := sep + 1
+		for valueStart < len(s) && asciiSpace(s[valueStart]) {
+			valueStart++
+		}
+		if valueStart < len(s) && (s[valueStart] == '\'' || s[valueStart] == '"') {
+			valueStart++
+		}
+		schemeStart := valueStart
+		for valueStart < len(s) && credentialKeyByte(s[valueStart]) {
+			valueStart++
+		}
+		if valueStart < len(s) && asciiSpace(s[valueStart]) && authorizationScheme(s[schemeStart:valueStart]) {
+			for valueStart < len(s) && asciiSpace(s[valueStart]) {
+				valueStart++
+			}
+			if valueStart < len(s) && (s[valueStart] == '\'' || s[valueStart] == '"') {
+				valueStart++
+			}
+		} else {
+			valueStart = schemeStart
+		}
+
+		valueEnd := valueStart
+		for valueEnd < len(s) && !asciiSpace(s[valueEnd]) && s[valueEnd] != '\'' && s[valueEnd] != '"' && s[valueEnd] != ',' && s[valueEnd] != ';' {
+			valueEnd++
+		}
+		if valueEnd == valueStart {
+			continue
+		}
+		if last == 0 {
+			out.Grow(len(s))
+		}
+		out.WriteString(s[last:valueStart])
+		value := s[valueStart:valueEnd]
+		if authorizationKey(key) {
+			out.WriteString(redactedValue)
+		} else if value == "****" || value == redactedValue {
+			out.WriteString(value)
+		} else {
+			out.WriteString(mask(value))
+		}
+		last = valueEnd
+		sep = valueEnd - 1
+	}
+	if last == 0 {
+		return s
+	}
+	out.WriteString(s[last:])
+	return out.String()
+}
+
+func credentialKeyByte(b byte) bool {
+	return b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z' || b >= '0' && b <= '9' || b == '_' || b == '-' || b == '.'
+}
+
+func asciiSpace(b byte) bool {
+	return b == ' ' || b == '\t' || b == '\n' || b == '\r' || b == '\f'
+}
+
+func authorizationKey(key string) bool {
+	upper := strings.ToUpper(key)
+	return upper == "AUTHORIZATION" || strings.HasSuffix(upper, "-AUTHORIZATION") || strings.HasSuffix(upper, "_AUTHORIZATION") || strings.HasSuffix(upper, ".AUTHORIZATION")
+}
+
+func credentialTextKeySensitive(key string) bool {
+	upper := strings.ToUpper(key)
+	compact := strings.NewReplacer("_", "", "-", "").Replace(upper)
+	return authorizationKey(key) ||
+		strings.Contains(compact, "APIKEY") ||
+		strings.Contains(compact, "ACCESSKEY") ||
+		strings.Contains(compact, "PRIVATEKEY") ||
+		strings.Contains(upper, "SECRET") ||
+		strings.Contains(upper, "TOKEN") ||
+		strings.Contains(upper, "PASSWORD") ||
+		strings.Contains(upper, "PASSWD") ||
+		strings.Contains(upper, "_PWD") ||
+		strings.Contains(upper, "-PWD")
+}
+
+func authorizationScheme(s string) bool {
+	switch strings.ToLower(s) {
+	case "bearer", "basic", "digest", "negotiate", "ntlm", "token", "bot", "apikey":
+		return true
+	default:
+		return false
+	}
 }
 
 func mask(value string) string {

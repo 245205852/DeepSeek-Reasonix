@@ -4,12 +4,28 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync/atomic"
 	"testing"
 
 	"reasonix/internal/config"
 	"reasonix/internal/event"
 	"reasonix/internal/provider"
+	"reasonix/internal/recovery"
 )
+
+type recoveryMetricsDeltaStub struct {
+	deltas []recovery.Metrics
+}
+
+func (s *recoveryMetricsDeltaStub) DrainRecoveryMetrics() recovery.Metrics {
+	if len(s.deltas) == 0 {
+		return recovery.Metrics{}
+	}
+	next := s.deltas[0]
+	s.deltas = s.deltas[1:]
+	return next
+}
 
 func TestObserveClassifiesEvents(t *testing.T) {
 	m := newMetricsAggregator(t.TempDir())
@@ -18,24 +34,9 @@ func TestObserveClassifiesEvents(t *testing.T) {
 		{Kind: event.Usage, Usage: &provider.Usage{FinishReason: "tool_calls", CacheHitTokens: 60, CacheMissTokens: 40}},
 		{Kind: event.ToolResult, Tool: event.Tool{Name: "bash", Err: "blocked by permission policy"}},
 		{Kind: event.CompactionDone},
-		{Kind: event.MemoryCompilerStatsEvent, MemoryCompiler: &event.MemoryCompilerStats{
-			Injected:         true,
-			UsefulIR:         true,
-			CompiledTokens:   1100,
-			IROverheadTokens: 300,
-			MemoryReferences: 3,
-			Constraints:      2,
-			RiskNotes:        1,
-			ExecutionSteps:   4,
-			TotalNodes:       42,
-			HighSignalNodes:  11,
-			ToolResultNodes:  7,
-			DecisionNodes:    5,
-			StrategyCount:    3,
-			LearningCount:    6,
-		}},
 		{Kind: event.Notice, Text: "No visible answer was produced; asking the assistant to respond again.", Detail: "empty final answer blocked: model returned no visible answer text; retrying"},
 		{Kind: event.TurnDone, Err: errors.New("deepseek-flash: status 429: rate limited")},
+		{Kind: event.TurnDone, Err: errors.New("automatic recovery paused"), Outcome: event.TurnOutcomeRecoveryPaused},
 		{Kind: event.TurnDone},
 	}
 	for _, e := range feed {
@@ -43,28 +44,13 @@ func TestObserveClassifiesEvents(t *testing.T) {
 	}
 
 	want := map[string]map[string]int{
-		"finish_reason":                      {"stop": 1, "tool_calls": 1},
-		"cache_hit":                          {"99_100": 1, "50_80": 1},
-		"tool_error":                         {"permission": 1},
-		"compaction":                         {"total": 1},
-		"memory_compiler_turn":               {"total": 1},
-		"memory_compiler_injected":           {"on": 1},
-		"memory_compiler_useful_ir":          {"on": 1},
-		"memory_compiler_compiled_tokens":    {"t_751_1500": 1},
-		"memory_compiler_ir_overhead_tokens": {"t_251_750": 1},
-		"memory_compiler_memory_refs":        {"n_2_3": 1},
-		"memory_compiler_constraints":        {"n_2_3": 1},
-		"memory_compiler_risk_notes":         {"n_1": 1},
-		"memory_compiler_execution_steps":    {"n_4_5": 1},
-		"memory_compiler_nodes":              {"n_21_50": 1},
-		"memory_compiler_high_signal_nodes":  {"n_6_20": 1},
-		"memory_compiler_tool_result_nodes":  {"n_6_20": 1},
-		"memory_compiler_decisions":          {"n_1_5": 1},
-		"memory_compiler_strategies":         {"n_1_5": 1},
-		"memory_compiler_learnings":          {"n_6_20": 1},
-		"empty_final":                        {"total": 1},
-		"provider_error":                     {"http_429": 1},
-		"turns":                              {"total": 2},
+		"finish_reason":  {"stop": 1, "tool_calls": 1},
+		"cache_hit":      {"99_100": 1, "50_80": 1},
+		"tool_error":     {"permission": 1},
+		"compaction":     {"total": 1},
+		"empty_final":    {"total": 1},
+		"provider_error": {"http_429": 1},
+		"turns":          {"total": 3},
 	}
 	for sig, buckets := range want {
 		for b, n := range buckets {
@@ -72,6 +58,27 @@ func TestObserveClassifiesEvents(t *testing.T) {
 				t.Errorf("%s/%s = %d, want %d", sig, b, got, n)
 			}
 		}
+	}
+}
+
+func TestObserveControllerRecoveryMetricsConsumesOnlyNewDelta(t *testing.T) {
+	m := newMetricsAggregator(t.TempDir())
+	ctrl := &recoveryMetricsDeltaStub{deltas: []recovery.Metrics{
+		{FailureEvents: 1, HumanPrompts: 1, ReviewLatencyMsSum: 750, ReviewLatencyCount: 1},
+		{},
+	}}
+
+	observeControllerRecoveryMetrics(m, ctrl)
+	observeControllerRecoveryMetrics(m, ctrl)
+
+	if got := m.c["recovery_failure"]["total"]; got != 1 {
+		t.Fatalf("recovery_failure/total = %d, want 1", got)
+	}
+	if got := m.c["recovery_human_prompt"]["total"]; got != 1 {
+		t.Fatalf("recovery_human_prompt/total = %d, want 1", got)
+	}
+	if got := m.c["recovery_review_latency"]["lt_2s"]; got != 1 {
+		t.Fatalf("recovery_review_latency/lt_2s = %d, want 1", got)
 	}
 }
 
@@ -100,9 +107,6 @@ func TestObserveSettingsSnapshotUsesSafeBuckets(t *testing.T) {
 	}
 	if err := cfg.SetDesktopDisplayMode("compact"); err != nil {
 		t.Fatalf("SetDesktopDisplayMode: %v", err)
-	}
-	if err := cfg.SetAutoPlan("on"); err != nil {
-		t.Fatalf("SetAutoPlan: %v", err)
 	}
 	if err := cfg.SetDesktopStatusBarStyle("icon"); err != nil {
 		t.Fatalf("SetDesktopStatusBarStyle: %v", err)
@@ -143,8 +147,6 @@ func TestObserveSettingsSnapshotUsesSafeBuckets(t *testing.T) {
 		"settings_theme_style":             "graphite",
 		"settings_close_behavior":          "quit",
 		"settings_display_mode":            "compact",
-		"settings_auto_plan":               "on",
-		"settings_memory_compiler":         "on",
 		"settings_status_bar_style":        "icon",
 		"settings_status_bar_items_count":  "n_3",
 		"settings_check_updates":           "off",
@@ -168,9 +170,6 @@ func TestObserveSettingsSnapshotUsesSafeBuckets(t *testing.T) {
 func TestObserveSettingsSnapshotCountsDisabledPlannerAsOff(t *testing.T) {
 	cfg := config.Default()
 	cfg.Agent.PlannerModel = ""
-	if err := cfg.SetMemoryCompilerEnabled(false); err != nil {
-		t.Fatalf("SetMemoryCompilerEnabled(false): %v", err)
-	}
 
 	m := newMetricsAggregator(t.TempDir())
 	m.observeSettingsSnapshot(cfg)
@@ -180,9 +179,6 @@ func TestObserveSettingsSnapshotCountsDisabledPlannerAsOff(t *testing.T) {
 	}
 	if got := m.c["settings_planner_model"][safeModelBucket(cfg, cfg.DefaultModel)]; got != 0 {
 		t.Fatalf("disabled planner should not count the default model, got %d", got)
-	}
-	if got := m.c["settings_memory_compiler"]["off"]; got != 1 {
-		t.Fatalf("settings_memory_compiler/off = %d, want 1", got)
 	}
 }
 
@@ -196,6 +192,11 @@ func TestErrorClass(t *testing.T) {
 		"read: connection reset by peer":      "stream_interrupted",
 		"stream interrupted mid-flight":       "stream_interrupted",
 		"context deadline exceeded (timeout)": "timeout",
+		"update: authorization cancelled":     "authorization_cancelled",
+		"update: authorization failed":        "authorization_failed",
+		"update: package manager busy":        "package_manager_busy",
+		"update: package install failed":      "package_install_failed",
+		"update: package verify failed":       "package_verify_failed",
 		"some unrecognized failure":           "other",
 	}
 	for msg, want := range cases {
@@ -245,5 +246,66 @@ func TestPersistMergesAcrossSessions(t *testing.T) {
 	}
 	if n := len(flatten(readCounters(path))); n != 1 {
 		t.Errorf("flatten produced %d counters, want 1", n)
+	}
+}
+
+func TestRecordDroppedWebRuntimeEventsDrainsAtomicCount(t *testing.T) {
+	oldVersion := version
+	version = "v1.23.0"
+	t.Cleanup(func() { version = oldVersion })
+
+	dir := t.TempDir()
+	app := NewApp()
+	app.metrics.Store(newMetricsAggregator(dir))
+	var dropped atomic.Uint64
+	dropped.Store(3)
+
+	recordDroppedWebRuntimeEvents(app, "webview2", &dropped)
+	recordDroppedWebRuntimeEvents(app, "webview2", &dropped)
+
+	if got := dropped.Load(); got != 0 {
+		t.Fatalf("dropped count = %d, want drained", got)
+	}
+	if got := readCounters(filepath.Join(dir, metricsPendingFile))["desktop_web_runtime_dropped"]["webview2"]; got != 3 {
+		t.Fatalf("desktop_web_runtime_dropped/webview2 = %d, want 3", got)
+	}
+}
+
+func TestErrorClassSeparatesBadRequestCauses(t *testing.T) {
+	// Verbatim provider bodies from reported issues, each needing a different fix.
+	cases := map[string]string{
+		`status 400: messages[203]: unknown variant ` + "`image_url`" + `, expected ` + "`text`": "http_400_content",
+		`status 400: Invalid schema for function 'ls': null is not of type "array"`:              "http_400_schema",
+		"status 400: The `content[].thinking` in the thinking mode must be passed back":          "http_400_reasoning_replay",
+		"status 400: thinking: invalid type: map, expected a boolean":                            "http_400_thinking_shape",
+		"status 400: This model's maximum context length is 65536 tokens":                        "http_400_context_length",
+		"status 400: missing field name at line 1":                                               "http_400_tool_calls",
+		"status 400: something nobody has classified yet":                                        "http_400",
+	}
+	for msg, want := range cases {
+		if got := errorClass(msg); got != want {
+			t.Errorf("errorClass(%q) = %q, want %q", msg, got, want)
+		}
+	}
+}
+
+func TestErrorClassNeverEchoesProviderText(t *testing.T) {
+	// The bucket is uploaded; the message is not. A label must be a fixed token,
+	// so no substring of a body carrying user code or prompt text can reach it.
+	secrets := []string{
+		"status 400: Invalid schema for function 'ls': /home/alice/secret-project is not of type \"array\"",
+		"status 400: unknown variant `image_url` in ~/work/client-contract.pdf",
+		"status 400: thinking: invalid type: map, expected a boolean, key=sk-abc123",
+	}
+	for _, msg := range secrets {
+		got := errorClass(msg)
+		for _, leak := range []string{"alice", "secret", "client-contract", "sk-abc123", "/home", "~/work"} {
+			if strings.Contains(got, leak) {
+				t.Fatalf("errorClass(%q) = %q, leaked %q", msg, got, leak)
+			}
+		}
+		if !strings.HasPrefix(got, "http_400") {
+			t.Errorf("errorClass(%q) = %q, want an http_400 label", msg, got)
+		}
 	}
 }

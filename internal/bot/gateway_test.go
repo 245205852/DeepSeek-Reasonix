@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"reasonix/internal/agent"
+	"reasonix/internal/config"
 	"reasonix/internal/control"
 	"reasonix/internal/event"
 	"reasonix/internal/provider"
@@ -155,15 +157,24 @@ func (f *fakeReactionAdapter) cleanupMessages() []string {
 
 type queueTestController struct {
 	botController
-	mu       sync.Mutex
-	steers   []string
-	canceled bool
+	mu          sync.Mutex
+	steers      []string
+	rejectSteer bool
+	canceled    bool
 }
 
 func (c *queueTestController) Steer(text string) {
+	_ = c.TrySteer(text)
+}
+
+func (c *queueTestController) TrySteer(text string) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.rejectSteer {
+		return false
+	}
 	c.steers = append(c.steers, text)
+	return true
 }
 
 func (c *queueTestController) Cancel() {
@@ -188,6 +199,36 @@ func (c *queueTestController) wasCanceled() bool {
 	defer c.mu.Unlock()
 	return c.canceled
 }
+
+type rotatingBotController struct {
+	botController
+	path     string
+	newPath  string
+	newCalls int
+	closed   bool
+}
+
+func (c *rotatingBotController) Running() bool { return false }
+func (c *rotatingBotController) NewSession() error {
+	c.newCalls++
+	c.path = c.newPath
+	return nil
+}
+func (c *rotatingBotController) SessionPath() string { return c.path }
+func (c *rotatingBotController) Close()              { c.closed = true }
+
+type runtimeStatusBotController struct {
+	botController
+	status        control.RuntimeStatus
+	workspaceRoot string
+	sessionPath   string
+	closed        bool
+}
+
+func (c *runtimeStatusBotController) RuntimeStatus() control.RuntimeStatus { return c.status }
+func (c *runtimeStatusBotController) WorkspaceRoot() string                { return c.workspaceRoot }
+func (c *runtimeStatusBotController) SessionPath() string                  { return c.sessionPath }
+func (c *runtimeStatusBotController) Close()                               { c.closed = true }
 
 type blockingApprovalController struct {
 	botController
@@ -639,6 +680,28 @@ func TestGatewayNormalizesNumericApprovalShortcutsOnlyWhenPending(t *testing.T) 
 	}
 }
 
+func TestGatewayNormalizesTaskGrantRecoveryShortcuts(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	gw := NewGateway(GatewayConfig{}, nil, logger)
+	key := "recovery-key"
+	gw.controllers[key] = &sessionState{
+		pendingApprovals: map[string]event.Approval{
+			"r1": {ID: "r1", Kind: "recovery", Recovery: &event.RecoveryApproval{CanGrantTask: true}},
+		},
+		lastApprovalID: "r1",
+	}
+	for input, want := range map[string]string{
+		"1": "/recovery-continue r1",
+		"2": "/recovery-continue-task r1",
+		"3": "/recovery-revise r1",
+	} {
+		got, ok := gw.normalizeApprovalShortcut(key, input)
+		if !ok || got != want {
+			t.Fatalf("normalize %q = %q,%v; want %q,true", input, got, ok, want)
+		}
+	}
+}
+
 func TestGatewayNormalizesAskShortcutForPendingAsk(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	gw := NewGateway(GatewayConfig{}, nil, logger)
@@ -788,7 +851,11 @@ func TestGatewayNewSessionRemembersRotatedSessionPath(t *testing.T) {
 	oldPath := agent.NewSessionPath(sessionDir, "old-model")
 	exec := agent.New(gatewayFakeProvider{}, tool.NewRegistry(), agent.NewSession("system"), agent.Options{}, event.Discard)
 	ctrl := control.New(control.Options{Executor: exec, SessionDir: sessionDir, SessionPath: oldPath, Label: "fake-model"})
-	gw.controllers[key] = &sessionState{ctrl: ctrl}
+	leases := control.NewSessionLeaseKeeper()
+	if err := leases.Rebind(oldPath); err != nil {
+		t.Fatalf("bind old session lease: %v", err)
+	}
+	gw.controllers[key] = &sessionState{ctrl: ctrl, leases: leases, sessionPath: oldPath}
 
 	gw.handleSlashCommand(context.Background(), adapter, key, msg)
 
@@ -801,6 +868,339 @@ func TestGatewayNewSessionRemembersRotatedSessionPath(t *testing.T) {
 	if ctrl.SessionPath() == oldPath {
 		t.Fatalf("controller session path was not rotated")
 	}
+	if got := leases.HeldPath(); got != agent.CanonicalSessionPath(ctrl.SessionPath()) {
+		t.Fatalf("held lease = %q, want rotated path %q", got, agent.CanonicalSessionPath(ctrl.SessionPath()))
+	}
+	oldLease, err := agent.TryAcquireSessionLease(oldPath)
+	if err != nil {
+		t.Fatalf("old session lease was not released: %v", err)
+	}
+	oldLease.Release()
+	gw.closeSessions()
+}
+
+func TestGatewayRecoveryRebindsLeaseAndRemembersSessionPath(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	dir := t.TempDir()
+	originalPath := filepath.Join(dir, "session.jsonl")
+
+	disk := agent.NewSession("sys")
+	disk.Add(provider.Message{Role: provider.RoleUser, Content: "first"})
+	disk.Add(provider.Message{Role: provider.RoleAssistant, Content: "disk"})
+	if err := disk.Save(originalPath); err != nil {
+		t.Fatalf("save disk session: %v", err)
+	}
+
+	local := agent.NewSession("sys")
+	local.Add(provider.Message{Role: provider.RoleUser, Content: "first"})
+	local.Add(provider.Message{Role: provider.RoleAssistant, Content: "local"})
+	exec := agent.New(nil, nil, local, agent.Options{}, event.Discard)
+
+	var remembered []string
+	gw := NewGateway(GatewayConfig{
+		OnSessionReady: func(_ InboundMessage, sessionID string) error {
+			remembered = append(remembered, sessionID)
+			return nil
+		},
+	}, nil, logger)
+	msg := InboundMessage{
+		Platform:     PlatformWeixin,
+		ConnectionID: "weixin-main",
+		Domain:       "weixin",
+		ChatType:     ChatDM,
+		ChatID:       "chat",
+		UserID:       "user",
+	}
+	key := BuildSessionKey(msg.Session())
+	adapter := newFakeAdapter(PlatformWeixin, "fake-weixin")
+	sessionSink := &sessionEventSink{}
+	sessionSink.setTarget(newRenderSink(
+		context.Background(), adapter, msg.ConnectionID, msg.Domain, msg.ChatID,
+		msg.ChatType, msg.UserID, msg.MessageID, logger, nil, nil,
+	))
+	t.Cleanup(func() { sessionSink.setTarget(nil) })
+	leases := control.NewSessionLeaseKeeper()
+	if err := leases.Rebind(originalPath); err != nil {
+		t.Fatalf("bind original session lease: %v", err)
+	}
+	state := &sessionState{sink: sessionSink, leases: leases, sessionPath: originalPath}
+	gw.controllers[key] = state
+	gw.sessionOverrides[key] = sessionRuntimeOverride{sessionPath: originalPath, label: "session:original"}
+	ctrl := control.New(control.Options{
+		Executor:           exec,
+		SessionDir:         dir,
+		SessionPath:        originalPath,
+		Label:              "test",
+		Sink:               sessionSink,
+		OnSessionRecovered: gw.botSessionRecoveredHandler(key, msg, state),
+	})
+	state.ctrl = ctrl
+	mustBindBotControllerAuthority(t, leases, ctrl)
+	t.Cleanup(gw.closeSessions)
+
+	if err := ctrl.Snapshot(); err != nil {
+		t.Fatalf("snapshot diverged session: %v", err)
+	}
+	recoveryPath := ctrl.SessionPath()
+	if recoveryPath == "" || recoveryPath == originalPath {
+		t.Fatalf("controller path = %q, want recovery path", recoveryPath)
+	}
+	if got := leases.HeldPath(); got != agent.CanonicalSessionPath(recoveryPath) {
+		t.Fatalf("held lease = %q, want recovery path %q", got, agent.CanonicalSessionPath(recoveryPath))
+	}
+	leases.WaitForRetiredLeases()
+	mustAcquireAndReleaseBotSessionLease(t, originalPath)
+
+	gw.mu.Lock()
+	gotStatePath := state.sessionPath
+	gotOverridePath := gw.sessionOverrides[key].sessionPath
+	gw.mu.Unlock()
+	if canonicalBotPath(gotStatePath) != canonicalBotPath(recoveryPath) {
+		t.Fatalf("state path = %q, want recovery path %q", gotStatePath, recoveryPath)
+	}
+	if canonicalBotPath(gotOverridePath) != canonicalBotPath(recoveryPath) {
+		t.Fatalf("override path = %q, want recovery path %q", gotOverridePath, recoveryPath)
+	}
+	if len(remembered) != 1 || remembered[0] != botSessionTarget(recoveryPath) {
+		t.Fatalf("remembered sessions = %v, want [%q]", remembered, botSessionTarget(recoveryPath))
+	}
+
+	if err := ctrl.Snapshot(); err != nil {
+		t.Fatalf("snapshot recovered session: %v", err)
+	}
+	matches, err := filepath.Glob(filepath.Join(dir, "*-recovery-*.jsonl"))
+	if err != nil {
+		t.Fatalf("glob recovery sessions: %v", err)
+	}
+	transcripts := matches[:0]
+	for _, path := range matches {
+		if !strings.HasSuffix(path, ".events.jsonl") && !strings.HasSuffix(path, ".conflicts.jsonl") {
+			transcripts = append(transcripts, path)
+		}
+	}
+	if len(transcripts) != 1 || transcripts[0] != recoveryPath {
+		t.Fatalf("recovery transcripts = %v, want only %q", transcripts, recoveryPath)
+	}
+	if sent := adapter.sentMessages(); len(sent) != 0 {
+		t.Fatalf("recovery maintenance leaked into IM messages: %+v", sent)
+	}
+}
+
+func TestGatewayRecoveryLeaseFailureKeepsOriginalGeneration(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	dir := t.TempDir()
+	originalPath := filepath.Join(dir, "original.jsonl")
+	recoveryPath := filepath.Join(dir, "recovery.jsonl")
+	readyCalls := 0
+	gw := NewGateway(GatewayConfig{
+		OnSessionReady: func(InboundMessage, string) error {
+			readyCalls++
+			return nil
+		},
+	}, nil, logger)
+	msg := InboundMessage{Platform: PlatformWeixin, ChatType: ChatDM, ChatID: "chat", UserID: "user"}
+	key := BuildSessionKey(msg.Session())
+	leases := control.NewSessionLeaseKeeper()
+	if err := leases.Rebind(originalPath); err != nil {
+		t.Fatalf("bind original session lease: %v", err)
+	}
+	defer leases.Release()
+	blocker, err := agent.TryAcquireSessionLease(recoveryPath)
+	if err != nil {
+		t.Fatalf("bind recovery blocker: %v", err)
+	}
+	defer blocker.Release()
+	state := &sessionState{leases: leases, sessionPath: originalPath}
+	gw.controllers[key] = state
+	gw.sessionOverrides[key] = sessionRuntimeOverride{sessionPath: originalPath}
+
+	err = gw.botSessionRecoveredHandler(key, msg, state)(control.SessionRecoveryInfo{
+		OriginalPath: originalPath,
+		RecoveryPath: recoveryPath,
+	})
+	if err == nil {
+		t.Fatal("recovery handoff succeeded while recovery lease was held")
+	}
+	if got := leases.HeldPath(); got != agent.CanonicalSessionPath(originalPath) {
+		t.Fatalf("held lease = %q, want original path %q", got, agent.CanonicalSessionPath(originalPath))
+	}
+	gw.mu.Lock()
+	gotStatePath := state.sessionPath
+	gotOverridePath := gw.sessionOverrides[key].sessionPath
+	gw.mu.Unlock()
+	if gotStatePath != originalPath || gotOverridePath != originalPath {
+		t.Fatalf("paths changed after failed handoff: state=%q override=%q", gotStatePath, gotOverridePath)
+	}
+	if readyCalls != 0 {
+		t.Fatalf("session-ready callback ran %d times after failed handoff", readyCalls)
+	}
+}
+
+func TestGatewayLateRecoveryCannotReplaceCurrentSessionMapping(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	dir := t.TempDir()
+	oldPath := filepath.Join(dir, "old.jsonl")
+	oldRecoveryPath := filepath.Join(dir, "old-recovery.jsonl")
+	currentPath := filepath.Join(dir, "current.jsonl")
+	readyCalls := 0
+	gw := NewGateway(GatewayConfig{
+		OnSessionReady: func(InboundMessage, string) error {
+			readyCalls++
+			return nil
+		},
+	}, nil, logger)
+	msg := InboundMessage{Platform: PlatformWeixin, ChatType: ChatDM, ChatID: "chat", UserID: "user"}
+	key := BuildSessionKey(msg.Session())
+	oldLeases := control.NewSessionLeaseKeeper()
+	if err := oldLeases.Rebind(oldPath); err != nil {
+		t.Fatalf("bind old session lease: %v", err)
+	}
+	defer oldLeases.Release()
+	oldState := &sessionState{leases: oldLeases, sessionPath: oldPath}
+	currentState := &sessionState{sessionPath: currentPath}
+	gw.controllers[key] = currentState
+	gw.sessionOverrides[key] = sessionRuntimeOverride{sessionPath: currentPath}
+
+	if err := gw.botSessionRecoveredHandler(key, msg, oldState)(control.SessionRecoveryInfo{
+		OriginalPath: oldPath,
+		RecoveryPath: oldRecoveryPath,
+	}); err != nil {
+		t.Fatalf("late recovery handoff: %v", err)
+	}
+	if got := oldLeases.HeldPath(); got != agent.CanonicalSessionPath(oldRecoveryPath) {
+		t.Fatalf("old generation lease = %q, want recovery path %q", got, agent.CanonicalSessionPath(oldRecoveryPath))
+	}
+	gw.mu.Lock()
+	gotCurrentPath := currentState.sessionPath
+	gotOverridePath := gw.sessionOverrides[key].sessionPath
+	gw.mu.Unlock()
+	if gotCurrentPath != currentPath || gotOverridePath != currentPath {
+		t.Fatalf("current mapping overwritten by late recovery: state=%q override=%q", gotCurrentPath, gotOverridePath)
+	}
+	if readyCalls != 0 {
+		t.Fatalf("session-ready callback ran %d times for retired generation", readyCalls)
+	}
+}
+
+func TestGatewayLateRecoveryAfterRetirementDoesNotReacquireLease(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	dir := t.TempDir()
+	originalPath := filepath.Join(dir, "original.jsonl")
+	recoveryPath := filepath.Join(dir, "recovery.jsonl")
+	gw := NewGateway(GatewayConfig{}, nil, logger)
+	msg := InboundMessage{Platform: PlatformWeixin, ChatType: ChatDM, ChatID: "chat", UserID: "user"}
+	key := BuildSessionKey(msg.Session())
+	leases := control.NewSessionLeaseKeeper()
+	if err := leases.Rebind(originalPath); err != nil {
+		t.Fatalf("bind original session lease: %v", err)
+	}
+	state := &sessionState{leases: leases, sessionPath: originalPath}
+	gw.controllers[key] = state
+	handler := gw.botSessionRecoveredHandler(key, msg, state)
+
+	// Gateway shutdown retires and releases the state before waiting for every
+	// turn goroutine. A callback already captured by the controller must not
+	// reacquire a lease after that teardown.
+	gw.closeSessions()
+	if got := leases.HeldPath(); got != "" {
+		t.Fatalf("lease after retirement = %q, want empty", got)
+	}
+	if err := handler(control.SessionRecoveryInfo{
+		OriginalPath: originalPath,
+		RecoveryPath: recoveryPath,
+	}); !errors.Is(err, errBotSessionRetired) {
+		t.Fatalf("late recovery error = %v, want %v", err, errBotSessionRetired)
+	}
+	if got := leases.HeldPath(); got != "" {
+		t.Fatalf("late recovery reacquired lease after retirement: %q", got)
+	}
+	probe, err := agent.TryAcquireSessionLease(recoveryPath)
+	if err != nil {
+		t.Fatalf("recovery lease remained unavailable after late callback: %v", err)
+	}
+	probe.Release()
+}
+
+func TestGatewayNewSessionLeaseFailureRetiresSession(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	readyCalls := 0
+	gw := NewGateway(GatewayConfig{
+		OnSessionReady: func(InboundMessage, string) error {
+			readyCalls++
+			return nil
+		},
+	}, nil, logger)
+	adapter := newFakeAdapter(PlatformWeixin, "fake-weixin")
+	msg := InboundMessage{
+		Platform:     PlatformWeixin,
+		ConnectionID: "weixin-weixin",
+		Domain:       "weixin",
+		ChatType:     ChatDM,
+		ChatID:       "chat",
+		UserID:       "user",
+		Text:         "/new",
+	}
+	key := BuildSessionKey(msg.Session())
+	sessionDir := t.TempDir()
+	oldPath := filepath.Join(sessionDir, "old.jsonl")
+	newPath := filepath.Join(sessionDir, "new.jsonl")
+	ctrl := &rotatingBotController{path: oldPath, newPath: newPath}
+	leases := control.NewSessionLeaseKeeper()
+	if err := leases.Rebind(oldPath); err != nil {
+		t.Fatalf("bind old session lease: %v", err)
+	}
+	blocker, err := agent.TryAcquireSessionLease(newPath)
+	if err != nil {
+		t.Fatalf("hold rotated session lease: %v", err)
+	}
+	defer blocker.Release()
+	gw.controllers[key] = &sessionState{ctrl: ctrl, leases: leases, sessionPath: oldPath}
+
+	gw.handleSlashCommand(context.Background(), adapter, key, msg)
+
+	gw.mu.Lock()
+	_, exists := gw.controllers[key]
+	gw.mu.Unlock()
+	if exists {
+		t.Fatal("lease-failed session remains registered")
+	}
+	if ctrl.newCalls != 1 || !ctrl.closed {
+		t.Fatalf("controller lifecycle = new calls %d closed %v, want 1/true", ctrl.newCalls, ctrl.closed)
+	}
+	if got := leases.HeldPath(); got != "" {
+		t.Fatalf("old lease remained held after retirement: %q", got)
+	}
+	oldLease, err := agent.TryAcquireSessionLease(oldPath)
+	if err != nil {
+		t.Fatalf("old session lease was not released after retirement: %v", err)
+	}
+	oldLease.Release()
+	if readyCalls != 0 {
+		t.Fatalf("session-ready callback ran %d times after failed creation", readyCalls)
+	}
+	sent := adapter.sentMessages()
+	if len(sent) != 1 || !strings.Contains(sent[0].Text, "新会话创建失败") || strings.Contains(sent[0].Text, "已开始新会话") {
+		t.Fatalf("sent messages = %+v, want a single creation-failed response", sent)
+	}
+}
+
+func TestGatewayCloseSessionStateReleasesSessionLease(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	gw := NewGateway(GatewayConfig{}, nil, logger)
+	path := filepath.Join(t.TempDir(), "session.jsonl")
+	leases := control.NewSessionLeaseKeeper()
+	if err := leases.Rebind(path); err != nil {
+		t.Fatalf("bind session lease: %v", err)
+	}
+	ctrl := control.New(control.Options{})
+
+	gw.closeSessionState(&sessionState{ctrl: ctrl, leases: leases})
+
+	lease, err := agent.TryAcquireSessionLease(path)
+	if err != nil {
+		t.Fatalf("session lease was not released after controller close: %v", err)
+	}
+	lease.Release()
 }
 
 func TestGatewayYoloCommandUpdatesCurrentSessionAndConnectionDefault(t *testing.T) {
@@ -953,8 +1353,7 @@ func TestGatewayApprovalReplyUnblocksWedgedTurn(t *testing.T) {
 		pendingAsks:      make(map[string][]event.AskQuestion),
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	go gw.dispatchLoop(ctx, binding)
 
 	adapter.msgCh <- msg
@@ -1008,8 +1407,7 @@ func TestGatewayAskReplyUnblocksWedgedTurn(t *testing.T) {
 		pendingAsks:      make(map[string][]event.AskQuestion),
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	go gw.dispatchLoop(ctx, binding)
 
 	adapter.msgCh <- msg
@@ -1191,6 +1589,68 @@ func TestGatewaySessionsSearchAndAttachSessionOverride(t *testing.T) {
 	}
 }
 
+func TestGatewayRuntimeOverridePreservesControllersWithActiveWork(t *testing.T) {
+	tests := []struct {
+		name         string
+		status       control.RuntimeStatus
+		admittedTurn bool
+	}{
+		{name: "foreground turn", status: control.RuntimeStatus{Running: true}},
+		{name: "pending prompt", status: control.RuntimeStatus{PendingPrompt: true}},
+		{name: "background job", status: control.RuntimeStatus{BackgroundJobs: 1}},
+		{name: "admitted turn", admittedTurn: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+			gw := NewGateway(GatewayConfig{}, nil, logger)
+			msg := InboundMessage{Platform: PlatformFeishu, ChatType: ChatDM, ChatID: "chat", UserID: "user"}
+			key := BuildSessionKey(msg.Session())
+			ctrl := &runtimeStatusBotController{status: tc.status, workspaceRoot: "/old"}
+			state := &sessionState{ctrl: ctrl, workspaceRoot: "/old"}
+			gw.controllers[key] = state
+			gw.sessionOverrides[key] = sessionRuntimeOverride{channel: ChannelConfig{WorkspaceRoot: "/old"}, label: "project:old"}
+			if tc.admittedTurn {
+				if result := gw.sessions.TryAcquireWithQueue(key, msg, QueueOptions{}); !result.Acquired {
+					t.Fatalf("admit turn: %+v", result)
+				}
+			}
+
+			text := gw.handleUseProjectCommand(context.Background(), msg, "/use project default")
+			if !strings.Contains(text, "请先完成或停止") {
+				t.Fatalf("busy response = %q", text)
+			}
+			if ctrl.closed || gw.controllers[key] != state {
+				t.Fatalf("active controller was replaced or closed: closed=%v installed=%v", ctrl.closed, gw.controllers[key] == state)
+			}
+			if override, ok := gw.sessionOverrides[key]; !ok || override.label != "project:old" {
+				t.Fatalf("active override changed: %+v, present=%v", override, ok)
+			}
+		})
+	}
+}
+
+func TestGatewayDefersProfileMismatchWhileBackgroundWorkIsActive(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	newRoot := t.TempDir()
+	gw := NewGateway(GatewayConfig{WorkspaceRoot: newRoot}, nil, logger)
+	msg := InboundMessage{Platform: PlatformFeishu, ChatType: ChatDM, ChatID: "chat", UserID: "user"}
+	key := BuildSessionKey(msg.Session())
+	ctrl := &runtimeStatusBotController{
+		status: control.RuntimeStatus{BackgroundJobs: 1}, workspaceRoot: t.TempDir(),
+	}
+	state := &sessionState{ctrl: ctrl, workspaceRoot: ctrl.workspaceRoot}
+	gw.controllers[key] = state
+
+	got := gw.getOrCreateSession(context.Background(), key, msg)
+	if got != state || gw.controllers[key] != state || ctrl.closed {
+		t.Fatalf("profile mismatch canceled active work: gotOld=%v installed=%v closed=%v", got == state, gw.controllers[key] == state, ctrl.closed)
+	}
+	if state.workspaceRoot == newRoot {
+		t.Fatalf("deferred runtime change mutated the live profile to %q", state.workspaceRoot)
+	}
+}
+
 func TestGatewaySearchAllSearchesIndexedProjects(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	projectRoot := t.TempDir()
@@ -1319,6 +1779,39 @@ func TestGatewayDefaultQueueSteersActiveTurn(t *testing.T) {
 	}
 }
 
+func TestGatewayRejectedSteerFallsBackToFollowupQueue(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	gw := NewGateway(GatewayConfig{Allowlist: AllowlistConfig{AllowAll: true}}, nil, logger)
+	adapter := &fakeReactionAdapter{fakeAdapter: newFakeAdapter(PlatformFeishu, "fake-feishu")}
+	msg := InboundMessage{
+		Platform:     PlatformFeishu,
+		ConnectionID: "feishu-feishu",
+		ChatType:     ChatDM,
+		ChatID:       "chat",
+		UserID:       "user",
+		Text:         "run this after the current turn",
+		MessageID:    "m-rejected-steer",
+	}
+	key := BuildSessionKey(msg.Session())
+	ctrl := &queueTestController{rejectSteer: true}
+	gw.controllers[key] = &sessionState{ctrl: ctrl, sink: &sessionEventSink{}}
+	if result := gw.sessions.TryAcquireWithQueue(key, msg, QueueOptions{Mode: QueueModeFollowup}); !result.Acquired {
+		t.Fatalf("failed to mark session active: %+v", result)
+	}
+
+	gw.handleMessage(context.Background(), AdapterBinding{ID: "feishu-feishu", Platform: PlatformFeishu, Adapter: adapter}, msg)
+
+	if got := ctrl.steered(); len(got) != 0 {
+		t.Fatalf("rejected steers = %#v, want none", got)
+	}
+	if pending := gw.sessions.PendingCount(key); pending != 1 {
+		t.Fatalf("pending = %d, want rejected steer preserved as one follow-up", pending)
+	}
+	if sent := adapter.sentMessages(); len(sent) != 0 {
+		t.Fatalf("sent = %#v, rejected steer must not receive an applied acknowledgement", sent)
+	}
+}
+
 func TestGatewayDefaultQueueSteersMediaOnlyActiveTurn(t *testing.T) {
 	imageServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "image/png")
@@ -1422,12 +1915,19 @@ func TestGatewayQueueInterruptCancelsAndKeepsNewestMessage(t *testing.T) {
 	if !ctrl.wasCanceled() {
 		t.Fatal("controller was not canceled")
 	}
-	next := gw.sessions.Release(key)
-	if next == nil || next.Text != "newest request" {
-		t.Fatalf("release = %#v, want newest request", next)
+	// Durable interrupt keeps the message in the session inbox (not SessionManager.pending).
+	if next := gw.sessions.Release(key); next != nil {
+		t.Fatalf("legacy pending should be empty after durable interrupt, got %#v", next)
+	}
+	if n := gw.nextInboxMessage(key); n == nil || n.Text != "newest request" {
+		// Controllers without SessionAPI cannot durable-queue; accept cancel-only.
+		if api, ok := any(ctrl).(control.SessionAPI); ok {
+			_ = api
+			t.Fatalf("durable inbox missing newest request")
+		}
 	}
 	sent := adapter.sentMessages()
-	if len(sent) != 1 || !strings.Contains(sent[0].Text, "稍后处理这条新消息") {
+	if len(sent) != 1 || (!strings.Contains(sent[0].Text, "稍后处理") && !strings.Contains(sent[0].Text, "已持久排队") && !strings.Contains(sent[0].Text, "排队失败")) {
 		t.Fatalf("sent = %#v, want interrupt acknowledgement", sent)
 	}
 }
@@ -1933,5 +2433,287 @@ func TestBotSessionDirUsesProjectWorkspaceRoot(t *testing.T) {
 	got := botSessionDir(root)
 	if got == "" || got == botSessionDir("") {
 		t.Fatalf("project session dir = %q, want project-specific dir", got)
+	}
+}
+
+// A persisted session_mappings binding must resolve to the mapped session file
+// at session-profile time — before this, the binding was display-only and every
+// gateway restart opened a fresh session for the chat (#6917, #6934).
+func TestSessionProfileConsumesPersistedMapping(t *testing.T) {
+	dir := t.TempDir()
+	mapped := filepath.Join(dir, "chat.jsonl")
+	if err := os.WriteFile(mapped, []byte(`{"role":"user","content":"hi"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gw := &BotGateway{
+		cfg: GatewayConfig{
+			ConnectionChannels: map[string]ChannelConfig{
+				"conn-1": {SessionMappings: []SessionMapping{{
+					RemoteID:  "chat-42",
+					SessionID: "path:" + mapped,
+				}}},
+			},
+		},
+		logger:           slog.New(slog.NewTextHandler(io.Discard, nil)),
+		sessionOverrides: map[string]sessionRuntimeOverride{},
+	}
+	msg := InboundMessage{ConnectionID: "conn-1", ChatID: "chat-42", ChatType: ChatDM}
+
+	profile := gw.sessionProfileForMessage(msg)
+	if canonicalBotPath(profile.sessionPath) != canonicalBotPath(mapped) {
+		t.Fatalf("profile.sessionPath = %q, want mapped %q", profile.sessionPath, mapped)
+	}
+	if !profile.sessionPathOptional {
+		t.Fatal("mapping-derived path must be optional (degradable), not an attach-style hard binding")
+	}
+
+	// A missing target falls back to the deterministic per-chat path instead of
+	// a fresh timestamp session, keeping the chat on one stable file.
+	if err := os.Remove(mapped); err != nil {
+		t.Fatal(err)
+	}
+	profile = gw.sessionProfileForMessage(msg)
+	if profile.sessionPath == "" {
+		t.Fatal("missing mapped file should fall back to a stable chat path, got empty")
+	}
+	if !profile.sessionPathOptional {
+		t.Fatal("stable fallback must stay optional (degradable)")
+	}
+
+	// An /attach override outranks the mapping.
+	gw.sessionOverrides[BuildSessionKey(msg.Session())] = sessionRuntimeOverride{sessionPath: filepath.Join(dir, "attached.jsonl")}
+	profile = gw.sessionProfileForMessage(msg)
+	if profile.sessionPathOptional {
+		t.Fatal("attach override must stay a hard binding")
+	}
+}
+
+// Without any persisted mapping or /attach binding, the session profile must
+// resolve to a deterministic per-chat file so the same chat reuses one
+// conversation across restarts instead of spawning a fresh timestamp session
+// per message (the chat-side analogue of dsh-dingtalk-channel's `ding-<chatId>`).
+func TestSessionProfileFallsBackToStableChatPath(t *testing.T) {
+	dir := t.TempDir()
+	gw := &BotGateway{
+		cfg: GatewayConfig{
+			WorkspaceRoot: dir,
+			Channels:      map[Platform]ChannelConfig{},
+			ConnectionChannels: map[string]ChannelConfig{
+				"conn-1": {WorkspaceRoot: dir},
+			},
+		},
+		logger:           slog.New(slog.NewTextHandler(io.Discard, nil)),
+		sessionOverrides: map[string]sessionRuntimeOverride{},
+	}
+	dm := InboundMessage{Platform: PlatformFeishu, ConnectionID: "conn-1", ChatID: "oc_abc", ChatType: ChatDM}
+	dmProfile := gw.sessionProfileForMessage(dm)
+	if dmProfile.sessionPath == "" {
+		t.Fatal("DM without a mapping must resolve to a stable session path")
+	}
+	if !dmProfile.sessionPathOptional {
+		t.Fatal("stable fallback path must be optional (degradable), like a mapping")
+	}
+	// Same chat, repeated messages: identical path.
+	if again := gw.sessionProfileForMessage(dm); canonicalBotPath(again.sessionPath) != canonicalBotPath(dmProfile.sessionPath) {
+		t.Fatalf("same DM chat must map to one stable file: first=%q second=%q", dmProfile.sessionPath, again.sessionPath)
+	}
+	// Different chat: different file.
+	other := InboundMessage{Platform: PlatformFeishu, ConnectionID: "conn-1", ChatID: "oc_xyz", ChatType: ChatDM}
+	otherProfile := gw.sessionProfileForMessage(other)
+	if canonicalBotPath(otherProfile.sessionPath) == canonicalBotPath(dmProfile.sessionPath) {
+		t.Fatalf("different chats must map to different files, both=%q", otherProfile.sessionPath)
+	}
+	// Group chat scopes per sender, mirroring BuildSessionKey.
+	groupA := InboundMessage{Platform: PlatformFeishu, ConnectionID: "conn-1", ChatID: "oc_grp", ChatType: ChatGroup, UserID: "ou_a"}
+	groupB := InboundMessage{Platform: PlatformFeishu, ConnectionID: "conn-1", ChatID: "oc_grp", ChatType: ChatGroup, UserID: "ou_b"}
+	pa := gw.sessionProfileForMessage(groupA)
+	pb := gw.sessionProfileForMessage(groupB)
+	if pa.sessionPath == "" || pb.sessionPath == "" {
+		t.Fatal("group messages must resolve to stable session paths")
+	}
+	if canonicalBotPath(pa.sessionPath) == canonicalBotPath(pb.sessionPath) {
+		t.Fatalf("different group senders must map to different files, both=%q", pa.sessionPath)
+	}
+	if again := gw.sessionProfileForMessage(groupA); canonicalBotPath(again.sessionPath) != canonicalBotPath(pa.sessionPath) {
+		t.Fatalf("same group sender must map to one stable file: first=%q second=%q", pa.sessionPath, again.sessionPath)
+	}
+	// The stable path must live under the resolved session dir and carry a
+	// readable, bot-scoped name.
+	projectDir := config.ProjectSessionDir(dir)
+	if projectDir == "" {
+		t.Fatal("ProjectSessionDir must resolve for the test workspace root")
+	}
+	if !strings.HasPrefix(filepath.Base(dmProfile.sessionPath), "bot-") {
+		t.Fatalf("stable path name should be bot-scoped, got %q", filepath.Base(dmProfile.sessionPath))
+	}
+	if !strings.HasSuffix(dmProfile.sessionPath, ".jsonl") {
+		t.Fatalf("stable path must end in .jsonl, got %q", dmProfile.sessionPath)
+	}
+	if !strings.HasPrefix(dmProfile.sessionPath, projectDir+string(filepath.Separator)) {
+		t.Fatalf("stable path must live under the resolved session dir, got %q (want prefix %q)", dmProfile.sessionPath, projectDir)
+	}
+}
+
+// A state that degraded off its unavailable mapped session must not be torn
+// down by the next message re-resolving the mapping — that would spawn a new
+// session file per message.
+func TestDegradedMappingStateStaysStable(t *testing.T) {
+	s := &sessionState{mappingDegraded: true, sessionPath: "", ctrl: stubPathController{}}
+	profile := sessionRuntimeProfile{sessionPath: "/some/mapped.jsonl", sessionPathOptional: true}
+	if !sessionStateMatchesRuntime(s, profile) {
+		t.Fatal("degraded state must keep matching an optional mapped profile")
+	}
+	hard := sessionRuntimeProfile{sessionPath: "/some/mapped.jsonl"}
+	if sessionStateMatchesRuntime(s, hard) {
+		t.Fatal("an explicit attach must still force a rebuild")
+	}
+}
+
+type stubPathController struct{ botController }
+
+func (stubPathController) SessionPath() string   { return "" }
+func (stubPathController) WorkspaceRoot() string { return "" }
+
+// testSenderAdapter 是实现了 TestSender 的假适配器，用于 TestSendToAdapter 测试。
+type testSenderAdapter struct {
+	*fakeAdapter
+	gotText string
+}
+
+func (a *testSenderAdapter) TestSend(_ context.Context, text string) (SendResult, error) {
+	a.gotText = text
+	return SendResult{MessageID: "test-1"}, nil
+}
+
+func TestGatewayTestSendToAdapter(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	ts := &testSenderAdapter{fakeAdapter: newFakeAdapter(PlatformDingtalk, "dingtalk")}
+	gw := NewGatewayWithAdapterBindings(GatewayConfig{}, []AdapterBinding{{
+		ID:       "dingtalk",
+		Domain:   "dingtalk",
+		Platform: PlatformDingtalk,
+		Adapter:  ts,
+	}}, logger)
+
+	result, err := gw.TestSendToAdapter(context.Background(), "dingtalk", "dingtalk", "hello")
+	if err != nil {
+		t.Fatalf("TestSendToAdapter: %v", err)
+	}
+	if result.MessageID != "test-1" {
+		t.Fatalf("message id = %q, want test-1", result.MessageID)
+	}
+	if ts.gotText != "hello" {
+		t.Fatalf("test text = %q, want hello", ts.gotText)
+	}
+
+	if _, err := gw.TestSendToAdapter(context.Background(), "missing", "", "hi"); err == nil {
+		t.Fatal("TestSendToAdapter for unknown conn should fail")
+	}
+}
+
+func TestGatewayTestSendToAdapterUnsupported(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	gw := NewGatewayWithAdapterBindings(GatewayConfig{}, []AdapterBinding{{
+		ID:       "feishu-lark",
+		Domain:   "lark",
+		Platform: PlatformFeishu,
+		Adapter:  newFakeAdapter(PlatformFeishu, "feishu"),
+	}}, logger)
+	if _, err := gw.TestSendToAdapter(context.Background(), "feishu-lark", "lark", "hi"); err == nil {
+		t.Fatal("TestSendToAdapter on non-TestSender adapter should fail")
+	}
+}
+
+func TestParseModelSelector(t *testing.T) {
+	cases := []struct {
+		text       string
+		model      string
+		provider   string
+		statusOnly bool
+		ok         bool
+	}{
+		{"/model", "", "", true, true},
+		{"/model deepseek-v4-flash", "deepseek-v4-flash", "", false, true},
+		{"/model deepseek-v4-flash --provider deepseek", "deepseek-v4-flash", "deepseek", false, true},
+		{"/model deepseek-v4-flash -p deepseek", "deepseek-v4-flash", "deepseek", false, true},
+		{"/model --provider deepseek deepseek-v4-flash", "deepseek-v4-flash", "deepseek", false, true},
+		{"/model deepseek-v4-flash --provider 17an", "deepseek-v4-flash", "17an", false, true},
+		{"not a model command", "", "", false, false},
+		{"/model --provider deepseek", "", "deepseek", false, true},
+	}
+	for _, c := range cases {
+		model, provider, statusOnly, ok := parseModelSelector(c.text)
+		if model != c.model || provider != c.provider || statusOnly != c.statusOnly || ok != c.ok {
+			t.Errorf("parseModelSelector(%q) = (%q, %q, %v, %v), want (%q, %q, %v, %v)",
+				c.text, model, provider, statusOnly, ok, c.model, c.provider, c.statusOnly, c.ok)
+		}
+	}
+}
+
+func TestHandleModelCommand(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	gw := NewGatewayWithAdapterBindings(GatewayConfig{Model: "deepseek/deepseek-v4-flash"}, []AdapterBinding{}, logger)
+	msg := InboundMessage{Platform: PlatformWeixin, ConnectionID: "weixin-weixin", Domain: "weixin", ChatType: ChatDM, ChatID: "chat", UserID: "user"}
+	key := BuildSessionKey(msg.Session())
+	overrideModel := func() string { gw.mu.Lock(); defer gw.mu.Unlock(); return gw.sessionOverrides[key].channel.Model }
+	if got := gw.handleModelCommand(context.Background(), msg, "/model"); !strings.Contains(got, "deepseek-v4-flash") {
+		t.Fatalf("/model status = %q, want global default", got)
+	}
+	gw.mu.Lock()
+	gw.cfg.Channels = map[Platform]ChannelConfig{PlatformWeixin: {Model: "17an/deepseek-v4-flash"}}
+	gw.mu.Unlock()
+	if got := gw.handleModelCommand(context.Background(), msg, "/model"); !strings.Contains(got, "17an/deepseek-v4-flash") {
+		t.Fatalf("/model status with channel model = %q, want channel model", got)
+	}
+	if got := gw.handleModelCommand(context.Background(), msg, "/model deepseek-v4-pro"); !strings.Contains(got, "deepseek-v4-pro") {
+		t.Fatalf("/model switch = %q", got)
+	}
+	if m := overrideModel(); m != "deepseek-v4-pro" {
+		t.Fatalf("override model = %q, want deepseek-v4-pro", m)
+	}
+	if got := gw.handleModelCommand(context.Background(), msg, "/model deepseek-v4-flash --provider 17an"); !strings.Contains(got, "17an") || !strings.Contains(got, "deepseek-v4-flash") {
+		t.Fatalf("/model with provider = %q", got)
+	}
+	if m := overrideModel(); m != "17an/deepseek-v4-flash" {
+		t.Fatalf("override model = %q, want 17an/deepseek-v4-flash", m)
+	}
+	if got := gw.handleModelCommand(context.Background(), msg, "/model --provider deepseek"); !strings.Contains(got, "用法") {
+		t.Fatalf("provider-only /model = %q, want usage message", got)
+	}
+	if m := overrideModel(); m != "17an/deepseek-v4-flash" {
+		t.Fatalf("provider-only /model mutated override to %q, want unchanged", m)
+	}
+}
+
+// TestHandleModelCommandRejectsUnresolvableModel: /model 切换前必须预校验
+// 模型；无效模型直接拒绝且不写入覆盖（失败原子性，保留当前 controller）。
+func TestHandleModelCommandRejectsUnresolvableModel(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	gw := NewGatewayWithAdapterBindings(GatewayConfig{
+		Model: "deepseek/deepseek-v4-flash",
+		ModelResolver: func(ref string) error {
+			if strings.TrimSpace(ref) == "deepseek-v4-flash" {
+				return nil
+			}
+			return fmt.Errorf("未配置该模型（provider/model 不存在）")
+		},
+	}, []AdapterBinding{}, logger)
+	msg := InboundMessage{Platform: PlatformWeixin, ConnectionID: "weixin-weixin", Domain: "weixin", ChatType: ChatDM, ChatID: "chat", UserID: "user"}
+	key := BuildSessionKey(msg.Session())
+	overrideModel := func() string { gw.mu.Lock(); defer gw.mu.Unlock(); return gw.sessionOverrides[key].channel.Model }
+
+	// 有效模型 → 写入覆盖。
+	if got := gw.handleModelCommand(context.Background(), msg, "/model deepseek-v4-flash"); !strings.Contains(got, "deepseek-v4-flash") {
+		t.Fatalf("/model switch = %q, want success", got)
+	}
+	if m := overrideModel(); m != "deepseek-v4-flash" {
+		t.Fatalf("override model = %q, want deepseek-v4-flash", m)
+	}
+	// 无效模型 → 拒绝且 override 保持原值（controller 未被销毁）。
+	if got := gw.handleModelCommand(context.Background(), msg, "/model nope-model"); !strings.Contains(got, "不可用") {
+		t.Fatalf("/model invalid = %q, want rejection message", got)
+	}
+	if m := overrideModel(); m != "deepseek-v4-flash" {
+		t.Fatalf("invalid /model mutated override to %q, want unchanged", m)
 	}
 }

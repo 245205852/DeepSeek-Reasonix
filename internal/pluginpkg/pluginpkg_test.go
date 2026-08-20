@@ -1,42 +1,15 @@
 package pluginpkg
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
 	fileencoding "reasonix/internal/fileutil/encoding"
-	"reasonix/internal/mcpcatalog"
 )
-
-func TestModifiedInstalledPackageLosesOfficialVerification(t *testing.T) {
-	home := t.TempDir()
-	root := InstallRoot(home, "verified")
-	writeTestFile(t, filepath.Join(root, NativeManifest), `{"name":"verified","version":"1.0.0"}`)
-	digest, err := mcpcatalog.TreeSHA256(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := Upsert(home, InstalledPlugin{
-		Name: "verified", Root: RelativeRoot(home, root), Version: "1.0.0", Enabled: true,
-		Verification: &Verification{CatalogEntryID: "verified@1.0.0", PackageSHA256: digest, CatalogSequence: 1},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	installed, warnings := LoadInstalled(home)
-	if len(warnings) != 0 || len(installed) != 1 || installed[0].Installed.Verification == nil {
-		t.Fatalf("initial verified load = %+v, warnings=%v", installed, warnings)
-	}
-	writeTestFile(t, filepath.Join(root, "modified.txt"), "changed")
-	installed, warnings = LoadInstalled(home)
-	if len(installed) != 1 || installed[0].Installed.Verification != nil {
-		t.Fatalf("modified package retained verification: %+v", installed)
-	}
-	if len(warnings) != 1 || !strings.Contains(warnings[0], "official verification removed") {
-		t.Fatalf("modified package warnings = %v", warnings)
-	}
-}
 
 func TestParseCodexSuperpowersManifest(t *testing.T) {
 	root := t.TempDir()
@@ -76,7 +49,7 @@ func TestParseCodexSuperpowersManifest(t *testing.T) {
 
 func TestParseDirDecodesGB18030Manifest(t *testing.T) {
 	root := t.TempDir()
-	manifest := `{"name":"cn-plugin","version":"1.0.0","description":"中文插件"}`
+	manifest := `{"apiVersion":"reasonix.io/plugin/v2","name":"cn-plugin","version":"1.0.0","description":"中文插件"}`
 	path := filepath.Join(root, NativeManifest)
 	if err := os.WriteFile(path, fileencoding.Encode(manifest, fileencoding.GB18030), 0o644); err != nil {
 		t.Fatal(err)
@@ -147,7 +120,7 @@ func TestParseCodexClaudeCompatibility(t *testing.T) {
 	}
 }
 
-func TestParseClaudePluginManifest(t *testing.T) {
+func TestParseClaudePluginManifestDoesNotLoadRootClaudeInstructions(t *testing.T) {
 	root := t.TempDir()
 	writeTestFile(t, filepath.Join(root, ClaudeManifest), `{
 	  "name": "ui-ux-pro-max",
@@ -175,8 +148,8 @@ func TestParseClaudePluginManifest(t *testing.T) {
 	if len(inv.Skills) != 1 || inv.Skills[0].Name != "ui-ux-pro-max" || inv.Skills[0].Invocation != "/ui-ux-pro-max" {
 		t.Fatalf("Inventory().Skills = %+v", inv.Skills)
 	}
-	if hooks := pkg.Manifest.Hooks["SessionStart"]; len(hooks) != 1 || hooks[0].ContextFile != "CLAUDE.md" {
-		t.Fatalf("SessionStart hooks = %+v, want CLAUDE.md context hook", hooks)
+	if hooks := pkg.Manifest.Hooks["SessionStart"]; len(hooks) != 0 {
+		t.Fatalf("SessionStart hooks = %+v, want plugin-root CLAUDE.md ignored", hooks)
 	}
 	if ManifestPath(pkg.ManifestKind) != ClaudeManifest {
 		t.Fatalf("ManifestPath(%q) = %q, want %q", pkg.ManifestKind, ManifestPath(pkg.ManifestKind), ClaudeManifest)
@@ -202,6 +175,7 @@ func TestParseCodexWithoutSessionStartHookDoesNotWarn(t *testing.T) {
 func TestRejectsEscapingSkillPath(t *testing.T) {
 	root := t.TempDir()
 	writeTestFile(t, filepath.Join(root, NativeManifest), `{
+	  "apiVersion": "reasonix.io/plugin/v2",
 	  "name": "bad",
 	  "skills": "../skills"
 	}`)
@@ -373,6 +347,52 @@ func TestParseClaudeHooksKeepsDistinctEnvTimeoutAsyncCwd(t *testing.T) {
 	}
 }
 
+func TestParseClaudeHooksPreservesExecAndShellForms(t *testing.T) {
+	root := t.TempDir()
+	writeTestFile(t, filepath.Join(root, ClaudeManifest), `{"name": "hook-contract-pack"}`)
+	writeTestFile(t, filepath.Join(root, "hooks", "hooks.json"), `{
+  "hooks": {"SessionStart": [
+    {"hooks": [
+      {"type":"command","command":"node","args":[],"shell":"powershell"},
+      {"type":"command","command":"tool","args":[""," spaced ","$HOME"]},
+      {"type":"command","command":"Write-Output \"a && b\"","shell":"powershell"}
+    ]}
+  ]}
+}`)
+
+	pkg, warnings, err := ParseDir(root)
+	if err != nil {
+		t.Fatalf("ParseDir: %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("warnings = %v, want none", warnings)
+	}
+	hooks := pkg.Manifest.Hooks["SessionStart"]
+	if len(hooks) != 3 {
+		t.Fatalf("hooks = %#v, want 3", hooks)
+	}
+	if !hooks[0].ArgsSet || hooks[0].Args == nil || len(hooks[0].Args) != 0 || hooks[0].Shell != "" {
+		t.Fatalf("explicit empty args did not remain exec form (and ignore shell): %#v", hooks[0])
+	}
+	wantArgs := []string{"", " spaced ", "$HOME"}
+	if !hooks[1].ArgsSet || !reflect.DeepEqual(hooks[1].Args, wantArgs) {
+		t.Fatalf("literal exec args = %#v, want %#v", hooks[1].Args, wantArgs)
+	}
+	if hooks[2].ArgsSet || hooks[2].Shell != "powershell" || !hooks[2].ShellCommand {
+		t.Fatalf("PowerShell hook did not remain shell form: %#v", hooks[2])
+	}
+}
+
+func TestHookJSONPreservesExplicitEmptyArgs(t *testing.T) {
+	var hook Hook
+	if err := json.Unmarshal([]byte(`{"command":"bin/check","args":[]}`), &hook); err != nil {
+		t.Fatal(err)
+	}
+	if !hook.ArgsSet || hook.Args == nil || len(hook.Args) != 0 {
+		t.Fatalf("hook = %#v, want explicit empty exec-form args", hook)
+	}
+}
+
 func TestParseClaudeHooksWarnOnUnsupportedSemantics(t *testing.T) {
 	cases := []struct {
 		name      string
@@ -479,6 +499,27 @@ func TestParseClaudeHooksWarnOnUnsupportedSemantics(t *testing.T) {
 				t.Fatal("hook should still be imported despite the unsupported semantics")
 			}
 		})
+	}
+}
+
+func TestParseClaudeHooksSkipsUnsupportedShell(t *testing.T) {
+	root := t.TempDir()
+	writeTestFile(t, filepath.Join(root, ClaudeManifest), `{"name": "hook-pack"}`)
+	writeTestFile(t, filepath.Join(root, "hooks", "hooks.json"),
+		`{"hooks":{"PostToolUse":[{"hooks":[{"type":"command","command":"echo ok","shell":"cmd"}]}]}}`)
+
+	pkg, warnings, err := ParseDir(root)
+	if err != nil {
+		t.Fatalf("ParseDir: %v", err)
+	}
+	if pkg.Compatibility.Status != "none" {
+		t.Fatalf("compatibility status = %q, want none", pkg.Compatibility.Status)
+	}
+	if len(pkg.Manifest.Hooks) != 0 {
+		t.Fatalf("unsupported shell hook was imported: %#v", pkg.Manifest.Hooks)
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0], `unsupported shell "cmd"`) {
+		t.Fatalf("warnings = %v, want unsupported shell diagnostic", warnings)
 	}
 }
 
@@ -702,7 +743,7 @@ func TestParseClaudePluginMapsCommandsDir(t *testing.T) {
 // reasonix-plugin.json, including path validation.
 func TestNativeManifestCommandsField(t *testing.T) {
 	root := t.TempDir()
-	writeTestFile(t, filepath.Join(root, NativeManifest), `{"name": "native-pack", "commands": ["cmds"]}`)
+	writeTestFile(t, filepath.Join(root, NativeManifest), `{"apiVersion":"reasonix.io/plugin/v2","name": "native-pack", "commands": ["cmds"]}`)
 	writeTestFile(t, filepath.Join(root, "cmds", "ship.md"), "---\ndescription: ship it\n---\nShip $1")
 
 	pkg, _, err := ParseDir(root)
@@ -718,7 +759,7 @@ func TestNativeManifestCommandsField(t *testing.T) {
 	}
 
 	rootBad := t.TempDir()
-	writeTestFile(t, filepath.Join(rootBad, NativeManifest), `{"name": "bad-pack", "commands": ["../escape"]}`)
+	writeTestFile(t, filepath.Join(rootBad, NativeManifest), `{"apiVersion":"reasonix.io/plugin/v2","name": "bad-pack", "commands": ["../escape"]}`)
 	if _, _, err := ParseDir(rootBad); err == nil {
 		t.Fatal("ParseDir must reject a commands path escaping the plugin root")
 	}
@@ -812,7 +853,6 @@ func TestParseClaudePluginAdoptsDeeplyNestedCommands(t *testing.T) {
 	writeTestFile(t, filepath.Join(root, ClaudeManifest), `{"name": "deep-pack"}`)
 	writeTestFile(t, filepath.Join(root, "skills", "s", "SKILL.md"), "---\ndescription: s\n---\nbody")
 	writeTestFile(t, filepath.Join(root, "commands", "a", "b", "c", "d", "e", "commit.md"), "---\ndescription: deep commit\n---\nCommit")
-
 	pkg, _, err := ParseDir(root)
 	if err != nil {
 		t.Fatalf("ParseDir: %v", err)

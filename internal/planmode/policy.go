@@ -25,15 +25,14 @@ const (
 	PlanSafetyUnsafe
 )
 
-// Call is the plan-mode view of one tool invocation. ReadOnly,
-// UntrustedReadOnly, and Args remain for source compatibility with older callers;
-// they do not decide phase availability because Permissions/Sandbox own safety.
+// Call is the plan-mode view of one tool invocation. ReadOnly and Args remain
+// for source compatibility with older callers; they do not decide phase
+// availability because Permissions/Sandbox own safety.
 type Call struct {
-	Name              string
-	ReadOnly          bool
-	UntrustedReadOnly bool
-	Safety            PlanSafety
-	Args              json.RawMessage
+	Name     string
+	ReadOnly bool
+	Safety   PlanSafety
+	Args     json.RawMessage
 }
 
 // Decision reports whether phase semantics refuse a call and why.

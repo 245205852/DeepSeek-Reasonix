@@ -4,6 +4,7 @@ package config
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 
 	"reasonix/internal/provider/openai"
@@ -69,10 +70,17 @@ func modelFetchAuthMode(e *ProviderEntry) openai.ModelFetchAuthMode {
 
 // BuildModelFetchURLs derives likely OpenAI-compatible model-list endpoints.
 // It keeps Reasonix's historical {base}/models path first, then tries the common
-// {base}/v1/models shape used by many aggregators.
+// {base}/v1/models shape used by many aggregators. Known official Token Rhythm
+// URLs collapse to a single /v1/models candidate because that /v1 route is complete.
 func BuildModelFetchURLs(baseURL, override string) ([]string, error) {
 	if trimmed := strings.TrimSpace(override); trimmed != "" {
+		if canonical, ok := canonicalVendorModelsURL(trimmed); ok {
+			return []string{canonical}, nil
+		}
 		return []string{trimmed}, nil
+	}
+	if canonical, ok := canonicalVendorModelsURL(baseURL); ok {
+		return []string{canonical}, nil
 	}
 	base := strings.TrimRight(strings.TrimSpace(baseURL), "/")
 	if base == "" {
@@ -92,6 +100,15 @@ func BuildModelFetchURLs(baseURL, override string) ([]string, error) {
 		candidates = append(candidates, root+"/models", root+"/v1/models")
 	}
 	return uniqueStrings(candidates), nil
+}
+
+// canonicalVendorModelsURL rewrites official vendor bases whose documented
+// form differs from the OpenAI-compatible shape (Token Rhythm, StepFun step_plan).
+func canonicalVendorModelsURL(raw string) (string, bool) {
+	if canonical, ok := openai.CanonicalTokenRhythmModelsURL(raw); ok {
+		return canonical, true
+	}
+	return openai.CanonicalStepFunPlanModelsURL(raw)
 }
 
 func endsWithVersionSegment(raw string) bool {
@@ -125,13 +142,7 @@ func uniqueStrings(in []string) []string {
 		if s == "" {
 			continue
 		}
-		seen := false
-		for _, existing := range out {
-			if existing == s {
-				seen = true
-				break
-			}
-		}
+		seen := slices.Contains(out, s)
 		if !seen {
 			out = append(out, s)
 		}

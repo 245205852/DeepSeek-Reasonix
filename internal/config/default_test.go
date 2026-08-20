@@ -2,7 +2,13 @@ package config
 
 import "testing"
 
-func TestDefaultAutoPlanOff(t *testing.T) {
+func TestDefaultCompactRatioIsEightyPercent(t *testing.T) {
+	if got := Default().Agent.CompactRatio; got != 0.80 {
+		t.Fatalf("compact ratio = %v, want 0.80", got)
+	}
+}
+
+func TestDefaultRetiredAutoPlanCompatibilityOff(t *testing.T) {
 	if got := Default().Agent.AutoPlan; got != "off" {
 		t.Fatalf("default auto_plan = %q, want off", got)
 	}
@@ -14,13 +20,25 @@ func TestDefaultReasoningLanguageAuto(t *testing.T) {
 	}
 }
 
-func TestDefaultMemoryCompilerEnabled(t *testing.T) {
-	cfg := Default()
-	if !cfg.MemoryCompilerEnabled() {
-		t.Fatal("default memory compiler = false, want true")
+func TestDefaultBotRunsWithoutStepLimit(t *testing.T) {
+	if got := Default().Bot.MaxSteps; got != 0 {
+		t.Fatalf("default bot max_steps = %d, want continuous 0", got)
 	}
-	if got := cfg.MemoryCompilerVerbosity(); got != MemoryCompilerVerbosityObserve {
-		t.Fatalf("default memory compiler verbosity = %q, want observe", got)
+}
+
+func TestDefaultDeepSeekUsesAnthropicWebSearch(t *testing.T) {
+	cfg := Default()
+	for _, name := range []string{"deepseek-flash", "deepseek-pro"} {
+		provider, ok := cfg.Provider(name)
+		if !ok {
+			t.Fatalf("default provider %q is missing", name)
+		}
+		if provider.Kind != "anthropic" || provider.BaseURL != deepSeekAnthropicBaseURL {
+			t.Fatalf("default provider %q = kind %q base_url %q, want anthropic %q", name, provider.Kind, provider.BaseURL, deepSeekAnthropicBaseURL)
+		}
+		if !EffectiveWebSearch(provider) {
+			t.Fatalf("default provider %q web_search = false, want true", name)
+		}
 	}
 }
 
@@ -31,6 +49,9 @@ func TestDefaultDesktopAppearanceAutoGraphite(t *testing.T) {
 	}
 	if got := cfg.DesktopThemeStyle(); got != "" {
 		t.Fatalf("default desktop theme style = %q, want empty so frontend resolves graphite", got)
+	}
+	if got := cfg.DesktopTerminalTheme(); got != "auto" {
+		t.Fatalf("default desktop terminal theme = %q, want auto", got)
 	}
 }
 

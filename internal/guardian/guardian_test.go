@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -17,16 +19,22 @@ import (
 )
 
 type scriptedProvider struct {
-	mu        sync.Mutex
-	responses []scriptedResponse
-	requests  []provider.Request
+	mu           sync.Mutex
+	responses    []scriptedResponse
+	requests     []provider.Request
+	defaultUsage *provider.Usage
 }
 
 type scriptedResponse struct {
-	text  string
-	usage *provider.Usage
-	err   error
+	text      string
+	reasoning string
+	usage     *provider.Usage
+	err       error
 }
+
+type reasoningScriptedProvider struct{ *scriptedProvider }
+
+func (*reasoningScriptedProvider) RequiresToolCallReasoning() bool { return true }
 
 func (p *scriptedProvider) Name() string { return "guardian-test" }
 
@@ -39,11 +47,18 @@ func (p *scriptedProvider) Stream(ctx context.Context, req provider.Request) (<-
 		p.responses = p.responses[1:]
 	}
 	p.mu.Unlock()
+	if resp.usage == nil && p.defaultUsage != nil {
+		usage := *p.defaultUsage
+		resp.usage = &usage
+	}
 
-	ch := make(chan provider.Chunk, 3)
+	ch := make(chan provider.Chunk, 4)
 	if resp.err != nil {
 		close(ch)
 		return nil, resp.err
+	}
+	if resp.reasoning != "" {
+		ch <- provider.Chunk{Type: provider.ChunkReasoning, Text: resp.reasoning}
 	}
 	if resp.text != "" {
 		ch <- provider.Chunk{Type: provider.ChunkText, Text: resp.text}
@@ -101,9 +116,112 @@ func TestParseAssessmentRejectsUnknownEnum(t *testing.T) {
 	}
 }
 
+func TestGuardianReasoningOnlyStopRetriesInsteadOfReusingPriorVerdict(t *testing.T) {
+	base := &scriptedProvider{responses: []scriptedResponse{
+		{text: `{"risk_level":"low","user_authorization":"high","outcome":"allow","rationale":"first action is safe"}`},
+		{reasoning: "The second action is dangerous and must be denied.", usage: &provider.Usage{FinishReason: "stop"}},
+		{text: `{"risk_level":"high","user_authorization":"low","outcome":"deny","rationale":"current action is unsafe"}`},
+	}}
+	prov := &reasoningScriptedProvider{scriptedProvider: base}
+	gs := NewSession(prov, tool.NewRegistry(), PolicyPrompt(), "guardian-test", 0, nil, &captureSink{})
+	parent := agent.NewSession("sys")
+	parent.Add(provider.Message{Role: provider.RoleUser, Content: "review two different actions"})
+
+	if allow, _, err := gs.ReviewVerdict(context.Background(), "read_file", json.RawMessage(`{"file_path":"a.txt"}`), parent); err != nil || !allow {
+		t.Fatalf("first ReviewVerdict = allow %v err %v, want allow nil", allow, err)
+	}
+	allow, reason, err := gs.ReviewVerdict(context.Background(), "bash", json.RawMessage(`{"command":"dangerous command"}`), parent)
+	if err != nil || allow {
+		t.Fatalf("second ReviewVerdict = allow %v reason %q err %v, want deny with authentic verdict", allow, reason, err)
+	}
+	if !strings.Contains(reason, "current action is unsafe") {
+		t.Fatalf("second denial reason = %q, want current verdict rationale", reason)
+	}
+	if got := len(base.requestsSnapshot()); got != 3 {
+		t.Fatalf("provider requests = %d, want 3 (allow, reasoning-only, visible retry)", got)
+	}
+}
+
+func TestGuardianRepeatedReasoningOnlyStopsFailClosedWithoutReusingPriorAllow(t *testing.T) {
+	base := &scriptedProvider{responses: []scriptedResponse{
+		{text: `{"risk_level":"low","user_authorization":"high","outcome":"allow","rationale":"first action is safe"}`},
+		{reasoning: "dangerous review 1", usage: &provider.Usage{FinishReason: "stop"}},
+		{reasoning: "dangerous review 2", usage: &provider.Usage{FinishReason: "stop"}},
+		{reasoning: "dangerous review 3", usage: &provider.Usage{FinishReason: "stop"}},
+	}}
+	prov := &reasoningScriptedProvider{scriptedProvider: base}
+	gs := NewSession(prov, tool.NewRegistry(), PolicyPrompt(), "guardian-test", 0, nil, &captureSink{})
+	parent := agent.NewSession("sys")
+	parent.Add(provider.Message{Role: provider.RoleUser, Content: "review two different actions"})
+
+	if allow, _, err := gs.ReviewVerdict(context.Background(), "read_file", json.RawMessage(`{"file_path":"a.txt"}`), parent); err != nil || !allow {
+		t.Fatalf("first ReviewVerdict = allow %v err %v, want allow nil", allow, err)
+	}
+	before := gs.sess.Snapshot()
+	allow, _, err := gs.ReviewVerdict(context.Background(), "bash", json.RawMessage(`{"command":"dangerous command"}`), parent)
+	if allow || err == nil {
+		t.Fatalf("second ReviewVerdict = allow %v err %v, want fail-closed error", allow, err)
+	}
+	if got := len(base.requestsSnapshot()); got != 4 {
+		t.Fatalf("provider requests = %d, want 4 (prior allow plus three bounded empty finals)", got)
+	}
+	if after := gs.sess.Snapshot(); !reflect.DeepEqual(after, before) {
+		t.Fatalf("failed reasoning-only review did not roll back session:\nbefore=%+v\nafter=%+v", before, after)
+	}
+
+	// A fresh review after the bounded failure must start from the prior clean
+	// verdict, not from any of the discarded retry turns. The scripted
+	// provider's default response is a visible allow verdict.
+	if allow, _, err := gs.ReviewVerdict(context.Background(), "read_file", json.RawMessage(`{"file_path":"c.txt"}`), parent); err != nil || !allow {
+		t.Fatalf("review after rollback = allow %v err %v, want allow nil", allow, err)
+	}
+	reqs := base.requestsSnapshot()
+	if got := len(reqs); got != 5 {
+		t.Fatalf("provider requests after recovery = %d, want 5", got)
+	}
+	last := reqs[len(reqs)-1]
+	for i := 1; i < len(last.Messages); i++ {
+		if last.Messages[i].Role == provider.RoleUser && last.Messages[i-1].Role == provider.RoleUser {
+			t.Fatalf("request after reasoning-only rollback carries consecutive user messages at index %d", i)
+		}
+	}
+}
+
+func TestGuardianRollbackAfterRewriteDropsReasoningOnlyRetryTail(t *testing.T) {
+	gs := NewSession(&scriptedProvider{}, tool.NewRegistry(), PolicyPrompt(), "guardian-test", 0, nil, &captureSink{})
+	before := gs.sess.Snapshot()
+	rewriteBefore := gs.sess.RewriteVersion()
+
+	compactedWithEvidence := []provider.Message{
+		{Role: provider.RoleSystem, Content: PolicyPrompt()},
+		{Role: provider.RoleUser, Content: "<compaction-summary>\ncompacted reviews\n</compaction-summary>"},
+		{Role: provider.RoleAssistant, Content: `{"risk_level":"low","user_authorization":"high","outcome":"allow","rationale":"preserved verdict"}`},
+		{Role: provider.RoleUser, Content: "review the current action"},
+		{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{{ID: "read-1", Name: "read_file", Arguments: `{"path":"policy.md"}`}}},
+		{Role: provider.RoleTool, ToolCallID: "read-1", Name: "read_file", Content: "preserved read-only evidence"},
+	}
+	gs.sess.Replace(compactedWithEvidence)
+	gs.sess.IncrementRewrite()
+	gs.sess.Add(provider.Message{Role: provider.RoleAssistant, ReasoningContent: "first hidden-only verdict"})
+	gs.sess.Add(provider.Message{Role: provider.RoleUser, Content: "provide a visible verdict"})
+	gs.sess.Add(provider.Message{Role: provider.RoleAssistant, ReasoningContent: "second hidden-only verdict"})
+	gs.sess.Add(provider.Message{Role: provider.RoleUser, Content: "do not call tools; provide a visible verdict"})
+	gs.sess.Add(provider.Message{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{{ID: "unpaired-1", Name: "read_file", Arguments: `{"path":"more.md"}`}}})
+
+	gs.rollbackReview(before, rewriteBefore)
+
+	got := gs.sess.Snapshot()
+	if !reflect.DeepEqual(got, compactedWithEvidence) {
+		t.Fatalf("rewrite-aware rollback changed compacted or completed tool evidence:\n got=%+v\nwant=%+v", got, compactedWithEvidence)
+	}
+	if normalized := provider.NormalizeMessages(got); !reflect.DeepEqual(normalized, got) {
+		t.Fatalf("preserved guardian history is not provider-coherent:\n got=%+v\nnormalized=%+v", got, normalized)
+	}
+}
+
 func TestTranscriptRenderKeepsFirstAndLastUserAnchors(t *testing.T) {
 	entries := []TranscriptEntry{{Kind: "user", Text: "first task"}}
-	for i := 0; i < maxRecentEntries+5; i++ {
+	for range maxRecentEntries + 5 {
 		entries = append(entries, TranscriptEntry{Kind: "assistant", Text: "assistant detail"})
 	}
 	entries = append(entries, TranscriptEntry{Kind: "user", Text: "latest instruction"})
@@ -208,6 +326,29 @@ func TestGuardianUsageDoesNotLeakAcrossReviews(t *testing.T) {
 	}
 }
 
+func TestGuardianUsageAggregatesEveryModelCall(t *testing.T) {
+	prov := &scriptedProvider{responses: []scriptedResponse{
+		{text: "", usage: &provider.Usage{PromptTokens: 3, CompletionTokens: 1, TotalTokens: 4}},
+		{text: `{"risk_level":"low","user_authorization":"high","outcome":"allow","rationale":"ok"}`, usage: &provider.Usage{PromptTokens: 5, CompletionTokens: 2, TotalTokens: 7, RequestCount: 2}},
+	}}
+	sink := &captureSink{}
+	gs := NewSession(prov, tool.NewRegistry(), PolicyPrompt(), "guardian-test", 0, nil, sink)
+	parent := agent.NewSession("sys")
+	parent.Add(provider.Message{Role: provider.RoleUser, Content: "do it"})
+
+	if allow, _, err := gs.Review(context.Background(), "write_file", json.RawMessage(`{"file_path":"a.txt"}`), parent); err != nil || !allow {
+		t.Fatalf("Review = allow %v err %v, want allow nil", allow, err)
+	}
+	events := sink.guardianEvents()
+	if len(events) != 1 || events[0].Guardian.Usage == nil {
+		t.Fatalf("guardian events = %+v, want one usage-bearing event", events)
+	}
+	usage := events[0].Guardian.Usage
+	if usage.PromptTokens != 8 || usage.CompletionTokens != 3 || usage.TotalTokens != 11 || usage.RequestCount != 3 {
+		t.Fatalf("aggregated usage = %+v, want prompt=8 completion=3 total=11 requests=3", usage)
+	}
+}
+
 // TestGuardianReviewTurnsAlternateRoles pins the review request shape: the
 // transcript evidence and action request ride in one combined user message per
 // review, so the guardian session alternates user/assistant strictly and
@@ -221,7 +362,7 @@ func TestGuardianReviewTurnsAlternateRoles(t *testing.T) {
 	parent := agent.NewSession("sys")
 	parent.Add(provider.Message{Role: provider.RoleUser, Content: "do the thing"})
 
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		if allow, _, err := gs.Review(context.Background(), "write_file", json.RawMessage(`{"file_path":"a.txt"}`), parent); err != nil || !allow {
 			t.Fatalf("review %d = allow %v err %v, want allow nil", i+1, allow, err)
 		}
@@ -242,9 +383,9 @@ func TestGuardianReviewTurnsAlternateRoles(t *testing.T) {
 	// The combined message must still carry the evidence boundary and the action.
 	msgs := reqs[len(reqs)-1].Messages
 	var review string
-	for i := len(msgs) - 1; i >= 0; i-- {
-		if msgs[i].Role == provider.RoleUser {
-			review = msgs[i].Content
+	for _, v := range slices.Backward(msgs) {
+		if v.Role == provider.RoleUser {
+			review = v.Content
 			break
 		}
 	}
@@ -321,12 +462,13 @@ func TestGuardianLoadResetsLegacyConsecutiveUserSessions(t *testing.T) {
 // user turn — consecutive user roles again. The post-review normalization must
 // keep the session strictly alternating across that fold.
 func TestGuardianSessionAlternatesAfterCompaction(t *testing.T) {
-	prov := &scriptedProvider{} // default allow verdict, also serves the summarizer
-	gs := NewSession(prov, tool.NewRegistry(), PolicyPrompt(), "guardian-test", 0, nil, &captureSink{})
+	prov := &scriptedProvider{defaultUsage: &provider.Usage{TotalTokens: 1}} // default allow verdict, also serves the summarizer
+	sink := &captureSink{}
+	gs := NewSession(prov, tool.NewRegistry(), PolicyPrompt(), "guardian-test", 0, nil, sink)
 	parent := agent.NewSession("sys")
 
 	filler := strings.Repeat("parent transcript filler. ", 160)
-	for i := 0; i < compactEvery; i++ {
+	for i := range compactEvery {
 		parent.Add(provider.Message{Role: provider.RoleUser, Content: fmt.Sprintf("turn %d: %s", i, filler)})
 		if allow, _, err := gs.Review(context.Background(), "write_file", json.RawMessage(`{"file_path":"a.txt"}`), parent); err != nil || !allow {
 			t.Fatalf("review %d = allow %v err %v, want allow nil", i+1, allow, err)
@@ -334,18 +476,42 @@ func TestGuardianSessionAlternatesAfterCompaction(t *testing.T) {
 	}
 
 	msgs := gs.sess.Snapshot()
-	var hasDigest bool
-	for _, m := range msgs {
-		if agent.IsCompactionSummary(m) {
-			hasDigest = true
-		}
+	events := sink.guardianEvents()
+	if len(events) != compactEvery {
+		t.Fatalf("guardian events = %d, want %d", len(events), compactEvery)
 	}
-	if !hasDigest {
-		t.Fatal("test setup: guardian compaction did not fold anything, the digest adjacency is not exercised")
+	usage := events[len(events)-1].Guardian.Usage
+	if usage == nil || usage.TotalTokens != 2 || usage.RequestCount != 2 {
+		t.Fatalf("compacting review usage = %+v, want total=2 requests=2", usage)
 	}
 	for i := 1; i < len(msgs); i++ {
 		if msgs[i].Role == msgs[i-1].Role {
 			t.Fatalf("guardian session has consecutive %s messages at indexes %d/%d of %d", msgs[i].Role, i-1, i, len(msgs))
 		}
+	}
+
+	// Projection compaction leaves the canonical transcript untouched. The next
+	// review must nevertheless send the compacted view, with the digest and tail
+	// coalesced so strict-alternation providers do not receive adjacent users.
+	parent.Add(provider.Message{Role: provider.RoleUser, Content: "post-compaction review"})
+	if allow, _, err := gs.Review(context.Background(), "write_file", json.RawMessage(`{"file_path":"a.txt"}`), parent); err != nil || !allow {
+		t.Fatalf("post-compaction review = allow %v err %v, want allow nil", allow, err)
+	}
+	reqs := prov.requestsSnapshot()
+	if len(reqs) <= compactEvery {
+		t.Fatalf("provider requests = %d, want a request after projection compaction", len(reqs))
+	}
+	last := reqs[len(reqs)-1]
+	hasDigest := false
+	for i, m := range last.Messages {
+		if agent.IsCompactionSummary(m) {
+			hasDigest = true
+		}
+		if i > 0 && m.Role == provider.RoleUser && last.Messages[i-1].Role == provider.RoleUser {
+			t.Fatalf("post-compaction request carries consecutive user messages at index %d", i)
+		}
+	}
+	if !hasDigest {
+		t.Fatal("post-compaction request did not use the digest projection")
 	}
 }

@@ -4,26 +4,14 @@ import { JSDOM } from "jsdom";
 import React from "react";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
-import gsap from "gsap";
 import { ApprovalModal } from "../components/ApprovalModal";
 import { activeFileReferenceToken, pickInlineFileReference } from "../components/FileReferenceMenu";
-import { LocaleProvider } from "../lib/i18n";
+import { LocaleProvider, preloadDetectedLocale } from "../lib/i18n";
 import type { AppBindings } from "../lib/bridge";
 import type { WireApproval } from "../lib/types";
 
 let passed = 0;
 let failed = 0;
-
-type GsapToOptions = { onComplete?: () => void };
-const gsapForTests = (typeof gsap.to === "function" ? gsap : (gsap as unknown as { default?: typeof gsap }).default) as unknown as {
-  to?: (target: unknown, vars: GsapToOptions) => unknown;
-};
-if (typeof gsapForTests.to === "function") {
-  gsapForTests.to = (_target: unknown, vars: GsapToOptions) => {
-    vars.onComplete?.();
-    return {};
-  };
-}
 
 function ok(value: boolean, label: string) {
   if (value) {
@@ -95,6 +83,7 @@ function mockApp(methods: Partial<AppBindings>) {
 }
 
 async function renderApproval(props: Partial<Parameters<typeof ApprovalModal>[0]> = {}) {
+  await preloadDetectedLocale();
   const rootEl = document.getElementById("root");
   if (!rootEl) throw new Error("missing root");
   const root = createRoot(rootEl);
@@ -156,6 +145,13 @@ async function selectAndConfirm(label: string) {
   });
 }
 
+async function clickImmediateAction(label: string) {
+  await act(async () => {
+    actionButton(label).click();
+    await flushTimers();
+  });
+}
+
 console.log("\napproval modal file references");
 
 {
@@ -180,7 +176,7 @@ console.log("\napproval modal file references");
   });
   const { root, revisions, rerender } = await renderApproval();
 
-  await selectAndConfirm("Revise plan");
+  await clickImmediateAction("Revise plan");
 
   const textarea = document.querySelector(".plan-revision__input") as HTMLTextAreaElement | null;
   if (!textarea) throw new Error("plan revision textarea did not render");
@@ -233,7 +229,9 @@ console.log("\napproval modal file references");
   });
 
   const text = document.body.textContent ?? "";
-  ok(text.includes("仅本次不进沙箱运行：go test ./..."), "sandbox escape approval localizes subject in Chinese UI");
+  ok(text.includes("go test ./..."), "sandbox escape approval keeps the command visible in Chinese UI");
+  ok(!text.includes("仅本次不进沙箱运行："), "sandbox escape approval removes the redundant scope prefix from the command block");
+  eq((text.match(/go test \.\/\.\.\./g) ?? []).length, 1, "sandbox escape approval renders the command once");
   ok(text.includes("Windows 不提供这条命令所需的 OS 级 Bash 沙箱"), "sandbox escape approval localizes the retired Windows backend reason in Chinese UI");
   ok(text.includes("允许一次"), "sandbox escape Chinese approval shows allow once");
   ok(text.includes("本会话使用真实环境"), "sandbox escape Chinese approval shows session grant");
@@ -322,6 +320,70 @@ console.log("\napproval modal file references");
 }
 
 {
+  const dom = installDom("zh-CN");
+  mockApp({
+    ListDir: async () => [],
+    SearchFileRefs: async () => [],
+  });
+  const { root } = await renderApproval({
+    approval: {
+      id: "dynamic-bash-zh",
+      tool: "bash",
+      subject: "python3 -c \"print('hello')\"",
+      reason: "Matched permission rule: ask Bash(python3:*)\nThis command uses nested or indirect shell execution. Auto and broad allow rules cannot verify the inner command; approve this exact command or use YOLO.",
+    },
+  });
+
+  const text = document.body.textContent ?? "";
+  ok(text.includes("命中权限规则：ask Bash(python3:*)"), "approval identifies the exact matched permission rule");
+  ok(text.includes("嵌套或间接执行"), "dynamic Bash approval explains the matched safety boundary in Chinese");
+  ok(text.includes("精确命令"), "dynamic Bash approval tells the user how to grant the command");
+
+  await act(async () => {
+    root.unmount();
+  });
+  dom.window.close();
+}
+
+{
+  const dom = installDom();
+  mockApp({
+    ListDir: async () => [],
+    SearchFileRefs: async () => [],
+  });
+  const { root, rerender } = await renderApproval();
+
+  await clickImmediateAction("Revise plan");
+
+  const textarea = document.querySelector(".plan-revision__input") as HTMLTextAreaElement | null;
+  if (!textarea) throw new Error("plan revision textarea did not render");
+  ok(textarea === document.activeElement, "opening plan revision focuses its textarea once");
+
+  const transcriptText = document.createElement("p");
+  transcriptText.tabIndex = -1;
+  transcriptText.textContent = "copy this plan text";
+  document.body.appendChild(transcriptText);
+  transcriptText.focus();
+  const range = document.createRange();
+  range.selectNodeContents(transcriptText);
+  const selection = document.getSelection();
+  selection?.removeAllRanges();
+  selection?.addRange(range);
+
+  // App refreshes tab metadata periodically; emulate callback churn from a parent rerender.
+  await rerender({ onRevisionActiveChange: () => undefined });
+
+  ok(document.activeElement === transcriptText, "parent rerender does not return focus to plan revision");
+  eq(document.getSelection()?.toString(), "copy this plan text", "parent rerender preserves transcript text selection");
+
+  transcriptText.remove();
+  await act(async () => {
+    root.unmount();
+  });
+  dom.window.close();
+}
+
+{
   const dom = installDom();
   mockApp({
     ListDir: async () => [],
@@ -329,7 +391,7 @@ console.log("\napproval modal file references");
   });
   const { root, activeStates, rerender } = await renderApproval();
 
-  await selectAndConfirm("Revise plan");
+  await clickImmediateAction("Revise plan");
 
   const textarea = document.querySelector(".plan-revision__input") as HTMLTextAreaElement | null;
   if (!textarea) throw new Error("plan revision textarea did not render");
@@ -366,6 +428,12 @@ console.log("\napproval modal file references");
     "npm run build\n\nRun the build command to verify frontend artifacts.",
     "default-open tool approval keeps the complete subject visible",
   );
+  eq(
+    (document.body.textContent?.match(/npm run build/g) ?? []).length,
+    1,
+    "tool approval renders the command once instead of repeating it in header metadata",
+  );
+  ok(document.querySelector(".prompt-shelf__meta") == null, "tool approval omits duplicate subject metadata");
   // Subject is always visible; reason expands when short enough / via Details.
   const actions = [...document.querySelectorAll(".prompt-shelf__actions .prompt-action")] as HTMLElement[];
   eq(actions.length, 4, "ordinary tool approval exposes four select-then-confirm options");
@@ -559,7 +627,7 @@ console.log("\napproval modal file references");
   });
   const { root, rerender } = await renderApproval({ workspaceScopeKey: "session-a" });
 
-  await selectAndConfirm("Revise plan");
+  await clickImmediateAction("Revise plan");
   await rerender({ insertRequest: { id: 20, text: "inspect @" } });
   await waitFor("initial approval session scope request", () => pending.length === 1);
   await rerender({ workspaceScopeKey: "session-b" });

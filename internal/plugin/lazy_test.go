@@ -5,11 +5,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"reasonix/internal/mcplaunch"
 	"reasonix/internal/tool"
 )
 
@@ -63,7 +66,7 @@ func helperSpec() Spec {
 func writeMockCache(t *testing.T, spec Spec) {
 	t.Helper()
 	cs := CachedSchema{
-		SpecHash:     SpecFingerprint(spec),
+		CacheKey:     SchemaCacheKey(spec),
 		Capabilities: map[string]bool{"prompts": false, "resources": false},
 		Tools: []CachedTool{
 			{
@@ -91,10 +94,8 @@ func waitForServer(t *testing.T, host *Host, name string, timeout time.Duration)
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		for _, n := range host.ServerNames() {
-			if n == name {
-				return
-			}
+		if slices.Contains(host.ServerNames(), name) {
+			return
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -105,13 +106,42 @@ func waitForCachedSchema(t *testing.T, spec Spec, timeout time.Duration) *Cached
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		if cs, ok := LoadCachedSchema(spec.Name, SpecFingerprint(spec)); ok {
+		if cs, ok := LoadCachedSchema(spec.Name, SchemaCacheKey(spec)); ok {
 			return cs
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("cached schema for %q never appeared within %v", spec.Name, timeout)
 	return nil
+}
+
+func TestHostCloseWaitsForLazyBackgroundWrite(t *testing.T) {
+	host := NewHost()
+	started := make(chan struct{})
+	release := make(chan struct{})
+	host.queueBackgroundWrite(func() {
+		close(started)
+		<-release
+	})
+	<-started
+
+	closed := make(chan struct{})
+	go func() {
+		host.Close()
+		close(closed)
+	}()
+	select {
+	case <-closed:
+		t.Fatal("Host.Close returned before the lazy background write finished")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(release)
+	select {
+	case <-closed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Host.Close did not return after the lazy background write finished")
+	}
 }
 
 // TestLazyCacheHitSyncSpawn drives the cache-hit branch end-to-end: cache is
@@ -125,7 +155,7 @@ func TestLazyCacheHitSyncSpawn(t *testing.T) {
 	spec := helperSpec()
 	writeMockCache(t, spec)
 
-	cs, ok := LoadCachedSchema(spec.Name, SpecFingerprint(spec))
+	cs, ok := LoadCachedSchema(spec.Name, SchemaCacheKey(spec))
 	if !ok {
 		t.Fatal("LoadCachedSchema: miss right after save (sanity)")
 	}
@@ -202,7 +232,7 @@ func TestLazyCacheHitReusesExistingSharedHostClient(t *testing.T) {
 	spec := helperSpec()
 	writeMockCache(t, spec)
 
-	cs, ok := LoadCachedSchema(spec.Name, SpecFingerprint(spec))
+	cs, ok := LoadCachedSchema(spec.Name, SchemaCacheKey(spec))
 	if !ok {
 		t.Fatal("LoadCachedSchema: miss right after save (sanity)")
 	}
@@ -286,7 +316,7 @@ func TestLazyRemoveCancelsInFlightGenerationWithoutResurrection(t *testing.T) {
 	if _, ok := reg.Get(ToolPrefix(spec.Name) + "connect"); ok {
 		t.Fatal("removed lazy placeholder was re-registered")
 	}
-	if _, ok := LoadCachedSchema(spec.Name, SpecFingerprint(spec)); ok {
+	if _, ok := LoadCachedSchema(spec.Name, SchemaCacheKey(spec)); ok {
 		t.Fatal("cancelled lazy generation wrote a new schema cache")
 	}
 	tools, err := host.Add(ctx, spec)
@@ -339,13 +369,14 @@ func TestAddWithLifecycleCoalescesConcurrentSameServer(t *testing.T) {
 	}
 }
 
-func TestLazyCacheHitStartupTimeoutCanRetry(t *testing.T) {
+func TestLazyCacheHitSlowStartupContinuesInBackground(t *testing.T) {
 	redirectCache(t)
 	spec := helperSpec()
-	spec.Env["GO_WANT_HELPER_INIT_MS"] = fmt.Sprint(int(defaultStartTimeout/time.Millisecond) + 200)
+	spec.StartupTimeout = 2 * time.Second
+	spec.Env["GO_WANT_HELPER_INIT_MS"] = "200"
 	writeMockCache(t, spec)
 
-	cs, ok := LoadCachedSchema(spec.Name, SpecFingerprint(spec))
+	cs, ok := LoadCachedSchema(spec.Name, SchemaCacheKey(spec))
 	if !ok {
 		t.Fatal("LoadCachedSchema: miss right after save (sanity)")
 	}
@@ -368,56 +399,63 @@ func TestLazyCacheHitStartupTimeoutCanRetry(t *testing.T) {
 	if !ok {
 		t.Fatalf("pre-Execute echo should be a *lazyTool, got %T", echo)
 	}
+	lazyEcho.shared.waitBudget = 25 * time.Millisecond
+	beforeName := echo.Name()
+	beforeDescription := echo.Description()
+	beforeSchema := string(echo.Schema())
 
-	if _, err := echo.Execute(ctx, json.RawMessage(`{"msg":"slow"}`)); err == nil || !strings.Contains(err.Error(), "startup timed out") {
-		t.Fatalf("first Execute error = %v, want startup timed out", err)
+	if _, err := echo.Execute(ctx, json.RawMessage(`{"msg":"slow"}`)); err == nil || !strings.Contains(err.Error(), "continues in background") {
+		t.Fatalf("first Execute error = %v, want background startup notice", err)
 	}
-
-	lazyEcho.shared.spec.Env["GO_WANT_HELPER_INIT_MS"] = "0"
+	waitForServer(t, host, spec.Name, 2*time.Second)
 	out, err := echo.Execute(ctx, json.RawMessage(`{"msg":"retry"}`))
 	if err != nil {
-		t.Fatalf("second Execute after timeout should retry: %v", err)
+		t.Fatalf("second Execute after background startup should succeed: %v", err)
 	}
 	if out != "echo: retry" {
 		t.Fatalf("Execute result = %q, want %q", out, "echo: retry")
 	}
+	if echo.Name() != beforeName || echo.Description() != beforeDescription || string(echo.Schema()) != beforeSchema {
+		t.Fatalf("provider-visible cached tool changed across background startup")
+	}
 }
 
-func TestLazyToolsetAppliesSpecReadOnlyOverrideToCachedTools(t *testing.T) {
+func TestLazyToolsetInheritsInstalledServerReaderAuthorization(t *testing.T) {
 	redirectCache(t)
 	spec := helperSpec()
-	spec.ReadOnlyToolNames = map[string]bool{"echo": true}
-	writeMockCache(t, spec)
-
-	cs, ok := LoadCachedSchema(spec.Name, SpecFingerprint(spec))
+	spec.LaunchManager = mcplaunch.NewManager(filepath.Join(t.TempDir(), mcplaunch.StateFilename), t.TempDir())
+	spec.Authorized = true
+	if err := SaveCachedSchema(spec.Name, CachedSchema{
+		CacheKey: SchemaCacheKey(spec),
+		Tools: []CachedTool{{
+			Name: "echo", Description: "Echo back the message.",
+			Schema: json.RawMessage(`{"type":"object","properties":{"msg":{"type":"string"}}}`), ReadOnly: true,
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cs, ok := LoadCachedSchema(spec.Name, SchemaCacheKey(spec))
 	if !ok {
-		t.Fatal("LoadCachedSchema: miss right after save (sanity)")
+		t.Fatal("LoadCachedSchema: miss right after save")
 	}
 
 	host := NewHost()
 	defer host.Close()
-	reg := tool.NewRegistry()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-
-	tools := LazyToolset(spec, cs, host, reg, ctx, false)
-	byName := map[string]tool.Tool{}
-	for _, tl := range tools {
-		byName[tl.Name()] = tl
+	tools := LazyToolset(spec, cs, host, tool.NewRegistry(), ctx, false)
+	var echo tool.Tool
+	for _, candidate := range tools {
+		if candidate.Name() == "mcp__mock__echo" {
+			echo = candidate
+			break
+		}
 	}
-	echo := byName["mcp__mock__echo"]
-	if echo == nil {
-		t.Fatalf("mcp__mock__echo missing from %v", byName)
+	if echo == nil || !echo.ReadOnly() {
+		t.Fatalf("installed cached reader missing or not read-only: %T", echo)
 	}
-	if !echo.ReadOnly() {
-		t.Fatal("lazy cached echo should use the spec read-only override")
-	}
-	zed := byName["mcp__mock__zed"]
-	if zed == nil {
-		t.Fatalf("mcp__mock__zed missing from %v", byName)
-	}
-	if zed.ReadOnly() {
-		t.Fatal("lazy cached zed should keep cached non-read-only status")
+	if authority, ok := echo.(tool.MCPServerAuthorization); !ok || !authority.MCPServerAuthorized() {
+		t.Fatalf("lazy installed reader did not inherit authorization: %T", echo)
 	}
 }
 
@@ -483,7 +521,7 @@ func TestLazySwapDoesNotRaceRegistrySchemas(t *testing.T) {
 	spec := helperSpec()
 	spec.Env["GO_WANT_HELPER_INIT_MS"] = "50"
 	writeMockCache(t, spec)
-	cs, _ := LoadCachedSchema(spec.Name, SpecFingerprint(spec))
+	cs, _ := LoadCachedSchema(spec.Name, SchemaCacheKey(spec))
 
 	host := NewHost()
 	defer host.Close()
@@ -502,9 +540,7 @@ func TestLazySwapDoesNotRaceRegistrySchemas(t *testing.T) {
 
 	done := make(chan struct{})
 	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		for {
 			select {
 			case <-done:
@@ -513,7 +549,7 @@ func TestLazySwapDoesNotRaceRegistrySchemas(t *testing.T) {
 				_ = reg.Schemas()
 			}
 		}
-	}()
+	})
 
 	out, err := echo.Execute(ctx, json.RawMessage(`{"msg":"race"}`))
 	close(done)
@@ -535,7 +571,7 @@ func TestLazyBackgroundKick(t *testing.T) {
 	redirectCache(t)
 	spec := helperSpec()
 	writeMockCache(t, spec)
-	cs, _ := LoadCachedSchema(spec.Name, SpecFingerprint(spec))
+	cs, _ := LoadCachedSchema(spec.Name, SchemaCacheKey(spec))
 
 	host := NewHost()
 	defer host.Close()
@@ -573,7 +609,7 @@ func TestLazyBackgroundKick(t *testing.T) {
 	}
 }
 
-func TestLazyBackgroundCacheMissPersistsSchema(t *testing.T) {
+func TestLazyBackgroundCacheMissPersistsSchemaAndCompletesAdvertisedConnect(t *testing.T) {
 	redirectCache(t)
 	spec := helperSpec()
 
@@ -584,6 +620,13 @@ func TestLazyBackgroundCacheMissPersistsSchema(t *testing.T) {
 	defer cancel()
 
 	tools := LazyToolset(spec, nil, host, reg, ctx, true) // cache miss + background kick
+	if len(tools) != 1 {
+		t.Fatalf("cache-miss LazyToolset returned %d tools, want one connect placeholder", len(tools))
+	}
+	connect, ok := tools[0].(*lazyTool)
+	if !ok {
+		t.Fatalf("cache-miss placeholder type = %T, want *lazyTool", tools[0])
+	}
 	for _, lt := range tools {
 		reg.Add(lt)
 	}
@@ -600,6 +643,12 @@ func TestLazyBackgroundCacheMissPersistsSchema(t *testing.T) {
 	if !got["echo"] || !got["zed"] {
 		t.Fatalf("cached tools = %v, want echo and zed", got)
 	}
+	if _, found := reg.Get(connect.Name()); found {
+		t.Fatalf("connect placeholder remained provider-visible after discovery; names=%v", reg.Names())
+	}
+	if out, err := connect.Execute(ctx, json.RawMessage(`{}`)); err != nil || !strings.Contains(out, "real tools are now available") {
+		t.Fatalf("already-advertised connect after discovery = (%q, %v), want controlled connected result", out, err)
+	}
 }
 
 func TestLazyBackgroundCloseCancelsInFlightKick(t *testing.T) {
@@ -608,7 +657,7 @@ func TestLazyBackgroundCloseCancelsInFlightKick(t *testing.T) {
 	spec.Name = "slow"
 	spec.Env["GO_WANT_HELPER_INIT_MS"] = "5000"
 	writeMockCache(t, spec)
-	cs, _ := LoadCachedSchema(spec.Name, SpecFingerprint(spec))
+	cs, _ := LoadCachedSchema(spec.Name, SchemaCacheKey(spec))
 
 	host := NewHost()
 	reg := tool.NewRegistry()
@@ -652,7 +701,7 @@ func TestLazyConcurrentExecuteOnlyOneSpawn(t *testing.T) {
 	redirectCache(t)
 	spec := helperSpec()
 	writeMockCache(t, spec)
-	cs, _ := LoadCachedSchema(spec.Name, SpecFingerprint(spec))
+	cs, _ := LoadCachedSchema(spec.Name, SchemaCacheKey(spec))
 
 	host := NewHost()
 	defer host.Close()
@@ -671,7 +720,7 @@ func TestLazyConcurrentExecuteOnlyOneSpawn(t *testing.T) {
 	results := make([]string, goroutines)
 	errs := make([]error, goroutines)
 	wg.Add(goroutines)
-	for i := 0; i < goroutines; i++ {
+	for i := range goroutines {
 		go func(i int) {
 			defer wg.Done()
 			out, err := echo.Execute(ctx, json.RawMessage(fmt.Sprintf(`{"msg":"r%d"}`, i)))
@@ -735,10 +784,10 @@ func TestLazyHandshakeFailureSurfaced(t *testing.T) {
 
 	// Hand-craft a cache so the cache-HIT branch runs (synchronous spawn,
 	// failure surfaces directly to the first caller rather than via a retry
-	// hint). The SpecHash must match — otherwise LoadCachedSchema would miss
+	// hint). The CacheKey must match — otherwise LoadCachedSchema would miss
 	// and we'd be exercising the async path.
 	cs := &CachedSchema{
-		SpecHash:     SpecFingerprint(spec),
+		CacheKey:     SchemaCacheKey(spec),
 		Capabilities: map[string]bool{},
 		Tools: []CachedTool{{
 			Name:        "doit",
@@ -794,7 +843,7 @@ func TestLazyToolsetCacheHitSchemaVisible(t *testing.T) {
 
 	rawSchema := json.RawMessage(`{"properties":{"msg":{"type":"string"}},"type":"object","required":["msg"]}`)
 	cs := &CachedSchema{
-		SpecHash:     SpecFingerprint(spec),
+		CacheKey:     SchemaCacheKey(spec),
 		Capabilities: map[string]bool{},
 		Tools: []CachedTool{{
 			Name:        "echo",
@@ -848,7 +897,7 @@ func TestLazyCacheHitPinsToolBytesAcrossDivergentHandshake(t *testing.T) {
 	redirectCache(t)
 	spec := helperSpec()
 	stale := CachedSchema{
-		SpecHash:     SpecFingerprint(spec),
+		CacheKey:     SchemaCacheKey(spec),
 		Capabilities: map[string]bool{},
 		Tools: []CachedTool{{
 			Name:        "echo",
@@ -860,7 +909,7 @@ func TestLazyCacheHitPinsToolBytesAcrossDivergentHandshake(t *testing.T) {
 	if err := SaveCachedSchema(spec.Name, stale); err != nil {
 		t.Fatalf("SaveCachedSchema: %v", err)
 	}
-	cs, ok := LoadCachedSchema(spec.Name, SpecFingerprint(spec))
+	cs, ok := LoadCachedSchema(spec.Name, SchemaCacheKey(spec))
 	if !ok {
 		t.Fatal("LoadCachedSchema miss after save")
 	}
@@ -879,8 +928,8 @@ func TestLazyCacheHitPinsToolBytesAcrossDivergentHandshake(t *testing.T) {
 	// Let the background handshake finish and give trySwap every chance to run.
 	waitForServer(t, host, "mock", 5*time.Second)
 	echo, _ := reg.Get("mcp__mock__echo")
-	if out, err := echo.Execute(ctx, json.RawMessage(`{"msg":"pin"}`)); err == nil || out != "" || !strings.Contains(err.Error(), "changed the security schema") {
-		t.Fatalf("Execute after schema drift = %q, %v; want a pre-execution drift block", out, err)
+	if out, err := echo.Execute(ctx, json.RawMessage(`{"msg":"pin"}`)); err != nil || out != "echo: pin" {
+		t.Fatalf("Execute after schema drift = %q, %v; want live execution", out, err)
 	}
 
 	if got := registrySchemaBytes(t, reg); got != bootBytes {
@@ -896,7 +945,7 @@ func TestLazyCacheHitPinsToolBytesAcrossDivergentHandshake(t *testing.T) {
 	// slow machines) rather than accepting the first loadable snapshot.
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		refreshed, ok := LoadCachedSchema(spec.Name, SpecFingerprint(spec))
+		refreshed, ok := LoadCachedSchema(spec.Name, SchemaCacheKey(spec))
 		if ok {
 			names := map[string]bool{}
 			for _, ct := range refreshed.Tools {
@@ -941,7 +990,7 @@ func TestLazyToolPromotesLiveDestructiveHintBeforeExecution(t *testing.T) {
 
 	out, err := lazy.Execute(context.Background(), nil)
 	if err != nil || out != "executed" || target.calls != 1 {
-		t.Fatalf("second Execute = (%q,%v), calls=%d, want execution after approval retry", out, err, target.calls)
+		t.Fatalf("second Execute = (%q,%v), calls=%d, want execution after metadata refresh retry", out, err, target.calls)
 	}
 }
 
@@ -958,7 +1007,7 @@ func TestLazyToolDemotesStaleReaderBeforeExecution(t *testing.T) {
 		shared: shared, name: name, rawName: "mutate", readOnly: true, hasCache: true,
 	}
 
-	if out, err := lazy.Execute(context.Background(), nil); err == nil || !strings.Contains(err.Error(), "writer approval") || out != "" {
+	if out, err := lazy.Execute(context.Background(), nil); err == nil || !strings.Contains(err.Error(), "Plan/read-only safety boundary") || out != "" {
 		t.Fatalf("first Execute = (%q,%v), want retry before writer execution", out, err)
 	}
 	if target.calls != 0 || lazy.ReadOnly() {
@@ -977,7 +1026,7 @@ func TestLazyToolDemotesStaleReaderBeforeExecution(t *testing.T) {
 func TestLazyEmptyCachedToolsFallsBackToConnectStub(t *testing.T) {
 	redirectCache(t)
 	spec := helperSpec()
-	cs := &CachedSchema{SpecHash: SpecFingerprint(spec), Tools: nil}
+	cs := &CachedSchema{CacheKey: SchemaCacheKey(spec), Tools: nil}
 
 	host := NewHost()
 	defer host.Close()
@@ -1000,8 +1049,7 @@ func TestAddWithLifecycleSurvivesHandshakeCtxCancel(t *testing.T) {
 	host := NewHost()
 	defer host.Close()
 
-	lifeCtx, cancelLife := context.WithCancel(context.Background())
-	defer cancelLife()
+	lifeCtx := t.Context()
 	handshakeCtx, cancelHandshake := context.WithTimeout(context.Background(), 5*time.Second)
 	tools, err := host.AddWithLifecycle(lifeCtx, handshakeCtx, spec)
 	cancelHandshake() // the proxy's deferred cancel fires right after connect

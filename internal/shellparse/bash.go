@@ -193,6 +193,192 @@ func ContainsShellSyntax(command string) bool {
 	return malformed != ""
 }
 
+// ApprovalFeatures describes Bash syntax that affects whether a permission can
+// be reused. CommandPrefix contains the leading static argv fields up to the
+// first runtime expansion; it lets callers recognize a static eval/-c command
+// even when its payload is dynamic.
+type ApprovalFeatures struct {
+	CommandPrefix      []string
+	DynamicCommandName bool
+	NestedExecution    bool
+	Expansion          bool
+	Assignment         bool
+	Redirection        bool
+}
+
+// AnalyzeApprovalFeatures inspects one simple Bash command without evaluating
+// expansions. ok is false for compound or otherwise unsupported statements.
+func AnalyzeApprovalFeatures(command string) (features ApprovalFeatures, ok bool) {
+	file, err := ParseBash(command)
+	if err != nil || len(file.Stmts) != 1 {
+		return features, false
+	}
+	stmt := file.Stmts[0]
+	if stmt == nil || stmt.Negated || stmt.Background || stmt.Coprocess || stmt.Disown {
+		return features, false
+	}
+	call, ok := stmt.Cmd.(*syntax.CallExpr)
+	if !ok {
+		return features, false
+	}
+	syntax.Walk(file, func(node syntax.Node) bool {
+		switch node.(type) {
+		case *syntax.CmdSubst, *syntax.ProcSubst:
+			features.NestedExecution = true
+		case *syntax.ParamExp, *syntax.ArithmExp, *syntax.ExtGlob:
+			features.Expansion = true
+		case *syntax.Assign:
+			features.Assignment = true
+		case *syntax.Redirect:
+			features.Redirection = true
+		}
+		return true
+	})
+	for _, arg := range call.Args {
+		if wordHasUnescapedBrace(arg) {
+			syntax.SplitBraces(arg)
+		}
+	}
+	for i, arg := range call.Args {
+		field, static := StaticWord(arg)
+		if !static {
+			features.Expansion = true
+			if i == 0 {
+				features.DynamicCommandName = true
+			}
+			break
+		}
+		features.CommandPrefix = append(features.CommandPrefix, field)
+	}
+	return features, true
+}
+
+// ContainsUnquotedGlob reports whether command contains an unquoted shell glob
+// token. StaticFields deliberately returns argv without expanding globs, so
+// permission callers use this additional check before reusing broad rules.
+func ContainsUnquotedGlob(command string) bool {
+	file, err := ParseBash(command)
+	if err != nil {
+		return true
+	}
+	found := false
+	syntax.Walk(file, func(node syntax.Node) bool {
+		word, ok := node.(*syntax.Word)
+		if !ok {
+			return !found
+		}
+		for _, part := range word.Parts {
+			lit, ok := part.(*syntax.Lit)
+			if ok && hasUnescapedGlobMeta(lit.Value) {
+				found = true
+				return false
+			}
+		}
+		return !found
+	})
+	return found
+}
+
+func hasUnescapedGlobMeta(value string) bool {
+	return hasUnescapedMeta(value, "*?[")
+}
+
+func wordHasUnescapedBrace(word *syntax.Word) bool {
+	if word == nil {
+		return false
+	}
+	for _, part := range word.Parts {
+		if lit, ok := part.(*syntax.Lit); ok && hasUnescapedMeta(lit.Value, "{") {
+			return true
+		}
+	}
+	return false
+}
+
+func hasUnescapedMeta(value, meta string) bool {
+	escaped := false
+	for i := range len(value) {
+		if escaped {
+			escaped = false
+			continue
+		}
+		if value[i] == '\\' {
+			escaped = true
+			continue
+		}
+		if strings.ContainsRune(meta, rune(value[i])) {
+			return true
+		}
+	}
+	return false
+}
+
+// CanMaskEarlierFailure reports whether a later part of command can hide the
+// failure of an earlier part, so the shell's final exit status is not evidence
+// that every step succeeded.
+//
+// Only `&&` chains are exempt: bash short-circuits them and reports the first
+// failing command's status, so `build && test` already surfaces a failed build.
+// Everything else can mask — `;` and newlines run the next command regardless,
+// `||` runs it precisely when the previous one failed, `|` reports only the
+// last stage, and `&` detaches the status entirely.
+//
+// ok is false when the command cannot be analyzed statically (parse failure,
+// here-documents, unsupported control syntax); callers must not read canMask
+// as proven-safe in that case.
+func CanMaskEarlierFailure(command string) (canMask bool, ok bool) {
+	if strings.TrimSpace(command) == "" {
+		return false, true
+	}
+	file, err := ParseBash(command)
+	if err != nil || HasHereDoc(file) {
+		return false, false
+	}
+	// Two or more top-level statements are `;`/newline separated.
+	if len(file.Stmts) > 1 {
+		return true, true
+	}
+	for _, stmt := range file.Stmts {
+		masks, stmtOK := stmtCanMaskEarlierFailure(stmt)
+		if !stmtOK {
+			return false, false
+		}
+		if masks {
+			return true, true
+		}
+	}
+	return false, true
+}
+
+func stmtCanMaskEarlierFailure(stmt *syntax.Stmt) (bool, bool) {
+	if stmt == nil || stmt.Negated || stmt.Coprocess || stmt.Disown {
+		return false, false
+	}
+	if stmt.Background {
+		return true, true
+	}
+	switch cmd := stmt.Cmd.(type) {
+	case *syntax.BinaryCmd:
+		if cmd.Op != syntax.AndStmt {
+			// `||`, `|`, and `|&` all let a later stage decide the status.
+			return true, true
+		}
+		xMasks, xOK := stmtCanMaskEarlierFailure(cmd.X)
+		if !xOK {
+			return false, false
+		}
+		yMasks, yOK := stmtCanMaskEarlierFailure(cmd.Y)
+		if !yOK {
+			return false, false
+		}
+		return xMasks || yMasks, true
+	case *syntax.CallExpr:
+		return false, true
+	default:
+		return false, false
+	}
+}
+
 // SplitTopLevel returns simple command segments split at top-level shell
 // control operators. It preserves each segment's original source text. ok is
 // false when the command cannot be decomposed without losing safety.
@@ -361,7 +547,7 @@ func IsAssignment(word string) bool {
 	if !ok || name == "" {
 		return false
 	}
-	for i := 0; i < len(name); i++ {
+	for i := range len(name) {
 		c := name[i]
 		if i == 0 {
 			if c != '_' && (c < 'A' || c > 'Z') && (c < 'a' || c > 'z') {

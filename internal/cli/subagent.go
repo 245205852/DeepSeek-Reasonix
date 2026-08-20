@@ -20,7 +20,7 @@ import (
 )
 
 var setupSubagentCommand = func(ctx context.Context, modelName string, maxStepsOverride int, requireKey bool, sink event.Sink, workspaceRoot string) (*control.Controller, error) {
-	return setupProfile(ctx, modelName, maxStepsOverride, requireKey, sink, "", workspaceRoot)
+	return setupProfile(ctx, modelName, maxStepsOverride, requireKey, sink, workspaceRoot)
 }
 
 const subagentUsageText = `usage:
@@ -64,8 +64,8 @@ func subagentCommand(args []string) int {
 func subagentListCommand(args []string) int {
 	fs := flag.NewFlagSet("subagent list", flag.ContinueOnError)
 	dir := fs.String("dir", "", "project root")
-	if err := fs.Parse(args); err != nil {
-		return 2
+	if code, ok := parseCommandFlags(fs, args); !ok {
+		return code
 	}
 	if len(fs.Args()) != 0 {
 		fmt.Fprint(os.Stderr, subagentUsageText)
@@ -143,7 +143,18 @@ func addSubagentProfileFlags(fs *flag.FlagSet, values *subagentProfileFlags) {
 	fs.StringVar(&values.dir, "dir", "", "project root")
 }
 
+func reportNamedSubagentHelp(args []string) bool {
+	if !commandHelpRequested(args, 1) {
+		return false
+	}
+	fmt.Fprint(os.Stdout, subagentUsageText)
+	return true
+}
+
 func subagentCreateCommand(args []string) int {
+	if reportNamedSubagentHelp(args) {
+		return 0
+	}
 	name, rest, ok := namedSubagentArgs(args)
 	if !ok {
 		fmt.Fprint(os.Stderr, subagentUsageText)
@@ -153,7 +164,10 @@ func subagentCreateCommand(args []string) int {
 	var values subagentProfileFlags
 	addSubagentProfileFlags(fs, &values)
 	scopeText := fs.String("scope", "", "project or global (default: project)")
-	if err := fs.Parse(rest); err != nil || len(fs.Args()) != 0 {
+	if code, ok := parseCommandFlags(fs, rest); !ok {
+		return code
+	}
+	if len(fs.Args()) != 0 {
 		return 2
 	}
 	if rc := chdirTo(values.dir); rc != 0 {
@@ -186,7 +200,7 @@ func subagentCreateCommand(args []string) int {
 		fmt.Fprintln(os.Stderr, "subagent create:", err)
 		return 1
 	}
-	content := renderCLIProfile(name, values.description.value, prompt, values.model.value, values.effort.value, parseToolList(values.tools.value), values.color.value)
+	content := renderCLIProfile(name, values.description.value, prompt, values.model.value, values.effort.value, parseToolList(values.tools.value), values.color.value, false)
 	path, err := store.CreateWithContent(name, scope, content)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "subagent create:", err)
@@ -197,6 +211,9 @@ func subagentCreateCommand(args []string) int {
 }
 
 func subagentEditCommand(args []string) int {
+	if reportNamedSubagentHelp(args) {
+		return 0
+	}
 	name, rest, ok := namedSubagentArgs(args)
 	if !ok {
 		fmt.Fprint(os.Stderr, subagentUsageText)
@@ -205,7 +222,10 @@ func subagentEditCommand(args []string) int {
 	fs := flag.NewFlagSet("subagent edit", flag.ContinueOnError)
 	var values subagentProfileFlags
 	addSubagentProfileFlags(fs, &values)
-	if err := fs.Parse(rest); err != nil || len(fs.Args()) != 0 {
+	if code, ok := parseCommandFlags(fs, rest); !ok {
+		return code
+	}
+	if len(fs.Args()) != 0 {
 		return 2
 	}
 	if rc := chdirTo(values.dir); rc != 0 {
@@ -263,7 +283,7 @@ func subagentEditCommand(args []string) int {
 		fmt.Fprintln(os.Stderr, "subagent edit: description and prompt cannot be empty")
 		return 2
 	}
-	content := renderCLIProfile(sk.Name, description, body, model, effort, tools, color)
+	content := renderCLIProfile(sk.Name, description, body, model, effort, tools, color, sk.ReadOnly)
 	if err := store.UpdateContent(sk.Name, sk.Scope, content); err != nil {
 		fmt.Fprintln(os.Stderr, "subagent edit:", err)
 		return 1
@@ -273,6 +293,9 @@ func subagentEditCommand(args []string) int {
 }
 
 func subagentDeleteCommand(args []string) int {
+	if reportNamedSubagentHelp(args) {
+		return 0
+	}
 	name, rest, ok := namedSubagentArgs(args)
 	if !ok {
 		fmt.Fprint(os.Stderr, subagentUsageText)
@@ -281,7 +304,10 @@ func subagentDeleteCommand(args []string) int {
 	fs := flag.NewFlagSet("subagent delete", flag.ContinueOnError)
 	yes := fs.Bool("yes", false, "confirm deletion")
 	dir := fs.String("dir", "", "project root")
-	if err := fs.Parse(rest); err != nil || len(fs.Args()) != 0 {
+	if code, ok := parseCommandFlags(fs, rest); !ok {
+		return code
+	}
+	if len(fs.Args()) != 0 {
 		return 2
 	}
 	if !*yes {
@@ -310,6 +336,9 @@ func subagentDeleteCommand(args []string) int {
 }
 
 func subagentRunCommand(args []string, readOnly bool) int {
+	if reportNamedSubagentHelp(args) {
+		return 0
+	}
 	name, rest, ok := namedSubagentArgs(args)
 	if !ok {
 		fmt.Fprint(os.Stderr, subagentUsageText)
@@ -323,8 +352,8 @@ func subagentRunCommand(args []string, readOnly bool) int {
 	model := fs.String("model", "", "default model reference")
 	maxSteps := fs.Int("max-steps", 0, "max tool-call rounds")
 	dir := fs.String("dir", "", "project root")
-	if err := fs.Parse(rest); err != nil {
-		return 2
+	if code, ok := parseCommandFlags(fs, rest); !ok {
+		return code
 	}
 	if rc := chdirTo(*dir); rc != 0 {
 		return rc
@@ -454,13 +483,17 @@ func editBuiltinSubagentProfile(sk skill.Skill, values subagentProfileFlags) err
 		deleteSubagentOverrideAliases(cfg.Agent.SubagentEfforts, sk.Name)
 		level := strings.TrimSpace(values.effort.value)
 		if level != "" && level != "auto" {
-			model := subagentOverride(cfg.Agent.SubagentModels, sk.Name)
-			if model == "" {
-				model = strings.TrimSpace(cfg.Agent.SubagentModel)
+			explicit := subagentOverride(cfg.Agent.SubagentModels, sk.Name)
+			if explicit == "" {
+				explicit = strings.TrimSpace(cfg.Agent.SubagentModel)
 			}
+			model := explicit
 			if model == "" {
-				model = cfg.DefaultModel
+				model, _, _ = cfg.ResolveNewSessionChatModel()
 			}
+			// Profile editing is an offline configuration operation. The model
+			// must resolve so effort capabilities can be validated, but it does
+			// not need a credential until the profile is actually run.
 			entry, ok := cfg.ResolveModel(model)
 			if !ok {
 				return fmt.Errorf("unknown subagent model %q", model)
@@ -525,7 +558,7 @@ func profileFlagsChanged(values subagentProfileFlags) bool {
 func parseToolList(raw string) []string {
 	seen := map[string]bool{}
 	var tools []string
-	for _, item := range strings.Split(raw, ",") {
+	for item := range strings.SplitSeq(raw, ",") {
 		name := strings.TrimSpace(item)
 		if name == "" || seen[name] {
 			continue
@@ -536,7 +569,7 @@ func parseToolList(raw string) []string {
 	return tools
 }
 
-func renderCLIProfile(name, description, prompt, model, effort string, tools []string, color string) string {
+func renderCLIProfile(name, description, prompt, model, effort string, tools []string, color string, readOnly bool) string {
 	return skill.RenderSkillFile(skill.SkillFileOptions{
 		Name:         strings.TrimSpace(name),
 		Description:  strings.TrimSpace(description),
@@ -545,6 +578,7 @@ func renderCLIProfile(name, description, prompt, model, effort string, tools []s
 		Model:        strings.TrimSpace(model),
 		Effort:       strings.TrimSpace(effort),
 		AllowedTools: tools,
+		ReadOnly:     readOnly,
 		Color:        strings.TrimSpace(color),
 		Invocation:   "manual",
 	})

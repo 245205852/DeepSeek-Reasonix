@@ -6,11 +6,12 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { Composer, composerPickFileEntry } from "../components/Composer";
 import { InvocationMetadataContext, UserMessage } from "../components/Message";
+import { selectionFromDom } from "../components/RichComposerInput";
 import { LocaleProvider } from "../lib/i18n";
 import { ToastProvider } from "../lib/toast";
 import type { AppBindings } from "../lib/bridge";
-import type { StructuredInvocationSubmit } from "../lib/invocationDisplay";
-import type { CollaborationMode, CommandInfo, DirEntry, ToolApprovalMode, TokenMode } from "../lib/types";
+import type { ComposerInvocation, StructuredInvocationSubmit } from "../lib/invocationDisplay";
+import type { CollaborationMode, CommandInfo, DirEntry, ToolApprovalMode } from "../lib/types";
 
 let passed = 0;
 let failed = 0;
@@ -107,7 +108,7 @@ async function renderComposer(props: Partial<Parameters<typeof Composer>[0]> = {
     running: false,
     collaborationMode: "normal",
     toolApprovalMode: "ask" as ToolApprovalMode,
-    tokenMode: "full" as TokenMode,
+
     goal: "",
     cwd: "/repo",
     tabId: "tab-a",
@@ -117,9 +118,9 @@ async function renderComposer(props: Partial<Parameters<typeof Composer>[0]> = {
       calls.submit.push(submitText);
       calls.structured.push(structured);
     },
-    onCancel: () => {
+    onCancel: async () => {
       calls.cancel += 1;
-      return undefined;
+      return { discardedItemIds: [] };
     },
     onCycleMode: () => {},
     onSetMode: () => {},
@@ -131,7 +132,7 @@ async function renderComposer(props: Partial<Parameters<typeof Composer>[0]> = {
     },
     onSwitchModel: () => {},
     onSetEffort: () => {},
-    onSetTokenMode: () => {},
+
     ready: true,
     ...props,
   };
@@ -267,10 +268,9 @@ console.log("\ncomposer goal toggle");
 {
   const dom = installDom();
   const { root, calls, rerender } = await renderComposer();
-
   let textarea = document.querySelector("textarea") as HTMLTextAreaElement | null;
   if (!textarea) throw new Error("composer textarea did not render");
-
+  eq(["spellcheck", "autocorrect", "autocapitalize"].map((name) => textarea.getAttribute(name)).join("/"), "false/off/off", "plain composer disables browser text assistance");
   await rerender({ insertRequest: { id: 1, text: "ship the release notes", mode: "replace" } });
   eq(textarea.value, "ship the release notes", "insert request populates the composer draft");
   // The insert queues a rAF that refocuses the textarea; drain that frame
@@ -327,6 +327,142 @@ console.log("\ncomposer goal toggle");
   eq(calls.send.length, 0, "enabling goal mode with a draft does not send");
   eq(calls.setCollaborationMode.join(","), "goal", "enabling goal mode switches only the collaboration axis");
   eq(textarea.value, "/reviewer ship the release notes", "enabling goal mode preserves the prefixed draft text");
+
+  await act(async () => {
+    root.unmount();
+  });
+  dom.window.close();
+}
+
+{
+  const dom = installDom();
+  mockApp({
+    Commands: async () => [
+      { name: "ui-ux-pro-max", description: "Review the interface", kind: "skill" },
+    ],
+    ListDirForTab: async () => [],
+    SearchFileRefsForTab: async () => [],
+  });
+  const { root, calls, rerender } = await renderComposer({ collaborationMode: "goal", goal: "" });
+  await replaceComposerDraft(rerender, 4199, "/ui-ux-pro-max");
+  await waitFor("skill menu for the initial goal", () => Boolean(document.querySelector(".slashmenu")));
+  let textarea = document.querySelector("textarea") as HTMLTextAreaElement | null;
+  if (!textarea) throw new Error("composer textarea did not render for the initial goal skill");
+  await act(async () => {
+    textarea.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    await flushTimers();
+  });
+
+  let sendButton = document.querySelector(".composer__btn--send") as HTMLButtonElement | null;
+  if (!sendButton) throw new Error("composer send button did not render for the initial goal skill");
+  await act(async () => {
+    sendButton.click();
+    await flushTimers();
+  });
+  eq(calls.send.length, 0, "a skill alone cannot become the initial goal");
+  ok(document.body.textContent?.includes("Enter a goal") === true, "a skill-only initial goal asks for task text");
+
+  await replaceComposerDraft(rerender, 4200, "List the existing notes");
+  sendButton = document.querySelector(".composer__btn--send") as HTMLButtonElement | null;
+  if (!sendButton) throw new Error("composer send button disappeared after entering the goal");
+  await act(async () => {
+    sendButton.click();
+    await flushTimers();
+  });
+  eq(calls.send[0], "List the existing notes", "the initial goal keeps its visible task text");
+  eq(calls.submit[0], "/ui-ux-pro-max List the existing notes", "the initial goal preserves the selected skill");
+  eq(calls.structured[0]?.input, "List the existing notes", "the initial goal sends structured skill input");
+  eq(calls.structured[0]?.invocations[0]?.name, "ui-ux-pro-max", "the initial goal submits the selected skill entity");
+
+  await replaceComposerDraft(rerender, 4201, "/ui-ux-pro-max List the notes again");
+  sendButton = document.querySelector(".composer__btn--send") as HTMLButtonElement | null;
+  if (!sendButton) throw new Error("composer send button did not render for a pasted skill invocation");
+  await act(async () => {
+    sendButton.click();
+    await flushTimers();
+  });
+  eq(calls.send[1], "List the notes again", "a pasted skill invocation keeps its task as the visible goal");
+  eq(calls.submit[1], "/ui-ux-pro-max List the notes again", "a pasted skill invocation keeps its slash display");
+  eq(calls.structured[1]?.input, "List the notes again", "a pasted skill invocation uses structured input");
+  eq(calls.structured[1]?.invocations[0]?.name, "ui-ux-pro-max", "a pasted skill invocation resolves the selected command");
+
+  await act(async () => {
+    root.unmount();
+  });
+  dom.window.close();
+}
+
+{
+  // Attachment-only first Goal: no text, no skill — attachment refs are valid task context.
+  const dom = installDom();
+  mockApp({
+    SavePastedFile: async () => ".reasonix/attachments/notes.txt",
+  });
+  const { root, calls } = await renderComposer({ collaborationMode: "goal", goal: "" });
+  const textarea = document.querySelector("textarea") as HTMLTextAreaElement | null;
+  if (!textarea) throw new Error("composer textarea did not render for attachment-only goal");
+  await act(async () => {
+    dispatchPasteFile(textarea, new File(["hello"], "notes.txt", { type: "text/plain" }));
+    await flushTimers();
+  });
+  await waitFor("attachment-only initial goal card", () => document.body.textContent?.includes("notes.txt") === true);
+
+  const sendButton = document.querySelector(".composer__btn--send") as HTMLButtonElement | null;
+  if (!sendButton) throw new Error("send button missing for attachment-only initial goal");
+  await act(async () => {
+    sendButton.click();
+    await flushTimers();
+  });
+  eq(calls.send.length, 1, "attachment-only input can become the initial Goal");
+  ok(
+    calls.submit[0]?.includes("@.reasonix/attachments/notes.txt") === true,
+    "attachment-only initial Goal submits the attachment ref",
+  );
+  eq(calls.structured[0], undefined, "attachment-only initial Goal is not a structured skill submit");
+
+  await act(async () => {
+    root.unmount();
+  });
+  dom.window.close();
+}
+
+{
+  // Workspace-ref-only first Goal: no text, no skill — workspace refs remain valid task context.
+  const dom = installDom();
+  let droppedCallback: ((x: number, y: number, paths: string[]) => void) | undefined;
+  window.runtime = {
+    EventsOn: () => () => {},
+    BrowserOpenURL: () => {},
+    OnFileDrop: (cb) => {
+      droppedCallback = cb;
+    },
+    OnFileDropOff: () => {},
+  };
+  mockApp({
+    AttachDropped: async () => ({
+      kind: "workspace",
+      path: "src/App.tsx",
+      isDir: false,
+      displayPath: "src/App.tsx",
+    }),
+  });
+  const { root, calls } = await renderComposer({ collaborationMode: "goal", goal: "" });
+  if (!droppedCallback) throw new Error("native file drop handler did not register for workspace-ref goal");
+  await act(async () => {
+    droppedCallback?.(0, 0, ["/repo/src/App.tsx"]);
+    await flushTimers();
+  });
+  await waitFor("workspace-ref-only initial goal card", () => document.body.textContent?.includes("App.tsx") === true);
+
+  const sendButton = document.querySelector(".composer__btn--send") as HTMLButtonElement | null;
+  if (!sendButton) throw new Error("send button missing for workspace-ref-only initial goal");
+  await act(async () => {
+    sendButton.click();
+    await flushTimers();
+  });
+  eq(calls.send.length, 1, "workspace-ref-only input can become the initial Goal");
+  eq(calls.submit[0], "@src/App.tsx", "workspace-ref-only initial Goal submits the workspace ref");
+  eq(calls.structured[0], undefined, "workspace-ref-only initial Goal is not a structured skill submit");
 
   await act(async () => {
     root.unmount();
@@ -439,6 +575,127 @@ console.log("\ncomposer goal toggle");
 
 {
   const dom = installDom();
+  const command: CommandInfo = {
+    name: "writing-plans",
+    description: "Write a plan",
+    kind: "skill",
+  };
+  mockApp({
+    Commands: async () => [command],
+    ListDirForTab: async () => [],
+    SearchFileRefsForTab: async () => [],
+  });
+  const { root, rerender } = await renderComposer();
+  await replaceComposerDraft(rerender, 4201, "/writing-plans");
+  await waitFor("skill menu for paste undo selection", () => Boolean(document.querySelector(".slashmenu")));
+  const initialTextarea = document.querySelector("textarea") as HTMLTextAreaElement | null;
+  if (!initialTextarea) throw new Error("composer textarea did not render for paste undo selection");
+  await act(async () => {
+    initialTextarea.dispatchEvent(new window.KeyboardEvent("keydown", {
+      key: "Enter",
+      bubbles: true,
+      cancelable: true,
+    }));
+    await flushTimers();
+  });
+
+  let richInput = document.querySelector(".composer__rich-input") as HTMLDivElement | null;
+  let token = richInput?.querySelector<HTMLElement>(".composer-invocation-token");
+  const invocationId = token?.dataset.invocationId;
+  if (!richInput || !token || !invocationId) throw new Error("rich invocation did not render for paste undo selection");
+  eq(["spellcheck", "autocorrect", "autocapitalize"].map((name) => richInput.getAttribute(name)).join("/"), "false/off/off", "rich composer disables browser text assistance");
+  const afterToken = document.createRange();
+  afterToken.setStartAfter(token);
+  afterToken.collapse(true);
+  document.getSelection()?.removeAllRanges();
+  document.getSelection()?.addRange(afterToken);
+  await act(async () => {
+    dispatchPasteText(richInput!, "pasted");
+    await flushTimers();
+  });
+  richInput = document.querySelector(".composer__rich-input") as HTMLDivElement | null;
+  if (!richInput) throw new Error("rich input disappeared after paste");
+  eq(richComposerTaskText(richInput), "pasted", "paste after an invocation inserts on the token's right side");
+
+  await act(async () => {
+    richInput!.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+    await flushTimers();
+  });
+  let richMenuItems = Array.from(document.querySelectorAll<HTMLButtonElement>(".context-menu__item"));
+  eq(richMenuItems.length, 6, "rich composer exposes the shared edit context menu");
+  ok(richMenuItems[0]?.disabled === false, "rich composer context-menu undo is enabled after paste");
+  ok(richMenuItems[1]?.disabled === true, "rich composer context-menu redo is disabled before undo");
+  await act(async () => {
+    richMenuItems[0]?.click();
+    await flushTimers();
+  });
+  richInput = document.querySelector(".composer__rich-input") as HTMLDivElement | null;
+  if (!richInput) throw new Error("rich input disappeared after context-menu undo");
+  eq(richComposerTaskText(richInput), "", "rich composer context-menu undo removes the pasted text");
+
+  await act(async () => {
+    richInput!.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+    await flushTimers();
+  });
+  richMenuItems = Array.from(document.querySelectorAll<HTMLButtonElement>(".context-menu__item"));
+  ok(richMenuItems[1]?.disabled === false, "rich composer context-menu redo is enabled after undo");
+  await act(async () => {
+    richMenuItems[1]?.click();
+    await flushTimers();
+  });
+  richInput = document.querySelector(".composer__rich-input") as HTMLDivElement | null;
+  if (!richInput) throw new Error("rich input disappeared after context-menu redo");
+  eq(richComposerTaskText(richInput), "pasted", "rich composer context-menu redo restores the pasted text");
+
+  const undoPaste = new window.KeyboardEvent("keydown", {
+    key: "z",
+    ctrlKey: true,
+    bubbles: true,
+    cancelable: true,
+  });
+  await act(async () => {
+    richInput!.dispatchEvent(undoPaste);
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    await flushTimers();
+  });
+  eq(undoPaste.defaultPrevented, true, "Ctrl+Z restores the rich-composer paste transaction");
+
+  richInput = document.querySelector(".composer__rich-input") as HTMLDivElement | null;
+  token = richInput?.querySelector<HTMLElement>(".composer-invocation-token");
+  if (!richInput || !token) throw new Error("rich invocation disappeared after paste undo");
+  const restoredInvocation: ComposerInvocation = { id: invocationId, offset: 0, command };
+  const restoredSelection = selectionFromDom(
+    richInput,
+    new Map([[invocationId, restoredInvocation]]),
+  );
+  eq(
+    restoredSelection.ok ? restoredSelection.selection.afterInvocationId : undefined,
+    invocationId,
+    "paste undo restores the caret after the invocation token",
+  );
+
+  await act(async () => {
+    richInput!.dispatchEvent(new window.KeyboardEvent("keydown", {
+      key: "Backspace",
+      bubbles: true,
+      cancelable: true,
+    }));
+    await flushTimers();
+  });
+  ok(
+    document.querySelector(".composer-invocation-token") === null,
+    "Backspace after paste undo removes the invocation on the caret's left",
+  );
+
+  await act(async () => {
+    root.unmount();
+  });
+  dom.window.close();
+}
+
+{
+  const dom = installDom();
   const { root, calls } = await renderComposer({
     collaborationMode: "goal",
     goal: "finish the migration",
@@ -453,9 +710,10 @@ console.log("\ncomposer goal toggle");
     await flushTimers();
   });
 
-  const stopGoal = document.querySelector(".composer-intent-menu__stop") as HTMLButtonElement | null;
-  if (!stopGoal) throw new Error("explicit stop goal action did not render");
-  eq(stopGoal.textContent, "Stop goal", "active goal uses an explicit stop action");
+  const goalActions = Array.from(document.querySelectorAll(".composer-intent-menu__stop")) as HTMLButtonElement[];
+  const stopGoal = goalActions.find((b) => b.textContent === "End goal");
+  if (!stopGoal) throw new Error("explicit end-goal action did not render");
+  ok(goalActions.some((b) => b.textContent === "Pause goal"), "running goal offers a pause action");
   await act(async () => {
     stopGoal.click();
     await flushTimers();
@@ -854,6 +1112,25 @@ console.log("\ncomposer goal toggle");
 
 {
   const dom = installDom();
+  let nextInboxID = 0;
+  const steerItemIDs: string[] = [];
+  const deletedItemIDs: string[] = [];
+  mockApp({
+    InboxSnapshot: async () => ({
+      revision: 0, paused: false, recovered: false, items: [], itemsCount: 0,
+      bytes: 0, maxItems: 64, maxBytes: 64 * 1024 * 1024,
+    }),
+    EnqueueInboxFollowup: async () => ({
+      itemId: `durable-${++nextInboxID}`, disposition: "queued_followup", position: nextInboxID, paused: false,
+    }),
+    SteerInboxItem: async (_tabID, itemID) => {
+      steerItemIDs.push(itemID);
+      return { itemId: itemID, disposition: "steer_accepted", position: 1, paused: false };
+    },
+    DeleteInboxItem: async (_tabID, itemID) => {
+      deletedItemIDs.push(itemID);
+    },
+  });
   const { root, calls, rerender } = await renderComposer({
     running: true,
     onSend: (displayText, submitText) => {
@@ -892,8 +1169,9 @@ console.log("\ncomposer goal toggle");
     guideButton.click();
     await flushTimers();
   });
-  eq(calls.send.join(","), "keep the files small", "queued guidance sends through onSend when guided");
-  ok(document.querySelector(".composer-guidance-item") === null, "queued guidance clears after being guided");
+  eq(steerItemIDs.join(","), "durable-1", "guide attempts admission with the existing durable item ID");
+  eq(calls.send.join(","), "", "guide never opens a duplicate frontend submit");
+  ok(document.querySelector(".composer-guidance-item") === null, "accepted durable steer clears after backend admission");
 
   await rerender({ insertRequest: { id: 5, text: "prefer the smaller diff", mode: "replace" } });
   await act(async () => {
@@ -902,12 +1180,13 @@ console.log("\ncomposer goal toggle");
   });
   const dismissibleGuidanceItem = document.querySelector(".composer-guidance-item") as HTMLElement | null;
   if (!dismissibleGuidanceItem) throw new Error("dismissible guidance chip did not render");
-  const dismissButton = dismissibleGuidanceItem.querySelector(".composer-guidance-item__action") as HTMLButtonElement | null;
+  const dismissButton = Array.from(dismissibleGuidanceItem.querySelectorAll<HTMLButtonElement>(".composer-guidance-item__action")).at(-1) ?? null;
   if (!dismissButton) throw new Error("running guidance dismiss button did not render");
   await act(async () => {
     dismissButton.click();
     await flushTimers();
   });
+  eq(deletedItemIDs.join(","), "durable-2", "dismiss deletes the durable backend item before clearing the shelf");
   ok(document.querySelector(".composer-guidance-item") === null, "running guidance chip can be dismissed");
 
   await rerender({ insertRequest: { id: 6, text: "prefer the smaller diff", mode: "replace" } });
@@ -938,6 +1217,20 @@ console.log("\ncomposer goal toggle");
 
 {
   const dom = installDom();
+  const steerItemIDs: string[] = [];
+  mockApp({
+    InboxSnapshot: async () => ({
+      revision: 0, paused: false, recovered: false, items: [], itemsCount: 0,
+      bytes: 0, maxItems: 64, maxBytes: 64 * 1024 * 1024,
+    }),
+    EnqueueInboxFollowup: async () => ({
+      itemId: "durable-activating", disposition: "queued_followup", position: 1, paused: false,
+    }),
+    SteerInboxItem: async (_tabID, itemID) => {
+      steerItemIDs.push(itemID);
+      return { itemId: itemID, disposition: "steer_accepted", position: 1, paused: false };
+    },
+  });
   const { root, calls, rerender } = await renderComposer({
     running: true,
     submitDisabled: true,
@@ -965,7 +1258,8 @@ console.log("\ncomposer goal toggle");
     await flushTimers();
   });
 
-  eq(calls.send.join(","), "steer while activating", "queued guidance can be guided while controllerReady is false");
+  eq(steerItemIDs.join(","), "durable-activating", "queued durable item can be guided while controllerReady is false");
+  eq(calls.send.join(","), "", "controllerReady gap does not create a duplicate submit");
 
   await act(async () => {
     root.unmount();
@@ -974,10 +1268,97 @@ console.log("\ncomposer goal toggle");
 }
 
 {
-  // Reproduces #6210: a message queued while a turn is running, without the
-  // explicit "guide" steer click, must not vanish when the turn ends on its
-  // own — it is the user's next turn, so it should send automatically.
+  // A backend steer rejection means the turn crossed its final admission
+  // boundary. The same durable item becomes a follow-up; the Controller, not
+  // the browser, owns its later FIFO dispatch and ack.
   const dom = installDom();
+  let steerAttempts = 0;
+  let backendQueued = false;
+  mockApp({
+    InboxSnapshot: async () => ({
+      revision: backendQueued ? 1 : 2,
+      paused: false,
+      recovered: false,
+      items: backendQueued ? [{
+        id: "durable-late", intent: "followup", state: "queued", preview: "preserve this late guidance", byteSize: 27, position: 1,
+      }] : [],
+      itemsCount: backendQueued ? 1 : 0,
+      bytes: backendQueued ? 27 : 0,
+      maxItems: 64,
+      maxBytes: 64 * 1024 * 1024,
+    }),
+    EnqueueInboxFollowup: async () => {
+      backendQueued = true;
+      return { itemId: "durable-late", disposition: "queued_followup", position: 1, paused: false };
+    },
+    SteerInboxItem: async (_tabID, itemID) => {
+      steerAttempts += 1;
+      return { itemId: itemID, disposition: "queued_followup", position: 1, paused: false };
+    },
+  });
+  const { root, calls, rerender } = await renderComposer({
+    running: true,
+    onSend: (displayText, submitText) => {
+      calls.send.push(displayText);
+      calls.submit.push(submitText);
+      return Promise.resolve();
+    },
+  });
+
+  await rerender({ insertRequest: { id: 71, text: "preserve this late guidance", mode: "replace" } });
+  const sendButton = document.querySelector(".composer__btn--send") as HTMLButtonElement | null;
+  if (!sendButton) throw new Error("running composer send button did not render");
+  await act(async () => {
+    sendButton.click();
+    await flushTimers();
+  });
+  const guidanceItem = document.querySelector(".composer-guidance-item") as HTMLElement | null;
+  const guideButton = guidanceItem?.querySelector(".composer-guidance-item__guide") as HTMLButtonElement | null;
+  if (!guideButton) throw new Error("late guidance guide button did not render");
+  await act(async () => {
+    guideButton.click();
+    await flushTimers();
+  });
+
+  eq(steerAttempts, 1, "late guidance attempts one strict steer admission");
+  eq(calls.send.length, 0, "rejected steer does not open a provider turn");
+  ok(document.querySelector(".composer-guidance-item") !== null, "rejected steer remains queued");
+
+  backendQueued = false; // Controller dispatched and durably acked after TurnDone.
+  await rerender({ running: false });
+  await waitFor("acked durable follow-up removed from shelf", () => document.querySelector(".composer-guidance-item") === null);
+  eq(calls.send.length, 0, "late durable follow-up is never resubmitted by the frontend");
+
+  await act(async () => {
+    root.unmount();
+  });
+  dom.window.close();
+}
+
+{
+  // A message queued while a turn is running remains durable. Natural
+  // completion is dispatched by the Controller, so the frontend must only
+  // reconcile the eventual durable ack and never call onSend itself.
+  const dom = installDom();
+  let backendQueued = false;
+  mockApp({
+    InboxSnapshot: async () => ({
+      revision: backendQueued ? 1 : 2,
+      paused: false,
+      recovered: false,
+      items: backendQueued ? [{
+        id: "durable-natural", intent: "followup", state: "queued", preview: "keep going after this finishes", byteSize: 30, position: 1,
+      }] : [],
+      itemsCount: backendQueued ? 1 : 0,
+      bytes: backendQueued ? 30 : 0,
+      maxItems: 64,
+      maxBytes: 64 * 1024 * 1024,
+    }),
+    EnqueueInboxFollowup: async () => {
+      backendQueued = true;
+      return { itemId: "durable-natural", disposition: "queued_followup", position: 1, paused: false };
+    },
+  });
   const { root, calls, rerender } = await renderComposer({
     running: true,
     onSend: (displayText, submitText) => {
@@ -999,12 +1380,12 @@ console.log("\ncomposer goal toggle");
   eq(calls.send.length, 0, "queuing while running does not send immediately");
   ok(document.querySelector(".composer-guidance-item") !== null, "queued message shows in the guidance shelf");
 
+  backendQueued = false; // Controller completed and acked the next FIFO turn.
   await rerender({ running: false });
-  await waitFor("queued guidance auto-sent on natural completion", () => calls.send.length === 1);
+  await waitFor("durable guidance ack reconciled", () => document.querySelector(".composer-guidance-item") === null);
 
-  eq(calls.send.join(","), "keep going after this finishes", "queued guidance is sent automatically once the turn ends naturally, not discarded");
-  eq(calls.submit.join(","), "keep going after this finishes", "auto-sent guidance submits the same text it was queued with");
-  ok(document.querySelector(".composer-guidance-item") === null, "guidance shelf clears once the queued message is sent");
+  eq(calls.send.length, 0, "natural completion never triggers a duplicate frontend submit");
+  eq(calls.submit.length, 0, "durable body remains backend-owned through dispatch");
 
   await act(async () => {
     root.unmount();
@@ -1013,11 +1394,76 @@ console.log("\ncomposer goal toggle");
 }
 
 {
-  // #6210 follow-up: if the turn ends naturally while the controller is
-  // still activating/hydrating (submitDisabled), onSend would silently
-  // no-op — auto-send must wait for submitDisabled to clear instead of
-  // firing into that window and losing the queued message anyway.
+  // Stop passes only this Composer's durable IDs to the controller, then folds
+  // their visible text back into the draft instead of leaving a hidden turn
+  // that could run after cancellation.
   const dom = installDom();
+  let cancelledItemIDs: string[] = [];
+  mockApp({
+    InboxSnapshot: async () => ({
+      revision: 0, paused: false, recovered: false, items: [], itemsCount: 0,
+      bytes: 0, maxItems: 64, maxBytes: 64 * 1024 * 1024,
+    }),
+    EnqueueInboxFollowup: async () => ({
+      itemId: "durable-cancel", disposition: "queued_followup", position: 1, paused: false,
+    }),
+  });
+  const { root, rerender } = await renderComposer({
+    running: true,
+    onCancel: async (itemIDs = []) => {
+      cancelledItemIDs = itemIDs;
+      return { discardedItemIds: [...itemIDs] };
+    },
+  });
+
+  await rerender({ insertRequest: { id: 81, text: "keep cancelled follow-up", mode: "replace" } });
+  const sendButton = document.querySelector(".composer__btn--send") as HTMLButtonElement | null;
+  if (!sendButton) throw new Error("running composer send button did not render");
+  await act(async () => {
+    sendButton.click();
+    await flushTimers();
+  });
+
+  const stopButton = document.querySelector(".composer__btn--stop") as HTMLButtonElement | null;
+  if (!stopButton) throw new Error("running composer stop button did not render");
+  await act(async () => {
+    stopButton.click();
+    await flushTimers();
+  });
+  eq(cancelledItemIDs.join(","), "durable-cancel", "stop scopes backend discard to the Composer-owned durable ID");
+  ok(document.querySelector(".composer-guidance-item") === null, "stop clears the local shelf after handing off durable IDs");
+  const textarea = document.querySelector("textarea") as HTMLTextAreaElement | null;
+  ok(textarea?.value.includes("keep cancelled follow-up") === true, "stop restores queued guidance to the editable draft");
+
+  await act(async () => {
+    root.unmount();
+  });
+  dom.window.close();
+}
+
+{
+  // Controller activation state is irrelevant to browser-side dispatch now:
+  // the durable item remains visible until an authoritative consume/ack event.
+  const dom = installDom();
+  let backendReadyQueued = false;
+  mockApp({
+    InboxSnapshot: async () => ({
+      revision: backendReadyQueued ? 1 : 0,
+      paused: false,
+      recovered: false,
+      items: backendReadyQueued ? [{
+        id: "durable-ready", intent: "followup", state: "queued", preview: "keep going once ready", byteSize: 21, position: 1,
+      }] : [],
+      itemsCount: backendReadyQueued ? 1 : 0,
+      bytes: backendReadyQueued ? 21 : 0,
+      maxItems: 64,
+      maxBytes: 64 * 1024 * 1024,
+    }),
+    EnqueueInboxFollowup: async () => {
+      backendReadyQueued = true;
+      return { itemId: "durable-ready", disposition: "queued_followup", position: 1, paused: false };
+    },
+  });
   const { root, calls, rerender } = await renderComposer({
     running: true,
     submitDisabled: false,
@@ -1048,10 +1494,14 @@ console.log("\ncomposer goal toggle");
   ok(document.querySelector(".composer-guidance-item") !== null, "queued message stays on the shelf while not ready");
 
   await rerender({ submitDisabled: false });
-  await waitFor("queued guidance auto-sent once the controller becomes ready", () => calls.send.length === 1);
+  await act(async () => {
+    await flushTimers();
+  });
+  eq(calls.send.length, 0, "controller readiness never triggers frontend auto-submit");
+  ok(document.querySelector(".composer-guidance-item") !== null, "durable item remains until backend consume/ack");
 
-  eq(calls.send.join(","), "keep going once ready", "queued guidance sends once submitDisabled clears, instead of being lost");
-  ok(document.querySelector(".composer-guidance-item") === null, "guidance shelf clears once the delayed send completes");
+  await rerender({ guidanceConsumedKey: "durable-ready-acked", guidanceConsumedText: "keep going once ready" });
+  ok(document.querySelector(".composer-guidance-item") === null, "backend consume event clears the acknowledged item");
 
   await act(async () => {
     root.unmount();
@@ -1254,6 +1704,119 @@ console.log("\ncomposer goal toggle");
 
 {
   const dom = installDom();
+  mockApp({
+    Commands: async () => [
+      { name: "writing-plans", description: "Write a plan", kind: "skill", color: "amber" },
+      { name: "review", description: "Review the result", kind: "skill" },
+      { name: "mcp", description: "Manage MCP servers", kind: "builtin", group: "integrations" },
+    ],
+    ListDirForTab: async () => [],
+    SearchFileRefsForTab: async () => [],
+  });
+  const { root, calls, rerender } = await renderComposer();
+
+  const initialText = "请用/writing-plans检查";
+  await replaceComposerDraft(rerender, 1900, initialText);
+  let textarea = document.querySelector("textarea") as HTMLTextAreaElement | null;
+  if (!textarea) throw new Error("composer textarea did not render for middle slash completion");
+  const slashCaret = "请用/writ".length;
+  await act(async () => {
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    await flushTimers();
+  });
+  await act(async () => {
+    textarea!.focus();
+    textarea!.setSelectionRange(slashCaret, slashCaret);
+    textarea!.dispatchEvent(new window.Event("select", { bubbles: true }));
+    textarea!.dispatchEvent(new window.KeyboardEvent("keyup", { key: "/", bubbles: true }));
+    await flushTimers();
+  });
+  await waitFor("middle slash command menu", () => Boolean(document.querySelector(".slashmenu")));
+
+  await act(async () => {
+    textarea!.dispatchEvent(new window.KeyboardEvent("keydown", {
+      key: "Enter",
+      bubbles: true,
+      cancelable: true,
+    }));
+    await flushTimers();
+  });
+
+  let richInput = document.querySelector(".composer__rich-input") as HTMLDivElement | null;
+  let tokens = richInput?.querySelectorAll<HTMLElement>(".composer-invocation-token");
+  if (!richInput || !tokens?.[0]) throw new Error("middle skill invocation did not render");
+  eq(richComposerTaskText(richInput), "请用检查", "first middle skill selection preserves surrounding text");
+  eq(
+    document.querySelector<HTMLElement>(".invocation-display--composer")?.style.getPropertyValue("--invocation-color"),
+    "#d59a2f",
+    "middle skill selection keeps its configured color",
+  );
+
+  const afterFirstToken = document.createRange();
+  afterFirstToken.setStartAfter(tokens[0]);
+  afterFirstToken.collapse(true);
+  document.getSelection()?.removeAllRanges();
+  document.getSelection()?.addRange(afterFirstToken);
+  await act(async () => {
+    dispatchPasteText(richInput!, "更多");
+    await flushTimers();
+  });
+  richInput = document.querySelector(".composer__rich-input") as HTMLDivElement | null;
+  if (!richInput) throw new Error("rich input disappeared after middle-skill paste");
+  eq(richComposerTaskText(richInput), "请用更多检查", "paste after a middle skill preserves the entity and suffix");
+  eq(
+    richInput.querySelectorAll(".composer-invocation-token").length,
+    1,
+    "paste after a middle skill keeps the selected entity",
+  );
+
+  await appendRichComposerInput(richInput, " /review");
+  richInput = document.querySelector(".composer__rich-input") as HTMLDivElement | null;
+  if (!richInput) throw new Error("rich input disappeared before the second skill selection");
+  const queryAtEnd = document.createRange();
+  queryAtEnd.selectNodeContents(richInput);
+  queryAtEnd.collapse(false);
+  document.getSelection()?.removeAllRanges();
+  document.getSelection()?.addRange(queryAtEnd);
+  await act(async () => {
+    richInput!.dispatchEvent(new window.KeyboardEvent("keyup", { key: "w", bubbles: true }));
+    await flushTimers();
+  });
+  await waitFor("second skill menu at the end", () => Boolean(document.querySelector(".slashmenu")));
+  await act(async () => {
+    richInput!.dispatchEvent(new window.KeyboardEvent("keydown", {
+      key: "Enter",
+      bubbles: true,
+      cancelable: true,
+    }));
+    await flushTimers();
+  });
+
+  richInput = document.querySelector(".composer__rich-input") as HTMLDivElement | null;
+  tokens = richInput?.querySelectorAll<HTMLElement>(".composer-invocation-token");
+  eq(tokens?.length, 2, "a second skill can be inserted after existing text and an entity");
+  const sendButton = document.querySelector(".composer__btn--send") as HTMLButtonElement | null;
+  if (!sendButton) throw new Error("send button did not render for middle skill submission");
+  await act(async () => {
+    sendButton.click();
+    await flushTimers();
+  });
+  eq(calls.structured[0]?.input, "请用更多检查", "middle skills submit the surrounding task text without slash tokens");
+  eq(
+    calls.structured[0]?.invocations.map((item) => item.name).join(","),
+    "writing-plans,review",
+    "multiple middle/end skills submit in visual order",
+  );
+  eq(calls.structured[0]?.invocations[0]?.offset, 2, "first middle skill keeps its text offset");
+
+  await act(async () => {
+    root.unmount();
+  });
+  dom.window.close();
+}
+
+{
+  const dom = installDom();
   let commandsCalls = 0;
   const slashArgInputs: string[] = [];
   let availableCommands: CommandInfo[] = [
@@ -1364,8 +1927,42 @@ console.log("\ncomposer goal toggle");
     document.activeElement === textareaAfterEntityRemoval,
     "removing the last entity hands focus to the textarea that replaces the rich input",
   );
+  const undoEntityRemoval = new window.KeyboardEvent("keydown", {
+    key: "z",
+    ctrlKey: true,
+    bubbles: true,
+    cancelable: true,
+  });
+  await act(async () => {
+    textareaAfterEntityRemoval.dispatchEvent(undoEntityRemoval);
+    await flushTimers();
+  });
+  eq(undoEntityRemoval.defaultPrevented, true, "Ctrl+Z restores a token removed by the rich composer");
+  ok(
+    document.querySelector(".invocation-display--composer") !== null,
+    "undoing the programmatic Backspace restores the selected skill",
+  );
+  const restoredRichInput = document.querySelector(".composer__rich-input") as HTMLDivElement | null;
+  if (!restoredRichInput) throw new Error("rich composer did not return after undoing token removal");
+  const redoEntityRemoval = new window.KeyboardEvent("keydown", {
+    key: "Z",
+    ctrlKey: true,
+    shiftKey: true,
+    bubbles: true,
+    cancelable: true,
+  });
+  await act(async () => {
+    restoredRichInput.dispatchEvent(redoEntityRemoval);
+    await flushTimers();
+  });
+  eq(redoEntityRemoval.defaultPrevented, true, "Ctrl+Shift+Z redoes rich token removal");
+  ok(
+    document.querySelector(".invocation-display--composer") === null,
+    "redoing the programmatic Backspace removes the selected skill again",
+  );
 
   await replaceComposerDraft(rerender, 2002, "/writing-plans");
+  await waitFor("plain composer after replacing the restored skill", () => Boolean(document.querySelector("textarea")));
   await waitFor("skill menu after removal", () => Boolean(document.querySelector(".slashmenu")));
   textarea = document.querySelector("textarea") as HTMLTextAreaElement | null;
   if (!textarea) throw new Error("composer textarea did not return after removing the skill");
@@ -1694,16 +2291,23 @@ console.log("\ncomposer goal toggle");
 }
 
 {
-  // An entity-only submit while a turn is running must queue as guidance,
-  // rendered with its slash form — not be dropped silently while
-  // clearSubmittedDraft wipes the composer.
+  // Entity-only input must remain structured while queued during a run.
   const dom = installDom();
+  let queued: { submit?: string; invocations?: StructuredInvocationSubmit["invocations"] } = {};
   mockApp({
     Commands: async () => [
       { name: "superpowers:writing-plans", description: "Write a plan", kind: "skill", plugin: "superpowers" },
     ],
     ListDirForTab: async () => [],
     SearchFileRefsForTab: async () => [],
+    InboxSnapshot: async () => ({
+      revision: 0, paused: false, recovered: false, items: [], itemsCount: 0,
+      bytes: 0, maxItems: 64, maxBytes: 64 * 1024 * 1024,
+    }),
+    EnqueueInboxFollowupWithInvocations: async (_tabId, _display, input, invocations) => {
+      queued = { submit: input, invocations };
+      return { itemId: "durable-entity", disposition: "queued_followup", position: 1, paused: false };
+    },
   });
   const { root, calls, rerender } = await renderComposer();
   await replaceComposerDraft(rerender, 4000, "/writing-plans");
@@ -1716,7 +2320,6 @@ console.log("\ncomposer goal toggle");
   });
   const queueRichInput = document.querySelector(".composer__rich-input") as HTMLDivElement | null;
   if (!queueRichInput) throw new Error("rich composer did not render for the running-queue entity");
-
   await rerender({ running: true });
   await act(async () => {
     queueRichInput.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
@@ -1727,8 +2330,9 @@ console.log("\ncomposer goal toggle");
     document.querySelector(".composer-guidance-item__text")?.textContent?.includes("/superpowers:writing-plans") === true,
     "the queued guidance shows the entity's slash form instead of dropping it silently",
   );
+  eq(`${queued.invocations?.[0]?.name}:${queued.invocations?.[0]?.kind}`, "superpowers:writing-plans:skill", "queued guidance preserves the selected skill invocation");
+  eq(queued.submit, "", "entity-only guidance keeps an empty explicit task instead of degrading to slash text");
   ok(document.querySelector(".composer__rich-input") === null, "queueing an entity-only submit clears the draft");
-
   await act(async () => {
     root.unmount();
   });
@@ -1799,6 +2403,154 @@ console.log("\ncomposer goal toggle");
   await act(async () => {
     root.unmount();
   });
+  dom.window.close();
+}
+
+{
+  const dom = installDom();
+  mockApp({
+    Commands: async () => [
+      { name: "review", description: "Review the current task", kind: "skill" },
+    ],
+    ListDirForTab: async () => [],
+    SearchFileRefsForTab: async () => [],
+  });
+  const sessionA = "session:project:/repo:topic-a:session-a";
+  const sessionB = "session:project:/repo:topic-b:session-b";
+  const { root, rerender } = await renderComposer({ sessionKey: sessionA });
+
+  await replaceComposerDraft(rerender, 5000, "x/review");
+  await waitFor("session A slash menu", () => Boolean(document.querySelector(".slashmenu")));
+
+  await rerender({ sessionKey: sessionB, insertRequest: null });
+  await replaceComposerDraft(rerender, 5001, "b");
+  const sessionBInput = document.querySelector("textarea") as HTMLTextAreaElement | null;
+  if (!sessionBInput) throw new Error("session B textarea did not render");
+  await act(async () => {
+    sessionBInput.focus();
+    sessionBInput.setSelectionRange(1, 1);
+    sessionBInput.dispatchEvent(new window.KeyboardEvent("keyup", { key: "b", bubbles: true }));
+    await flushTimers();
+  });
+
+  await rerender({ sessionKey: sessionA, insertRequest: null });
+  eq(
+    (document.querySelector("textarea") as HTMLTextAreaElement | null)?.value,
+    "x/review",
+    "switching back restores session A slash draft",
+  );
+  await waitFor(
+    "restored session A slash menu",
+    () => Boolean(document.querySelector(".slashmenu")),
+  );
+  ok(
+    document.querySelector(".slashmenu") !== null,
+    "restoring a draft recomputes slash completion from its end caret",
+  );
+
+  await act(async () => {
+    root.unmount();
+  });
+  dom.window.close();
+}
+
+{
+  const dom = installDom();
+  mockApp({
+    Commands: async () => [
+      { name: "review", description: "Review the current task", kind: "skill" },
+    ],
+    ListDirForTab: async () => [],
+    SearchFileRefsForTab: async () => [],
+  });
+  const sessionA = "session:project:/repo:rich-topic-a:rich-session-a";
+  const sessionB = "session:project:/repo:rich-topic-b:rich-session-b";
+  const realRequestAnimationFrame = globalThis.requestAnimationFrame;
+  const queuedComposerFrames: FrameRequestCallback[] = [];
+  globalThis.requestAnimationFrame = (callback) => {
+    queuedComposerFrames.push(callback);
+    return queuedComposerFrames.length;
+  };
+  const { root, rerender } = await renderComposer({ sessionKey: sessionA });
+
+  await replaceComposerDraft(rerender, 6000, "/review");
+  await waitFor("session A first skill menu", () => Boolean(document.querySelector(".slashmenu")));
+  const textarea = document.querySelector("textarea") as HTMLTextAreaElement | null;
+  if (!textarea) throw new Error("session A textarea did not render");
+  await act(async () => {
+    textarea.dispatchEvent(new window.KeyboardEvent("keydown", {
+      key: "Enter",
+      bubbles: true,
+      cancelable: true,
+    }));
+    await flushTimers();
+  });
+
+  let richInput = document.querySelector(".composer__rich-input") as HTMLDivElement | null;
+  if (!richInput) throw new Error("session A rich input did not render");
+  await appendRichComposerInput(richInput, " /review");
+  richInput = document.querySelector(".composer__rich-input") as HTMLDivElement | null;
+  if (!richInput) throw new Error("session A rich input disappeared");
+  const queryAtEnd = document.createRange();
+  queryAtEnd.selectNodeContents(richInput);
+  queryAtEnd.collapse(false);
+  document.getSelection()?.removeAllRanges();
+  document.getSelection()?.addRange(queryAtEnd);
+  await act(async () => {
+    richInput.dispatchEvent(new window.KeyboardEvent("keyup", { key: "w", bubbles: true }));
+    await flushTimers();
+  });
+  await waitFor("session A second skill menu", () => Boolean(document.querySelector(".slashmenu")));
+
+  await rerender({ sessionKey: sessionB, insertRequest: null });
+  await replaceComposerDraft(rerender, 6001, "b");
+  await rerender({ sessionKey: sessionA, insertRequest: null });
+  await act(async () => {
+    let frameTime = 0;
+    while (queuedComposerFrames.length > 0) {
+      queuedComposerFrames.shift()?.(frameTime += 16);
+    }
+    await flushTimers();
+  });
+  richInput = document.querySelector(".composer__rich-input") as HTMLDivElement | null;
+  if (!richInput) throw new Error("session A rich input was not restored");
+  eq(richComposerTaskText(richInput), " /review", "switching back restores the rich invocation draft");
+  await waitFor(
+    "restored session A rich slash menu",
+    () => Boolean(document.querySelector(".slashmenu")),
+  );
+  ok(
+    document.querySelector(".slashmenu") !== null,
+    "restoring a rich invocation draft recomputes slash completion from its end caret",
+  );
+
+  await act(async () => {
+    richInput.dispatchEvent(new window.KeyboardEvent("keydown", {
+      key: "Enter",
+      bubbles: true,
+      cancelable: true,
+    }));
+    await flushTimers();
+  });
+  richInput = document.querySelector(".composer__rich-input") as HTMLDivElement | null;
+  eq(
+    richInput?.querySelectorAll(".composer-invocation-token").length,
+    2,
+    "the restored rich slash query can select a second skill",
+  );
+  eq(richInput ? richComposerTaskText(richInput) : "", " ", "selecting the restored query replaces its slash token");
+
+  await rerender({ sessionKey: sessionB, insertRequest: null });
+  eq(
+    (document.querySelector("textarea") as HTMLTextAreaElement | null)?.value,
+    "b",
+    "switching away again preserves the other session draft",
+  );
+
+  await act(async () => {
+    root.unmount();
+  });
+  globalThis.requestAnimationFrame = realRequestAnimationFrame;
   dom.window.close();
 }
 

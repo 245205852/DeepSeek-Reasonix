@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"reasonix/internal/agent"
+	"reasonix/internal/boot"
 	"reasonix/internal/config"
 	"reasonix/internal/event"
 )
@@ -34,14 +36,14 @@ func TestSessionLeaseHelpersConcurrentAccess(t *testing.T) {
 	wg.Add(3)
 	go func() {
 		defer wg.Done()
-		for i := 0; i < iterations; i++ {
+		for range iterations {
 			_ = tabA.ensureSessionLease(path)
 			_ = tabA.sessionLeaseRuntimeKey()
 		}
 	}()
 	go func() {
 		defer wg.Done()
-		for i := 0; i < iterations; i++ {
+		for range iterations {
 			// The applyRuntimeTab transfer shape: move A's lease to B and back.
 			tabB.adoptSessionLease(tabA.takeSessionLease())
 			tabA.adoptSessionLease(tabB.takeSessionLease())
@@ -49,7 +51,7 @@ func TestSessionLeaseHelpersConcurrentAccess(t *testing.T) {
 	}()
 	go func() {
 		defer wg.Done()
-		for i := 0; i < iterations; i++ {
+		for range iterations {
 			tabA.releaseSessionLease()
 		}
 	}()
@@ -140,13 +142,13 @@ func TestTabEventSinkEmitConcurrentRebind(t *testing.T) {
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		for i := 0; i < iterations; i++ {
+		for range iterations {
 			sink.Emit(event.Event{Kind: event.Notice, Text: "hammer"})
 		}
 	}()
 	go func() {
 		defer wg.Done()
-		for i := 0; i < iterations; i++ {
+		for i := range iterations {
 			sink.setBinding(fmt.Sprintf("tab-%d", i%2), nil)
 			sink.clearContext()
 		}
@@ -154,6 +156,117 @@ func TestTabEventSinkEmitConcurrentRebind(t *testing.T) {
 	wg.Wait()
 	if tabID, _ := sink.binding(); tabID == "" {
 		t.Fatal("sink lost its tab binding")
+	}
+}
+
+func TestModeRebuildAndABANavigationFenceLeaseFailureAndOldEpochEvent(t *testing.T) {
+	app, tab, oldCtrl, pathA, pathB, loadedB := newAtomicRebindTestApp(t)
+	oldSink := tab.sink
+	app.mu.RLock()
+	epochA := app.sessionRuntimeViewLocked(tab).Epoch
+	app.mu.RUnlock()
+
+	restored := make(chan struct{})
+	continueCommit := make(chan struct{})
+	oldEvent := make(chan wireEventTab, 1)
+	var capturedOldEvent wireEventTab
+	oldSink.runtimeEvents.emit = func(_ context.Context, name string, payload ...any) {
+		if name != eventChannel || len(payload) != 1 {
+			return
+		}
+		if wire, ok := payload[0].(wireEventTab); ok && wire.Text == "retired runtime event" {
+			oldEvent <- wire
+		}
+	}
+	var blockOnce sync.Once
+	app.rebindCandidateHook = func(stage string) error {
+		switch stage {
+		case "restored":
+			blockOnce.Do(func() {
+				close(restored)
+				<-continueCommit
+			})
+		case "committed":
+			oldSink.Emit(event.Event{Kind: event.Notice, Text: "retired runtime event"})
+			select {
+			case capturedOldEvent = <-oldEvent:
+			case <-time.After(5 * time.Second):
+				return errors.New("retired runtime event was not emitted")
+			}
+		}
+		return nil
+	}
+
+	rebindDone := make(chan error, 1)
+	go func() {
+		rebindDone <- app.rebindTabToLoadedSessionPath(tab, pathB, loadedB)
+	}()
+	select {
+	case <-restored:
+	case <-time.After(10 * time.Second):
+		t.Fatal("A to B rebind did not reach restored candidate")
+	}
+
+	// Concurrent deprecated mode call must not interleave with the rebind
+	// transaction or publish a half-updated profile.
+	modeDone := make(chan error, 1)
+	go func() {
+		modeDone <- app.SetTokenModeForTab(tab.ID, boot.TokenModeFull)
+	}()
+	close(continueCommit)
+	if err := <-rebindDone; err != nil {
+		t.Fatalf("A to B rebind: %v", err)
+	}
+	if err := <-modeDone; err != nil {
+		t.Fatalf("SetTokenModeForTab after A to B: %v", err)
+	}
+
+	stale := capturedOldEvent
+	app.mu.RLock()
+	epochB := app.sessionRuntimeViewLocked(tab).Epoch
+	app.mu.RUnlock()
+	if stale.RuntimeEpoch != epochA || epochB == "" || epochB == epochA {
+		t.Fatalf("epoch fence stale=%q source=%q target=%q", stale.RuntimeEpoch, epochA, epochB)
+	}
+	if app.controllerForTab(tab) == oldCtrl ||
+		sessionRuntimeKey(tab.currentSessionPath()) != sessionRuntimeKey(pathB) ||
+		currentTabTokenMode(tab) != boot.TokenModeFull {
+		t.Fatalf("A to B plus SetTokenModeForTab did not converge: ctrl=%p path=%q token=%q",
+			app.controllerForTab(tab), tab.currentSessionPath(), currentTabTokenMode(tab))
+	}
+
+	// A is now free. Hold it as an external target, then attempt B to A. The
+	// failed return leg must keep the rebuilt B controller, lease, path, epoch,
+	// and full token profile unchanged.
+	app.rebindCandidateHook = nil
+	holderA, err := agent.TryAcquireSessionLease(pathA)
+	if err != nil {
+		t.Fatalf("hold A before return navigation: %v", err)
+	}
+	defer holderA.Release()
+	loadedA, err := agent.LoadSession(pathA)
+	if err != nil {
+		t.Fatalf("load A: %v", err)
+	}
+	ctrlB := app.controllerForTab(tab)
+	err = app.rebindTabToLoadedSessionPath(tab, pathA, loadedA)
+	if !errors.Is(err, agent.ErrSessionLeaseHeld) {
+		t.Fatalf("B to A error = %v, want ErrSessionLeaseHeld", err)
+	}
+	if app.controllerForTab(tab) != ctrlB ||
+		sessionRuntimeKey(tab.currentSessionPath()) != sessionRuntimeKey(pathB) ||
+		tab.sessionLeaseRuntimeKey() != sessionRuntimeKey(pathB) ||
+		currentTabTokenMode(tab) != boot.TokenModeFull {
+		t.Fatalf("failed B to A changed B runtime: ctrl=%p path=%q lease=%q token=%q",
+			app.controllerForTab(tab), tab.currentSessionPath(), tab.sessionLeaseRuntimeKey(), currentTabTokenMode(tab))
+	}
+	app.mu.RLock()
+	finalView := app.sessionRuntimeViewLocked(tab)
+	targetAlias := app.runtimeBySessionKey[sessionRuntimeKey(pathA)]
+	app.mu.RUnlock()
+	if finalView.Phase != sessionRuntimeReady || finalView.Epoch != epochB || targetAlias != nil {
+		t.Fatalf("failed B to A runtime = phase %q epoch %q aliasA=%#v, want ready/%q/no alias",
+			finalView.Phase, finalView.Epoch, targetAlias, epochB)
 	}
 }
 
@@ -459,18 +572,17 @@ func TestMetaForTabConcurrentWithBuildSwap(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		for i := 0; i < iterations; i++ {
+		for i := range iterations {
 			app.mu.Lock()
 			tab.Ready = !tab.Ready
 			tab.Label = fmt.Sprintf("model-%d", i)
 			tab.StartupErr = ""
 			tab.model = fmt.Sprintf("provider/m%d", i)
 			tab.goal = fmt.Sprintf("goal-%d", i)
-			tab.tokenMode = "full"
 			app.mu.Unlock()
 		}
 	}()
-	for i := 0; i < iterations; i++ {
+	for range iterations {
 		meta := app.MetaForTab("tab")
 		if meta.EventChannel == "" {
 			t.Fatal("MetaForTab returned zero meta for a live tab")

@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-// --- Runner construction ---
+// Runner construction
 
 func TestNewRunnerNil(t *testing.T) {
 	var r *Runner
@@ -43,7 +43,28 @@ func TestNewRunnerWithHooks(t *testing.T) {
 	}
 }
 
-// --- Runner.PreToolUse ---
+func TestToolMutationHooksEnabled(t *testing.T) {
+	tests := []struct {
+		name  string
+		event Event
+		want  bool
+	}{
+		{name: "session hook", event: SessionStart, want: false},
+		{name: "pre tool", event: PreToolUse, want: true},
+		{name: "post tool", event: PostToolUse, want: true},
+		{name: "post tool failure", event: PostToolUseFailure, want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := NewRunner([]ResolvedHook{{Event: tt.event}}, "/tmp", nil, nil)
+			if got := r.ToolMutationHooksEnabled(); got != tt.want {
+				t.Fatalf("ToolMutationHooksEnabled() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// Runner.PreToolUse
 
 func TestRunnerPreToolUseNoHooks(t *testing.T) {
 	r := NewRunner(nil, "/tmp", nil, nil)
@@ -89,7 +110,7 @@ func TestRunnerPreToolUseBlock(t *testing.T) {
 	}
 }
 
-// --- Runner.PostToolUse ---
+// Runner.PostToolUse
 
 func TestRunnerPostToolUseNoHooks(t *testing.T) {
 	r := NewRunner(nil, "/tmp", nil, nil)
@@ -129,7 +150,7 @@ func TestRunnerPostToolUseFailurePreservesNativeObserver(t *testing.T) {
 	}
 }
 
-// --- Runner.PermissionRequest ---
+// Runner.PermissionRequest
 
 func TestRunnerPermissionRequestPayload(t *testing.T) {
 	hooks := []ResolvedHook{
@@ -205,7 +226,7 @@ func TestRunnerPermissionRequestClaudeDecisions(t *testing.T) {
 	}
 }
 
-// --- Runner.PromptSubmit ---
+// Runner.PromptSubmit
 
 func TestRunnerPromptSubmitBlock(t *testing.T) {
 	hooks := []ResolvedHook{
@@ -221,7 +242,7 @@ func TestRunnerPromptSubmitBlock(t *testing.T) {
 	}
 }
 
-// --- Runner.Stop ---
+// Runner.Stop
 
 func TestRunnerStopNoHooks(t *testing.T) {
 	r := NewRunner(nil, "/tmp", nil, nil)
@@ -359,7 +380,7 @@ func TestRunnerClaudeLifecyclePayloadsShareSessionID(t *testing.T) {
 	}
 }
 
-// --- Runner.PostLLMCall ---
+// Runner.PostLLMCall
 
 func TestRunnerHasPostLLMCall(t *testing.T) {
 	with := NewRunner([]ResolvedHook{{HookConfig: HookConfig{Command: "x"}, Event: PostLLMCall}}, "/tmp", nil, nil)
@@ -406,7 +427,7 @@ func TestRunnerPostLLMCallKeepsOriginal(t *testing.T) {
 	}
 }
 
-// --- FormatOutcome ---
+// FormatOutcome
 
 func TestFormatOutcomePass(t *testing.T) {
 	o := Outcome{
@@ -435,7 +456,7 @@ func TestFormatOutcomeWithDetail(t *testing.T) {
 	}
 }
 
-// --- clipRunes ---
+// clipRunes
 
 func TestClipRunes(t *testing.T) {
 	if got := clipRunes("short", 10); got != "short" {
@@ -452,7 +473,7 @@ func TestClipRunes(t *testing.T) {
 	}
 }
 
-// --- payload JSON ---
+// payload JSON
 
 func TestPayloadJSON(t *testing.T) {
 	args := json.RawMessage(`{"command":"echo hi"}`)
@@ -482,7 +503,7 @@ func TestPayloadJSON(t *testing.T) {
 	}
 }
 
-// --- capping behavior ---
+// capping behavior
 
 func TestCappedBuffer(t *testing.T) {
 	var cb cappedBuffer
@@ -512,7 +533,7 @@ func TestCappedBuffer(t *testing.T) {
 	}
 }
 
-// --- IsBlocking ---
+// IsBlocking
 
 func TestIsBlocking(t *testing.T) {
 	if !IsBlocking(PreToolUse) {
@@ -529,7 +550,7 @@ func TestIsBlocking(t *testing.T) {
 	}
 }
 
-// --- defaultTimeout ---
+// defaultTimeout
 
 func TestDefaultTimeout(t *testing.T) {
 	if defaultTimeout(PreToolUse) != 5*time.Second {

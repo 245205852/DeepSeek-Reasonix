@@ -33,7 +33,7 @@ func testAppWithOrderedTabs(t *testing.T, active string, ids ...string) *App {
 }
 
 func installNoopRuntimeEvents(app *App, sinks ...*tabEventSink) {
-	emit := func(context.Context, string, ...interface{}) {}
+	emit := func(context.Context, string, ...any) {}
 	if app != nil {
 		app.runtimeEvents.emit = emit
 	}
@@ -664,18 +664,16 @@ func TestListTabsRepairsStaleOrderWithoutRacing(t *testing.T) {
 	if testing.Short() {
 		iterations = 5
 	}
-	for i := 0; i < 8; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range 8 {
+		wg.Go(func() {
 			<-start
-			for j := 0; j < iterations; j++ {
+			for range iterations {
 				if got := strings.Join(tabIDs(app.ListTabs()), ","); got != "a,b,c" {
 					errs <- got
 					return
 				}
 			}
-		}()
+		})
 	}
 	close(start)
 	wg.Wait()
@@ -918,8 +916,14 @@ func TestBuildTabControllerBlocksWhenSessionLeaseHeld(t *testing.T) {
 	if tab.Ctrl != nil {
 		t.Fatalf("tab controller = %T, want nil when lease is held", tab.Ctrl)
 	}
-	if !tab.Ready {
-		t.Fatal("tab should be ready with startup error")
+	if tab.Ready {
+		t.Fatal("tab with no controller must not report ready")
+	}
+	app.mu.RLock()
+	runtimeView := app.sessionRuntimeViewLocked(tab)
+	app.mu.RUnlock()
+	if runtimeView.Phase != sessionRuntimeLeaseBlocked {
+		t.Fatalf("runtime phase = %q, want %q", runtimeView.Phase, sessionRuntimeLeaseBlocked)
 	}
 	// The surfaced startup error is the sanitized busy message: the raw lease
 	// error would leak the session path and the holder's host-pid-writer id
@@ -1126,8 +1130,9 @@ func TestOpenGlobalTabResolvesTopicToLatestSessionRuntime(t *testing.T) {
 		t.Fatalf("visible session path = %q, want %q", got, newPath)
 	}
 	history := visible.Ctrl.History()
-	if len(history) == 0 || history[0].Content != "new session prompt" {
-		t.Fatalf("visible history = %+v, want latest session prompt", history)
+	if len(history) != 2 || string(history[0].Role) != "system" || strings.TrimSpace(history[0].Content) == "" ||
+		string(history[1].Role) != "user" || history[1].Content != "new session prompt" {
+		t.Fatalf("visible history = %+v, want fresh system prompt and latest session prompt", history)
 	}
 
 	close(runner.release)

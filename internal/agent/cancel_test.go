@@ -130,7 +130,7 @@ func (closedStreamProvider) Stream(context.Context, provider.Request) (<-chan pr
 }
 
 func TestCanceledContextClosedProviderStreamReturnsCancel(t *testing.T) {
-	for i := 0; i < 100; i++ {
+	for i := range 100 {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
 
@@ -167,6 +167,206 @@ func TestCancelDuringStuckProviderStreamReturnsPromptly(t *testing.T) {
 	}
 }
 
+type activeReasoningUntilCancelProvider struct{}
+
+func (activeReasoningUntilCancelProvider) Name() string { return "active-reasoning" }
+
+func (p activeReasoningUntilCancelProvider) Stream(ctx context.Context, _ provider.Request) (<-chan provider.Chunk, error) {
+	ch := make(chan provider.Chunk)
+	go func() {
+		defer close(ch)
+		for offset := 224; ; offset += 4 {
+			select {
+			case <-ctx.Done():
+				return
+			case ch <- provider.Chunk{Type: provider.ChunkReasoning, Text: fmt.Sprintf("%d unknown\n", offset)}:
+			}
+		}
+	}()
+	return ch, nil
+}
+
+type finiteReasoningThenTextProvider struct {
+	canceled        chan struct{}
+	reasoning, text string
+	finished        bool
+}
+
+func (finiteReasoningThenTextProvider) Name() string { return "finite-reasoning" }
+
+func (p *finiteReasoningThenTextProvider) Stream(ctx context.Context, _ provider.Request) (<-chan provider.Chunk, error) {
+	ch := make(chan provider.Chunk)
+	go func() {
+		defer close(ch)
+		defer close(p.canceled)
+		select {
+		case <-ctx.Done():
+			return
+		case ch <- provider.Chunk{Type: provider.ChunkReasoning, Text: p.reasoning}:
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case ch <- provider.Chunk{Type: provider.ChunkText, Text: p.text}:
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case ch <- provider.Chunk{Type: provider.ChunkDone}:
+			p.finished = true
+		}
+	}()
+	return ch, nil
+}
+
+func TestReasoningByteGuardDoesNotAbortTurn(t *testing.T) {
+	sink := &recordSink{}
+	reasoning := strings.Repeat("abcd", 64)
+	prov := testutil.NewMock("m", testutil.Turn{Reasoning: reasoning, Text: "svg done"})
+	a := New(prov, tool.NewRegistry(), NewSession(""), Options{ReasoningByteLimit: 32}, sink)
+
+	if err := a.Run(context.Background(), "draw the compound bow"); err != nil {
+		t.Fatalf("Run error = %v, byte guard must not fail the turn", err)
+	}
+	if got := sink.kinds(event.Text); len(got) == 0 || !strings.Contains(got[0].Text, "svg done") {
+		t.Fatal("visible answer was dropped after the reasoning buffer cap")
+	}
+	for _, notice := range sink.kinds(event.Notice) {
+		if strings.Contains(notice.Text, "client reasoning safety limit") {
+			t.Fatalf("unexpected abort notice %q", notice.Text)
+		}
+	}
+}
+
+func TestDefaultReasoningGuardAllowsFormer128KiBStream(t *testing.T) {
+	// 128KiB is ~32K estimated tokens — a legitimate DeepSeek V4 Pro think.
+	reasoning := strings.Repeat("abcd", 128*1024/4+1)
+	prov := testutil.NewMock("m", testutil.Turn{Reasoning: reasoning, Text: "svg done"})
+	a := New(prov, tool.NewRegistry(), NewSession(""), Options{}, event.Discard)
+	if err := a.Run(context.Background(), "draw the compound bow"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestReasoningByteGuardDoesNotCancelProviderStream(t *testing.T) {
+	canceled := make(chan struct{})
+	prov := &finiteReasoningThenTextProvider{canceled: canceled, reasoning: strings.Repeat("x", 64), text: "done"}
+	a := New(prov, tool.NewRegistry(), NewSession(""), Options{ReasoningByteLimit: 16}, event.Discard)
+
+	if err := a.Run(context.Background(), "keep generating"); err != nil {
+		t.Fatalf("Run error = %v, byte guard must not cancel the provider", err)
+	}
+	select {
+	case <-canceled:
+	case <-time.After(time.Second):
+		t.Fatal("provider stream did not finish after the answer")
+	}
+	if !prov.finished {
+		t.Fatal("provider stream was cut off before the final text")
+	}
+}
+
+func TestInterruptedReasoningEmitsBestEffortUsage(t *testing.T) {
+	sink := &recordSink{}
+	a := New(activeReasoningUntilCancelProvider{}, tool.NewRegistry(), NewSession(""), Options{}, sink)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- a.Run(ctx, "parse this binary by offset")
+	}()
+
+	deadline := time.After(500 * time.Millisecond)
+	for len(sink.kinds(event.Reasoning)) == 0 {
+		select {
+		case <-deadline:
+			t.Fatal("timed out waiting for streamed reasoning")
+		default:
+			time.Sleep(time.Millisecond)
+		}
+	}
+	cancel()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Run error = %v, want context cancellation", err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("Run did not return after cancellation")
+	}
+
+	usages := sink.kinds(event.Usage)
+	if len(usages) != 1 {
+		t.Fatalf("usage events = %d, want one best-effort usage event", len(usages))
+	}
+	if u := usages[0].Usage; u == nil || u.FinishReason != "interrupted" || !u.Estimated || u.TotalTokens <= 0 || u.ReasoningTokens <= 0 {
+		t.Fatalf("usage = %+v, want interrupted finish with estimated reasoning tokens", u)
+	}
+}
+
+func TestReasoningByteGuardDoesNotSetProviderOutputBudget(t *testing.T) {
+	tests := []struct {
+		name  string
+		limit int
+	}{
+		{name: "default"},
+		{name: "custom", limit: 65},
+		{name: "disabled", limit: -1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			prov := testutil.NewMock("m", testutil.Turn{Text: "done"})
+			a := New(prov, tool.NewRegistry(), NewSession(""), Options{ReasoningByteLimit: tt.limit}, event.Discard)
+			if err := a.Run(context.Background(), "go"); err != nil {
+				t.Fatal(err)
+			}
+			req := prov.LastRequest()
+			if req == nil || req.MaxTokens != 0 {
+				t.Fatalf("request = %+v, reasoning bytes must not become a total output budget", req)
+			}
+		})
+	}
+
+	t.Run("stable across tool loop", func(t *testing.T) {
+		prov := testutil.NewMock("m",
+			testutil.Turn{ToolCalls: []provider.ToolCall{{ID: "call-1", Name: "read", Arguments: `{}`}}},
+			testutil.Turn{Text: "done"},
+		)
+		registry := tool.NewRegistry()
+		registry.Add(fakeTool{name: "read", readOnly: true})
+		a := New(prov, registry, NewSession(""), Options{MaxOutputTokens: 8192}, event.Discard)
+		if err := a.Run(context.Background(), "go"); err != nil {
+			t.Fatal(err)
+		}
+		requests := prov.Requests()
+		if len(requests) != 2 {
+			t.Fatalf("requests = %d, want two provider turns", len(requests))
+		}
+		for i, req := range requests {
+			if req.MaxTokens != 8192 {
+				t.Fatalf("request %d max_tokens = %d, want stable 8192", i+1, req.MaxTokens)
+			}
+		}
+	})
+}
+
+func TestBestEffortStreamUsageMarksOnlySyntheticCountsEstimated(t *testing.T) {
+	exact := &provider.Usage{PromptTokens: 10, CompletionTokens: 20, TotalTokens: 30, ReasoningTokens: 15}
+	got := bestEffortStreamUsage(exact, 4, 4, "interrupted")
+	if got.Estimated {
+		t.Fatalf("usage = %+v, exact counts should remain exact", got)
+	}
+	if got.FinishReason != "interrupted" {
+		t.Fatalf("finish reason = %q, want interrupted", got.FinishReason)
+	}
+
+	got = bestEffortStreamUsage(exact, 200, 400, "interrupted")
+	if !got.Estimated || got.CompletionTokens != 150 || got.ReasoningTokens != 100 || got.TotalTokens != 160 {
+		t.Fatalf("usage = %+v, want byte-derived estimates", got)
+	}
+}
+
 // TestCancelDuringToolExecutionBreaksOutPromptly verifies that when the context
 // is cancelled while tools are executing, the agent loop breaks out immediately
 // rather than continuing to execute remaining tools.
@@ -194,7 +394,7 @@ func TestCancelDuringToolExecutionBreaksOutPromptly(t *testing.T) {
 	start := time.Now()
 	done := make(chan error, 1)
 	go func() {
-		done <- a.Run(ctx, "test cancel during tool execution")
+		done <- a.Run(withNoClosedLoop(ctx), "test cancel during tool execution")
 	}()
 
 	// Cancel after a short delay to simulate user pressing Esc mid-execution
@@ -260,7 +460,7 @@ func TestCancelDuringBatchStopsRemainingTools(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- a.Run(ctx, "test batch cancel")
+		done <- a.Run(withNoClosedLoop(ctx), "test batch cancel")
 	}()
 
 	// Cancel while tool2 is still running (after tool1 completes but during tool2)
@@ -347,7 +547,7 @@ func TestCancelBeforeParallelBatchSkipsTheWholeRemainingBatch(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- a.Run(ctx, "test cancel before parallel batch")
+		done <- a.Run(withNoClosedLoop(ctx), "test cancel before parallel batch")
 	}()
 	go func() {
 		time.Sleep(300 * time.Millisecond)
@@ -395,7 +595,7 @@ func TestCancelInsideLargeParallelBatchStopsSchedulingNewTools(t *testing.T) {
 	reg.Add(trackingTool{name: "readonly_tracking", readOnly: true})
 
 	var calls []provider.ToolCall
-	for i := 0; i < 12; i++ {
+	for i := range 12 {
 		calls = append(calls, provider.ToolCall{
 			ID:        fmt.Sprintf("call-%02d", i),
 			Name:      "readonly_tracking",
@@ -450,7 +650,7 @@ func TestCancelInsideLargeParallelBatchStopsSchedulingNewTools(t *testing.T) {
 func toolMessagesByID(msgs []provider.Message) map[string]string {
 	out := make(map[string]string)
 	for _, m := range msgs {
-		if m.Role == provider.RoleTool {
+		if m.Role == provider.RoleTool && !m.LocalOnly {
 			out[m.ToolCallID] = m.Content
 		}
 	}

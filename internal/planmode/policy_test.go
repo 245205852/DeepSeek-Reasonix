@@ -14,7 +14,7 @@ func TestDecideLeavesSafetyToPermissionsAndSandbox(t *testing.T) {
 		{Name: "read_file", ReadOnly: true},
 		{Name: "write_file", ReadOnly: false},
 		{Name: "bash", ReadOnly: false},
-		{Name: "mcp__srv__query", ReadOnly: true, UntrustedReadOnly: true},
+		{Name: "mcp__srv__query", ReadOnly: true},
 		{Name: "mcp__srv__write", ReadOnly: false},
 		{Name: "self_reported_writer", ReadOnly: false, Safety: PlanSafetySafe},
 	} {

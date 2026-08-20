@@ -6,10 +6,10 @@ import (
 	"fmt"
 	"os"
 	"strings"
-	"time"
 
 	"reasonix/internal/command"
 	"reasonix/internal/config"
+	"reasonix/internal/hook"
 	"reasonix/internal/installsource"
 	"reasonix/internal/pluginpkg"
 )
@@ -37,15 +37,6 @@ type PluginView struct {
 	MCPServerDetails    []PluginMCPServerView          `json:"mcpServerDetails,omitempty"`
 	Warnings            []string                       `json:"warnings,omitempty"`
 	Error               string                         `json:"error,omitempty"`
-	Verification        *PluginVerificationView        `json:"verification,omitempty"`
-}
-
-type PluginVerificationView struct {
-	CatalogEntryID  string `json:"catalogEntryId"`
-	Commit          string `json:"commit"`
-	PackageSHA256   string `json:"packageSha256"`
-	VerifiedAt      string `json:"verifiedAt"`
-	CatalogSequence uint64 `json:"catalogSequence"`
 }
 
 type PluginInstallOptions struct {
@@ -122,13 +113,6 @@ func (a *App) Plugins() []PluginView {
 			Root:         pluginpkg.ResolveRoot(config.ReasonixHomeDir(), p.Root),
 			ManifestKind: p.ManifestKind,
 			Enabled:      p.Enabled,
-		}
-		if p.Verification != nil && pluginpkg.VerificationValid(config.ReasonixHomeDir(), p) {
-			view.Verification = &PluginVerificationView{
-				CatalogEntryID: p.Verification.CatalogEntryID, Commit: p.Verification.Commit,
-				PackageSHA256: p.Verification.PackageSHA256, VerifiedAt: p.Verification.VerifiedAt.Format(time.RFC3339),
-				CatalogSequence: p.Verification.CatalogSequence,
-			}
 		}
 		if pkg, warnings, err := pluginpkg.ParseDir(view.Root); err == nil {
 			applyPluginPackageDetails(&view, pkg, warnings)
@@ -229,6 +213,7 @@ func (a *App) InstallPlugin(source string, opts PluginInstallOptions) (string, e
 	if err != nil {
 		return "", err
 	}
+	a.bumpExtensionGeneration()
 	a.invalidateSkillRootsCache()
 	if rebuildErr := a.rebuild(); rebuildErr != nil {
 		if _, ok := a.deferredRebuildWarning("plugins", rebuildErr); ok {
@@ -243,22 +228,40 @@ func (a *App) RemovePlugin(name string) error {
 	if err := a.ensureActiveTabRebuildAllowed("plugins"); err != nil {
 		return err
 	}
+	// Uninstall disconnects the plugin's MCP servers, so the whole flow holds
+	// the MCP lifecycle lock: an unlocked disconnect can interleave with a
+	// launch-authorization preflight, which would then relaunch the just-removed server from
+	// its stale snapshot.
+	defer a.lockMCPMutation("remove-plugin")()
+	// A global uninstall touches every runtime, so gate every visible and
+	// detached tab — not only the active one — and hold the gates through the
+	// uninstall and rebuild. The re-check runs under the gates because the
+	// lifecycle-lock wait can outlast the pre-lock check: work that started
+	// mid-wait must fail the removal before anything is deleted, and no tab
+	// may start a turn against a half-removed plugin.
+	releaseGates, err := a.lockRuntimeTurnGates("plugins", nil)
+	if err != nil {
+		return err
+	}
+	defer releaseGates()
+	tab := a.activeTab()
+	if tab == nil && a.ctx != nil {
+		return fmt.Errorf("no active tab")
+	}
 	raw, _ := json.Marshal(map[string]any{"op": "uninstall", "kind": "plugin", "name": strings.TrimSpace(name), "scope": "global"})
 	tl := installsource.NewTool(installsource.Options{
-		ProjectRoot: a.activeWorkspaceRoot(),
-		OnDisconnect: func(serverName string) bool {
-			tab := a.activeTab()
-			if tab == nil || tab.Ctrl == nil {
-				return false
-			}
-			return tab.Ctrl.DisconnectMCPServer(serverName)
-		},
+		ProjectRoot:  a.activeWorkspaceRoot(),
+		OnDisconnect: a.disconnectMCPServerAllRuntimes,
 	})
 	if _, err := tl.Execute(context.Background(), raw); err != nil {
 		return err
 	}
+	a.bumpExtensionGeneration()
 	a.invalidateSkillRootsCache()
-	if err := a.rebuild(); err != nil {
+	if tab == nil || a.ctx == nil {
+		return nil
+	}
+	if err := a.rebuildSettingTurnLocked("plugins", tab, true, false); err != nil {
 		if _, ok := a.deferredRebuildWarning("plugins", err); ok {
 			return nil
 		}
@@ -274,6 +277,7 @@ func (a *App) SetPluginEnabled(name string, enabled bool) error {
 	if err := pluginpkg.SetEnabled(config.ReasonixHomeDir(), strings.TrimSpace(name), enabled); err != nil {
 		return err
 	}
+	a.bumpExtensionGeneration()
 	a.invalidateSkillRootsCache()
 	if err := a.rebuild(); err != nil {
 		if _, ok := a.deferredRebuildWarning("plugins", err); ok {
@@ -313,6 +317,22 @@ func (a *App) PluginDoctor(name string) PluginView {
 		if _, err := os.Stat(p.Root); err != nil {
 			p.Error = err.Error()
 			return p
+		}
+		pkg, _, err := pluginpkg.ParseDir(p.Root)
+		if err != nil {
+			p.Error = err.Error()
+			return p
+		}
+		cfg, _ := config.LoadForRootReadOnly(a.activeWorkspaceRoot())
+		runtimeOptions := hook.RuntimeOptions{}
+		if cfg != nil {
+			runtimeOptions = hook.RuntimeOptionsForShell(cfg.Tools.Shell.Prefer, cfg.Tools.Shell.Path)
+		}
+		for _, issue := range hook.CheckPackageRuntime(pkg, runtimeOptions) {
+			p.Warnings = append(p.Warnings, fmt.Sprintf(
+				"%s hook is unavailable: %v; install Git for Windows or configure a usable Bash path",
+				issue.Event, issue.Err,
+			))
 		}
 		return p
 	}

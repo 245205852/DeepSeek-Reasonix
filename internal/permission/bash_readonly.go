@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"strings"
 
-	"reasonix/internal/shellparse"
 	"reasonix/internal/shellsafe"
 )
 
@@ -29,82 +28,16 @@ func BashCommandIsReadOnly(args json.RawMessage) bool {
 
 // isReadOnlyBashSubject returns true when a bash command is a known read-only
 // operation. The subject is the JSON arg value extracted by Subject() — for bash
-// it is the raw command string. Command membership comes from the shared
-// shellsafe tables (the shared command-classification source, #5341); the
-// argument rigor below is permission-specific.
+// it is the raw command string. Both command membership and argument effects
+// come from shellsafe so permission and mutation accounting cannot drift.
 func isReadOnlyBashSubject(subject string) bool {
-	if normalized, ok := normalizeBashSafeRedirectsForMatch(subject); ok {
-		subject = normalized
-	}
-	base, sub, ok := shellsafe.CommandIsReadOnly(subject)
-	if !ok {
-		return false
-	}
-	fields, malformed := shellparse.StaticFields(subject)
-	if malformed != "" {
-		return false
-	}
-	if sub == "" {
-		return !hasUnsafeReadOnlyArgs(base, fields[1:])
-	}
-	return !hasUnsafePrefixArgs(base, sub, fields[2:])
+	return shellsafe.ClassifyBash(subject).IsPermissionReader()
 }
 
 // containsShellSyntax delegates to the shared classifier; retained for the other
 // permission call sites (permission.go).
 func containsShellSyntax(cmd string) bool {
 	return shellsafe.ContainsShellSyntax(cmd)
-}
-
-func hasUnsafeReadOnlyArgs(base string, args []string) bool {
-	switch base {
-	case "find":
-		return hasAnyArg(args, "-exec", "-execdir", "-delete", "-ok", "-okdir", "-fls", "-fprint", "-fprint0", "-fprintf")
-	case "sed":
-		for _, arg := range args {
-			if strings.HasPrefix(arg, "-i") || strings.HasPrefix(arg, "--in-place") {
-				return true
-			}
-		}
-	case "sort":
-		return hasArgWithPrefix(args, "-o") || hasAnyArg(args, "--output") || hasArgWithPrefix(args, "--output=")
-	}
-	return false
-}
-
-func hasUnsafePrefixArgs(base, subcmd string, args []string) bool {
-	switch base {
-	case "git":
-		switch subcmd {
-		case "diff", "show", "log":
-			return hasAnyArg(args, "--output") || hasArgWithPrefix(args, "--output=")
-		}
-	case "go":
-		if subcmd == "env" {
-			return hasAnyArg(args, "-w", "-u")
-		}
-	}
-	return false
-}
-
-func hasArgWithPrefix(args []string, prefix string) bool {
-	for _, arg := range args {
-		if strings.HasPrefix(arg, prefix) {
-			return true
-		}
-	}
-	return false
-}
-
-func hasAnyArg(args []string, unsafe ...string) bool {
-	for _, arg := range args {
-		for _, candidate := range unsafe {
-			if arg == candidate {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 // dangerousBashPatterns are glob-like patterns that match destructive
@@ -121,6 +54,11 @@ var dangerousBashPatterns = []struct {
 	{"git push*-f*", "force push"},
 	{"git reset --hard*", "hard reset"},
 	{"git clean -f*", "force clean"},
+	{"git restore*", "discards uncommitted changes"},
+	{"git checkout -- *", "discards uncommitted changes"},
+	{"git checkout .*", "discards uncommitted changes"},
+	{"git stash drop*", "drops stashed changes"},
+	{"git stash clear*", "drops stashed changes"},
 	{"chmod 777*", "world-writable"},
 	{"chmod -R 777*", "world-writable recursive"},
 	{"chown *", "ownership change"},

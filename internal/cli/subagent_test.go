@@ -145,7 +145,9 @@ func TestSubagentProfileCLIRejectsBuiltinCollisionAndRichSkillEdit(t *testing.T)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, []byte("---\ndescription: rich\nrunAs: subagent\ninvocation: manual\nread-only: true\n---\nbody"), 0o644); err != nil {
+	// read-only is now a managed profile field; use a still-unmanaged key so
+	// the editor refuse path remains covered.
+	if err := os.WriteFile(path, []byte("---\ndescription: rich\nrunAs: subagent\ninvocation: manual\ntriggers: [deploy]\n---\nbody"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	errOut = captureStderr(t, func() {
@@ -155,6 +157,27 @@ func TestSubagentProfileCLIRejectsBuiltinCollisionAndRichSkillEdit(t *testing.T)
 	})
 	if !strings.Contains(errOut, "does not manage") {
 		t.Fatalf("rich edit output = %q", errOut)
+	}
+	// Positive: managed read-only frontmatter is editable and round-trips.
+	roPath := filepath.Join(project, ".reasonix", "skills", "readonly-agent", skill.SkillFile)
+	if err := os.MkdirAll(filepath.Dir(roPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(roPath, []byte("---\ndescription: ro\nrunAs: subagent\ninvocation: manual\nread-only: true\n---\nbody\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if rc := subagentCommand([]string{"edit", "readonly-agent", "--description", "read only agent"}); rc != 0 {
+		t.Fatalf("managed read-only edit rc = %d", rc)
+	}
+	raw, err := os.ReadFile(roPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), "read-only: true") {
+		t.Fatalf("edit must preserve read-only frontmatter, got:\n%s", raw)
+	}
+	if !strings.Contains(string(raw), "read only agent") {
+		t.Fatalf("edit must update description, got:\n%s", raw)
 	}
 }
 
@@ -188,22 +211,35 @@ func TestSubagentProfileCLIRejectsReservedAndCustomCommandNames(t *testing.T) {
 func TestSubagentProfileCLIEditBuiltinModelOverride(t *testing.T) {
 	isolateCLIConfigHome(t)
 	cfg := config.Default()
+	cfg.DefaultModel = "offline/chat"
+	cfg.Providers = []config.ProviderEntry{{
+		Name:             "offline",
+		Kind:             "openai",
+		BaseURL:          "https://offline.example.com",
+		Model:            "chat",
+		APIKeyEnv:        "REASONIX_SUBAGENT_OFFLINE_KEY",
+		SupportedEfforts: []string{"low", "high"},
+		DefaultEffort:    "low",
+	}}
 	if err := cfg.SaveTo(config.UserConfigPath()); err != nil {
 		t.Fatal(err)
 	}
-	if rc := subagentCommand([]string{"edit", "review", "--model", "deepseek-pro"}); rc != 0 {
+	if rc := subagentCommand([]string{"edit", "review", "--model", "offline/chat", "--effort", "high"}); rc != 0 {
 		t.Fatalf("builtin edit rc = %d", rc)
 	}
 	loaded := config.LoadForEdit(config.UserConfigPath())
-	if got := subagentOverride(loaded.Agent.SubagentModels, "review"); !strings.HasPrefix(got, "deepseek-pro/") {
+	if got := subagentOverride(loaded.Agent.SubagentModels, "review"); got != "offline/chat" {
 		t.Fatalf("review model override = %q", got)
+	}
+	if got := subagentOverride(loaded.Agent.SubagentEfforts, "review"); got != "high" {
+		t.Fatalf("review effort override = %q", got)
 	}
 	out := captureStdout(t, func() {
 		if rc := subagentCommand([]string{"list"}); rc != 0 {
 			t.Fatalf("list rc = %d", rc)
 		}
 	})
-	if !strings.Contains(out, "review") || !strings.Contains(out, "model=deepseek-pro/") {
+	if !strings.Contains(out, "review") || !strings.Contains(out, "model=offline/chat") || !strings.Contains(out, "effort=high") {
 		t.Fatalf("list did not show built-in override:\n%s", out)
 	}
 	if rc := subagentCommand([]string{"edit", "review", "--model="}); rc != 0 {

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 
@@ -17,69 +18,63 @@ import (
 type SourceStatus struct {
 	Scope      Scope
 	Path       string
-	Status     string // ok | missing | malformed | untrusted_skipped | empty
+	Status     string // ok | missing | malformed | empty
 	HookCount  int
 	ParseError string
 }
 
 // Entry is one configured hook with diagnostic annotations.
 type Entry struct {
-	Event       Event
-	Match       string
-	Command     string
-	ContextFile string
-	Description string
-	Timeout     int
-	Scope       Scope
-	Source      string
-	Issues      []string // stable codes attached at collect time (optional)
+	Event         Event
+	Match         string
+	Command       string
+	ContextFile   string
+	Description   string
+	Timeout       int
+	Scope         Scope
+	Source        string
+	Issues        []string // stable codes attached at collect time (optional)
+	runtimeConfig HookConfig
 }
 
 // Inspection is a read-only hook configuration snapshot. It does not execute
-// hooks and does not mutate trust state.
+// hooks.
 type Inspection struct {
+	// TrustedProject is retained in diagnostics for backward compatibility.
+	// A non-empty project root is always trusted now.
 	TrustedProject bool
 	Sources        []SourceStatus
 	Entries        []Entry
-	// ProjectDefines is true when project settings declare hooks regardless of trust.
+	// ProjectDefines is true when project settings declare hooks.
 	ProjectDefines bool
 }
 
 // Inspect loads hook configuration for diagnostics. Unlike Load, it reports
-// malformed files, untrusted project files, and empty/missing command entries
-// that Load would silently skip.
+// malformed files and empty/missing command entries that Load would silently
+// skip.
 func Inspect(opts LoadOptions) Inspection {
 	out := Inspection{
-		TrustedProject: opts.ProjectRoot != "" && IsTrusted(opts.ProjectRoot, opts.HomeDir),
+		TrustedProject: opts.ProjectRoot != "",
 		ProjectDefines: opts.ProjectRoot != "" && ProjectDefinesHooks(opts.ProjectRoot),
 	}
 
 	if opts.ProjectRoot != "" {
 		p := ProjectSettingsPath(opts.ProjectRoot)
-		if !opts.Trusted && !out.TrustedProject {
-			// Report project file even when untrusted so UIs can surface trust.
-			st := inspectSettingsFile(p, ScopeProject)
-			if st.Status == "ok" || st.Status == "malformed" || st.Status == "empty" {
-				st.Status = "untrusted_skipped"
-			}
-			out.Sources = append(out.Sources, st)
-			// Still parse entries for display, tagged as untrusted source.
-			if s := readSettingsRaw(p); s != nil {
-				appendInspectEntries(&out, s, ScopeProject, p)
-			}
-		} else {
-			st := inspectSettingsFile(p, ScopeProject)
-			out.Sources = append(out.Sources, st)
-			if s := readSettingsRaw(p); s != nil {
-				appendInspectEntries(&out, s, ScopeProject, p)
-			}
+		st := inspectSettingsFile(p, ScopeProject)
+		out.Sources = append(out.Sources, st)
+		if s := readSettingsRaw(p); s != nil {
+			appendInspectEntries(&out, s, ScopeProject, p)
 		}
 	}
 
 	// Plugin hooks (enabled packages only — same as Load).
-	appendPluginInspect(&out, reasonixHome(opts.HomeDir), opts.ProjectRoot)
+	reasonixHomeDir := reasonixHomeForOptions(opts)
+	appendPluginInspect(&out, reasonixHomeDir, opts.ProjectRoot)
 
-	g := GlobalSettingsPath(opts.HomeDir)
+	g := filepath.Join(reasonixHomeDir, SettingsFilename)
+	if reasonixHomeDir == "" {
+		g = GlobalSettingsPath(opts.HomeDir)
+	}
 	st := inspectSettingsFile(g, ScopeGlobal)
 	if st.Status == "missing" {
 		if legacy := legacyGlobalSettingsPath(opts.HomeDir); legacy != "" {
@@ -149,14 +144,15 @@ func appendInspectEntries(out *Inspection, s *Settings, scope Scope, source stri
 			seen[event] = true
 			for _, cfg := range hooks {
 				out.Entries = append(out.Entries, Entry{
-					Event:       event,
-					Match:       cfg.Match,
-					Command:     cfg.Command,
-					ContextFile: cfg.ContextFile,
-					Description: cfg.Description,
-					Timeout:     cfg.Timeout,
-					Scope:       scope,
-					Source:      source,
+					Event:         event,
+					Match:         cfg.Match,
+					Command:       cfg.Command,
+					ContextFile:   cfg.ContextFile,
+					Description:   cfg.Description,
+					Timeout:       cfg.Timeout,
+					Scope:         scope,
+					Source:        source,
+					runtimeConfig: cfg,
 				})
 			}
 		}
@@ -167,18 +163,19 @@ func appendInspectEntries(out *Inspection, s *Settings, scope Scope, source stri
 			unknown = append(unknown, event)
 		}
 	}
-	sort.Slice(unknown, func(i, j int) bool { return unknown[i] < unknown[j] })
+	slices.Sort(unknown)
 	for _, event := range unknown {
 		for _, cfg := range s.Hooks[event] {
 			out.Entries = append(out.Entries, Entry{
-				Event:       event,
-				Match:       cfg.Match,
-				Command:     cfg.Command,
-				ContextFile: cfg.ContextFile,
-				Description: cfg.Description,
-				Timeout:     cfg.Timeout,
-				Scope:       scope,
-				Source:      source,
+				Event:         event,
+				Match:         cfg.Match,
+				Command:       cfg.Command,
+				ContextFile:   cfg.ContextFile,
+				Description:   cfg.Description,
+				Timeout:       cfg.Timeout,
+				Scope:         scope,
+				Source:        source,
+				runtimeConfig: cfg,
 			})
 		}
 	}
@@ -203,10 +200,7 @@ func appendPluginInspect(out *Inspection, reasonixHomeDir, projectRoot string) {
 			// Keep unknown event names so diagnostics can report them.
 			for _, h := range pkg.Manifest.Hooks[eventName] {
 				count++
-				command := expandPluginRoot(h.Command, pkg.Root)
-				if command != "" && !h.ShellCommand && !filepath.IsAbs(command) {
-					command = filepath.Join(pkg.Root, filepath.FromSlash(command))
-				}
+				execution := pluginHookExecutionConfig(h, pkg.Root)
 				contextFile := expandPluginRoot(h.ContextFile, pkg.Root)
 				if contextFile != "" {
 					contextFile = filepath.FromSlash(contextFile)
@@ -217,14 +211,15 @@ func appendPluginInspect(out *Inspection, reasonixHomeDir, projectRoot string) {
 					}
 				}
 				out.Entries = append(out.Entries, Entry{
-					Event:       event,
-					Match:       h.Match,
-					Command:     command,
-					ContextFile: contextFile,
-					Description: h.Description,
-					Timeout:     h.Timeout,
-					Scope:       ScopePlugin,
-					Source:      src,
+					Event:         event,
+					Match:         h.Match,
+					Command:       execution.Command,
+					ContextFile:   contextFile,
+					Description:   h.Description,
+					Timeout:       h.Timeout,
+					Scope:         ScopePlugin,
+					Source:        src,
+					runtimeConfig: execution,
 				})
 			}
 		}
@@ -242,6 +237,12 @@ func appendPluginInspect(out *Inspection, reasonixHomeDir, projectRoot string) {
 	}
 }
 
+// CheckEntryRuntime validates the host dependencies required by an inspected
+// Hook without executing the command.
+func CheckEntryRuntime(entry Entry, options RuntimeOptions) error {
+	return CheckRuntime(entry.runtimeConfig, options)
+}
+
 // ValidateMatcher returns an error string when match is an invalid anchored regex.
 // Empty and "*" are valid (match all).
 func ValidateMatcher(match string) string {
@@ -253,6 +254,12 @@ func ValidateMatcher(match string) string {
 		return fmt.Sprintf("invalid matcher regex: %v", err)
 	}
 	return ""
+}
+
+// UsesToolMatcher reports whether an event evaluates HookConfig.Match.
+// Non-tool events ignore matchers entirely, including malformed ones.
+func UsesToolMatcher(event Event) bool {
+	return event == PreToolUse || event == PostToolUse || event == PostToolUseFailure || event == PermissionRequest
 }
 
 // IsKnownEvent reports whether event is one of the 11 supported hook events.

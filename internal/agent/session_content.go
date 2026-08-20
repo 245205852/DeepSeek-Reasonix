@@ -2,12 +2,34 @@ package agent
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"time"
 
 	"reasonix/internal/provider"
 	"reasonix/internal/store"
 )
+
+// ContentDigest returns the canonical digest used by the session WAL and
+// revision ledger for the current in-memory transcript.
+func (s *Session) ContentDigest() (string, error) {
+	if s == nil {
+		return "", fmt.Errorf("nil session")
+	}
+	return ContentDigestForMessages(s.Snapshot())
+}
+
+// ContentDigestForMessages returns the canonical transcript digest for an
+// immutable message snapshot. Frontends use it to bind a rendered history page
+// to the exact content it contains instead of sampling a sidecar revision that
+// may have advanced before or after the page was built.
+func ContentDigestForMessages(msgs []provider.Message) (string, error) {
+	digest, err := digestSessionMessages(msgs)
+	if err != nil {
+		return "", err
+	}
+	return digestString(digest), nil
+}
 
 // SessionsShareContent reports whether two saved sessions decode to the same
 // transcript. It replaces byte-comparing the .jsonl checkpoints, which stopped
@@ -46,9 +68,23 @@ type SessionUserMessage struct {
 // after the first save once an event log exists, so surfaces like prompt
 // history must use this instead.
 func LoadSessionUserMessages(path string) ([]SessionUserMessage, error) {
-	if probe, err := probeSessionEventLog(path); err == nil && probe.native && probe.size > 0 {
-		replay, err := replaySessionEventLog(store.SessionEventLog(path))
-		if err == nil && replay.records > 0 {
+	return loadSessionUserMessagesWithLimits(path, defaultSessionReplayLimits)
+}
+
+func loadSessionUserMessagesWithLimits(path string, limits sessionReplayLimits) ([]SessionUserMessage, error) {
+	probe, err := probeSessionEventLogWithLimits(path, limits)
+	if err != nil {
+		return nil, err
+	}
+	if probe.futureSchema {
+		return nil, fmt.Errorf("session event log for %s uses schema %d; this build supports up to %d", path, probe.schemaVersion, sessionEventSchemaVersion)
+	}
+	if probe.native && probe.size > 0 {
+		replay, err := replaySessionEventLogWithLimits(store.SessionEventLog(path), limits)
+		if err != nil {
+			return nil, err
+		}
+		if replay.records > 0 {
 			out := make([]SessionUserMessage, 0, len(replay.msgs))
 			for i, m := range replay.msgs {
 				if m.Role != provider.RoleUser {
@@ -57,6 +93,9 @@ func LoadSessionUserMessages(path string) ([]SessionUserMessage, error) {
 				at := time.Time{}
 				if i < len(replay.times) {
 					at = replay.times[i]
+				}
+				if m.CreatedAt > 0 {
+					at = time.UnixMilli(m.CreatedAt)
 				}
 				out = append(out, SessionUserMessage{Text: m.Content, At: at})
 			}
@@ -72,7 +111,11 @@ func LoadSessionUserMessages(path string) ([]SessionUserMessage, error) {
 		if m.Role != provider.RoleUser {
 			continue
 		}
-		out = append(out, SessionUserMessage{Text: m.Content})
+		at := time.Time{}
+		if m.CreatedAt > 0 {
+			at = time.UnixMilli(m.CreatedAt)
+		}
+		out = append(out, SessionUserMessage{Text: m.Content, At: at})
 	}
 	return out, nil
 }

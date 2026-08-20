@@ -1,9 +1,10 @@
 import { memo, useRef, useState } from "react";
 import { ChevronRight } from "lucide-react";
 import { useT } from "../lib/i18n";
-import { useGSAPCollapse } from "../lib/useGSAPCollapse";
+import { useCollapseAnimation } from "../lib/useCollapseAnimation";
 import type { Item } from "../lib/useController";
 import { ToolCard } from "./ToolCard";
+import { useTranscriptUserResizeIntent } from "./TranscriptLayoutIntentContext";
 
 type ToolItem = Extract<Item, { kind: "tool" }>;
 
@@ -15,9 +16,10 @@ type ReadOnlyBatchProps = {
 
 export const ReadOnlyBatch = memo(function ReadOnlyBatch({ items, subcalls, tabId }: ReadOnlyBatchProps) {
   const t = useT();
+  const beginUserResize = useTranscriptUserResizeIntent();
   const [open, setOpen] = useState(false);
   const bodyRef = useRef<HTMLDivElement>(null);
-  useGSAPCollapse(bodyRef, open);
+  useCollapseAnimation(bodyRef, open);
 
   const readCount = items.filter((it) => it.name === "read_file" || it.name === "ls").length;
   const searchCount = items.filter((it) => it.name === "grep" || it.name === "glob" || it.name === "web_fetch").length;
@@ -33,7 +35,7 @@ export const ReadOnlyBatch = memo(function ReadOnlyBatch({ items, subcalls, tabI
 
   return (
     <div className={`readonly-batch${open ? " readonly-batch--open" : ""}`} data-entrance={items[0]?.id}>
-      <button type="button" className="reasoning__head" onClick={() => setOpen((v) => !v)} aria-expanded={open}>
+      <button type="button" className="reasoning__head" onClick={() => { beginUserResize(); setOpen((v) => !v); }} aria-expanded={open}>
         <ChevronRight className={`reasoning__chevron${open ? " reasoning__chevron--open" : ""}`} size={12} />
         <span className="readonly-batch__label" data-creation-label={t("creation.toolCallsLabel")}>{label}</span>
       </button>

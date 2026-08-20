@@ -1,17 +1,52 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
 	"strings"
 
+	"reasonix/internal/config"
 	"reasonix/internal/doctor"
 	"reasonix/internal/repair"
+	"reasonix/internal/sessioncatalog"
 )
 
+func doctorBillingCommand(args []string) int {
+	fs := flag.NewFlagSet("doctor billing", flag.ContinueOnError)
+	jsonOut := fs.Bool("json", false, "print billing diagnostics as JSON")
+	root := fs.String("root", ".", "project root for config resolution")
+	if code, ok := parseCommandFlags(fs, args); !ok {
+		return code
+	}
+	cfg, err := config.LoadForRoot(*root)
+	if err != nil {
+		// Still report with defaults so doctor stays useful offline.
+		cfg = config.Default()
+	}
+	report := doctor.CollectBilling(cfg)
+	if *jsonOut {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		if err := enc.Encode(report); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		return 0
+	}
+	fmt.Print(doctor.RenderBillingText(report))
+	return 0
+}
+
 func doctorCommand(args []string, version string) int {
+	if len(args) > 0 && args[0] == "catalogs" {
+		return doctorCatalogsCommand(args[1:])
+	}
+	if len(args) > 0 && args[0] == "sessions" {
+		return doctorSessionsCommand(args[1:])
+	}
 	if len(args) > 0 && args[0] == "quality" {
 		return doctorQualityCommand(args[1:], version)
 	}
@@ -24,13 +59,19 @@ func doctorCommand(args []string, version string) int {
 	if len(args) > 0 && args[0] == "capabilities" {
 		return doctorCapabilitiesCommand(args[1:])
 	}
+	if len(args) > 0 && args[0] == "runtime" {
+		return doctorRuntimeCommand(args[1:])
+	}
+	if len(args) > 0 && args[0] == "billing" {
+		return doctorBillingCommand(args[1:])
+	}
 	if len(args) > 0 && args[0] == "repair" {
 		return doctorRepairCommand(args[1:])
 	}
 	fs := flag.NewFlagSet("doctor", flag.ContinueOnError)
 	jsonOut := fs.Bool("json", false, "print diagnostics as JSON")
-	if err := fs.Parse(args); err != nil {
-		return 2
+	if code, ok := parseCommandFlags(fs, args); !ok {
+		return code
 	}
 
 	report := doctor.Collect(doctor.Options{Version: version})
@@ -47,14 +88,54 @@ func doctorCommand(args []string, version string) int {
 	return 0
 }
 
+func doctorSessionsCommand(args []string) int {
+	fs := flag.NewFlagSet("doctor sessions", flag.ContinueOnError)
+	jsonOut := fs.Bool("json", false, "print session catalog diagnostics as JSON")
+	if code, ok := parseCommandFlags(fs, args); !ok {
+		return code
+	}
+	if fs.NArg() != 0 {
+		fmt.Fprintln(os.Stderr, "usage: reasonix doctor sessions [--json]")
+		return 2
+	}
+	status, err := sessioncatalog.Inspect(context.Background(), sessioncatalog.DefaultPath())
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return 1
+	}
+	if *jsonOut {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		if err := enc.Encode(status); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		return 0
+	}
+	fmt.Println("Reasonix session catalog")
+	fmt.Printf("  state: %s\n", status.State)
+	fmt.Printf("  mode: %s\n", status.Mode)
+	fmt.Printf("  revision: %d\n", status.Revision)
+	fmt.Printf("  indexed: %d\n", status.Indexed)
+	fmt.Printf("  physical sessions: %d\n", status.PhysicalSessions)
+	fmt.Printf("  logical sessions: %d\n", status.LogicalSessions)
+	fmt.Printf("  repair pending: %d\n", status.RepairPending)
+	fmt.Printf("  recovery: %d groups, %d branches, %d diverged, %d safe cleanup\n",
+		status.RecoveryGroups, status.RecoveryBranches, status.RecoveryDiverged, status.CleanupEligible)
+	if status.LastError != "" {
+		fmt.Printf("  note: %s\n", status.LastError)
+	}
+	return 0
+}
+
 func doctorRepairCommand(args []string) int {
 	fs := flag.NewFlagSet("doctor repair", flag.ContinueOnError)
 	root := fs.String("root", ".", "project root to inspect")
 	apply := fs.Bool("apply", false, "quarantine invalid config and restore the last-known-good global snapshot")
 	includeProject := fs.Bool("project", false, "allow --apply to quarantine an invalid project reasonix.toml")
 	jsonOut := fs.Bool("json", false, "print result as JSON")
-	if err := fs.Parse(args); err != nil {
-		return 2
+	if code, ok := parseCommandFlags(fs, args); !ok {
+		return code
 	}
 	if fs.NArg() != 0 {
 		fmt.Fprintln(os.Stderr, "usage: reasonix doctor repair [--root PATH] [--apply] [--project] [--json]")
@@ -167,8 +248,8 @@ func doctorRedactSessionsCommand(args []string) int {
 	dryRun := fs.Bool("dry-run", false, "show how many session files would be redacted without writing")
 	jsonOut := fs.Bool("json", false, "print result as JSON")
 	fs.Var(&dirs, "dir", "session directory to scan; repeat to scan multiple directories")
-	if err := fs.Parse(args); err != nil {
-		return 2
+	if code, ok := parseCommandFlags(fs, args); !ok {
+		return code
 	}
 	if fs.NArg() != 0 {
 		fmt.Fprintln(os.Stderr, "usage: reasonix doctor redact-sessions [--dry-run] [--json] [--dir PATH]")

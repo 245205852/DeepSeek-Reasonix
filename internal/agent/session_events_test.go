@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,7 +16,7 @@ import (
 func sessionWithTurns(t *testing.T, path string, turns int) *Session {
 	t.Helper()
 	s := NewSession("sys")
-	for i := 0; i < turns; i++ {
+	for i := range turns {
 		s.Add(provider.Message{Role: provider.RoleUser, Content: "prompt " + strings.Repeat("x", 8)})
 		s.Add(provider.Message{Role: provider.RoleAssistant, Content: "reply"})
 		if err := s.SaveSnapshot(path); err != nil {
@@ -134,7 +135,7 @@ func TestLoadSessionIgnoresForeignEventLog(t *testing.T) {
 	}
 }
 
-func TestForceSaveLeavesLegacyEventTranscriptUntouched(t *testing.T) {
+func TestSaveLeavesLegacyEventTranscriptUntouched(t *testing.T) {
 	// The v0.x migration reconstructs sessions from legacy Claude-style
 	// ".events.jsonl" transcripts that live in the SAME directory the native
 	// session is imported into — i.e. exactly at the native event-log path.
@@ -153,7 +154,7 @@ func TestForceSaveLeavesLegacyEventTranscriptUntouched(t *testing.T) {
 	s.Add(provider.Message{Role: provider.RoleUser, Content: "hello from v0.x"})
 	s.Add(provider.Message{Role: provider.RoleAssistant, Content: "hi"})
 	if err := s.Save(path); err != nil {
-		t.Fatalf("force Save beside legacy transcript: %v", err)
+		t.Fatalf("Save beside legacy transcript: %v", err)
 	}
 
 	got, err := os.ReadFile(logPath)
@@ -169,6 +170,91 @@ func TestForceSaveLeavesLegacyEventTranscriptUntouched(t *testing.T) {
 	}
 	if len(loaded.Messages) != 2 || loaded.Messages[1].Content != "hi" {
 		t.Fatalf("imported transcript = %+v", loaded.Messages)
+	}
+}
+
+// TestRepairPreservesDamagedTailBytes locks in the #6607 content-loss fix:
+// bytes the tail repair truncates away — including intact turns buried behind
+// an out-of-order record, the dual-writer shape — must be salvaged to the
+// .damaged sidecar instead of discarded forever.
+func TestRepairPreservesDamagedTailBytes(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.jsonl")
+	sessionWithTurns(t, path, 2)
+
+	logPath := store.SessionEventLog(path)
+	// An out-of-order append (as an interleaving second writer would leave)
+	// followed by a torn partial record: replay stops before both, and repair
+	// truncates both away.
+	buried := `{"schema_version":1,"type":"append","message_index":99,"messages":[{"role":"user","content":"buried turn"}],"created_at":"2026-01-01T00:00:00Z"}` + "\n"
+	torn := `{"schema_version":1,"type":"ap`
+	f, err := os.OpenFile(logPath, os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		t.Fatalf("open log: %v", err)
+	}
+	if _, err := f.Write([]byte(buried + torn)); err != nil {
+		t.Fatalf("write damaged tail: %v", err)
+	}
+	f.Close()
+
+	// The healing save truncates the tail; preservation must run first.
+	resumed, err := LoadSession(path)
+	if err != nil {
+		t.Fatalf("LoadSession: %v", err)
+	}
+	resumed.Add(provider.Message{Role: provider.RoleUser, Content: "after damage"})
+	if err := resumed.SaveSnapshot(path); err != nil {
+		t.Fatalf("SaveSnapshot after damage: %v", err)
+	}
+
+	salvaged, err := os.ReadFile(store.SessionEventLogDamaged(path))
+	if err != nil {
+		t.Fatalf("read damaged sidecar: %v", err)
+	}
+	if !strings.Contains(string(salvaged), "buried turn") {
+		t.Fatalf("salvage sidecar is missing the buried turn:\n%s", salvaged)
+	}
+	if !strings.Contains(string(salvaged), `"damaged_tail":true`) {
+		t.Fatalf("salvage sidecar is missing the incident header:\n%s", salvaged)
+	}
+	// The log itself must be healed: replay to the end, no damage, and the
+	// buried record must not leak back into the transcript.
+	reloaded, err := LoadSession(path)
+	if err != nil {
+		t.Fatalf("LoadSession after heal: %v", err)
+	}
+	if reloaded.eventLogDamaged {
+		t.Fatal("event log still damaged after healing save")
+	}
+	for _, m := range reloaded.Messages {
+		if m.Content == "buried turn" {
+			t.Fatal("truncated record leaked back into the transcript")
+		}
+	}
+
+	// A second incident appends to the sidecar instead of overwriting the
+	// first salvage.
+	f, err = os.OpenFile(store.SessionEventLog(path), os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		t.Fatalf("reopen log: %v", err)
+	}
+	if _, err := f.Write([]byte(`{"schema_version":1,"type":"append","message_index":77,"messages":[{"role":"user","content":"second incident"}],"created_at":"2026-01-01T00:00:00Z"}` + "\n")); err != nil {
+		t.Fatalf("write second damage: %v", err)
+	}
+	f.Close()
+	resumed2, err := LoadSession(path)
+	if err != nil {
+		t.Fatalf("LoadSession second incident: %v", err)
+	}
+	resumed2.Add(provider.Message{Role: provider.RoleUser, Content: "after second"})
+	if err := resumed2.SaveSnapshot(path); err != nil {
+		t.Fatalf("SaveSnapshot second incident: %v", err)
+	}
+	salvaged, err = os.ReadFile(store.SessionEventLogDamaged(path))
+	if err != nil {
+		t.Fatalf("read damaged sidecar after second incident: %v", err)
+	}
+	if !strings.Contains(string(salvaged), "buried turn") || !strings.Contains(string(salvaged), "second incident") {
+		t.Fatalf("salvage sidecar must keep both incidents:\n%s", salvaged)
 	}
 }
 
@@ -211,47 +297,255 @@ func TestReplayRejectsUnsupportedSchemaVersion(t *testing.T) {
 	}
 }
 
-func TestForceSaveDoesNotBootstrapEventLog(t *testing.T) {
+func TestReplaySessionEventLogEnforcesResourceBudgetsWithoutMutation(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "bounded.events.jsonl")
+	replace := `{"schema_version":1,"type":"replace","messages":[{"role":"system","content":"sys"},{"role":"user","content":"prompt"}]}` + "\n"
+	appendEvent := `{"schema_version":1,"type":"append","message_index":2,"messages":[{"role":"assistant","content":"reply"}]}` + "\n"
+	contents := replace + appendEvent
+	if err := os.WriteFile(logPath, []byte(contents), 0o600); err != nil {
+		t.Fatalf("write event log: %v", err)
+	}
+
+	tests := []struct {
+		name     string
+		limits   sessionReplayLimits
+		resource string
+	}{
+		{
+			name: "encoded bytes",
+			limits: sessionReplayLimits{
+				maxBytes: int64(len(contents) - 1), maxRecords: 10, maxMessages: 10,
+			},
+			resource: "encoded_bytes",
+		},
+		{
+			name: "event records",
+			limits: sessionReplayLimits{
+				maxBytes: int64(len(contents) + 1), maxRecords: 1, maxMessages: 10,
+			},
+			resource: "event_records",
+		},
+		{
+			name: "messages",
+			limits: sessionReplayLimits{
+				maxBytes: int64(len(contents) + 1), maxRecords: 10, maxMessages: 1,
+			},
+			resource: "messages",
+		},
+		{
+			name: "aggregate messages across records",
+			limits: sessionReplayLimits{
+				maxBytes: int64(len(contents) + 1), maxRecords: 10, maxMessages: 2,
+			},
+			resource: "messages",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := replaySessionEventLogWithLimits(logPath, tc.limits); !errors.Is(err, ErrSessionReplayLimitExceeded) {
+				t.Fatalf("replay error = %v, want ErrSessionReplayLimitExceeded", err)
+			} else {
+				var limitErr *SessionReplayLimitError
+				if !errors.As(err, &limitErr) || limitErr.Resource != tc.resource {
+					t.Fatalf("limit error = %#v, want resource %q", limitErr, tc.resource)
+				}
+				if strings.Contains(err.Error(), logPath) {
+					t.Fatalf("user-facing error leaked local path: %q", err)
+				}
+			}
+			got, err := os.ReadFile(logPath)
+			if err != nil {
+				t.Fatalf("read event log after rejection: %v", err)
+			}
+			if string(got) != contents {
+				t.Fatal("resource-budget rejection modified the event log")
+			}
+		})
+	}
+}
+
+func TestReplayChecksMessageBudgetBeforeDecodingOverLimitElement(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "bounded-before-decode.events.jsonl")
+	// The third element is valid JSON but cannot decode into provider.Message.
+	// A two-message budget must reject it before attempting that decode.
+	events := `{"schema_version":1,"type":"replace","messages":[{}, {}, 42]}` + "\n"
+	if err := os.WriteFile(logPath, []byte(events), 0o600); err != nil {
+		t.Fatalf("write event log: %v", err)
+	}
+
+	replay, err := replaySessionEventLogWithLimits(logPath, sessionReplayLimits{
+		maxBytes: int64(len(events) + 1), maxRecords: 10, maxMessages: 2,
+	})
+	if !errors.Is(err, ErrSessionReplayLimitExceeded) {
+		t.Fatalf("replay error = %v, want message replay limit", err)
+	}
+	var limitErr *SessionReplayLimitError
+	if !errors.As(err, &limitErr) || limitErr.Resource != "messages" || limitErr.Value != 3 {
+		t.Fatalf("limit error = %#v, want third message rejected before decode", limitErr)
+	}
+	if replay.records != 0 || len(replay.msgs) != 0 {
+		t.Fatalf("partial over-limit record was applied: records=%d messages=%d", replay.records, len(replay.msgs))
+	}
+}
+
+func TestReplayChecksCollectionBudgetBeforeDecodingOverLimitElement(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "bounded-collection-before-decode.events.jsonl")
+	// The third tool call cannot decode into provider.ToolCall. A two-item
+	// collection budget must reject it before constructing the typed slice.
+	events := `{"schema_version":1,"type":"replace","messages":[{"role":"assistant","tool_calls":[{}, {}, 42]}]}` + "\n"
+	if err := os.WriteFile(logPath, []byte(events), 0o600); err != nil {
+		t.Fatalf("write event log: %v", err)
+	}
+
+	replay, err := replaySessionEventLogWithLimits(logPath, sessionReplayLimits{
+		maxBytes: int64(len(events) + 1), maxRecords: 10, maxMessages: 10, maxCollectionItems: 2,
+	})
+	if !errors.Is(err, ErrSessionReplayLimitExceeded) {
+		t.Fatalf("replay error = %v, want collection replay limit", err)
+	}
+	var limitErr *SessionReplayLimitError
+	if !errors.As(err, &limitErr) || limitErr.Resource != "message_collection_items" || limitErr.Value != 3 {
+		t.Fatalf("limit error = %#v, want third collection item rejected before decode", limitErr)
+	}
+	if replay.records != 0 || len(replay.msgs) != 0 {
+		t.Fatalf("partial over-limit record was applied: records=%d messages=%d", replay.records, len(replay.msgs))
+	}
+	if got, readErr := os.ReadFile(logPath); readErr != nil || string(got) != events {
+		t.Fatalf("event log changed after refusal: bytes=%q err=%v", got, readErr)
+	}
+}
+
+func TestReplayCollectionBudgetAggregatesAcrossRecords(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "aggregate-collection-budget.events.jsonl")
+	replace := `{"schema_version":1,"type":"replace","messages":[{"role":"user","images":["one"]}]}` + "\n"
+	appendEvent := `{"schema_version":1,"type":"append","message_index":1,"messages":[{"role":"assistant","tool_calls":[{},{}]}]}` + "\n"
+	events := replace + appendEvent
+	if err := os.WriteFile(logPath, []byte(events), 0o600); err != nil {
+		t.Fatalf("write event log: %v", err)
+	}
+
+	replay, err := replaySessionEventLogWithLimits(logPath, sessionReplayLimits{
+		maxBytes: int64(len(events) + 1), maxRecords: 10, maxMessages: 10, maxCollectionItems: 2,
+	})
+	if !errors.Is(err, ErrSessionReplayLimitExceeded) {
+		t.Fatalf("replay error = %v, want aggregate collection replay limit", err)
+	}
+	var limitErr *SessionReplayLimitError
+	if !errors.As(err, &limitErr) || limitErr.Resource != "message_collection_items" || limitErr.Value != 3 {
+		t.Fatalf("limit error = %#v, want third live collection item rejected", limitErr)
+	}
+	if replay.records != 1 || len(replay.msgs) != 1 || replay.collectionItems != 1 {
+		t.Fatalf("replay prefix = records:%d messages:%d collections:%d, want first record only",
+			replay.records, len(replay.msgs), replay.collectionItems)
+	}
+}
+
+func TestLoadSessionMessagesDoesNotFallbackAfterEventReplayBudget(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.jsonl")
+	checkpoint := `{"role":"system","content":"older checkpoint"}` + "\n"
+	if err := os.WriteFile(path, []byte(checkpoint), 0o600); err != nil {
+		t.Fatalf("write checkpoint: %v", err)
+	}
+	logPath := store.SessionEventLog(path)
+	events := `{"schema_version":1,"type":"replace","messages":[{"role":"system","content":"newer event state"},{"role":"user","content":"must not disappear"}]}` + "\n"
+	if err := os.WriteFile(logPath, []byte(events), 0o600); err != nil {
+		t.Fatalf("write event log: %v", err)
+	}
+
+	msgs, fromEvents, damaged, err := loadSessionMessagesWithLimits(path, sessionReplayLimits{
+		maxBytes: int64(len(events) + 1), maxRecords: 10, maxMessages: 1,
+	})
+	if !errors.Is(err, ErrSessionReplayLimitExceeded) {
+		t.Fatalf("load error = %v, want ErrSessionReplayLimitExceeded", err)
+	}
+	if msgs != nil || !fromEvents || damaged {
+		t.Fatalf("load result = msgs:%v fromEvents:%v damaged:%v, want hard event-log refusal", msgs, fromEvents, damaged)
+	}
+	if got, readErr := os.ReadFile(path); readErr != nil || string(got) != checkpoint {
+		t.Fatalf("checkpoint changed after refusal: bytes=%q err=%v", got, readErr)
+	}
+	if got, readErr := os.ReadFile(logPath); readErr != nil || string(got) != events {
+		t.Fatalf("event log changed after refusal: bytes=%q err=%v", got, readErr)
+	}
+}
+
+func TestProbeSessionEventLogReadsOnlyNativeHeader(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.jsonl")
+	logPath := store.SessionEventLog(path)
+	largeRecord := `{"schema_version":1,"type":"replace","messages":[{"role":"user","content":"` +
+		strings.Repeat("x", int(sessionEventProbeMaxBytes*2)) + `"}]}` + "\n"
+	if err := os.WriteFile(logPath, []byte(largeRecord), 0o600); err != nil {
+		t.Fatalf("write event log: %v", err)
+	}
+	probe, err := probeSessionEventLogWithLimits(path, sessionReplayLimits{
+		maxBytes: 128, maxRecords: 10, maxMessages: 10,
+	})
+	if err != nil {
+		t.Fatalf("probe: %v", err)
+	}
+	if !probe.native || probe.size != int64(len(largeRecord)) {
+		t.Fatalf("probe = %+v, want native size %d", probe, len(largeRecord))
+	}
+}
+
+func TestLoadSessionMessagesAcceptsReorderedEventHeader(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.jsonl")
+	checkpoint := `{"role":"system","content":"older checkpoint"}` + "\n"
+	if err := os.WriteFile(path, []byte(checkpoint), 0o600); err != nil {
+		t.Fatalf("write checkpoint: %v", err)
+	}
+	content := "newer event state " + strings.Repeat("x", int(sessionEventProbeMaxBytes*2))
+	// schema_version deliberately follows a messages payload larger than the
+	// prefix probe. Valid in-budget JSON must remain field-order independent.
+	events := `{"type":"replace","messages":[{"role":"system","content":"sys"},{"role":"user","content":"` +
+		content + `"}],"schema_version":1}` + "\n"
+	if err := os.WriteFile(store.SessionEventLog(path), []byte(events), 0o600); err != nil {
+		t.Fatalf("write reordered event log: %v", err)
+	}
+
+	msgs, fromEvents, damaged, err := loadSessionMessages(path)
+	if err != nil {
+		t.Fatalf("load reordered event log: %v", err)
+	}
+	if !fromEvents || damaged {
+		t.Fatalf("load result fromEvents=%v damaged=%v, want clean native replay", fromEvents, damaged)
+	}
+	if len(msgs) != 2 || msgs[1].Content != content {
+		t.Fatalf("loaded messages = %d, want reordered event state", len(msgs))
+	}
+}
+
+func TestDefaultSaveBootstrapsEventLog(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "session.jsonl")
 	s := NewSession("sys")
 	s.Add(provider.Message{Role: provider.RoleUser, Content: "one-shot"})
 	if err := s.Save(path); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
-	if _, err := os.Stat(store.SessionEventLog(path)); !os.IsNotExist(err) {
-		t.Fatalf("force save created an event log (err=%v); one-shot copies must stay single-file", err)
+	if _, err := os.Stat(store.SessionEventLog(path)); err != nil {
+		t.Fatalf("default save did not create an event log: %v", err)
 	}
-	if _, err := os.Stat(store.SessionEventIndex(path)); !os.IsNotExist(err) {
-		t.Fatalf("force save created an event index (err=%v)", err)
+	if _, err := os.Stat(store.SessionEventIndex(path)); err != nil {
+		t.Fatalf("default save did not create an event index: %v", err)
 	}
 }
 
-func TestForceSaveCompactsExistingEventLog(t *testing.T) {
+func TestDefaultSaveRejectsDivergedOverwrite(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "session.jsonl")
-	sessionWithTurns(t, path, 3)
+	winner := sessionWithTurns(t, path, 3).Snapshot()
 
-	forced := NewSession("sys")
-	forced.Add(provider.Message{Role: provider.RoleUser, Content: "forced state"})
-	if err := forced.Save(path); err != nil {
-		t.Fatalf("force Save: %v", err)
-	}
-	events := readSessionEventsForTest(t, path)
-	if len(events) != 1 || events[0].Type != sessionEventTypeReplace {
-		t.Fatalf("events after force save = %+v, want single replace", events)
+	stale := NewSession("sys")
+	stale.Add(provider.Message{Role: provider.RoleUser, Content: "stale state"})
+	if err := stale.Save(path); !errors.Is(err, ErrSessionSnapshotConflict) {
+		t.Fatalf("diverged Save error = %v, want ErrSessionSnapshotConflict", err)
 	}
 	loaded, err := LoadSession(path)
 	if err != nil {
 		t.Fatalf("LoadSession: %v", err)
 	}
-	if len(loaded.Messages) != 2 || loaded.Messages[1].Content != "forced state" {
-		t.Fatalf("loaded after force save = %+v, want forced transcript", loaded.Messages)
-	}
-	anchor, err := loadSessionMessagesFromJSONL(path)
-	if err != nil {
-		t.Fatalf("read anchor: %v", err)
-	}
-	if len(anchor) != 2 || anchor[1].Content != "forced state" {
-		t.Fatalf("anchor after force save = %+v, want refreshed", anchor)
+	if !messagesEqualForStorageList(loaded.Messages, winner) {
+		t.Fatalf("default Save replaced newer transcript: got %d messages, want %d", len(loaded.Messages), len(winner))
 	}
 }
 
@@ -261,7 +555,7 @@ func TestEventLogCompactionBoundsGrowth(t *testing.T) {
 	filler := strings.Repeat("y", 8<<10)
 	// Repeated rewrites (each a full replace event) must not grow the log
 	// without bound: once past the threshold the log folds to one event.
-	for i := 0; i < 60; i++ {
+	for i := range 60 {
 		s.Replace([]provider.Message{
 			{Role: provider.RoleSystem, Content: "sys"},
 			{Role: provider.RoleUser, Content: filler},
@@ -337,7 +631,7 @@ func TestConcurrentLoadDuringAppendsStaysConsistent(t *testing.T) {
 			}
 		}
 	}()
-	for i := 0; i < 40; i++ {
+	for i := range 40 {
 		s.Add(provider.Message{Role: provider.RoleAssistant, Content: strings.Repeat("a", 512)})
 		if err := s.SaveSnapshot(path); err != nil {
 			t.Fatalf("SaveSnapshot %d: %v", i, err)
@@ -367,16 +661,23 @@ func TestSessionsShareContentSeesEventLogDivergence(t *testing.T) {
 		t.Fatal("identical transcripts reported as different")
 	}
 
-	// Grow A through the event log only — the .jsonl checkpoints stay
-	// byte-identical, which is exactly the trap byte comparison fell into.
+	// Grow A normally, then restore its old compatibility checkpoint to model a
+	// crash or an older Reasonix build that did not advance the display read
+	// model. Transcript equality must still follow the event log.
+	anchorB, err := os.ReadFile(pathB)
+	if err != nil {
+		t.Fatalf("read checkpoint B: %v", err)
+	}
 	a.Add(provider.Message{Role: provider.RoleUser, Content: "diverged"})
 	if err := a.SaveSnapshot(pathA); err != nil {
 		t.Fatalf("SaveSnapshot diverge: %v", err)
 	}
+	if err := os.WriteFile(pathA, anchorB, 0o600); err != nil {
+		t.Fatalf("restore stale checkpoint A: %v", err)
+	}
 	anchorA, _ := os.ReadFile(pathA)
-	anchorB, _ := os.ReadFile(pathB)
 	if string(anchorA) != string(anchorB) {
-		t.Skip("checkpoints diverged on disk; byte-compare trap not reproducible here")
+		t.Fatal("test setup did not preserve byte-identical checkpoints")
 	}
 	same, err = SessionsShareContent(pathA, pathB)
 	if err != nil {
@@ -412,16 +713,115 @@ func TestLoadSessionUserMessagesSeesEventLogTurns(t *testing.T) {
 	}
 }
 
+func TestLoadSessionUserMessagesDoesNotFallbackAfterEventReplayBudget(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.jsonl")
+	checkpoint := `{"role":"user","content":"older checkpoint prompt"}` + "\n"
+	if err := os.WriteFile(path, []byte(checkpoint), 0o600); err != nil {
+		t.Fatalf("write checkpoint: %v", err)
+	}
+	logPath := store.SessionEventLog(path)
+	events := `{"schema_version":1,"type":"replace","messages":[{"role":"user","content":"newer prompt"},{"role":"assistant","content":"reply"}]}` + "\n"
+	if err := os.WriteFile(logPath, []byte(events), 0o600); err != nil {
+		t.Fatalf("write event log: %v", err)
+	}
+
+	users, err := loadSessionUserMessagesWithLimits(path, sessionReplayLimits{
+		maxBytes: int64(len(events) + 1), maxRecords: 10, maxMessages: 1, maxCollectionItems: 10,
+	})
+	if !errors.Is(err, ErrSessionReplayLimitExceeded) {
+		t.Fatalf("load error = %v, want ErrSessionReplayLimitExceeded", err)
+	}
+	if users != nil {
+		t.Fatalf("user messages = %+v, want no stale checkpoint fallback", users)
+	}
+	if got, readErr := os.ReadFile(path); readErr != nil || string(got) != checkpoint {
+		t.Fatalf("checkpoint changed after refusal: bytes=%q err=%v", got, readErr)
+	}
+	if got, readErr := os.ReadFile(logPath); readErr != nil || string(got) != events {
+		t.Fatalf("event log changed after refusal: bytes=%q err=%v", got, readErr)
+	}
+}
+
+func TestLoadSessionUserMessagesDoesNotFallbackFromFutureEventSchema(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.jsonl")
+	checkpoint := `{"role":"user","content":"older checkpoint prompt"}` + "\n"
+	if err := os.WriteFile(path, []byte(checkpoint), 0o600); err != nil {
+		t.Fatalf("write checkpoint: %v", err)
+	}
+	events := `{"schema_version":99,"type":"replace","messages":[{"role":"user","content":"future prompt"}]}` + "\n"
+	if err := os.WriteFile(store.SessionEventLog(path), []byte(events), 0o600); err != nil {
+		t.Fatalf("write event log: %v", err)
+	}
+
+	users, err := LoadSessionUserMessages(path)
+	if err == nil || !strings.Contains(err.Error(), "uses schema 99") {
+		t.Fatalf("load error = %v, want future-schema refusal", err)
+	}
+	if users != nil {
+		t.Fatalf("user messages = %+v, want no stale checkpoint fallback", users)
+	}
+}
+
+func TestSessionEventLogPreservesUserCreatedAt(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.jsonl")
+	want := time.Date(2026, 7, 16, 8, 30, 0, 0, time.UTC).UnixMilli()
+	s := NewSession("sys")
+	s.Add(provider.Message{Role: provider.RoleUser, Content: "timed prompt", CreatedAt: want})
+	if err := s.SaveSnapshot(path); err != nil {
+		t.Fatalf("SaveSnapshot: %v", err)
+	}
+
+	loaded, err := LoadSession(path)
+	if err != nil {
+		t.Fatalf("LoadSession: %v", err)
+	}
+	msgs := loaded.Snapshot()
+	if len(msgs) != 2 || msgs[1].CreatedAt != want {
+		t.Fatalf("loaded messages = %+v, want user createdAt %d", msgs, want)
+	}
+}
+
+func TestSessionDigestIgnoresUserCreatedAt(t *testing.T) {
+	withoutTime := []provider.Message{
+		{Role: provider.RoleSystem, Content: "sys"},
+		{Role: provider.RoleUser, Content: "prompt"},
+	}
+	withTime := append([]provider.Message(nil), withoutTime...)
+	withTime[1].CreatedAt = 1_718_000_000_000
+
+	withoutDigest, withoutSize, err := digestAndSizeSessionMessages(withoutTime)
+	if err != nil {
+		t.Fatalf("digest without createdAt: %v", err)
+	}
+	withDigest, withSize, err := digestAndSizeSessionMessages(withTime)
+	if err != nil {
+		t.Fatalf("digest with createdAt: %v", err)
+	}
+	if withoutDigest != withDigest || withoutSize != withSize {
+		t.Fatalf("local createdAt changed transcript identity: digestEqual=%v size=%d/%d", withoutDigest == withDigest, withoutSize, withSize)
+	}
+	if !messagesHavePrefix(withTime, withoutTime) || !messagesHavePrefix(withoutTime, withTime) {
+		t.Fatal("local createdAt broke cross-version transcript prefix matching")
+	}
+	if depth := messagesPrefixDigestDepth(withTime, withoutDigest); depth != len(withTime) {
+		t.Fatalf("createdAt-aware prefix digest depth = %d, want %d", depth, len(withTime))
+	}
+}
+
 func TestSessionContentModTimeTracksEventLog(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "session.jsonl")
 	s := sessionWithTurns(t, path, 1)
-	old := time.Now().Add(-24 * time.Hour)
-	if err := os.Chtimes(path, old, old); err != nil {
-		t.Fatalf("age anchor: %v", err)
-	}
 	s.Add(provider.Message{Role: provider.RoleUser, Content: "new"})
 	if err := s.SaveSnapshot(path); err != nil {
 		t.Fatalf("SaveSnapshot: %v", err)
+	}
+	// Filesystems such as macOS can expose coarse mtime resolution, so the
+	// checkpoint and event log written by one save are allowed to have the
+	// same timestamp. Make the ordering under test explicit after the save:
+	// the checkpoint is a stale anchor while the event log remains current.
+	old := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	if err := os.Chtimes(path, old, old); err != nil {
+		t.Fatalf("age anchor: %v", err)
 	}
 	anchorInfo, err := os.Stat(path)
 	if err != nil {

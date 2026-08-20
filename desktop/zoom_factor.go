@@ -3,10 +3,11 @@ package main
 import (
 	"encoding/json"
 	"os"
-	"os/exec"
 	"path/filepath"
 
 	"reasonix/internal/config"
+	"reasonix/internal/fileutil"
+	"reasonix/internal/proc"
 )
 
 // DesktopZoomFactor persists the user's WebView2 zoom factor preference across
@@ -66,7 +67,7 @@ func (a *App) SetDesktopZoomFactor(factor float64) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0o644)
+	return fileutil.AtomicWriteFile(path, data, 0o644)
 }
 
 // RestartApplication saves the zoom and restarts the whole process so the new
@@ -76,7 +77,7 @@ func (a *App) RestartApplication() error {
 	if err != nil {
 		return err
 	}
-	cmd := exec.Command(exe, os.Args[1:]...)
+	cmd := proc.VisibleCommand(exe, os.Args[1:]...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Start(); err != nil {

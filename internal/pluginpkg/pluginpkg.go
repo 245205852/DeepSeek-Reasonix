@@ -10,18 +10,17 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
 	"sync"
-	"time"
 
 	"reasonix/internal/command"
 	"reasonix/internal/fileutil"
 	fileencoding "reasonix/internal/fileutil/encoding"
 	"reasonix/internal/frontmatter"
-	"reasonix/internal/mcpcatalog"
 )
 
 const (
@@ -30,11 +29,14 @@ const (
 	ClaudeManifest = ".claude-plugin/plugin.json"
 	StateFilename  = "plugin-packages.json"
 
+	PluginStatusDisabledIncompatible = "disabled_incompatible"
+
 	claudeSettingsPath = ".claude/settings.json"
 	claudeInstructions = "CLAUDE.md"
 )
 
 var validName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$`)
+var windowsAbsolutePath = regexp.MustCompile(`^[A-Za-z]:/`)
 
 // Package is one parsed plugin package rooted on disk.
 type Package struct {
@@ -48,6 +50,8 @@ type Inventory struct {
 	Skills     []SkillRef
 	Agents     []AgentRef
 	Commands   []CommandRef
+	Prompts    []PromptRef
+	Themes     []ThemeRef
 	Hooks      []HookRef
 	MCPServers []MCPServerRef
 }
@@ -91,6 +95,24 @@ type CommandRef struct {
 	Invocation  string
 }
 
+// PromptRef is one prompt template a v2 plugin contributes from a prompts
+// directory (distinct from legacy command contributions).
+// Prompt files share the slash-command file shape (flat <name>.md with
+// frontmatter) but map to kernel KindPrompt contributions, not commands.
+type PromptRef struct {
+	Name        string
+	Description string
+	ArgHint     string
+	Path        string
+}
+
+// ThemeRef is one theme file (*.reasonix-theme) a plugin contributes,
+// resolved from the manifest's themes list (plain paths and globs).
+type ThemeRef struct {
+	Name string
+	Path string
+}
+
 type HookRef struct {
 	Event       string
 	Match       string
@@ -111,6 +133,8 @@ type MCPServerRef struct {
 
 // Manifest is the normalized manifest shape used by Reasonix.
 type Manifest struct {
+	// APIVersion is reasonix.io/plugin/v2 for native packages; empty for Claude/Codex.
+	APIVersion  string
 	Name        string
 	Version     string
 	Description string
@@ -126,20 +150,82 @@ type Manifest struct {
 	Commands   []string
 	Hooks      map[string][]Hook
 	MCPServers map[string]MCPServer
+	// Prompts are directories of flat <name>.md prompt templates. The two are
+	// separate semantic sets: commands become slash commands, prompts become
+	// kernel KindPrompt contributions. A path listed under both stays in both.
+	Prompts []string
+	// Themes are *.reasonix-theme file paths or per-segment glob patterns
+	// (e.g. "themes/*.reasonix-theme"), all lexically inside the plugin root.
+	Themes []string
+	// Runtime declares a plugin-owned runtime process (native v2).
+	// nil for Claude and Codex packages.
+	Runtime  *RuntimeSpec
+	Requires []CapabilityRef // v2 dependency graph
+	Provides []CapabilityRef
 }
 
 type Hook struct {
 	Match         string            `json:"match,omitempty"`
 	Command       string            `json:"command,omitempty"`
 	Args          []string          `json:"args,omitempty"`
+	ArgsSet       bool              `json:"-"`
 	ContextFile   string            `json:"contextFile,omitempty"`
 	ShellCommand  bool              `json:"shellCommand,omitempty"`
+	Shell         string            `json:"shell,omitempty"`
 	Async         bool              `json:"async,omitempty"`
 	PayloadFormat string            `json:"payloadFormat,omitempty"`
 	Description   string            `json:"description,omitempty"`
 	Timeout       int               `json:"timeout,omitempty"`
 	Cwd           string            `json:"cwd,omitempty"`
 	Env           map[string]string `json:"env,omitempty"`
+}
+
+// UnmarshalJSON preserves whether args was present, including an explicit
+// empty array. Hook execution uses field presence — not argument count — to
+// distinguish exec form from shell form.
+func (h *Hook) UnmarshalJSON(data []byte) error {
+	type hookJSON Hook
+	var decoded hookJSON
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	*h = Hook(decoded)
+	for name := range fields {
+		if strings.EqualFold(name, "args") {
+			h.ArgsSet = true
+			break
+		}
+	}
+	return nil
+}
+
+// MarshalJSON keeps an explicit empty args array visible. Without this custom
+// form, omitempty would erase args:[] and silently change exec form into shell
+// form after a JSON round trip.
+func (h Hook) MarshalJSON() ([]byte, error) {
+	type hookJSON Hook
+	data, err := json.Marshal(hookJSON(h))
+	if err != nil || !h.ArgsSet {
+		return data, err
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return nil, err
+	}
+	args := h.Args
+	if args == nil {
+		args = []string{}
+	}
+	rawArgs, err := json.Marshal(args)
+	if err != nil {
+		return nil, err
+	}
+	fields["args"] = rawArgs
+	return json.Marshal(fields)
 }
 
 type MCPServer struct {
@@ -163,23 +249,16 @@ type State struct {
 }
 
 type InstalledPlugin struct {
-	Name         string        `json:"name"`
-	Source       string        `json:"source,omitempty"`
-	Root         string        `json:"root"`
-	Version      string        `json:"version,omitempty"`
-	Description  string        `json:"description,omitempty"`
-	ManifestKind string        `json:"manifestKind,omitempty"`
-	Enabled      bool          `json:"enabled"`
-	Commit       string        `json:"commit,omitempty"`
-	Verification *Verification `json:"verification,omitempty"`
-}
-
-type Verification struct {
-	CatalogEntryID  string    `json:"catalogEntryId"`
-	Commit          string    `json:"commit"`
-	PackageSHA256   string    `json:"packageSha256"`
-	VerifiedAt      time.Time `json:"verifiedAt"`
-	CatalogSequence uint64    `json:"catalogSequence"`
+	Name         string `json:"name"`
+	Source       string `json:"source,omitempty"`
+	Root         string `json:"root"`
+	Version      string `json:"version,omitempty"`
+	Description  string `json:"description,omitempty"`
+	ManifestKind string `json:"manifestKind,omitempty"`
+	Enabled      bool   `json:"enabled"`
+	Commit       string `json:"commit,omitempty"`
+	Status       string `json:"status,omitempty"`
+	StatusReason string `json:"statusReason,omitempty"`
 }
 
 type InstalledPackage struct {
@@ -294,49 +373,11 @@ func SetEnabled(reasonixHome, name string, enabled bool) error {
 	return fmt.Errorf("plugin %q is not installed", name)
 }
 
-func LoadInstalled(reasonixHome string) ([]InstalledPackage, []string) {
-	st, err := LoadState(reasonixHome)
-	if err != nil {
-		return nil, []string{err.Error()}
-	}
-	var out []InstalledPackage
-	var warnings []string
-	for _, installed := range st.Plugins {
-		if !installed.Enabled {
-			continue
-		}
-		if installed.Verification != nil && !VerificationValid(reasonixHome, installed) {
-			warnings = append(warnings, fmt.Sprintf("%s: installed package content changed; official verification removed", installed.Name))
-			installed.Verification = nil
-		}
-		root := ResolveRoot(reasonixHome, installed.Root)
-		pkg, pkgWarnings, err := ParseDir(root)
-		if err != nil {
-			warnings = append(warnings, fmt.Sprintf("%s: %v", installed.Name, err))
-			continue
-		}
-		out = append(out, InstalledPackage{Installed: installed, Package: pkg, Warnings: pkgWarnings})
-	}
-	sort.SliceStable(out, func(i, j int) bool { return out[i].Installed.Name < out[j].Installed.Name })
-	return out, warnings
-}
-
 func ResolveRoot(reasonixHome, root string) string {
 	if filepath.IsAbs(root) {
 		return filepath.Clean(root)
 	}
 	return filepath.Join(reasonixHome, filepath.Clean(root))
-}
-
-// VerificationValid recomputes the installed package tree on every load/use.
-// A modified package immediately loses official status before any MCP reader is
-// auto-trusted.
-func VerificationValid(reasonixHome string, installed InstalledPlugin) bool {
-	if installed.Verification == nil || strings.TrimSpace(installed.Verification.PackageSHA256) == "" {
-		return false
-	}
-	digest, err := mcpcatalog.TreeSHA256(ResolveRoot(reasonixHome, installed.Root))
-	return err == nil && strings.EqualFold(digest, installed.Verification.PackageSHA256)
 }
 
 func RelativeRoot(reasonixHome, root string) string {
@@ -348,19 +389,31 @@ func RelativeRoot(reasonixHome, root string) string {
 
 func ParseDir(root string) (Package, []string, error) {
 	root = filepath.Clean(root)
+	// A manifest that EXISTS but fails to parse fails loudly with the real
+	// error (a v1 typo names its field path); only a missing file falls
+	// through to the next manifest kind.
 	if pkg, warnings, err := parseNative(filepath.Join(root, NativeManifest), root); err == nil {
 		return pkg, warnings, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return Package{}, nil, err
 	}
 	if pkg, warnings, err := parseCodex(filepath.Join(root, CodexManifest), root); err == nil {
 		return pkg, warnings, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return Package{}, nil, err
 	}
 	if pkg, warnings, err := parseClaudePlugin(filepath.Join(root, ClaudeManifest), root); err == nil {
 		return pkg, warnings, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return Package{}, nil, err
 	}
 	return Package{}, nil, fmt.Errorf("no %s, %s, or %s found", NativeManifest, CodexManifest, ClaudeManifest)
 }
 
-func parseNative(path, root string) (Package, []string, error) {
+// parseNativeLegacy is the pre-extension native manifest path, preserved
+// byte-for-byte: manifests without an apiVersion parse exactly as they
+// always have, including silently ignoring unknown fields.
+func parseNativeLegacy(b []byte, root string) (Package, []string, error) {
 	var raw struct {
 		Name        string               `json:"name"`
 		Version     string               `json:"version"`
@@ -372,7 +425,7 @@ func parseNative(path, root string) (Package, []string, error) {
 		Hooks       map[string][]Hook    `json:"hooks"`
 		MCPServers  map[string]MCPServer `json:"mcpServers"`
 	}
-	if err := readJSONFile(path, &raw); err != nil {
+	if err := json.Unmarshal(b, &raw); err != nil {
 		return Package{}, nil, err
 	}
 	skills, err := parseSkillPaths(raw.Skills)
@@ -461,7 +514,16 @@ func parseCodexLike(path, root, kind string, includeCodexSessionStartHook bool) 
 	if kind == "claude" {
 		warnings = append(warnings, applyClaudeConventionDirs(root, &manifest)...)
 	}
-	compatWarnings, compatIssues := applyClaudeCompatibility(root, &manifest)
+	var compatWarnings []string
+	var compatIssues []CompatibilityIssue
+	if kind == "claude" {
+		// Claude Code does not treat a plugin-root CLAUDE.md as project
+		// context. Keep its supported hook and MCP conventions without
+		// synthesizing an extra SessionStart context hook.
+		compatWarnings, compatIssues = appendClaudeCompatibility(root, &manifest)
+	} else {
+		compatWarnings, compatIssues = applyClaudeCompatibility(root, &manifest)
+	}
 	warnings = append(warnings, compatWarnings...)
 	issues = append(issues, compatIssues...)
 	if err := validateManifest(root, &manifest); err != nil {
@@ -574,27 +636,6 @@ func ManifestPaths() []string {
 	return []string{NativeManifest, CodexManifest, ClaudeManifest}
 }
 
-func applyClaudeCompatibility(root string, manifest *Manifest) ([]string, []CompatibilityIssue) {
-	appendRootClaudeInstructions(root, manifest)
-	return appendClaudeCompatibility(root, manifest)
-}
-
-func appendRootClaudeInstructions(root string, manifest *Manifest) {
-	path := filepath.Join(root, claudeInstructions)
-	info, err := os.Stat(path)
-	if err != nil || !info.Mode().IsRegular() {
-		return
-	}
-	if manifest.Hooks == nil {
-		manifest.Hooks = map[string][]Hook{}
-	}
-	manifest.Hooks["SessionStart"] = append(manifest.Hooks["SessionStart"], Hook{
-		ContextFile: claudeInstructions,
-		Cwd:         ".",
-		Description: "Plugin CLAUDE.md startup context from " + manifest.Name,
-	})
-}
-
 func claudeTimeoutMillis(seconds int) int {
 	if seconds <= 0 {
 		return 0
@@ -660,15 +701,11 @@ func parseSkillPaths(raw json.RawMessage) ([]string, error) {
 func cleanPathList(paths []string) ([]string, error) {
 	var out []string
 	seen := map[string]bool{}
-	for _, p := range paths {
-		p = filepath.Clean(strings.TrimSpace(p))
-		if p == "." || p == "" {
-			p = "."
+	for _, raw := range paths {
+		slash, err := cleanPortableRelativePath(raw)
+		if err != nil {
+			return nil, err
 		}
-		if filepath.IsAbs(p) || strings.HasPrefix(p, ".."+string(filepath.Separator)) || p == ".." {
-			return nil, fmt.Errorf("plugin path %q must be relative and stay inside the plugin root", p)
-		}
-		slash := filepath.ToSlash(p)
 		if !seen[slash] {
 			seen[slash] = true
 			out = append(out, slash)
@@ -689,6 +726,10 @@ func normalizeHooks(in map[string][]Hook) map[string][]Hook {
 			h.Command = strings.TrimSpace(h.Command)
 			h.ContextFile = strings.TrimSpace(h.ContextFile)
 			h.Cwd = strings.TrimSpace(h.Cwd)
+			h.Shell = strings.ToLower(strings.TrimSpace(h.Shell))
+			if h.Shell != "" && !h.ArgsSet {
+				h.ShellCommand = true
+			}
 			if h.Command == "" && h.ContextFile == "" {
 				continue
 			}
@@ -717,6 +758,16 @@ func validateManifest(root string, m *Manifest) error {
 			return err
 		}
 	}
+	for _, p := range m.Prompts {
+		if err := validateRelativePath(p); err != nil {
+			return err
+		}
+	}
+	for _, p := range m.Themes {
+		if err := validateRelativePath(p); err != nil {
+			return err
+		}
+	}
 	for event, hooks := range m.Hooks {
 		if strings.TrimSpace(event) == "" {
 			return fmt.Errorf("hook event is required")
@@ -724,6 +775,9 @@ func validateManifest(root string, m *Manifest) error {
 		for _, h := range hooks {
 			if h.Command == "" && h.ContextFile == "" {
 				return fmt.Errorf("hook command or contextFile is required")
+			}
+			if !h.ArgsSet && !validHookShell(h.Shell) {
+				return fmt.Errorf("hook shell %q is not supported (use auto, bash, powershell, pwsh, or cmd)", h.Shell)
 			}
 			if h.Command != "" && !h.ShellCommand && !filepath.IsAbs(h.Command) {
 				if err := validateRelativePath(h.Command); err != nil {
@@ -753,15 +807,38 @@ func validateManifest(root string, m *Manifest) error {
 	return nil
 }
 
+func validHookShell(shell string) bool {
+	switch strings.ToLower(strings.TrimSpace(shell)) {
+	case "", "auto", "bash", "powershell", "pwsh", "cmd":
+		return true
+	default:
+		return false
+	}
+}
+
 func validateRelativePath(p string) error {
-	p = filepath.Clean(strings.TrimSpace(p))
-	if p == "" {
+	if strings.TrimSpace(p) == "" {
 		return fmt.Errorf("plugin path is required")
 	}
-	if filepath.IsAbs(p) || strings.HasPrefix(p, ".."+string(filepath.Separator)) || p == ".." {
-		return fmt.Errorf("plugin path %q must be relative and stay inside the plugin root", p)
+	_, err := cleanPortableRelativePath(p)
+	return err
+}
+
+// cleanPortableRelativePath applies the same manifest path contract on every
+// host OS. A plugin prepared on Windows must not turn a drive/UNC path into a
+// harmless-looking relative path on Unix, and a Unix-rooted path must remain
+// absolute when the same package is parsed on Windows.
+func cleanPortableRelativePath(raw string) (string, error) {
+	trimmed := strings.TrimSpace(raw)
+	normalized := strings.ReplaceAll(trimmed, `\`, "/")
+	if filepath.IsAbs(trimmed) || path.IsAbs(normalized) || windowsAbsolutePath.MatchString(normalized) {
+		return "", fmt.Errorf("plugin path %q must be relative and stay inside the plugin root", trimmed)
 	}
-	return nil
+	cleaned := path.Clean(normalized)
+	if cleaned == ".." || strings.HasPrefix(cleaned, "../") {
+		return "", fmt.Errorf("plugin path %q must be relative and stay inside the plugin root", trimmed)
+	}
+	return cleaned, nil
 }
 
 func (p Package) SkillRoots() []string {
@@ -793,6 +870,17 @@ func (p Package) CommandRoots() []string {
 	return out
 }
 
+// PromptRoots returns the absolute prompt-template directories this package
+// contributes through a native Manifest v2.
+func (p Package) PromptRoots() []string {
+	var out []string
+	for _, rel := range p.Manifest.Prompts {
+		out = append(out, filepath.Join(p.Root, filepath.FromSlash(rel)))
+	}
+	sort.Strings(out)
+	return out
+}
+
 func (p Package) CapabilityCounts() (skills, commands, hooks, mcp int) {
 	skills = len(p.skillRefs())
 	commands = len(p.commandRefs())
@@ -805,11 +893,50 @@ func (p Package) CapabilityCounts() (skills, commands, hooks, mcp int) {
 
 func (p Package) AgentCount() int { return len(p.agentRefs()) }
 
+// PromptCount counts the prompt templates discovered under Manifest.Prompts.
+func (p Package) PromptCount() int { return len(p.promptRefs()) }
+
+// ThemeCount counts the theme files resolved from Manifest.Themes.
+func (p Package) ThemeCount() int { return len(p.themeRefs()) }
+
+// CapabilitySummary is the full per-package capability count set. The
+// four-value CapabilityCounts predates native runtime manifests and keeps its
+// signature for existing callers (the desktop module among them); newer fields
+// live here.
+type CapabilitySummary struct {
+	Skills     int
+	Agents     int
+	Commands   int
+	Hooks      int
+	MCPServers int
+	Prompts    int
+	Themes     int
+	Runtime    bool
+}
+
+// CapabilitySummary counts everything the package contributes, including
+// native Manifest v2 prompts, themes, and runtime.
+func (p Package) CapabilitySummary() CapabilitySummary {
+	skills, commands, hooks, mcp := p.CapabilityCounts()
+	return CapabilitySummary{
+		Skills:     skills,
+		Agents:     p.AgentCount(),
+		Commands:   commands,
+		Hooks:      hooks,
+		MCPServers: mcp,
+		Prompts:    len(p.promptRefs()),
+		Themes:     len(p.themeRefs()),
+		Runtime:    p.Manifest.Runtime != nil,
+	}
+}
+
 func (p Package) Inventory() Inventory {
 	return Inventory{
 		Skills:     p.skillRefs(),
 		Agents:     p.agentRefs(),
 		Commands:   p.commandRefs(),
+		Prompts:    p.promptRefs(),
+		Themes:     p.themeRefs(),
 		Hooks:      p.hookRefs(),
 		MCPServers: p.mcpServerRefs(),
 	}
@@ -834,6 +961,67 @@ func (p Package) commandRefs() []CommandRef {
 			Invocation:  "/" + c.Name,
 		})
 	}
+	return out
+}
+
+// promptRefs loads the package's prompt dirs through the same loader the
+// command inventory uses (internal/command): prompt templates share the
+// slash-command file shape, so names, frontmatter, and malformed-file
+// handling stay identical.
+func (p Package) promptRefs() []PromptRef {
+	roots := p.PromptRoots()
+	if len(roots) == 0 {
+		return nil
+	}
+	cmds, _ := command.Load(roots...) // best-effort, like commandRefs
+	out := make([]PromptRef, 0, len(cmds))
+	for _, c := range cmds {
+		out = append(out, PromptRef{
+			Name:        c.Name,
+			Description: c.Description,
+			ArgHint:     c.ArgHint,
+			Path:        c.Source,
+		})
+	}
+	return out
+}
+
+// themeRefs resolves the manifest's themes list (plain paths and
+// per-segment globs) to concrete theme files. Parse-time validation has
+// already rejected escapes and non-regular files, so unreadable entries
+// here simply drop out (they were reported as parse warnings).
+func (p Package) themeRefs() []ThemeRef {
+	seen := map[string]bool{}
+	var out []ThemeRef
+	for _, pattern := range p.Manifest.Themes {
+		var matches []string
+		if hasGlobMeta(pattern) {
+			matches, _ = globThemePattern(p.Root, pattern)
+		} else {
+			abs := filepath.Join(p.Root, filepath.FromSlash(pattern))
+			if info, err := os.Stat(abs); err == nil && info.Mode().IsRegular() {
+				matches = []string{abs}
+			}
+		}
+		for _, match := range matches {
+			match = filepath.Clean(match)
+			if seen[match] {
+				continue
+			}
+			seen[match] = true
+			base := filepath.Base(match)
+			out = append(out, ThemeRef{
+				Name: strings.TrimSuffix(base, filepath.Ext(base)),
+				Path: match,
+			})
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Name != out[j].Name {
+			return out[i].Name < out[j].Name
+		}
+		return out[i].Path < out[j].Path
+	})
 	return out
 }
 

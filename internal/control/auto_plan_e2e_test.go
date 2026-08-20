@@ -38,6 +38,9 @@ func (s *scriptedTurns) Stream(_ context.Context, _ provider.Request) (<-chan pr
 func firstUserMessage(msgs []provider.Message) string {
 	for _, m := range msgs {
 		if m.Role == provider.RoleUser {
+			if m.ProviderContent != "" {
+				return m.ProviderContent
+			}
 			return m.Content
 		}
 	}
@@ -48,21 +51,36 @@ func textTurn(text string) []provider.Chunk {
 	return []provider.Chunk{{Type: provider.ChunkText, Text: text}, {Type: provider.ChunkDone}}
 }
 
-// TestAutoPlanGateEndToEnd drives the whole gate through a real agent: a complex
-// request auto-enters plan mode (marker reaches the model), the agent answers
-// with a plan, the controller asks for approval, and on approval it exits plan
-// mode, seeds the task list, and runs the execution turn.
-func TestAutoPlanGateEndToEnd(t *testing.T) {
-	prov := &scriptedTurns{turns: [][]provider.Chunk{
-		textTurn("Plan:\n1. Add the config field\n2. Wire it into boot\n3. Add tests"),
-		textTurn("Done — implemented the plan."),
-	}}
-	ag := agent.New(prov, tool.NewRegistry(), agent.NewSession(""), agent.Options{}, event.Discard)
+func readFileTurn() []provider.Chunk {
+	return []provider.Chunk{
+		{Type: provider.ChunkToolCall, ToolCall: &provider.ToolCall{ID: "r1", Name: "read_file", Arguments: `{"path":"README.md"}`}},
+		{Type: provider.ChunkDone},
+	}
+}
+
+func planThenExecuteTurns(plan, answer string) [][]provider.Chunk {
+	return [][]provider.Chunk{textTurn(plan), readFileTurn(), textTurn(answer)}
+}
+
+func newPlanTestAgent(prov provider.Provider) *agent.Agent {
+	reg := tool.NewRegistry()
+	reg.Add(fakeControlTool{name: "read_file"})
+	return agent.New(prov, reg, agent.NewSession(""), agent.Options{}, event.Discard)
+}
+
+// TestPlanGateEndToEnd drives explicit Plan Mode through a real agent: the plan
+// marker reaches the model, the controller asks for approval, and approval exits
+// Plan Mode, seeds the task list, and runs the execution turn.
+func TestPlanGateEndToEnd(t *testing.T) {
+	prov := &scriptedTurns{turns: planThenExecuteTurns(
+		"Plan:\n1. Add the config field\n2. Wire it into boot\n3. Add tests",
+		"Done — implemented the plan.",
+	)}
+	ag := newPlanTestAgent(prov)
 
 	approvalID := make(chan string, 1)
 	var seeded bool
 	c := New(Options{
-		AutoPlan: "on",
 		Runner:   ag,
 		Executor: ag,
 		Sink: event.FuncSink(func(e event.Event) {
@@ -76,6 +94,7 @@ func TestAutoPlanGateEndToEnd(t *testing.T) {
 			}
 		}),
 	})
+	c.SetPlanMode(true)
 
 	go func() { c.Approve(<-approvalID, true, false, false) }()
 
@@ -86,7 +105,7 @@ func TestAutoPlanGateEndToEnd(t *testing.T) {
 
 	msgs := ag.Session().Messages
 	if got := agent.StripTransientUserBlocks(firstUserMessage(msgs)); !strings.HasPrefix(got, PlanModeMarker) {
-		t.Fatalf("first model input = %q, want the auto-plan marker prefixed", got)
+		t.Fatalf("first model input = %q, want the plan marker prefixed", got)
 	}
 	if c.PlanMode() {
 		t.Fatal("plan mode should be off after approval")
@@ -97,22 +116,21 @@ func TestAutoPlanGateEndToEnd(t *testing.T) {
 	if got := lastAssistantText(msgs); got != "Done — implemented the plan." {
 		t.Fatalf("last assistant text = %q, want the execution turn's answer", got)
 	}
-	if prov.call != 2 {
-		t.Fatalf("provider called %d times, want 2 (plan + execution)", prov.call)
+	if prov.call != 3 {
+		t.Fatalf("provider called %d times, want 3 (plan + read + answer)", prov.call)
 	}
 }
 
 func TestApprovedPlanSeedClearsAfterExecutionWithoutModelTodoWrite(t *testing.T) {
-	prov := &scriptedTurns{turns: [][]provider.Chunk{
-		textTurn("Plan:\n1. Add the config field\n2. Wire it into boot"),
-		textTurn("Done."),
-	}}
-	ag := agent.New(prov, tool.NewRegistry(), agent.NewSession(""), agent.Options{}, event.Discard)
+	prov := &scriptedTurns{turns: planThenExecuteTurns(
+		"Plan:\n1. Add the config field\n2. Wire it into boot",
+		"Done.",
+	)}
+	ag := newPlanTestAgent(prov)
 
 	approvalID := make(chan string, 1)
 	var planSeedResults []string
 	c := New(Options{
-		AutoPlan: "on",
 		Runner:   ag,
 		Executor: ag,
 		Sink: event.FuncSink(func(e event.Event) {
@@ -126,6 +144,7 @@ func TestApprovedPlanSeedClearsAfterExecutionWithoutModelTodoWrite(t *testing.T)
 			}
 		}),
 	})
+	c.SetPlanMode(true)
 
 	go func() { c.Approve(<-approvalID, true, false, false) }()
 
@@ -146,9 +165,9 @@ func TestApprovedPlanSeedClearsAfterExecutionWithoutModelTodoWrite(t *testing.T)
 	}
 }
 
-// TestAutoPlanGateRejectionStaysInPlan proves a rejected plan keeps plan mode on
+// TestPlanGateRejectionStaysInPlan proves a rejected plan keeps plan mode on
 // and never runs the execution turn: only the plan turn reached the model.
-func TestAutoPlanGateRejectionStaysInPlan(t *testing.T) {
+func TestPlanGateRejectionStaysInPlan(t *testing.T) {
 	prov := &scriptedTurns{turns: [][]provider.Chunk{
 		textTurn("Plan:\n1. Add the config field\n2. Add tests"),
 	}}
@@ -157,7 +176,6 @@ func TestAutoPlanGateRejectionStaysInPlan(t *testing.T) {
 	approvalID := make(chan string, 1)
 	var seeded bool
 	c := New(Options{
-		AutoPlan: "on",
 		Runner:   ag,
 		Executor: ag,
 		Sink: event.FuncSink(func(e event.Event) {
@@ -171,6 +189,7 @@ func TestAutoPlanGateRejectionStaysInPlan(t *testing.T) {
 			}
 		}),
 	})
+	c.SetPlanMode(true)
 
 	go func() { c.Approve(<-approvalID, false, false, false) }()
 
@@ -187,68 +206,5 @@ func TestAutoPlanGateRejectionStaysInPlan(t *testing.T) {
 	}
 	if prov.call != 1 {
 		t.Fatalf("provider called %d times, want 1 (plan only, no execution)", prov.call)
-	}
-	c.mu.Lock()
-	suppressed := c.suppressAutoPlan
-	c.mu.Unlock()
-	if suppressed {
-		t.Fatal("denying a plan while plan mode stays on must not suppress auto-plan")
-	}
-}
-
-// TestAutoPlanSuppressedAfterUserExitsPlanMode: when the user turns plan mode
-// off and then denies the pending plan approval, the next turn must not
-// auto-plan straight back into the mode the user just left. The suppression is
-// one-shot. Absorbed from PR #6413 by @myipanta.
-func TestAutoPlanSuppressedAfterUserExitsPlanMode(t *testing.T) {
-	prov := &scriptedTurns{turns: [][]provider.Chunk{
-		textTurn("Plan:\n1. Add the config field\n2. Add tests"),
-		textTurn("done without planning"),
-	}}
-	ag := agent.New(prov, tool.NewRegistry(), agent.NewSession(""), agent.Options{}, event.Discard)
-
-	approvalID := make(chan string, 1)
-	c := New(Options{
-		AutoPlan: "on",
-		Runner:   ag,
-		Executor: ag,
-		Sink: event.FuncSink(func(e event.Event) {
-			if e.Kind == event.ApprovalRequest {
-				approvalID <- e.Approval.ID
-			}
-		}),
-	})
-
-	go func() {
-		id := <-approvalID
-		c.SetPlanMode(false) // the user exits plan mode from the UI...
-		c.Approve(id, false, false, false)
-	}()
-
-	input := "实现 issue #2395：新增配置项、自动判断复杂任务、补测试和文档"
-	if err := c.runTurnWithRaw(context.Background(), input, input); err != nil {
-		t.Fatalf("runTurnWithRaw: %v", err)
-	}
-	if c.PlanMode() {
-		t.Fatal("plan mode should stay off after the user exited it")
-	}
-	c.mu.Lock()
-	suppressed := c.suppressAutoPlan
-	c.mu.Unlock()
-	if !suppressed {
-		t.Fatal("denying the plan after exiting plan mode should suppress the next auto-plan")
-	}
-
-	if err := c.runTurnWithRaw(context.Background(), input, input); err != nil {
-		t.Fatalf("second runTurnWithRaw: %v", err)
-	}
-	if c.PlanMode() {
-		t.Fatal("auto-plan must not re-enter plan mode on the turn right after the user exited it")
-	}
-	c.mu.Lock()
-	suppressed = c.suppressAutoPlan
-	c.mu.Unlock()
-	if suppressed {
-		t.Fatal("auto-plan suppression should be one-shot")
 	}
 }

@@ -25,8 +25,21 @@ func explainError(err error) error {
 	if provider.IsConnReset(err) {
 		return fmt.Errorf("model stream disconnected before completion after retry attempts: %s. Check the provider/proxy connection, then retry or ask Reasonix to continue", err.Error())
 	}
+	if limit := provider.AsContextLimitError(err); limit != nil {
+		msg := fmt.Sprintf(i18n.M.ProviderErrContextOverflowFmt, limit.PromptTokens, limit.CompletionTokens, limit.RequestedTokens, limit.WindowTokens)
+		if reason := apiErrorReason(limit.APIError); reason != "" {
+			return fmt.Errorf("%s\n%s", msg, reason)
+		}
+		return errors.New(msg)
+	}
 	var apiErr *provider.APIError
 	if errors.As(err, &apiErr) {
+		if msg := providerContentSafetyMessage(apiErr); msg != "" {
+			if reason := apiErrorReason(apiErr); reason != "" {
+				return fmt.Errorf("%s\n%s", msg, reason)
+			}
+			return errors.New(msg)
+		}
 		msg := i18n.M.ProviderStatusMessage(apiErr.Status)
 		if msg == "" {
 			return err
@@ -67,66 +80,57 @@ func explainError(err error) error {
 // channel, unsupported tools, exhausted quota — in a 402/429/5xx body, and
 // without it those errors are undiagnosable from the category line alone.
 func apiErrorReason(e *provider.APIError) string {
-	reason := providerBodyReason(e.Body)
-	if e.ToolContext == "" {
-		return reason
+	details := make([]string, 0, 3)
+	if reason := providerBodyReason(e.Body); reason != "" {
+		details = append(details, reason)
 	}
-	if reason == "" {
-		return e.ToolContext
+	if traceID := strings.TrimSpace(e.TraceID); traceID != "" {
+		details = append(details, "Trace ID: "+clampRunes(traceID, 200))
 	}
-	return reason + "\n" + e.ToolContext
+	if e.ToolContext != "" {
+		details = append(details, e.ToolContext)
+	}
+	return strings.Join(details, "\n")
 }
 
-// Auth failure bodies are where servers echo credentials: providers include a
-// masked tail ("Your api key: ****ae54 is invalid") and a sloppy relay can
-// reflect the full key it received. Both narrow or reveal the key, and the
-// displayed turn error can travel further than the user's terminal (bot
-// forwarding, shared screenshots).
 var (
-	// maskedFragmentRe matches a partially masked credential and any visible
-	// prefix/suffix around the stars ("****ae54", "sk-ab****") — including the
-	// head/tail remnants secrets.Redact's own mask leaves behind. For auth
-	// display even the remnant narrows the key, so the whole run collapses.
-	maskedFragmentRe = regexp.MustCompile(`[A-Za-z0-9._-]*\*{2,}[A-Za-z0-9._-]*`)
-	// credContextRe masks any long value that follows a credential word.
-	// secrets.Redact's KEY=value rule only matches API_KEY/APIKEY-style names;
-	// providers write prose forms like "api key: <value>", where the value must
-	// go regardless of its composition.
-	credContextRe = regexp.MustCompile(`(?i)\b(api[ _-]?key|access[ _-]?key|secret|token|authorization|bearer|credential)s?\b(['"]?\s*[:=]?\s*['"]?)([A-Za-z0-9._~+/-]{12,})`)
-	// keyTokenRe matches key-shaped runs for the no-context fallback; a run is
-	// treated as a credential when it carries a digit or mixed case, so
-	// single-case digit-free identifiers like "invalid_authentication_token"
-	// stay readable.
-	keyTokenRe = regexp.MustCompile(`[A-Za-z0-9_-]{16,}`)
-	digitRe    = regexp.MustCompile(`[0-9]`)
+	miniMax1026CodeRe = regexp.MustCompile(`(^|[^0-9])1026([^0-9]|$)`)
+	miniMax1027CodeRe = regexp.MustCompile(`(^|[^0-9])1027([^0-9]|$)`)
 )
 
-// redactAuthReason scrubs key material from an auth-failure reason before
-// display, in layers: secrets.Redact for known key shapes (sk-/rk- prefixes,
-// Bearer, JWT, KEY=value forms), the credential-context rule for prose forms,
-// full collapse of masked fragments, then the key-shaped-token fallback. The
-// residual blind spot is a long single-case digit-free token with no context
-// word — indistinguishable from an identifier. Deliberately applied only to
-// 401/403 bodies: other statuses don't carry credentials, and 400 schema
-// errors legitimately contain long identifiers that this scrub would mangle.
-func redactAuthReason(s string) string {
-	if s == "" {
-		return s
+// providerContentSafetyMessage recognizes MiniMax's provider-specific content
+// review failures before the generic HTTP 422 mapping calls them invalid
+// parameters. A custom-named MiniMax provider is still recognized by the
+// documented status text; numeric-only errors require a MiniMax provider name
+// so another OpenAI-compatible API cannot accidentally inherit this meaning.
+func providerContentSafetyMessage(e *provider.APIError) string {
+	if e == nil || e.Status != 422 {
+		return ""
 	}
-	s = secrets.Redact(s)
-	s = credContextRe.ReplaceAllString(s, "${1}${2}****")
-	s = maskedFragmentRe.ReplaceAllString(s, "****")
-	return keyTokenRe.ReplaceAllStringFunc(s, func(tok string) string {
-		mixedCase := strings.ToLower(tok) != tok && strings.ToUpper(tok) != tok
-		if digitRe.MatchString(tok) || mixedCase {
-			return "****"
-		}
-		return tok
-	})
+	body := strings.ToLower(e.Body)
+	providerName := strings.ToLower(e.Provider)
+	isMiniMax := strings.Contains(providerName, "minimax")
+	switch {
+	case strings.Contains(body, "input new_sensitive") || isMiniMax && miniMax1026CodeRe.MatchString(body):
+		return i18n.M.ProviderErrInputSensitive
+	case strings.Contains(body, "output new_sensitive") || isMiniMax && miniMax1027CodeRe.MatchString(body):
+		return i18n.M.ProviderErrOutputSensitive
+	default:
+		return ""
+	}
 }
 
-// providerBodyReason pulls the human reason from an OpenAI/Anthropic-shaped error
-// body ({"error":{"message":…}}), falling back to the trimmed raw body.
+// redactAuthReason scrubs key material from an auth-failure reason before
+// display. Deliberately applied only to 401/403 bodies: other statuses don't
+// carry credentials, and 400 schema errors legitimately contain long
+// identifiers that this stronger scrub would mangle.
+func redactAuthReason(s string) string {
+	return secrets.RedactCredentials(s)
+}
+
+// providerBodyReason pulls the human reason from an OpenAI/Anthropic-shaped
+// error body ({"error":{"message":…}}) or MiniMax's base_resp envelope,
+// falling back to the trimmed raw body.
 func providerBodyReason(body string) string {
 	if body == "" {
 		return ""
@@ -135,9 +139,17 @@ func providerBodyReason(body string) string {
 		Error struct {
 			Message string `json:"message"`
 		} `json:"error"`
+		BaseResp struct {
+			StatusMsg string `json:"status_msg"`
+		} `json:"base_resp"`
 	}
-	if json.Unmarshal([]byte(body), &parsed) == nil && parsed.Error.Message != "" {
-		return clampRunes(parsed.Error.Message, 800)
+	if json.Unmarshal([]byte(body), &parsed) == nil {
+		switch {
+		case parsed.Error.Message != "":
+			return clampRunes(parsed.Error.Message, 800)
+		case parsed.BaseResp.StatusMsg != "":
+			return clampRunes(parsed.BaseResp.StatusMsg, 800)
+		}
 	}
 	return clampRunes(body, 800)
 }

@@ -8,7 +8,61 @@ import (
 
 	"reasonix/internal/event"
 	"reasonix/internal/evidence"
+	"reasonix/internal/provider"
 )
+
+func TestMetricsSinkForwardsEachEventOnce(t *testing.T) {
+	forwarded := 0
+	s := &metricsSink{inner: event.FuncSink(func(event.Event) { forwarded++ })}
+	s.Emit(event.Event{Kind: event.Text, Text: "x"})
+	if forwarded != 1 {
+		t.Fatalf("inner sink saw %d emissions for one event, want 1", forwarded)
+	}
+}
+
+type metricsCapabilityProbe struct {
+	event.Sink
+	readiness, delegation, workspace, runBudget int
+}
+
+func (p *metricsCapabilityProbe) RecordReadinessAudit(evidence.ReadinessAudit) { p.readiness++ }
+func (p *metricsCapabilityProbe) RecordDelegationAudit(evidence.DelegationAudit) {
+	p.delegation++
+}
+func (p *metricsCapabilityProbe) RecordWorkspaceMutation(event.WorkspaceMutation) {
+	p.workspace++
+}
+func (p *metricsCapabilityProbe) RecordRunBudget(event.RunBudgetSample) { p.runBudget++ }
+
+func TestMetricsSinkForwardsObservedCapabilities(t *testing.T) {
+	inner := &metricsCapabilityProbe{Sink: event.Discard}
+	s := &metricsSink{inner: inner}
+
+	s.RecordReadinessAudit(evidence.ReadinessAudit{})
+	s.RecordDelegationAudit(evidence.DelegationAudit{})
+	event.RecordWorkspaceMutation(s, event.WorkspaceMutation{ToolName: "write_file"})
+	event.RecordRunBudget(s, event.RunBudgetSample{Currency: "USD"})
+
+	if inner.readiness != 1 || inner.delegation != 1 || inner.workspace != 1 || inner.runBudget != 1 {
+		t.Fatalf("observed capabilities not forwarded: %+v", inner)
+	}
+}
+
+func TestMetricsSinkUsesProviderCacheWriteCost(t *testing.T) {
+	s := &metricsSink{inner: event.Discard}
+	s.Emit(event.Event{
+		Kind: event.Usage,
+		Usage: &provider.Usage{
+			CacheMissTokens:        500_000,
+			CacheWriteTokens:       100_000,
+			CacheWriteBilledTokens: 200_000,
+		},
+		Pricing: &provider.Pricing{Input: 2},
+	})
+	if got := s.Snapshot().Cost; got != 1.2 {
+		t.Fatalf("metrics cost = %f, want 1.2", got)
+	}
+}
 
 func TestMetricsSinkAccumulatesReadinessAudit(t *testing.T) {
 	s := &metricsSink{inner: event.Discard}
@@ -66,72 +120,56 @@ func TestMetricsSinkAccumulatesReadinessAudit(t *testing.T) {
 	}
 }
 
-func TestMetricsSinkAccumulatesMemoryCompilerStats(t *testing.T) {
+func TestMetricsSinkAccumulatesSilentReasoningRecovery(t *testing.T) {
+	s := &metricsSink{inner: event.Discard}
+	s.RecordProtocolRecovery(event.ProtocolRecoveryAudit{Kind: event.ProtocolRecoveryMissingReasoningDetected})
+	s.RecordProtocolRecovery(event.ProtocolRecoveryAudit{Kind: event.ProtocolRecoveryMissingReasoningRetryAttempted})
+	s.RecordProtocolRecovery(event.ProtocolRecoveryAudit{Kind: event.ProtocolRecoveryMissingReasoningRetryRecovered})
+	s.RecordProtocolRecovery(event.ProtocolRecoveryAudit{Kind: event.ProtocolRecoveryMissingReasoningRetryReplaced})
+	s.RecordProtocolRecovery(event.ProtocolRecoveryAudit{Kind: event.ProtocolRecoveryMissingReasoningRetrySuppressed})
+	s.RecordProtocolRecovery(event.ProtocolRecoveryAudit{Kind: event.ProtocolRecoveryMissingReasoningFallback})
+
+	if s.m.MissingReasoningDetected != 1 || s.m.MissingReasoningRetries != 1 || s.m.MissingReasoningRecovered != 1 || s.m.MissingReasoningReplaced != 1 || s.m.MissingReasoningSuppressed != 1 || s.m.MissingReasoningFallbacks != 1 {
+		t.Fatalf("reasoning recovery metrics = %+v", s.m)
+	}
+	if s.m.Steps != 1 {
+		t.Fatalf("retry model-call step = %d, want 1", s.m.Steps)
+	}
+}
+
+func TestMetricsSinkAccountsToolCallsAndRetries(t *testing.T) {
 	s := &metricsSink{inner: event.Discard}
 
-	s.Emit(event.Event{Kind: event.MemoryCompilerStatsEvent, MemoryCompiler: &event.MemoryCompilerStats{
-		Injected:         true,
-		UsefulIR:         true,
-		CompiledTokens:   120,
-		IROverheadTokens: 30,
-		MemoryReferences: 2,
-		Constraints:      3,
-		RiskNotes:        1,
-		ExecutionSteps:   4,
-		TotalNodes:       10,
-		HighSignalNodes:  6,
-		ToolResultNodes:  2,
-		DecisionNodes:    1,
-		StrategyCount:    2,
-		LearningCount:    3,
-	}})
-	s.Emit(event.Event{Kind: event.MemoryCompilerStatsEvent, MemoryCompiler: &event.MemoryCompilerStats{
-		Injected:         false,
-		UsefulIR:         false,
-		CompiledTokens:   0,
-		IROverheadTokens: 0,
-		MemoryReferences: 1,
-		Constraints:      0,
-		RiskNotes:        0,
-		ExecutionSteps:   0,
-		TotalNodes:       12,
-		HighSignalNodes:  7,
-		ToolResultNodes:  3,
-		DecisionNodes:    2,
-		StrategyCount:    4,
-		LearningCount:    5,
-	}})
-	s.Emit(event.Event{Kind: event.MemoryCompilerStatsEvent})
+	s.Emit(event.Event{Kind: event.ToolDispatch, Tool: event.Tool{Name: "read_file"}})
+	s.Emit(event.Event{Kind: event.ToolResult, Tool: event.Tool{Name: "read_file", DurationMs: 12}})
+	s.Emit(event.Event{Kind: event.ToolResult, Tool: event.Tool{Name: "read_file", DurationMs: 8}})
+	s.Emit(event.Event{Kind: event.ToolResult, Tool: event.Tool{Name: "bash", Err: "exit status 1", DurationMs: 30}})
+	s.Emit(event.Event{Kind: event.ToolResult, Tool: event.Tool{Name: "grep", ParentID: "task-1", DurationMs: 5}})
+	s.Emit(event.Event{Kind: event.Retrying, RetryAttempt: 1, RetryMax: 3})
 
-	if s.m.MemoryCompilerTurns != 2 {
-		t.Fatalf("memory compiler turns = %d, want 2", s.m.MemoryCompilerTurns)
+	if s.m.ToolCalls != 4 {
+		t.Fatalf("tool calls = %d, want 4 (dispatch must not count)", s.m.ToolCalls)
 	}
-	if s.m.MemoryCompilerInjectedTurns != 1 {
-		t.Fatalf("memory compiler injected turns = %d, want 1", s.m.MemoryCompilerInjectedTurns)
+	if s.m.ToolFailures != 1 {
+		t.Fatalf("tool failures = %d, want 1", s.m.ToolFailures)
 	}
-	if s.m.MemoryCompilerUsefulIRTurns != 1 {
-		t.Fatalf("memory compiler useful IR turns = %d, want 1", s.m.MemoryCompilerUsefulIRTurns)
+	if s.m.ToolDurationMs != 55 {
+		t.Fatalf("tool duration = %dms, want 55", s.m.ToolDurationMs)
 	}
-	if s.m.MemoryCompilerCompiledTokens != 120 || s.m.MemoryCompilerIROverheadTokens != 30 {
-		t.Fatalf("memory compiler tokens = compiled %d overhead %d, want 120/30", s.m.MemoryCompilerCompiledTokens, s.m.MemoryCompilerIROverheadTokens)
+	if s.m.SubagentToolCalls != 1 {
+		t.Fatalf("subagent tool calls = %d, want 1", s.m.SubagentToolCalls)
 	}
-	if s.m.MemoryCompilerMemoryReferences != 3 || s.m.MemoryCompilerConstraints != 3 || s.m.MemoryCompilerRiskNotes != 1 || s.m.MemoryCompilerExecutionSteps != 4 {
-		t.Fatalf("memory compiler totals = refs %d constraints %d risks %d steps %d, want 3/3/1/4", s.m.MemoryCompilerMemoryReferences, s.m.MemoryCompilerConstraints, s.m.MemoryCompilerRiskNotes, s.m.MemoryCompilerExecutionSteps)
+	if s.m.Retries != 1 {
+		t.Fatalf("retries = %d, want 1", s.m.Retries)
 	}
-	if s.m.MemoryCompilerTotalNodes != 12 || s.m.MemoryCompilerHighSignalNodes != 7 || s.m.MemoryCompilerToolResultNodes != 3 {
-		t.Fatalf("memory compiler latest nodes = total %d high %d tool %d, want 12/7/3", s.m.MemoryCompilerTotalNodes, s.m.MemoryCompilerHighSignalNodes, s.m.MemoryCompilerToolResultNodes)
+	if s.m.ToolCallsByName["read_file"] != 2 || s.m.ToolCallsByName["bash"] != 1 {
+		t.Fatalf("calls by name = %v", s.m.ToolCallsByName)
 	}
-	if s.m.MemoryCompilerDecisionNodes != 2 || s.m.MemoryCompilerStrategyCount != 4 || s.m.MemoryCompilerLearningCount != 5 {
-		t.Fatalf("memory compiler latest registry counts = decisions %d strategies %d learnings %d, want 2/4/5", s.m.MemoryCompilerDecisionNodes, s.m.MemoryCompilerStrategyCount, s.m.MemoryCompilerLearningCount)
+	if s.m.ToolFailuresByName["bash"] != 1 {
+		t.Fatalf("failures by name = %v, want bash 1", s.m.ToolFailuresByName)
 	}
-	if len(s.m.MemoryCompilerTurnDetails) != 2 {
-		t.Fatalf("memory compiler turn details = %d, want 2", len(s.m.MemoryCompilerTurnDetails))
-	}
-	if got := s.m.MemoryCompilerTurnDetails[0]; !got.Injected || got.CompiledTokens != 120 || got.TotalNodes != 10 {
-		t.Fatalf("first memory compiler detail = %+v, want injected compiled=120 total_nodes=10", got)
-	}
-	if got := s.m.MemoryCompilerTurnDetails[1]; got.Injected || got.MemoryReferences != 1 || got.TotalNodes != 12 {
-		t.Fatalf("second memory compiler detail = %+v, want not injected refs=1 total_nodes=12", got)
+	if _, ok := s.m.ToolFailuresByName["read_file"]; ok {
+		t.Fatalf("a successful tool must not appear in failures: %v", s.m.ToolFailuresByName)
 	}
 }
 
@@ -157,16 +195,6 @@ func TestWriteMetricsIncludesReadinessFields(t *testing.T) {
 		ReadinessMissingSignoff:        0,
 		ReadinessMissingActionEvidence: 0,
 		ReadinessMissingMutation:       0,
-		MemoryCompilerTurns:            1,
-		MemoryCompilerInjectedTurns:    1,
-		MemoryCompilerCompiledTokens:   42,
-		MemoryCompilerTotalNodes:       9,
-		MemoryCompilerTurnDetails: []RunMemoryCompilerMetrics{{
-			Injected:         true,
-			CompiledTokens:   42,
-			MemoryReferences: 2,
-			TotalNodes:       9,
-		}},
 	}); err != nil {
 		t.Fatalf("writeMetrics: %v", err)
 	}
@@ -194,29 +222,9 @@ func TestWriteMetricsIncludesReadinessFields(t *testing.T) {
 		"readiness_missing_signoff",
 		"readiness_missing_action_evidence",
 		"readiness_missing_mutation",
-		"memory_compiler_turns",
-		"memory_compiler_injected_turns",
-		"memory_compiler_useful_ir_turns",
-		"memory_compiler_compiled_tokens",
-		"memory_compiler_ir_overhead_tokens",
-		"memory_compiler_memory_references",
-		"memory_compiler_constraints",
-		"memory_compiler_risk_notes",
-		"memory_compiler_execution_steps",
-		"memory_compiler_total_nodes",
-		"memory_compiler_high_signal_nodes",
-		"memory_compiler_tool_result_nodes",
-		"memory_compiler_decision_nodes",
-		"memory_compiler_strategy_count",
-		"memory_compiler_learning_count",
-		"memory_compiler_turn_details",
 	} {
 		if _, ok := got[key]; !ok {
 			t.Fatalf("metrics JSON missing %q: %s", key, string(b))
 		}
-	}
-	details, ok := got["memory_compiler_turn_details"].([]any)
-	if !ok || len(details) != 1 {
-		t.Fatalf("memory_compiler_turn_details = %#v, want one detail", got["memory_compiler_turn_details"])
 	}
 }

@@ -64,6 +64,8 @@ export function subjectOf(name: string, args: string): string {
       return str(a, "pattern") || str(a, "path");
     case "web_fetch":
       return str(a, "url");
+    case "web_search":
+      return str(a, "query");
     case "task":
       return str(a, "description") || str(a, "prompt");
     case "run_skill":
@@ -78,6 +80,10 @@ export function subjectOf(name: string, args: string): string {
     case "todo_write":
     case "exit_plan_mode":
       return ""; // these get dedicated cards, not a subject line
+    case "use_capability":
+      // Stable MCP proxy: show the capability id as the collapsed subject so
+      // Planner/Delivery cards read as "MCP · mcp-tool:server/tool".
+      return str(a, "capability_id") || str(a, "action");
     default:
       return str(a, "path") || str(a, "file_path");
   }

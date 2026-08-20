@@ -20,6 +20,13 @@ import (
 // text come back as valid UTF-8 rather than mojibake.
 const psUTF8Prologue = "$OutputEncoding=[Console]::OutputEncoding=[System.Text.Encoding]::UTF8;"
 
+// PowerShellUTF8Script prepares a PowerShell script for captured execution.
+// Setting both encodings keeps PowerShell's own output and native child-process
+// output UTF-8 across Windows console code pages.
+func PowerShellUTF8Script(command string) string {
+	return psUTF8Prologue + command
+}
+
 // ShellKind is the interpreter a shell command runs under.
 type ShellKind int
 
@@ -166,7 +173,7 @@ func probeBash(path string) bool {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, path, "-c", "true")
+	cmd := proc.CommandContext(ctx, path, "-c", "true")
 	cmd.Env = secrets.ProcessEnv()
 	proc.HideWindow(cmd)
 	return cmd.Run() == nil
@@ -356,7 +363,7 @@ func (s Shell) argv(command string) []string {
 		path = s.Kind.String()
 	}
 	if s.Kind == ShellPowerShell {
-		return []string{path, "-NoProfile", "-NonInteractive", "-Command", psUTF8Prologue + normalizeNullRedirects(command, "$null")}
+		return []string{path, "-NoProfile", "-NonInteractive", "-Command", PowerShellUTF8Script(normalizeNullRedirects(command, "$null"))}
 	}
 	return []string{path, "-c", normalizeNullRedirects(command, "/dev/null")}
 }

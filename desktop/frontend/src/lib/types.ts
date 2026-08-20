@@ -1,6 +1,11 @@
 // Wire contract — mirrors desktop/wire.go (itself mirroring internal/serve/wire.go).
 // One event channel carries every kind; `kind` discriminates the payload.
-
+import type { HistoryServerSearch } from "./searchSources";
+import type { Todo } from "./tools";
+import type { ContextBudgetInfo, ContextMaintenanceInfo, WireContextMaintenance } from "./contextMaintenanceTypes";
+import type { WireApproval } from "./approvalTypes";
+export type { ContextBudgetInfo, ContextMaintenanceInfo, ContextMaintenanceReceipt, WireContextMaintenance } from "./contextMaintenanceTypes";
+export type { ProjectGroupsSnapshot, ProjectRuntimeTopic, ProjectTopicKey, ProjectTopicPage, ProjectTopicPageRequest, ProjectTreeChangedV2, ProjectTreeOrganizationBindings, ProjectTreeRuntimeSnapshot, ProjectTreeSnapshot, SessionCatalogBindings, SessionCatalogStatus, SessionGroup, SessionReference } from "./sessionCatalogTypes";
 export type EventKind =
   | "turn_started"
   | "reasoning"
@@ -8,6 +13,7 @@ export type EventKind =
   | "message"
   | "tool_dispatch"
   | "tool_result"
+  | "tool_result_preview"
   | "tool_progress"
   | "usage"
   | "notice"
@@ -20,25 +26,55 @@ export type EventKind =
   | "mcp_surface_ready"
   | "retrying"
   | "steer"
-  | "memory_compiler_stats"
-  | "guardian_assessment";
-
+  | "guardian_assessment"
+  | "extension_surface"
+  | "extension_status"
+  | "stream_attempt"
+  | "context_maintenance"
+  | "workspace_changed"
+  | "turn_phase"
+  | "completion_summary";
+export type StreamAttemptAction = "begin" | "discard" | "commit";
+export interface WireStreamAttempt {
+  id: string;
+  action: StreamAttemptAction;
+  attempt?: number;
+  max?: number;
+  /** Fixed enum only: connection_reset | premature_eof | idle_timeout */
+  reason?: string;
+}
 export interface WireCompaction {
   trigger?: string; // "auto" | "manual"
   messages?: number; // done: how many messages were folded into the summary
   summary?: string; // done: the briefing (empty on an aborted pass)
   archive?: string; // done: archive path, if any
 }
-
 export interface WireProfile {
   model?: string;
   effort?: string;
+}
+
+export interface WireShellExecution {
+  kind?: string;
+  shell?: string;
+  shellVersion?: string;
+  platform?: string;
+  supportsAndAnd?: boolean;
+  state?: string;
+  failurePhase?: string;
+  exitCode?: number;
+  outputTail?: string;
+  mutationRisk?: string;
+  verification?: string;
+  durationMs?: number;
 }
 
 export interface WireTool {
   id?: string;
   name: string;
   args?: string;
+  resolvedName?: string;
+  capabilityId?: string;
   output?: string;
   err?: string;
   readOnly: boolean;
@@ -48,10 +84,13 @@ export interface WireTool {
   argChars?: number; // partial only: cumulative argument chars streamed so far
   refreshed?: boolean; // same-ID full dispatch with a preview recomputed after an earlier write
   parentId?: string; // set on a sub-agent's calls — the parent `task` call's id
+  /** Host-local stream_attempt id for speculative parent partials only. */
+  attemptId?: string;
   diff?: string;
   added?: number;
   removed?: number;
   profile?: WireProfile; // subagent model/effort resolved for this call
+  execution?: WireShellExecution; // local shell metadata; never provider-visible
 }
 
 export interface WireCacheDiagnostics {
@@ -73,41 +112,85 @@ export interface WireUsage {
   cacheHitTokens: number;
   cacheMissTokens: number;
   reasoningTokens?: number;
+  estimated?: boolean;
   source?: string;
   cacheDiagnostics?: WireCacheDiagnostics;
   // Session-cumulative cache tokens — the status bar shows the aggregate
   // hit-rate (Σhit/Σ(hit+miss)), steadier than the single-turn cacheHitTokens.
   sessionCacheHitTokens: number;
   sessionCacheMissTokens: number;
+  /** Latest single-request shape for context gauges; omit → use billable totals. */
+  contextPromptTokens?: number;
+  contextCompletionTokens?: number;
+  contextReasoningTokens?: number;
+  contextCacheHitTokens?: number;
+  contextCacheMissTokens?: number;
   cost?: number;
   currency?: string;
-  // Deprecated compatibility alias. Prefer cost + currency.
+  currencyCode?: string;
+  // Deprecated compatibility alias. Prefer cost + currencyCode / costQuote.
   costUsd?: number;
+  costComplete?: boolean;
+  displayComplete?: boolean;
+  displayStatus?: string;
+  aggregateMode?: string;
+  originalTotals?: Money[];
+  /** Host-side structured quote; prefer over cost/currency aliases. */
+  costQuote?: CostQuote;
 }
 
-export interface WireApproval {
-  id: string;
-  tool: string;
-  subject: string;
-  reason?: string;
-  fresh?: boolean;
-  mcpTrust?: WireMCPTrust;
+export interface Money {
+  amount: string;
+  currency: string;
 }
 
-export interface WireMCPTrust {
-  server: string;
-  trustState: string;
-  trustSource?: string;
-  trustScope?: string;
-  isolationState: string;
-  isolationReason?: string;
-  identityChanged?: boolean;
-  changedTools: string[];
-  toolChanges: MCPToolTrustChangeView[];
-  readers: string[];
-  writers: string[];
-  destructive: string[];
+export interface CostQuote {
+  original: Money;
+  originalTotals?: Money[];
+  valuations?: Record<string, {
+    money: Money;
+    basis: string;
+    source: string;
+    asOf: string;
+    rateSnapshot?: { base: string; quote: string; rate: number; source: string; asOf: string; stale?: boolean };
+    stale?: boolean;
+  }>;
+  selected?: Money;
+  billingMode?: string;
+  estimated: boolean;
+  costComplete?: boolean;
+  displayComplete?: boolean;
+  complete: boolean;
+  displayStatus?: "matched" | "fallback_original" | "bucketed" | "unavailable" | string;
+  aggregateMode?: "single_currency" | "common_valuation" | "currency_buckets" | string;
+  modelRef?: string;
+  usageSource?: string;
+  pricingFingerprint?: string;
+  rateDate?: string;
+  rateBand?: "peak" | "off_peak" | "mixed" | string;
+  ratedAt?: string;
+  incompleteReason?: string;
+  legacyEstimate?: boolean;
+  catalogSource?: string;
 }
+
+export interface WireRecoveryApproval {
+  source_agent?: string;
+  failed_tool?: string;
+  failed_summary?: string;
+  diagnosis?: string;
+  next_tool?: string;
+  next_action?: string;
+  change_kind?: string;
+  change_rationale?: string;
+  review_rationale?: string;
+  plan_before?: string;
+  plan_after?: string;
+  can_grant_task?: boolean;
+  task_grant_scope?: string;
+}
+
+export type { WireApproval, WireWriteAccessApproval } from "./approvalTypes";
 
 export interface WireGuardian {
   id: string;
@@ -119,6 +202,14 @@ export interface WireGuardian {
   rationale?: string;
   duration_ms?: number;
   usage?: WireUsage;
+}
+
+export interface WireDecisionReceipt {
+  id: string;
+  kind: string;
+  tool?: string;
+  subject?: string;
+  outcome: string;
 }
 
 export interface WireAskOption {
@@ -139,6 +230,78 @@ export interface WireAsk {
   questions: WireAskQuestion[];
 }
 
+// Extension UI surfaces (stage 8a) — structured-only documents published by
+// extension sidecars through the host UI hub. Exactly one sub-struct is set,
+// selected by `kind`.
+export interface WireExtensionStatus {
+  label: string;
+  detail?: string;
+  severity?: string; // "info" | "warn" | "error"
+  progress?: number;
+}
+
+export interface WireExtensionKeyValue {
+  key: string;
+  value: string;
+}
+
+export interface WireExtensionActionRef {
+  actionId: string;
+  label: string;
+}
+
+export interface WireExtensionCard {
+  title?: string;
+  markdown?: string;
+  text?: string;
+  fields?: WireExtensionKeyValue[];
+  progress?: number;
+  actions?: WireExtensionActionRef[];
+}
+
+export interface WireExtensionFormField {
+  key: string;
+  label?: string;
+  kind?: string; // "confirm" | "input" | "select" | "multiselect"
+  options?: string[];
+  default?: unknown;
+  required?: boolean;
+}
+
+export interface WireExtensionForm {
+  title?: string;
+  message?: string;
+  fields: WireExtensionFormField[];
+}
+
+export interface WireExtensionNotification {
+  title: string;
+  body?: string;
+  severity?: string; // "info" | "warn" | "error"
+}
+
+export interface WireExtensionSurface {
+  pluginId: string;
+  surfaceId: string;
+  sessionId?: string;
+  generation?: number;
+  kind: string; // "status" | "card" | "form" | "notification"
+  status?: WireExtensionStatus;
+  card?: WireExtensionCard;
+  form?: WireExtensionForm;
+  notification?: WireExtensionNotification;
+}
+
+// ExtensionActionView is one handshake-declared extension UI action, the JSON
+// twin of desktop's ExtensionActionView (stage 8b2). Slash is the public
+// invocation name, "/<plugin>:<action>".
+export interface ExtensionActionView {
+  plugin: string;
+  action: string;
+  slash: string;
+  description?: string;
+}
+
 // QuestionAnswer is the reply for one question, sent back via AnswerQuestion.
 export interface QuestionAnswer {
   questionId: string;
@@ -154,23 +317,6 @@ export interface MemoryCitation {
   kind?: string;
 }
 
-export interface MemoryCompilerStats {
-  injected: boolean;
-  usefulIR: boolean;
-  compiledTokens: number;
-  irOverheadTokens: number;
-  memoryReferences: number;
-  constraints: number;
-  riskNotes: number;
-  executionSteps: number;
-  totalNodes: number;
-  highSignalNodes: number;
-  toolResultNodes: number;
-  decisionNodes: number;
-  strategyCount: number;
-  learningCount: number;
-}
-
 export interface WireEvent {
   kind: EventKind;
   text?: string;
@@ -179,28 +325,101 @@ export interface WireEvent {
   code?: string;
   reasoning?: string;
   memoryCitations?: MemoryCitation[];
-  memoryCompiler?: MemoryCompilerStats;
   level?: "info" | "warn";
   tool?: WireTool;
   usage?: WireUsage;
   approval?: WireApproval;
   ask?: WireAsk;
   compaction?: WireCompaction;
+  maintenance?: WireContextMaintenance;
   guardian?: WireGuardian;
+  decisionReceipt?: WireDecisionReceipt;
+  extension?: WireExtensionSurface;
   err?: string;
-  outcome?: "final_readiness";
+  checkpointTurn?: number; // Authoritative TurnDone rewind target; zero is valid.
+  submissionId?: string; // Opaque correlation for the exact optimistic user submission.
+  outcome?: "final_readiness" | "recovery_paused";
   readiness?: WireFinalReadiness;
   retryAttempt?: number;
   retryMax?: number;
-  // Tab routing: set by the Go-side tabEventSink so multi-tab frontends
-  // route each event to the correct per-tab reducer.
-  tabId?: string;
+  /** Optional: "headers" | "stream". Older clients ignore unknown fields. */
+  retryScope?: "headers" | "stream";
+  streamAttempt?: WireStreamAttempt;
+  /** Durable session-inbox item id for steer / TurnDone correlation. */
+  itemId?: string;
+  workspace?: WireWorkspaceChanged;
+  /** turn_phase: working | checking | verifying | reviewing */
+  phase?: string;
+  /** completion_summary: content-free quality summary for role settings */
+  completion?: WireCompletionSummary;
+  tabId?: string; // Go's tabEventSink tags events for the correct per-tab reducer.
+  runtimeEpoch?: string;
+  /** Unix milliseconds recorded by the desktop host when this turn began. */
+  turnStartedAt?: number;
   sessionHitTokens?: number;
   sessionMissTokens?: number;
   sessionCost?: number;
   sessionCurrency?: string;
   // Deprecated compatibility alias. Prefer sessionCost + sessionCurrency.
   sessionCostUsd?: number;
+}
+
+export interface WireCompletionSummary {
+  preset: string;
+  verdict: string;
+  mutations: number;
+  checks_passed: number;
+  checks_failed: number;
+  checks_suppressed: number;
+  review: string;
+  gap_kinds?: string[];
+  constraint_degraded: boolean;
+  /** Turn-time policy floor. Missing on historical events. */
+  floor?: "standard" | "delivery" | string;
+  /** Backend decision; authoritative when floor is present. */
+  attention?: boolean;
+}
+
+export type WorkspaceWatchState = "active" | "degraded" | "unavailable";
+export type WorkspaceChangeOp = "create" | "write" | "remove" | "rename" | "unknown";
+
+export interface WorkspaceRevisions {
+  content: number;
+  tree: number;
+  workingTree: number;
+  gitMeta: number;
+  session: number;
+}
+
+export interface WorkspacePathChange {
+  path: string;
+  oldPath?: string;
+  op: WorkspaceChangeOp;
+}
+
+export interface WireWorkspaceChanged {
+  revisions: WorkspaceRevisions;
+  changes: WorkspacePathChange[];
+  allPaths: boolean;
+  source: "agent" | "filesystem" | "git" | "mixed" | "reconcile";
+  watchState: WorkspaceWatchState;
+}
+
+export type SessionRuntimePhase = "starting" | "ready" | "lease_blocked" | "failed" | "closing";
+
+export interface SessionRuntimeIssue {
+  code: "session_lease_held" | "startup_failed";
+  message: string;
+  retryable: boolean;
+  holderPid?: number;
+  holderHost?: string;
+  acquiredAt?: string;
+}
+
+export interface SessionRuntimeView {
+  phase: SessionRuntimePhase;
+  epoch: string;
+  issue?: SessionRuntimeIssue;
 }
 
 export interface WireFinalReadiness {
@@ -221,12 +440,18 @@ export interface TabMeta {
   topicId: string;
   topicTitle: string;
   sessionPath?: string;
+  sessionRevision?: number;
+  sessionDigest?: string;
+  sessionGeneration?: number;
   readOnly?: boolean;
   filePath?: string;
   projectColor?: string;
   label: string;
   ready: boolean;
+  runtime?: SessionRuntimeView;
   running: boolean;
+  /** Unix milliseconds for the currently active foreground turn. */
+  turnStartedAt?: number;
   pendingPrompt?: boolean;
   backgroundJobs?: number;
   cancelRequested?: boolean;
@@ -235,9 +460,11 @@ export interface TabMeta {
   collaborationMode?: CollaborationMode;
   toolApprovalMode?: ToolApprovalMode;
   tokenMode?: TokenMode;
+  agentPreset?: AgentPreset; // canonical role; prefer qualityFloor
+  qualityFloor?: QualityFloor; // absent means standard
+  floorInferred?: boolean; // facts, not user choice, put the session at delivery
   goal?: string;
   goalStatus?: GoalStatus;
-  autoResearch?: AutoResearchCompactView;
   recovered?: boolean;
   recoveryReason?: string;
   recoveryDigest?: string;
@@ -247,6 +474,29 @@ export interface TabMeta {
   cwd: string;
 }
 
+export interface TerminalSessionView {
+  id: string;
+  title: string;
+  shell: string;
+  cwd: string;
+  createdAt: number;
+  exitCode?: number;
+  running: boolean;
+}
+
+export interface TerminalShellView {
+  id: string;
+  label: string;
+}
+
+export interface TerminalWorkspaceView {
+  available: boolean;
+  readOnly: boolean;
+  reason?: string;
+  sessions: TerminalSessionView[];
+  shells: TerminalShellView[];
+}
+
 export interface ProjectNode {
   key: string;
   kind: "project" | "topic" | "session" | "global_folder" | "global_topic" | "global_session";
@@ -254,20 +504,76 @@ export interface ProjectNode {
   root?: string;
   topicId?: string;
   sessionPath?: string;
+  preview?: string;
   projectColor?: string;
   turns?: number;
+  turnsState?: "unknown" | "valid" | "corrupt" | string;
+  health?: "ok" | "missing" | "corrupt" | "degraded" | string;
   createdAt?: number;
   lastActivityAt?: number;
   open?: boolean;
   running?: boolean;
   status?: ProjectTopicStatus;
   pinned?: boolean;
+  sortOrder?: number;
   recovered?: boolean;
   recoveryReason?: string;
   recoveryDigest?: string;
   recoveryParentId?: string;
+  recoveryState?: "normal" | "repairing" | "adopted" | "preferred" | "diverged" | "recovery_only" | string;
+  recoveryBranchCount?: number;
+  recoveryUnresolvedCount?: number;
+  recoveryCleanupEligibleCount?: number;
   isolatedWorktree?: boolean;
+  runtimeOnly?: boolean;
   children?: ProjectNode[];
+}
+
+export interface RecoveryLineageMember {
+  path: string;
+  role: "normal" | "covered_copy" | "adopted" | "preferred" | "diverged" | string;
+  canonical: boolean;
+  turns: number;
+  open: boolean;
+  running: boolean;
+}
+
+export interface RecoveryLineageView {
+  groupId: string;
+  state: string;
+  branchCount: number;
+  unresolved: number;
+  cleanupEligible: number;
+  members: RecoveryLineageMember[];
+}
+
+export interface RecoveryCleanupRequest {
+  scope: string;
+  workspaceRoot?: string;
+  topicId: string;
+  apply: boolean;
+}
+
+export interface RecoveryPreferenceRequest {
+  scope: string;
+  workspaceRoot?: string;
+  topicId: string;
+  path: string;
+}
+
+export interface RecoveryCleanupItem {
+  path: string;
+  status: "eligible" | "moved" | "busy" | "kept" | string;
+  error?: string;
+}
+
+export interface RecoveryCleanupResult {
+  eligible: number;
+  moved: number;
+  busy: number;
+  kept: number;
+  dryRun: boolean;
+  items: RecoveryCleanupItem[];
 }
 
 export interface DeliveryWorktreeAvailability {
@@ -287,7 +593,7 @@ export interface DeliveryWorktreeOpenResult {
   tab: TabMeta;
 }
 
-export type ProjectTopicStatus = "thinking" | "streaming" | "waiting_confirmation" | "background_job" | "paused" | "error";
+export type ProjectTopicStatus = "thinking" | "streaming" | "waiting_confirmation" | "background_job" | "paused" | "awaiting_delivery" | "error" | "diverged_recovery";
 
 export interface TopicMeta {
   id: string;
@@ -321,19 +627,26 @@ export interface ContextPanelInfo {
   reasoningTokens: number;
   cacheHitTokens: number;
   cacheMissTokens: number;
+  estimated?: boolean;
   sessionCacheHitTokens: number;
   sessionCacheMissTokens: number;
   sessionCompletionTokens: number;
+  sessionEstimated?: boolean;
   requestCount?: number;
   elapsedMs?: number;
   sessionCost?: number;
   sessionCurrency?: string;
   // Deprecated compatibility alias. Prefer sessionCost + sessionCurrency.
   sessionCostUsd?: number;
+  sessionCostComplete?: boolean;
+  sessionCostEstimated?: boolean;
+  sessionBillingMode?: string;
+  sessionCostQuote?: CostQuote;
   sources?: Record<string, UsageSourceStats>;
   mock?: boolean;
   readFiles: ReadFileRecord[];
   changedFiles: ChangedFileInfo[];
+  contextBudget?: ContextBudgetInfo;
 }
 
 export interface UsageSourceStats {
@@ -343,6 +656,7 @@ export interface UsageSourceStats {
   reasoningTokens: number;
   cacheHitTokens: number;
   cacheMissTokens: number;
+  estimated?: boolean;
   requestCount: number;
   sessionCost?: number;
   sessionCurrency?: string;
@@ -386,17 +700,24 @@ export interface HistoryMessage {
   toolName?: string;
   toolResultArchived?: boolean;
   toolResultError?: string;
+  execution?: WireShellExecution;
   pending?: boolean;
   trigger?: string;
   messages?: number;
   summary?: string;
   archive?: string;
+  decisionReceipt?: WireDecisionReceipt;
+  readiness?: WireFinalReadiness;
+  serverSearch?: HistoryServerSearch[];
 }
 
 export interface HistoryToolCall {
   id: string;
   name: string;
   arguments: string;
+  resolvedName?: string;
+  capabilityId?: string;
+  resolvedReadOnly?: boolean;
   subject?: string;
   summary?: string;
   diff?: string;
@@ -411,6 +732,101 @@ export interface HistoryPage {
   endTurn: number;
   totalTurns: number;
   hasOlder: boolean;
+  revision?: number;
+  digest?: string;
+}
+
+// ── Windowed history paging (desktop/history_slice.go) ──────────────────────
+// HistorySliceForTab pages toward older history with an opaque cursor; the
+// first call uses cursor "" for the newest page. Entry IDs are stable for the
+// life of a session revision (s<file>:r<epoch>:m<msgIndex>:o<subOrder>).
+
+export interface HistorySliceRequest {
+  cursor: string; // "" = newest page; pass nextCursor to page older
+  turns?: number;
+  entries?: number;
+  bytes?: number;
+}
+
+// HistoryContentRef marks a string field replaced inline by a ≤4KiB preview;
+// the full value is fetchable in chunks via HistoryContentForTab.
+export interface HistoryContentRef {
+  entryId: string;
+  field: string; // content|reasoning|submitText|detail|code|summary|archive|toolResultError|toolArguments|toolSubject|toolSummary|toolDiff
+  size: number;
+  chunks: number;
+  toolCallId?: string;
+  revision: number;
+  revKnown?: boolean;
+  digest: string;
+}
+
+export interface HistoryEntry {
+  entryId: string;
+  turn: number; // 1-based visible turn (0 = before the first turn)
+  order: number; // absolute provider-message index
+  message: HistoryMessage;
+  refs: HistoryContentRef[];
+}
+
+export interface SessionClearResult { sessionPath: string; sessionRevision?: number; sessionDigest?: string; sessionGeneration: number }
+
+export interface HistorySlice {
+  entries: HistoryEntry[];
+  nextCursor: string; // toward older; empty when none
+  hasOlder: boolean;
+  totalTurns: number;
+  startTurn: number;
+  endTurn: number;
+  stale: boolean; // cursor bound to an older session revision: discard + reload
+  revision: number;
+  revisionKnown?: boolean;
+  digest?: string;
+  // Diagnostic read path: index|scan|event-log|live-index|live-fallback.
+  source?: string;
+  error?: string; // failed read; empty entries alone are not an error
+}
+
+export interface HistoryContentChunk {
+  entryId: string;
+  field: string;
+  chunk: number;
+  chunks: number;
+  data: string;
+  done: boolean;
+  stale: boolean;
+}
+
+// ── Two-phase topic activation (desktop/topic_activation.go) ────────────────
+
+export interface TopicActivationRequest {
+  scope: string;
+  workspaceRoot: string;
+  topicId: string;
+  sessionPath: string;
+  requestId?: string;
+}
+
+export interface TopicActivationTicket {
+  requestId: string;
+  tabId: string;
+  meta: TabMeta;
+}
+
+export type TopicActivationPhase = "starting" | "ready" | "failed" | "cancelled";
+
+export interface TopicActivationEvent {
+  requestId: string;
+  tabId: string;
+  phase: TopicActivationPhase;
+  error?: string;
+}
+
+// tab:meta channel: a full refreshed Meta pushed after the background refresh
+// of the expensive MetaForTab fields (git branch, image-input capability).
+export interface TabMetaRefreshEvent {
+  tabId: string;
+  meta: Meta;
 }
 
 export interface PromptHistoryEntry {
@@ -438,45 +854,38 @@ export interface CheckpointMeta {
   time: number; // unix ms
   canCode?: boolean;
   canConversation?: boolean;
+  coverage?: string;
+  coverageGaps?: string[];
+  expiredFilePayload?: boolean;
+  activeWriters?: number;
+  legacy?: boolean;
+  canUndoFiles?: boolean;
+  disabledReason?: string;
 }
 
-// SessionMeta is one saved session for the history panel.
-export interface SessionMeta {
-  path: string;
-  preview: string;
-  title?: string; // user-chosen name; falls back to preview when empty
-  turns: number;
-  createdAt: number; // unix milliseconds
-  lastActivityAt: number; // unix milliseconds
-  modTime: number; // compatibility alias for lastActivityAt
-  deletedAt?: number; // unix milliseconds, present for trashed sessions
-  current: boolean;
-  open: boolean;
-  scope?: string;       // "project" | "global"; empty for legacy → treated as "global"
-  workspaceRoot?: string;
-  topicId?: string;
-  topicTitle?: string;
-  kind?: "session" | "channel" | string;
-  channel?: string;
-  channelLabel?: string;
-  remoteId?: string;
-  chatType?: string;
-  userId?: string;
-  threadId?: string;
-  sessionSource?: string;
-  recovered?: boolean; // created by conflict recovery, including a continued branch
-  recoveryCopy?: boolean; // actual branch content is unchanged and covered by its parent
+export type { RewindPlanView } from "./rewindTypes";
+
+export interface RewindResultView {
+  ok?: boolean;
+  transactionId?: string;
+  undoAvailable?: boolean;
+  written?: string[];
+  deleted?: string[];
+  conversationOk?: boolean;
+  conversationForked?: boolean;
+  operationId?: string;
+  branch?: string;
+  partial?: boolean;
+  tabId?: string;
+  tab?: TabMeta;
+  error?: string;
+  conflicts?: string[];
+  coverage?: string;
 }
 
-// SessionReference is a session selected via @ past:chats for context injection.
-export interface SessionReference {
-  path: string;
-  title: string;
-  preview?: string;
-  turns?: number;
-  createdAt?: number;
-  lastActivityAt?: number;
-}
+export type { SessionMeta } from "./sessionMetaTypes";
+
+export type { HistoryIndexStatus, HistorySearchContextLine, HistorySearchContextRequest, HistorySearchHit, HistorySearchPage, HistorySearchRequest, HistorySessionPage, HistorySessionPageRequest } from "./historyCatalogTypes";
 
 export interface WorkspaceView {
   path: string;
@@ -493,19 +902,28 @@ export interface ContextInfo {
   sessionCurrency?: string;
   cacheHitTokens?: number;
   cacheMissTokens?: number;
+  estimated?: boolean;
+  sessionCostComplete?: boolean;
+  sessionCostQuote?: CostQuote;
   sources?: Record<string, UsageSourceStats>;
+  maintenance?: ContextMaintenanceInfo;
+  contextBudget?: ContextBudgetInfo;
 }
 
 export interface Meta {
   label: string;
   ready: boolean;
+  runtime?: SessionRuntimeView;
   startupErr?: string;
   eventChannel: string;
+  sessionPath?: string;
+  sessionRevision?: number;
+  sessionDigest?: string;
+  sessionGeneration?: number;
   cwd: string;
   workspaceRoot?: string;
   workspaceName?: string;
   workspacePath?: string;
-  sessionPath?: string;
   gitBranch?: string;
   imageInputEnabled?: boolean;
   autoApproveTools?: boolean;
@@ -513,66 +931,40 @@ export interface Meta {
   collaborationMode?: CollaborationMode;
   toolApprovalMode?: ToolApprovalMode;
   tokenMode?: TokenMode;
+  agentPreset?: AgentPreset; // canonical role; prefer qualityFloor
+  qualityFloor?: QualityFloor; // absent means standard
+  floorInferred?: boolean; // facts, not user choice, put the session at delivery
   goal?: string;
   goalStatus?: GoalStatus;
-  autoResearch?: AutoResearchCompactView;
+  goalRuntime?: GoalRuntime;
+  canonicalTodos?: Todo[]; dismissedTodoBatches?: string[];
 }
 
 export type CollaborationMode = "normal" | "plan" | "goal";
 export type ToolApprovalMode = "ask" | "auto" | "yolo";
-// "full" is the persisted compatibility value for the Balanced runtime profile.
-export type TokenMode = "full" | "economy" | "delivery";
+// TokenMode is the dual-write wire value for the session quality floor.
+// The floor itself is standard|delivery; light and its aliases fold to
+// standard, and full/economy remain one compatibility version of old values.
+export type TokenMode = "full" | "economy" | "delivery" | "light" | "balanced";
+export type AgentPreset = "light" | "balanced" | "delivery";
+export type QualityFloor = "standard" | "delivery";
 export type GoalStatus = "running" | "complete" | "blocked" | "stopped";
-
-export interface AutoResearchCompactView {
-  taskId: string;
-  status: "running" | "blocked" | "complete" | "stopped" | "invalid";
-  iteration: number;
-  pivotRequired: boolean;
-  staleCount: number;
+// Optional Goal runtime summary; absent for old hosts or when no goal is active.
+export interface GoalRuntime {
+  turnsUsed: number;
+  turnsLimit: number; // Deprecated: Goal exposes no turn limit and returns 0.
+  tokensUsed: number;
+  requestsUsed?: number;
+  workDurationMs?: number;
+  /** @deprecated Goal has no hard token limit; retained as 0 for old hosts/clients. */
+  tokensLimit: number;
+  noProgressTurns: number;
+  /** @deprecated No longer enforced; retained for old hosts/clients. */
+  noProgressLimit: number;
+  lastReason?: string;
+  stopCause?: string;
+  budgetExtensions: number; // Deprecated: resumes no longer extend a numeric quota.
 }
-
-export interface AutoResearchCriterionView {
-  id: string;
-  description: string;
-  required: boolean;
-  evidenceCount: number;
-  status: string;
-}
-
-export interface AutoResearchStatusView extends AutoResearchCompactView {
-  goal: string;
-  currentDirection: string;
-  pivotCount: number;
-  lastHeartbeatAt: string;
-  findingCount: number;
-  openCriteria: AutoResearchCriterionView[];
-  blocker: string;
-  taskPath: string;
-  nextRequiredAction: string;
-}
-
-export interface AutoResearchFindingView {
-  id: string;
-  kind: string;
-  summary: string;
-  source: string;
-  command?: string;
-  paths?: string[];
-  accepted: boolean;
-  createdAt: string;
-}
-
-export interface AutoResearchEvidenceView {
-  id: string;
-  kind: string;
-  summary: string;
-  source: string;
-  command?: string;
-  paths?: string[];
-  accepted: boolean;
-}
-
 export function normalizeCollaborationMode(mode?: string, goal?: string, legacyMode?: Mode): CollaborationMode {
   if (mode === "plan" || mode === "goal" || mode === "normal") return mode;
   if (legacyMode && modeHasPlan(legacyMode)) return "plan";
@@ -594,9 +986,30 @@ export function normalizeToolApprovalMode(
 }
 
 export function normalizeTokenMode(mode?: string): TokenMode {
-  if (mode === "economy") return "economy";
-  if (mode === "delivery") return "delivery";
+  const m = (mode ?? "").trim().toLowerCase();
+  if (m === "economy" || m === "light" || m === "lite" || m === "eco") return "economy";
+  if (m === "delivery" || m === "deliver" || m === "quality") return "delivery";
+  // balanced | full | empty | unknown → balanced wire value "full"
   return "full";
+}
+
+/** Canonical product id for the three Agent role settings. */
+export function normalizeAgentPreset(mode?: string): AgentPreset {
+  const wire = normalizeTokenMode(mode);
+  if (wire === "economy" || wire === "light") return "light";
+  if (wire === "delivery") return "delivery";
+  return "balanced";
+}
+
+export function tokenModeFromAgentPreset(preset: AgentPreset): TokenMode {
+  switch (preset) {
+    case "light":
+      return "economy";
+    case "delivery":
+      return "delivery";
+    default:
+      return "full";
+  }
 }
 
 // Mode is the compatibility string for two independent composer axes:
@@ -679,6 +1092,7 @@ export interface WorkspaceChangeView {
   turns?: number[];
   latestPrompt?: string;
   latestTime?: number;
+  canSessionRevert?: boolean;
 }
 
 export interface WorkspaceChangesView {
@@ -686,6 +1100,15 @@ export interface WorkspaceChangesView {
   gitAvailable: boolean;
   gitErr?: string;
   gitBranch?: string;
+}
+
+export interface WorkspaceChangeDetailView {
+  diff?: string;
+  source?: "git" | "session";
+  added?: number;
+  removed?: number;
+  binary?: boolean;
+  truncated?: boolean;
 }
 
 export interface GitCommitView {
@@ -712,11 +1135,21 @@ export interface ServerView {
   name: string;
   transport: string;
   status: "connected" | "deferred" | "failed" | "initializing" | "disabled";
+  /** @deprecated derived from enabled */
   startIntent?: "off" | "automatic" | string;
   runtimeState?: "idle" | "connecting" | "ready" | "issue" | string;
+  /** Product availability: available_on_demand | starting | connected | auth_required | project_auth_changed | start_failed | disabled */
+  availability?: string;
+  enabled?: boolean;
+  installed?: boolean;
+  action?: "none" | "authenticate" | "authorize" | "retry" | string;
+  source?: "project" | "user" | "plugin" | "builtin" | string;
+  configSource?: string;
   builtIn?: boolean;
   configured?: boolean;
+  /** @deprecated same as enabled */
   autoStart: boolean;
+  /** @deprecated ignored by runtime */
   tier?: "background" | "eager" | string;
   command?: string;
   args?: string[];
@@ -724,36 +1157,19 @@ export interface ServerView {
   envKeys?: string[];
   headerKeys?: string[];
   tools: number;
+  toolCount?: number;
   prompts: number;
   resources: number;
   hasTools?: boolean;
   error?: string;
   toolList?: MCPToolView[];
-  trustedReadOnlyTools?: string[];
   callTimeoutSeconds?: number;
   toolTimeoutSeconds?: Record<string, number>;
-  defaultToolsApprovalMode?: MCPApprovalMode;
-  toolPolicies?: Record<string, MCPToolPolicy>;
-  approvalsReviewer?: MCPApprovalsReviewer;
+  requiresLaunchApproval?: boolean;
   authStatus?: "none" | "possible" | "required" | string;
   authUrl?: string;
   authConfigured?: boolean;
   managedByPlugin?: string;
-  trustState?: "official" | "workspace" | "session" | "changed" | "untrusted" | string;
-  trustSource?: "user" | "official_catalog" | "legacy_import" | string;
-  trustScope?: "session" | "workspace" | "global" | string;
-  isolationState?: "enforced" | "unavailable_unconfined" | "not_applicable" | string;
-  isolationReason?: string;
-  identityChanged?: boolean;
-  changedTools?: string[];
-  toolChanges?: MCPToolTrustChangeView[];
-  catalogSequence?: number;
-  verifiedVersion?: string;
-}
-export type MCPApprovalMode = "auto" | "prompt" | "writes" | "approve";
-export type MCPApprovalsReviewer = "user" | "auto_review";
-export interface MCPToolPolicy {
-  approval_mode: MCPApprovalMode;
 }
 export interface MCPToolView {
   name: string;
@@ -761,45 +1177,19 @@ export interface MCPToolView {
   readOnlyHint?: boolean;
   destructiveHint?: boolean;
   schemaError?: string;
-  trustedReader?: boolean;
-}
-
-export interface MCPToolTrustChangeView {
-  name: string;
-  kind: "added" | "reader_to_writer" | "reader_to_destructive" | "writer_to_reader" | "safety_changed" | "name_changed" | "schema_changed" | string;
-}
-
-export interface MCPTrustInspectionView {
-  name: string;
-  trustState: string;
-  trustSource?: string;
-  trustScope?: string;
-  isolationState: string;
-  isolationReason?: string;
-  identityChanged?: boolean;
-  changedTools: string[];
-  toolChanges?: MCPToolTrustChangeView[];
-  readers: string[];
-  writers: string[];
-  destructive: string[];
-}
-
-export interface MCPCatalogRefreshView {
-  source: string;
-  sequence: number;
-  offline: boolean;
-  stale?: boolean;
 }
 export interface SkillView {
   name: string;
   description: string;
   scope: string;
+  sourceDir?: string;
   runAs: string;
   enabled: boolean;
   plugin?: string;
   model?: string;
   effort?: string;
   allowedTools?: string[];
+  readOnly?: boolean;
   color?: string;
   invocation?: string;
   invocationMode?: string;
@@ -824,6 +1214,7 @@ export interface SkillRootView {
   scope: string;
   priority: number;
   status: string;
+  enabled: boolean;
   configured: boolean;
   removable: boolean;
   skills: number;
@@ -835,10 +1226,12 @@ export interface CapabilitiesView {
   skills: SkillView[];
   skillRoots: SkillRootView[];
   plugins: PluginView[];
+  allowImplicitInvocation?: boolean;
 }
 export interface SkillsSettingsView {
   skills: SkillView[];
   skillRoots: SkillRootView[];
+  allowImplicitInvocation?: boolean;
 }
 export interface SubagentProfileInput {
   name: string;
@@ -848,6 +1241,7 @@ export interface SubagentProfileInput {
   model?: string;
   effort?: string;
   allowedTools?: string[];
+  readOnly?: boolean;
   scope?: "project" | "global";
 }
 export interface PluginView {
@@ -873,13 +1267,6 @@ export interface PluginView {
   mcpServerDetails?: PluginMCPServerView[];
   warnings?: string[];
   error?: string;
-  verification?: {
-    catalogEntryId: string;
-    commit: string;
-    packageSha256: string;
-    verifiedAt: string;
-    catalogSequence: number;
-  };
 }
 export interface PluginCompatibilityIssue {
   capability: string;
@@ -940,13 +1327,38 @@ export interface MCPServerInput {
   url: string;
   env?: Record<string, string> | null;
   headers?: Record<string, string> | null;
-  trustedReadOnlyTools?: string[];
   autoStart?: boolean | null;
   callTimeoutSeconds?: number | null;
   toolTimeoutSeconds?: Record<string, number> | null;
-  defaultToolsApprovalMode?: MCPApprovalMode | "" | null;
-  tools?: Record<string, MCPToolPolicy> | null;
-  approvalsReviewer?: MCPApprovalsReviewer | "" | null;
+}
+
+export interface MCPInstallResult {
+  name: string;
+  state: "ready" | "action_required" | "issue";
+  toolCount: number;
+  action: "none" | "authenticate" | "authorize" | "retry";
+  message: string;
+}
+
+export interface MCPMarketplaceEntry {
+  name: string;
+  suggestedName: string;
+  title?: string;
+  description?: string;
+  version?: string;
+  repositoryUrl?: string;
+  installable: boolean;
+  unavailableReason?: string;
+  transport?: "stdio" | "http" | "sse" | string;
+  command?: string;
+  args: string[];
+  url?: string;
+}
+
+export interface MCPMarketplaceView {
+  servers: MCPMarketplaceEntry[];
+  cached: boolean;
+  warning?: string;
 }
 
 export interface ModelInfo {
@@ -980,15 +1392,65 @@ export interface SlashArgsResult {
 export interface MemoryDoc {
   path: string;
   scope: string; // "user" | "ancestor" | "project" | "local"
+  directory?: string;
   body: string;
+  imports: Array<{ path: string; sourcePath: string }>;
+  depth: number;
+  order: number;
+  precedence: number;
+}
+
+export interface InstructionDiagnostic {
+  code: string;
+  path: string;
+  sourcePath?: string;
+  line?: number;
+  message: string;
 }
 
 export interface MemoryFact {
+  id?: string;
+  revision?: number;
+  createdAt?: string;
+  updatedAt?: string;
   name: string;
   title?: string;
   description: string;
   type: string; // "user" | "feedback" | "project" | "reference"
+  scope: string; // "project" | "global"
   body: string;
+  freshness: string; // "fresh" | "current" | "stale"
+}
+
+export interface MemoryConflict {
+  key: string;
+  projectId: string;
+  projectName: string;
+  globalId: string;
+  globalName: string;
+  resolution: "project_over_global";
+}
+
+export interface MemoryRecallHit {
+  id: string;
+  revision: number;
+  name: string;
+  title?: string;
+  type: string;
+  scope: string;
+  score: number;
+  freshness: string;
+  reason: string;
+  snippet: string;
+}
+
+export interface MemoryRecallTrace {
+  query: string;
+  hits: MemoryRecallHit[];
+  omitted: number;
+  charBudget: number;
+  usedChars: number;
+  suppressed?: string;
 }
 
 export interface MemoryArchive extends MemoryFact {
@@ -1007,6 +1469,7 @@ export interface MemorySuggestion {
   title: string;
   description: string;
   type: string;
+  scope: string; // "project" | "global"
   body: string;
   reason: string;
   evidence: string[];
@@ -1035,13 +1498,185 @@ export interface MemoryView {
   facts: MemoryFact[];
   archives: MemoryArchive[];
   scopes: MemoryScope[];
+  instructionDiagnostics: InstructionDiagnostic[];
+  conflicts: MemoryConflict[];
+  lastRecall: MemoryRecallTrace;
   storeDir: string;
   storeGlobalDir?: string;
   available: boolean;
 }
 
 // SettingsTab is the top-level navigation item in the Settings Centre modal.
-export type SettingsTab = "general" | "models" | "providers" | "bots" | "mcp" | "skills" | "subagents" | "plugins" | "memory" | "hooks" | "diagnostics" | "shortcuts" | "permissions" | "sandbox" | "network" | "appearance" | "updates";
+export type SettingsTab = "general" | "models" | "providers" | "bots" | "mcp" | "remote" | "skills" | "subagents" | "plugins" | "memory" | "hooks" | "diagnostics" | "shortcuts" | "permissions" | "sandbox" | "network" | "appearance" | "storage" | "updates";
+
+// ── Remote SSH module (mirrors desktop/remote_app.go view structs) ──
+
+export type RemoteConnState =
+  | "connecting"
+  | "connected"
+  | "reconnecting"
+  | "degraded"
+  | "pending_hostkey"
+  | "pending_secret"
+  | "stopped";
+
+export type RemoteServerState =
+  | "starting"
+  | "detect"
+  | "install"
+  | "waiting_lock"
+  | "launch"
+  | "health_check"
+  | "ready"
+  | "error"
+  | "stopped"
+  | "reuse";
+
+export interface RemoteHostView {
+  id: string;
+  label: string;
+  host: string;
+  port: number;
+  user: string;
+  identityFile: string;
+  proxyJump: string;
+  defaultWorkspace: string;
+  serveInstall: string;
+  useSSHConfig: boolean;
+  passwordSet?: boolean;
+  keyPassphraseSet?: boolean;
+}
+
+export interface RemoteHostInput {
+  label: string;
+  host: string;
+  port: number;
+  user: string;
+  identityFile: string;
+  proxyJump: string;
+  defaultWorkspace: string;
+  serveInstall: string;
+  useSSHConfig: boolean;
+  password?: string;
+  keyPassphrase?: string;
+  clearPassword?: boolean;
+  clearPassphrase?: boolean;
+  preserveExistingSettings?: boolean;
+}
+
+export interface RemoteFingerprintView {
+  hostId: string;
+  address: string;
+  keyType: string;
+  sha256: string;
+}
+
+export interface RemoteSecretPromptView {
+  promptId: string;
+  hostId: string;
+  host: string;
+  kind: "password" | "passphrase";
+  identity?: string;
+}
+
+export interface RemoteKnownHostLocation {
+  path: string;
+  line: number;
+}
+
+export interface RemoteConnectionErrorDetails {
+  code: "connection_failed" | "auth_failed" | "host_key_rejected" | "host_key_mismatch";
+  presentedSha256?: string;
+  knownHostRecords?: RemoteKnownHostLocation[];
+}
+
+export interface RemoteConnectionStatus {
+  hostId: string;
+  state: RemoteConnState;
+  error?: string;
+  errorDetails?: RemoteConnectionErrorDetails;
+  fingerprint?: RemoteFingerprintView;
+  secretPrompt?: RemoteSecretPromptView;
+  attempt?: number;
+}
+
+export interface RemoteDirEntry {
+  name: string;
+  path: string;
+  isDir: boolean;
+  size: number;
+  mtimeUnix: number;
+  symlink: boolean;
+}
+
+export interface RemoteFilePreview {
+  path: string;
+  body: string;
+  size: number;
+  mtimeUnix: number;
+  truncated: boolean;
+  binary: boolean;
+  err?: string;
+}
+
+export interface RemoteWriteResult {
+  ok: boolean;
+  conflict: boolean;
+  newMtimeUnix: number;
+}
+
+export interface RemoteForwardInput {
+  localPort: number;
+  remoteHost: string;
+  remotePort: number;
+  label: string;
+}
+
+export interface RemoteForwardView {
+  id: string;
+  hostId: string;
+  localPort: number;
+  remoteHost: string;
+  remotePort: number;
+  label: string;
+  state: string;
+  error?: string;
+}
+
+export interface RemoteServerView {
+  hostId: string;
+  workspace: string;
+  state: RemoteServerState;
+  message?: string;
+  localUrl?: string;
+  error?: string;
+}
+
+/** Path-free summary of files left behind by the removed Remote Workbench. */
+export interface RemoteLegacyWorkbenchData {
+  mirrorCount: number;
+  mirrorBytes: number;
+  trustFile: boolean;
+}
+
+export interface RemoteForwardsEvent {
+  hostId: string;
+  forwards: RemoteForwardView[];
+}
+
+/** Extension runtime doctor report from App.RuntimeDoctor. */
+export interface RuntimeDoctorReport {
+  text: string;
+  publishedGeneration: number;
+  allowResume: boolean;
+  cleanRollback: boolean;
+  hasIrreversible: boolean;
+  noOpRebuilds: number;
+  fullRebuilds: number;
+  subgraphRebuilds: number;
+  staleDrops: number;
+  admissionRejected: number; runtimeOwnerFallbacks: number;
+}
 
 /** Capability diagnostics report from App.CapabilityDiagnostics (capdiag.Report). */
 export interface CapabilityDiagnosticsReport {
@@ -1059,7 +1694,7 @@ export interface CapabilityDiagnosticsReport {
     plugins: number;
     mcp_servers: number;
   };
-  instructions: { docs: Array<{ path: string; scope: string; order: number }> };
+  instructions: { docs: Array<{ path: string; scope: string; directory?: string; depth: number; order: number }> };
   skills: CapabilityAssetReport;
   commands: CapabilityAssetReport;
   hooks: {
@@ -1149,10 +1784,12 @@ export interface ProviderView {
   added: boolean;
   kind: string;
   baseUrl: string;
-  chatUrl?: string; // optional full chat completions URL; empty derives from baseUrl
+  chatUrl?: string; // legacy OpenAI chat endpoint override; preserved for old-config compatibility
+  requestUrl?: string; // exact provider request URL written by the current settings UI
   models: string[];
   visionModels: string[]; // subset of models that accepts image input
   visionModelsConfigured: boolean; // true when an empty list is an explicit choice
+  visionCapability?: "configurable" | "unsupported"; // backend authority; absent on older Wails payloads
   modelsUrl: string; // optional override for model discovery; empty derives from baseUrl
   default: string;
   apiKeyEnv: string;
@@ -1166,11 +1803,23 @@ export interface ProviderView {
   keySourcePath?: string;
   balanceUrl: string; // optional wallet-balance endpoint; "" disables the readout
   contextWindow: number;
-  reasoningProtocol: string; // auto|deepseek|openai|none; empty = auto/model registry
+  reasoningProtocol: string; // auto|deepseek|glm|kimi-k3|openai|none; empty = auto/model registry
   thinking: string; // provider-specific thinking override: ""|enabled|disabled|adaptive
+  webSearch?: boolean; // expose a provider-executed web search tool when supported
+  serverWebSearchCapability?: boolean; // backend-verified provider capability; absent on older Wails payloads
   supportedEfforts: string[]; // custom /effort levels; empty = use built-in Kind/BaseURL default
   defaultEffort: string; // /effort level when user picks "auto" or unset; "" = supportedEfforts[0]
   modelOverrides?: ProviderModelOverrideView[] | null;
+  recommendedUpgradeAvailable?: boolean; // official legacy OpenAI entry can switch to recommended Anthropic access
+  modelCatalogFingerprint?: string; // opaque compare-and-apply token for background model discovery
+}
+
+export interface ProviderModelCatalogUpdate {
+  name: string;
+  expectedFingerprint: string;
+  models: string[];
+  default: string;
+  visionModels: string[];
 }
 
 export interface ProviderPresetView {
@@ -1196,15 +1845,84 @@ export interface ProviderModelOverrideView {
   supportedEfforts: string[];
   defaultEffort: string;
   vision?: boolean | null;
+  contextWindow?: number;
+  maxOutputTokens?: number;
 }
 
 // BalanceInfo is the wallet-balance readout (desktop/app.go Balance). available
 // is false when the provider declares no balanceUrl or a fetch failed; display is
-// the formatted amount (e.g. "¥110.00").
+// the formatted amount in an original wallet currency; no implicit FX conversion.
 export interface BalanceInfo {
   available: boolean;
   display: string;
+  detail?: string;
+  complete?: boolean;
+  rateDate?: string;
+  approx?: boolean;
+  currencies?: string[];
+  primaryCurrency?: string;
+  costDisplayCurrency?: string;
+  multiCurrency?: boolean;
   err?: string;
+}
+
+// ── Usage statistics (desktop/stats_app.go) ────────────────────────────────
+
+// UsageStatsRequest selects the aggregation range and optional entry-point
+// filter for the usage statistics panel. Range is "7" | "14" | "30" | "90" |
+// "custom"; custom requires from/to as "2006-01-02" (inclusive, local dates).
+// Source "" or "all" aggregates every entry point; "desktop" | "cli" | "serve"
+// | "bot" | "remote" filters to that source's records.
+export interface UsageStatsRequest {
+  range: string;
+  from?: string;
+  to?: string;
+  source?: string;
+}
+
+// DailyTokenUsage is one day's token total, per-model split and turn count in
+// the daily trend series.
+export interface DailyTokenUsage {
+  day: string; // "2006-01-02"
+  total: number;
+  byModel: Record<string, number>; // model ref -> tokens
+  byProvider: Record<string, number>; // provider name -> tokens
+  requests: number; // API calls that day
+  turns: number;
+  cacheHit: number; // cached input tokens that day
+  cacheMiss: number; // uncached input tokens that day
+}
+
+// ModelTokenUsage is one model's aggregate within the range.
+export interface ModelTokenUsage {
+  model: string; // canonical "provider/model"
+  provider: string;
+  tokens: number;
+  percent: number; // 0..100
+}
+
+// ProviderTokenUsage is one provider's aggregate within the range.
+export interface ProviderTokenUsage {
+  provider: string;
+  tokens: number;
+  percent: number;
+}
+
+// UsageStatsRange is the full aggregate the settings panel renders.
+export interface UsageStatsRange {
+  from: string;
+  to: string;
+  tokens: number;
+  requests: number; // API calls
+  turns: number; // completed turns
+  cacheHit: number;
+  cacheMiss: number;
+  activeDays: number;
+  topModel: string;
+  topProvider: string;
+  daily: DailyTokenUsage[];
+  models: ModelTokenUsage[];
+  providers: ProviderTokenUsage[];
 }
 
 // JobView is one running background job (desktop/app.go Jobs) for the status bar.
@@ -1214,6 +1932,36 @@ export interface JobView {
   label: string;
   status: string; // "running"
   startedAt: number; // unix milliseconds
+}
+
+export interface ActiveWorkView {
+  running: boolean;
+  pendingPrompt: boolean;
+  cancellable: boolean;
+  jobs: JobView[];
+}
+
+export interface JobCancelBatchView {
+  cancelled: string[];
+  notRunning: string[];
+}
+
+export interface BackgroundRuntimeView {
+  tabId: string;
+  title: string;
+  detached: boolean;
+  running: boolean;
+  pendingPrompt: boolean;
+  jobs: JobView[];
+}
+
+export interface WorkspaceConflictView {
+  state: "none" | "local" | "external";
+  ownerTabId?: string; ownerTitle?: string;
+  ownerScope?: string; ownerLabel?: string;
+  ownerWork: ActiveWorkView;
+  canReveal: boolean;
+  canCreateWorktree: boolean;
 }
 
 export interface PermissionsView {
@@ -1254,9 +2002,13 @@ export interface AgentView {
   maxSteps: number;
   plannerMaxSteps: number;
   maxSubagentDepth: number;
+  maxSubagentConcurrency: number;
+  maxParallelWriters: number;
   systemPrompt: string;
-  coldResumePrune: boolean;
   reasoningLanguage: string; // "auto" | "zh" | "en"
+  compactRatio?: number; // Advanced global default; older backends omit it.
+  effectiveCompactRatio?: number; // Active local session after project overrides.
+  compactRatioOverridden?: boolean;
 }
 
 export interface BotAllowlistView {
@@ -1274,6 +2026,10 @@ export interface BotAllowlistView {
   qqGroups: string[];
   feishuGroups: string[];
   weixinGroups: string[];
+  dingtalkUsers: string[];
+  dingtalkApprovers: string[];
+  dingtalkAdmins: string[];
+  dingtalkGroups: string[];
 }
 
 export interface BotAccessView {
@@ -1290,6 +2046,7 @@ export interface BotSelfUserIDsView {
   qq: string[];
   feishu: string[];
   weixin: string[];
+  dingtalk: string[];
 }
 
 export interface BotPairingView {
@@ -1348,6 +2105,19 @@ export interface WeixinBotView {
   apiBase: string;
 }
 
+export interface DingtalkBotView {
+  enabled: boolean;
+  clientId: string;
+  clientSecretEnv: string;
+  secretSet: boolean;
+  botName: string;
+  requireMention: boolean;
+  model: string;
+  toolApprovalMode: string;
+  workspaceRoot: string;
+  access: BotAccessView;
+}
+
 export interface BotConnectionCredentialView {
   appId: string;
   appSecretEnv: string;
@@ -1404,6 +2174,7 @@ export interface BotSettingsView {
   qq: QQBotView;
   feishu: FeishuBotView;
   weixin: WeixinBotView;
+  dingtalk: DingtalkBotView;
   connections: BotConnectionView[];
 }
 
@@ -1413,6 +2184,7 @@ export interface BotRuntimeStatusView {
   message: string;
   connections: number;
   startedAt: string;
+  platforms: Record<string, string>;
 }
 
 export interface BotInstallStartResult {
@@ -1482,22 +2254,26 @@ export interface SettingsView {
   agent: AgentView;
   bot: BotSettingsView;
   desktopLanguage: string; // "" | "en" | "zh"; empty = auto
+  desktopCurrency?: string; // "" | "CNY" | "USD"; absent/empty = follow language
   desktopLayoutStyle: string; // "classic" | "workbench" | "creation"
   desktopTheme: string; // "auto" | "dark" | "light"
   desktopThemeStyle: string;
+  desktopTerminalTheme: string; // "auto" follows app | "dark" | "light"
   closeBehavior: string; // "background" | "quit"
-  displayMode: string;   // "standard" | "compact"
+  displayMode: string; reasoningDisplayMode: string; reasoningDisplayModeExplicit?: boolean;
   statusBarStyle: string; // "icon" | "text"
   statusBarItems: string[]; // ordered visible status bar item ids
   defaultToolApprovalMode: ToolApprovalMode | string; // default for newly-created sessions
   checkUpdates: boolean; // check for new versions on startup
-  telemetry: boolean; // anonymous launch ping (install id + version + OS)
-  metrics: boolean; // aggregate desktop metrics (anonymous signal/bucket counts)
-  memoryCompilerEnabled: boolean; // Memory v5 execution compiler
+  updateChannel: string; // compatibility field; always "stable"
+  telemetry: boolean; // anonymous launch ping + scrubbed next-launch native crash diagnostics
+  metrics: boolean; // aggregate quality/lifecycle metrics (anonymous signal/bucket counts)
   configPath: string;
+  shadowedByPath?: string; // workspace reasonix.toml that outranks configPath, when one exists
   providerKinds: string[]; // provider implementations the kernel registered (for the kind picker)
   autoApproveTools: boolean;
   bypass: boolean; // legacy JSON key for live YOLO/full-access tool auto-approval
+  conversationWidth?: string; // "standard" | "full"; absent from older Wails payloads
 }
 
 export interface DesktopStartupSettingsView {
@@ -1506,11 +2282,15 @@ export interface DesktopStartupSettingsView {
   desktopLayoutStyle: string; // "classic" | "workbench"
   desktopTheme: string; // "auto" | "dark" | "light"
   desktopThemeStyle: string;
-  displayMode: string;   // "standard" | "compact"
+  desktopTerminalTheme: string; // "auto" follows app | "dark" | "light"
+  displayMode: string; reasoningDisplayMode: string; reasoningDisplayModeExplicit?: boolean;
   statusBarStyle: string; // "icon" | "text"
   statusBarItems: string[]; // ordered visible status bar item ids
   checkUpdates: boolean; // check for new versions on startup
-  safeMode?: boolean; // recovery startup with external integrations disabled
+  updateChannel: string; // compatibility field; always "stable"
+  conversationWidth?: string; // "standard" | "full"; absent from older Wails payloads
+  configWarnings?: string[]; configWarningsRevision?: number; // load recovery notices and async delivery barrier
+  configPath?: string;
 }
 
 export type ExternalOpenerKind = "file-manager" | "editor" | "terminal";
@@ -1524,7 +2304,7 @@ export interface ExternalOpenerView {
 
 export interface ExternalOpenersView {
   openers: ExternalOpenerView[];
-  preferred: string;
+  preferred: string; workspaceOpenable?: boolean;
 }
 
 // Auto-updater payloads (desktop/updater.go). UpdateInfo drives the update banner;
@@ -1538,6 +2318,8 @@ export interface UpdateInfo {
   canSelfUpdate: boolean; // macOS true only for signed/notarized builds
   manualOnly?: boolean;
   manualReason?: string;
+  installMode?: "portable" | "deb" | "manual" | string;
+  requiresElevation?: boolean;
   downloaded: boolean;
   downloadUrl: string; // human-facing releases page (macOS path / fallback link)
   assetSize: number; // running platform's artifact size, for the progress bar
@@ -1545,6 +2327,7 @@ export interface UpdateInfo {
 }
 
 export interface UpdateDownloadResult {
+  requestId: string;
   version: string;
   channel: string;
   path: string;
@@ -1553,8 +2336,66 @@ export interface UpdateDownloadResult {
 }
 
 export interface UpdateProgress {
-  phase: "downloading" | "verifying" | "downloaded" | "installing" | "done" | "error";
+  requestId: string;
+  version: string;
+  channel: "stable" | "preview" | string;
+  phase: "downloading" | "verifying" | "downloaded" | "authorizing" | "recovering" | "installing" | "relaunching" | "done" | "error";
   received: number;
   total: number;
   err?: string;
+}
+
+// Task Monitor panel types (internal/taskmonitor).
+
+export type TaskState =
+  | "queued"
+  | "running"
+  | "waiting"
+  | "succeeded"
+  | "failed"
+  | "cancelled"
+  | "stale"
+  | string; // forward-compat
+
+export type RuntimeState = "unknown" | "alive" | "exited" | string;
+
+export interface TaskSnapshot {
+  schema_version: number;
+  task_id: string;
+  job_id?: string; // jobs.Manager-local runtime identifier
+  session_id: string;
+  state: TaskState;
+  runtime_state?: RuntimeState; // absent in snapshots written before this field existed
+  version: number;
+  created_at: string; // ISO 8601
+  updated_at: string; // ISO 8601
+  error_code?: string;
+  error_summary?: string;
+}
+
+export type { TaskActionRequest, TaskCatalogItem, TaskCatalogStatus, TaskEventPage, TaskEventPageRequest, TaskPage, TaskPageRequest } from "./taskCatalogTypes";
+
+export interface ControlResult {
+  schema_version: number;
+  command: string;
+  task_id: string;
+  session_id?: string;
+  state?: TaskState;
+  runtime_state?: RuntimeState;
+  version?: number;
+  accepted: boolean;
+  idempotent: boolean;
+  error?: { code: string; message: string };
+}
+
+export interface TaskEvent {
+  sequence: number;
+  timestamp: string; // ISO 8601
+  event_type: string;
+  task_id: string;
+  session_id: string;
+  state: TaskState;
+  runtime_state?: RuntimeState;
+  error_code?: string;
+  error_summary?: string;
 }

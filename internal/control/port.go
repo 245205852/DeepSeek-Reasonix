@@ -4,7 +4,6 @@ import (
 	"context"
 
 	"reasonix/internal/agent"
-	"reasonix/internal/autoresearch"
 	"reasonix/internal/billing"
 	"reasonix/internal/checkpoint"
 	"reasonix/internal/command"
@@ -16,6 +15,7 @@ import (
 	"reasonix/internal/memory"
 	"reasonix/internal/plugin"
 	"reasonix/internal/provider"
+	"reasonix/internal/sandbox"
 	"reasonix/internal/skill"
 )
 
@@ -50,15 +50,18 @@ type Lifecycle interface {
 type TurnControl interface {
 	Submit(input string)
 	SubmitDisplay(display, input string)
+	SubmitFinalReadinessRecovery(display, input string)
 	SubmitDeliveryRecovery(display, input string)
 	SubmitInvocationDisplay(display, input string, invocations []InvocationRequest)
 	SubmitEditedDisplay(display, input, original string)
 	SubmitHTTP(input string)
+	SubmitHTTPFormat(input, format string)
 	SubmitUserTurn(input, display string)
 	Send(input string)
 	SendWithRaw(input, raw string)
 	Run(ctx context.Context, input string) error
 	RunTurn(ctx context.Context, input string) error
+	RunFinalReadinessRecovery(ctx context.Context, input string) error
 	RunShell(command string)
 	Cancel()
 	Steer(text string)
@@ -75,9 +78,16 @@ type TurnControl interface {
 // posture (ask/auto/yolo). It mirrors the approvalManager surface.
 type Approvals interface {
 	Approve(id string, allow, session, persist bool)
+	ResolveApproval(id string, allow bool, scope sandbox.ApprovalScope) error
+	ResolvePlanDecision(id string, action PlanDecisionAction) error
+	// ResolveRecovery answers an Auto Guard card: continue|continue_task|revise. Revise
+	// refuses the mutation and steers feedback.
+	ResolveRecovery(id string, action agent.RecoveryAction, feedback string) error
 	AnswerQuestion(id string, answers []event.AskAnswer)
 	Ask(ctx context.Context, questions []event.AskQuestion) ([]event.AskAnswer, error)
 	ReplayPendingPrompts()
+	ReplayPendingPromptsTo(sink event.Sink)
+	ReplayPendingPromptsWith(sinkFactory func() event.Sink)
 	PendingPrompt() bool
 	EnableInteractiveApproval()
 	ToolApprovalMode() string
@@ -94,28 +104,43 @@ type Goals interface {
 	Goal() string
 	GoalStatus() string
 	SetGoal(goal string)
+	// SetGoalWithResearchMode is retained for deprecated CLI budget flags. The
+	// mode is translated at the boundary and is not stored in the Goal runtime.
 	SetGoalWithResearchMode(goal string, researchMode GoalResearchMode)
 	ResumeGoal() bool
+	PauseGoal() bool
+	GoalRuntime() GoalRuntimeView
 	GoalStrict(strict bool)
 	ClearGoal()
-	AutoResearchSummary() (*autoresearch.Summary, bool)
-	AutoResearchList() ([]autoresearch.Summary, bool)
-	AutoResearchFindings(limit int) ([]autoresearch.Finding, bool)
-	RecordAutoResearchEvidence(criterionID string, input AutoResearchEvidenceInput) error
-	AutoStartResearchGoal(input string) (string, bool)
 	ResetPlannerSession()
 	PlanMode() bool
 	SetPlanMode(v bool)
-	SetAutoPlan(mode string)
+	// AgentPreset is the session role setting (standard|delivery), derived
+	// from the quality floor.
+	AgentPreset() string
+	// SetAgentPreset updates the role setting for subsequent turns without
+	// rebuilding the controller.
+	SetAgentPreset(preset string)
+	// QualityFloor is the session delivery floor (standard|delivery).
+	QualityFloor() string
+	// SetQualityFloor updates the session delivery floor for subsequent
+	// turns without rebuilding the controller.
+	SetQualityFloor(floor string) error
 }
 
 // SessionHistory covers checkpoint/rewind, branch/fork, and the log-restructuring
 // operations (compact, summarize).
 type SessionHistory interface {
 	Checkpoints() []checkpoint.Meta
+	CheckpointFileState(path string) (checkpoint.FileState, bool)
 	CheckpointTurnsByMessageIndex() map[int]int
 	CheckpointHasBoundary(turn int) bool
 	Rewind(turn int, scope RewindScope) error
+	PrepareRewind(turn int, scope RewindScope) (checkpoint.RewindPlan, error)
+	CommitRewind(planID string) (checkpoint.RewindResult, error)
+	UndoRewind(transactionID string) (checkpoint.RewindResult, error)
+	PrepareFileRevert(path string) (checkpoint.RewindPlan, error)
+	CommitFileRevert(planID string, resolution checkpoint.ConflictResolution) (checkpoint.RewindResult, error)
 	Fork(turn int) (string, error)
 	ForkNamed(turn int, name string) (string, error)
 	ForkSession(turn int, name string) (string, error)
@@ -125,6 +150,7 @@ type SessionHistory interface {
 	SwitchBranch(ref string) (agent.BranchInfo, error)
 	Compact(ctx context.Context, instructions string) error
 	CompactRatio() float64
+	ContextReport() (summary, detail string)
 	SummarizeFrom(ctx context.Context, turn int) error
 	SummarizeUpTo(ctx context.Context, turn int) error
 }
@@ -137,6 +163,10 @@ type MemoryControl interface {
 	SaveMemory(m memory.Memory) (string, error)
 	ForgetMemory(name string) error
 	QueueMemory(note string)
+	MemoryRevisions(ref string) []memory.Memory
+	RestoreMemory(ref string, revision int) (memory.Memory, error)
+	RestoreArchivedMemory(archivePath string) (memory.Memory, error)
+	LastMemoryRecall() memory.RecallResult
 }
 
 // Capabilities covers the session's pluggable surface — MCP servers, skills,
@@ -160,6 +190,7 @@ type Capabilities interface {
 	RunSkill(input string) (sent string, found bool)
 	AddMCPServer(e config.PluginEntry) (int, error)
 	ConnectMCPServer(e config.PluginEntry) (int, error)
+	RegisterMCPServerOnDemand(e config.PluginEntry) (int, error)
 	ConnectConfiguredMCPServer(name string) (int, error)
 	DisconnectMCPServer(name string) bool
 	RemoveMCPServer(name string) (disconnected bool, err error)
@@ -167,11 +198,22 @@ type Capabilities interface {
 	DisconnectedMCPNames() []string
 	UnregisterMCPServerTools(name string) bool
 	ImportMCPEntries(entries []config.PluginEntry) (total, added, updated, connected, failed, skipped int, err error)
+	// Extension UI (stage 8a): enumerate handshake-declared extension actions
+	// and invoke one by its public /<plugin>:<action> name. Nil hub → empty /
+	// error; the stage-8b slash dispatch resolves these.
+	ExtensionActions() []ExtensionActionView
+	InvokeExtensionAction(ctx context.Context, name string, args map[string]string) (string, error)
+	// ProviderCatalog is the session's merged provider catalog — config/broker
+	// base plus sidecar-declared extension providers (plugin/... refs). Nil
+	// when no extension declared providers; frontends merge it into their
+	// model pickers and skip nil.
+	ProviderCatalog() []provider.Descriptor
 }
 
 // Status covers read-only run/usage/billing telemetry and task list state.
 type Status interface {
 	ContextSnapshot() (int, int)
+	ContextMaintenanceSnapshot() agent.ContextMaintenanceSnapshot
 	LastUsage() *provider.Usage
 	Balance(ctx context.Context) (*billing.Balance, error)
 	Jobs() []jobs.View
@@ -182,7 +224,12 @@ type Status interface {
 // state.
 type SessionPersistence interface {
 	Snapshot() error
+	SnapshotForShutdown() error
 	SnapshotActivity() error
+	// SessionHasUnsavedChanges reports whether the in-memory transcript is
+	// newer than the durable session file. Frontends use this to avoid
+	// replacing a failed/contended save with stale disk history.
+	SessionHasUnsavedChanges() bool
 	SessionCache() (hit, miss int)
 	BeginDestroySession(sessionPath string) SessionDestroyHandle
 	CloseAfterDestroy()
@@ -205,8 +252,6 @@ type Input interface {
 type Settings interface {
 	SetResponseLanguage(lang string)
 	SetReasoningLanguage(lang string)
-	SetMemoryCompilerEnabled(enabled bool)
-	SetMemoryCompilerVerbosity(verbosity string)
 	SetDisplayRecorder(fn func(content, display string))
 }
 
@@ -225,6 +270,7 @@ type SessionAPI interface {
 	SessionPersistence
 	Input
 	Settings
+	Inbox
 }
 
 // Compile-time proof that the concrete controller satisfies each sub-port and
@@ -242,5 +288,6 @@ var (
 	_ SessionPersistence = (*Controller)(nil)
 	_ Input              = (*Controller)(nil)
 	_ Settings           = (*Controller)(nil)
+	_ Inbox              = (*Controller)(nil)
 	_ SessionAPI         = (*Controller)(nil)
 )

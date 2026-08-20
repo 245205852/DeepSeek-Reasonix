@@ -20,7 +20,7 @@ import (
 	"reasonix/internal/control"
 )
 
-// --- workspaceStatePath ---
+// workspaceStatePath
 
 func TestWorkspaceStatePath(t *testing.T) {
 	// workspaceStatePath depends on config.MemoryUserDir() which needs a
@@ -35,7 +35,7 @@ func TestWorkspaceStatePath(t *testing.T) {
 	}
 }
 
-// --- saveWorkspace / loadWorkspace round-trip ---
+// saveWorkspace / loadWorkspace round-trip
 
 func TestSaveLoadWorkspaceRoundTrip(t *testing.T) {
 	// workspaceStatePath() resolves via os.UserConfigDir() (HOME on unix,
@@ -568,14 +568,14 @@ func BenchmarkDesktopSessionDir(b *testing.B) {
 		b.Fatal(err)
 	}
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		if desktopSessionDir(root) == "" {
 			b.Fatal("empty session dir")
 		}
 	}
 }
 
-// --- cwdWritable ---
+// cwdWritable
 
 func TestCwdWritable(t *testing.T) {
 	// In a normal test environment, cwd should be writable.
@@ -628,7 +628,7 @@ func TestReadFilePreviewBinaryClassification(t *testing.T) {
 	orig, _ := os.Getwd()
 	defer os.Chdir(orig)
 
-	dir := t.TempDir()
+	dir := robustTempDir(t)
 	if err := os.Chdir(dir); err != nil {
 		t.Fatal(err)
 	}
@@ -950,7 +950,7 @@ func TestMediaTokenMaxEviction(t *testing.T) {
 
 	// Fill beyond max to trigger eviction of oldest.
 	var oldestToken string
-	for i := 0; i < mediaTokenMax+1; i++ {
+	for i := range mediaTokenMax + 1 {
 		tok := store.create(dir+"/test.png", "test.png", "image/png", "image", 4, time.Time{})
 		if i == 0 {
 			oldestToken = tok
@@ -1048,7 +1048,7 @@ func TestReadFileGB18030(t *testing.T) {
 	}
 }
 
-// --- RemoveWorkspace cleanup of active pointer ---
+// RemoveWorkspace cleanup of active pointer
 
 func TestRemoveWorkspaceClearsActivePointerWhenRemovingCurrentWorkspace(t *testing.T) {
 	isolateDesktopUserDirs(t)
@@ -1115,7 +1115,7 @@ func TestClearWorkspace(t *testing.T) {
 	}
 }
 
-// --- OpenProjectTab updates active workspace pointer ---
+// OpenProjectTab updates active workspace pointer
 
 func TestOpenProjectTabUpdatesActiveWorkspacePointer(t *testing.T) {
 	isolateDesktopUserDirs(t)
@@ -1194,25 +1194,33 @@ func TestWorkspaceChangesUsesRequestedTabCheckpoints(t *testing.T) {
 	sessionA := filepath.Join(sessionDir, "a.jsonl")
 	sessionB := filepath.Join(sessionDir, "b.jsonl")
 	content := "old"
+	afterExists := true
 	now := time.Now()
 
 	for _, tc := range []struct {
-		session string
-		path    string
-		prompt  string
+		session       string
+		path          string
+		prompt        string
+		schemaVersion int
+		afterExisted  *bool
+		afterSHA256   string
 	}{
-		{sessionA, "a.txt", "edit a"},
-		{sessionB, "b.txt", "edit b"},
+		{sessionA, "a.txt", "edit a", checkpoint.SchemaV2, &afterExists, checkpoint.Digest([]byte("new"))},
+		{sessionB, "b.txt", "edit b", 0, nil, ""},
 	} {
 		ckptDir := strings.TrimSuffix(tc.session, ".jsonl") + ".ckpt"
 		if err := os.MkdirAll(ckptDir, 0o755); err != nil {
 			t.Fatal(err)
 		}
 		seedCheckpoint(t, ckptDir, checkpoint.Checkpoint{
-			Turn:   0,
-			Time:   now,
-			Prompt: tc.prompt,
-			Files:  []checkpoint.FileSnap{{Path: tc.path, Content: &content}},
+			SchemaVersion: tc.schemaVersion,
+			Turn:          0,
+			Time:          now,
+			Prompt:        tc.prompt,
+			Files: []checkpoint.FileSnap{{
+				Path: tc.path, Content: &content,
+				AfterExisted: tc.afterExisted, AfterSHA256: tc.afterSHA256,
+			}},
 		})
 	}
 
@@ -1236,6 +1244,13 @@ func TestWorkspaceChangesUsesRequestedTabCheckpoints(t *testing.T) {
 	}
 	if byPath["b.txt"].LatestPrompt != "edit b" {
 		t.Fatalf("requested tab b changes = %+v, want b.txt from tab b", got.Files)
+	}
+	if byPath["b.txt"].CanSessionRevert {
+		t.Fatalf("legacy checkpoint must not enable destructive one-click revert: %+v", byPath["b.txt"])
+	}
+	gotA := app.WorkspaceChanges("a")
+	if len(gotA.Files) != 1 || !gotA.Files[0].CanSessionRevert {
+		t.Fatalf("verified v2 checkpoint should enable session revert: %+v", gotA.Files)
 	}
 }
 
@@ -1396,6 +1411,177 @@ func TestWorkspaceChangesGitBranchDetachedHead(t *testing.T) {
 	}
 	if got.GitBranch != "@"+short {
 		t.Fatalf("git branch = %q, want @%s", got.GitBranch, short)
+	}
+}
+
+func TestWorkspaceChangeDetailIncludesStagedAndUnstagedChanges(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	repo := t.TempDir()
+	runGitIn(t, repo, "init")
+	runGitIn(t, repo, "config", "user.email", "test@example.com")
+	runGitIn(t, repo, "config", "user.name", "Test User")
+	path := filepath.Join(repo, "tracked.txt")
+	if err := os.WriteFile(path, []byte("v1\nkeep\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGitIn(t, repo, "add", "tracked.txt")
+	runGitIn(t, repo, "commit", "-m", "initial")
+	if err := os.WriteFile(path, []byte("v2\nkeep\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGitIn(t, repo, "add", "tracked.txt")
+	if err := os.WriteFile(path, []byte("v3\nkeep\nnew\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	app := &App{tabs: map[string]*WorkspaceTab{"tab": {ID: "tab", WorkspaceRoot: repo}}}
+	detail, err := app.WorkspaceChangeDetail("tab", "tracked.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail.Source != "git" || detail.Diff == nil {
+		t.Fatalf("detail = %+v, want git patch", detail)
+	}
+	if !strings.Contains(*detail.Diff, "-v1") || !strings.Contains(*detail.Diff, "+v3") || strings.Contains(*detail.Diff, "+v2") {
+		t.Fatalf("patch should describe HEAD to current worktree, got:\n%s", *detail.Diff)
+	}
+	if detail.Added != 2 || detail.Removed != 1 {
+		t.Fatalf("tallies = +%d/-%d, want +2/-1", detail.Added, detail.Removed)
+	}
+}
+
+func TestWorkspaceChangeDetailSynthesizesUntrackedFile(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	repo := t.TempDir()
+	runGitIn(t, repo, "init")
+	if err := os.WriteFile(filepath.Join(repo, "new.txt"), []byte("one\ntwo\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	app := &App{tabs: map[string]*WorkspaceTab{"tab": {ID: "tab", WorkspaceRoot: repo}}}
+	detail, err := app.WorkspaceChangeDetail("tab", "new.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail.Source != "git" || detail.Diff == nil || !strings.Contains(*detail.Diff, "+one") {
+		t.Fatalf("untracked detail = %+v", detail)
+	}
+	if detail.Added != 2 || detail.Removed != 0 {
+		t.Fatalf("untracked tallies = +%d/-%d, want +2/-0", detail.Added, detail.Removed)
+	}
+}
+
+func TestWorkspaceChangeDetailBoundsTrackedPatch(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	repo := t.TempDir()
+	runGitIn(t, repo, "init")
+	runGitIn(t, repo, "config", "user.email", "test@example.com")
+	runGitIn(t, repo, "config", "user.name", "Test User")
+	path := filepath.Join(repo, "large.txt")
+	if err := os.WriteFile(path, []byte(strings.Repeat("a", workspaceChangeDetailLimit+128)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGitIn(t, repo, "add", "large.txt")
+	runGitIn(t, repo, "commit", "-m", "initial")
+	if err := os.WriteFile(path, []byte(strings.Repeat("b", workspaceChangeDetailLimit+128)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	app := &App{tabs: map[string]*WorkspaceTab{"tab": {ID: "tab", WorkspaceRoot: repo}}}
+	detail, err := app.WorkspaceChangeDetail("tab", "large.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail.Source != "git" || !detail.Truncated || detail.Diff != nil {
+		t.Fatalf("large tracked detail = %+v, want bounded git result", detail)
+	}
+}
+
+func TestWorkspaceChangeDetailBoundsUntrackedFile(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	repo := t.TempDir()
+	runGitIn(t, repo, "init")
+	if err := os.WriteFile(filepath.Join(repo, "large.txt"), []byte(strings.Repeat("x", workspaceChangeDetailLimit+1)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	app := &App{tabs: map[string]*WorkspaceTab{"tab": {ID: "tab", WorkspaceRoot: repo}}}
+	detail, err := app.WorkspaceChangeDetail("tab", "large.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail.Source != "git" || !detail.Truncated || detail.Diff != nil {
+		t.Fatalf("large untracked detail = %+v, want bounded git result", detail)
+	}
+}
+
+func TestWorkspaceChangeDetailBoundsCheckpointSnapshot(t *testing.T) {
+	workspace := t.TempDir()
+	sessionDir := t.TempDir()
+	sessionPath := filepath.Join(sessionDir, "session.jsonl")
+	checkpointDir := strings.TrimSuffix(sessionPath, ".jsonl") + ".ckpt"
+	if err := os.MkdirAll(checkpointDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	original := strings.Repeat("before", workspaceChangeDetailLimit/6+1)
+	seedCheckpoint(t, checkpointDir, checkpoint.Checkpoint{
+		Turn:  0,
+		Time:  time.Now(),
+		Files: []checkpoint.FileSnap{{Path: filepath.Join(workspace, "large.txt"), Content: &original}},
+	})
+	if err := os.WriteFile(filepath.Join(workspace, "large.txt"), []byte("after\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ctrl := control.New(control.Options{
+		SessionDir: sessionDir, SessionPath: sessionPath, WorkspaceRoot: workspace, Label: "session",
+	})
+	app := &App{tabs: map[string]*WorkspaceTab{"tab": {ID: "tab", WorkspaceRoot: workspace, Ctrl: ctrl}}}
+	detail, err := app.WorkspaceChangeDetail("tab", "large.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail.Source != "session" || !detail.Truncated || detail.Diff != nil {
+		t.Fatalf("large checkpoint detail = %+v, want bounded session result", detail)
+	}
+}
+
+func TestWorkspaceChangeDetailFallsBackToRequestedTabCheckpoint(t *testing.T) {
+	workspace := t.TempDir()
+	sessionDir := t.TempDir()
+	sessionPath := filepath.Join(sessionDir, "session.jsonl")
+	checkpointDir := strings.TrimSuffix(sessionPath, ".jsonl") + ".ckpt"
+	if err := os.MkdirAll(checkpointDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	original := "before\n"
+	seedCheckpoint(t, checkpointDir, checkpoint.Checkpoint{
+		Turn:  0,
+		Time:  time.Now(),
+		Files: []checkpoint.FileSnap{{Path: filepath.Join(workspace, "file.txt"), Content: &original}},
+	})
+	if err := os.WriteFile(filepath.Join(workspace, "file.txt"), []byte("after\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ctrl := control.New(control.Options{
+		SessionDir: sessionDir, SessionPath: sessionPath, WorkspaceRoot: workspace, Label: "session",
+	})
+	app := &App{tabs: map[string]*WorkspaceTab{"tab": {ID: "tab", WorkspaceRoot: workspace, Ctrl: ctrl}}}
+	detail, err := app.WorkspaceChangeDetail("tab", "file.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail.Source != "session" || detail.Diff == nil || !strings.Contains(*detail.Diff, "-before") || !strings.Contains(*detail.Diff, "+after") {
+		t.Fatalf("checkpoint detail = %+v", detail)
+	}
+	if _, err := app.WorkspaceChangeDetail("tab", "../outside.txt"); err == nil {
+		t.Fatal("WorkspaceChangeDetail accepted a path outside the workspace")
 	}
 }
 
@@ -1606,6 +1792,16 @@ func runGit(t *testing.T, args ...string) {
 	}
 }
 
+func runGitIn(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v in %s: %v\n%s", args, dir, err, out)
+	}
+}
+
 func gitOutput(t *testing.T, args ...string) string {
 	t.Helper()
 	cmd := exec.Command("git", args...)
@@ -1616,7 +1812,7 @@ func gitOutput(t *testing.T, args ...string) string {
 	return strings.TrimSpace(string(out))
 }
 
-// --- settings_app.go helpers ---
+// settings_app.go helpers
 // These are unexported but in the same package, so we can test them.
 
 func TestOrDefault(t *testing.T) {

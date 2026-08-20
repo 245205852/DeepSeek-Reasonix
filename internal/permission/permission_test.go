@@ -27,6 +27,11 @@ func TestParseRule(t *testing.T) {
 		{"bash=make FOO=bar", "bash", "make FOO=bar", true, true},         // split on first '=' only
 		{"bash=echo (hi)", "bash", "echo (hi)", true, true},               // '=' before '(' → literal, parens kept
 		{"bash(make FOO=*)", "bash", "make FOO=*", false, true},           // '(' before '=' → still a glob
+		{"get-user", "get-user", "", false, true},
+		{"Set-Content", "Set-Content", "", false, true},
+		{"set-content", "set-content", "", false, true},
+		{"git", "git", "", false, true},
+		{"Get-CustomThing", "Get-CustomThing", "", false, true},
 		{"", "", "", false, false},
 		{"(noTool)", "", "", false, false},
 	}
@@ -42,6 +47,40 @@ func TestParseRule(t *testing.T) {
 	}
 }
 
+func TestPowerShellLikeBareToolNamesKeepGenericRuleSemantics(t *testing.T) {
+	p := New("ask",
+		[]string{"get-user"},
+		[]string{"write-report"},
+		[]string{"set-profile"},
+	)
+	if got := p.DecideSubject("get-user", false, ""); got != Allow {
+		t.Fatalf("bare allow tool rule = %v, want Allow", got)
+	}
+	if got := p.DecideSubject("write-report", true, ""); got != Ask {
+		t.Fatalf("bare ask tool rule = %v, want Ask", got)
+	}
+	if got := p.DecideSubject("set-profile", true, ""); got != Deny {
+		t.Fatalf("bare deny tool rule = %v, want Deny", got)
+	}
+	if got := p.DecideSubject("bash", false, "get-user --all"); got != Ask {
+		t.Fatalf("hyphenated command inherited a bare tool allow = %v, want Ask", got)
+	}
+	cmdletAllow := New("ask", []string{"Set-Content"}, nil, nil)
+	if got := cmdletAllow.DecideSubject("Set-Content", false, ""); got != Allow {
+		t.Fatalf("bare cmdlet allow tool rule = %v, want Allow", got)
+	}
+	if got := cmdletAllow.DecideSubject("bash", false, "Set-Content app.go"); got != Ask {
+		t.Fatalf("bare cmdlet allow leaked into Bash = %v, want Ask", got)
+	}
+	legacy := New("allow", nil, nil, []string{"Set-Content"})
+	if got := legacy.DecideSubject("Set-Content", true, ""); got != Deny {
+		t.Fatalf("legacy cmdlet exact tool deny = %v, want Deny", got)
+	}
+	if got := legacy.DecideSubject("bash", false, "set-content app.go"); got != Deny {
+		t.Fatalf("legacy cmdlet Bash deny = %v, want Deny", got)
+	}
+}
+
 func TestMatchGlob(t *testing.T) {
 	cases := []struct {
 		pattern, name string
@@ -49,6 +88,7 @@ func TestMatchGlob(t *testing.T) {
 	}{
 		{"rm -rf*", "rm -rf /tmp/x", true}, // '*' crosses '/'
 		{"go test*", "go test ./...", true},
+		{"rm *", "rm *.log", true},
 		{"go test*", "go build", false},
 		{"*", "anything at all", true},
 		{"git ?ush", "git push", true},
@@ -216,44 +256,55 @@ type stubApprover struct {
 	calls    int
 }
 
-type freshStubApprover struct {
-	allow   bool
-	reason  string
-	calls   int
-	subject string
-}
-
-type mcpStubApprover struct {
-	stubApprover
-	mcpCalls    int
-	destructive bool
-	forced      bool
-	reviewer    string
-	subject     string
-}
-
-func (s *mcpStubApprover) ApproveMCP(_ context.Context, _ string, subject string, _ json.RawMessage, destructive, forced bool, reviewer string) (bool, string, error) {
-	s.mcpCalls++
-	s.destructive = destructive
-	s.forced = forced
-	s.reviewer = reviewer
-	s.subject = subject
-	return s.allow, "reviewed", s.err
-}
-
-func (s *freshStubApprover) Approve(context.Context, string, string, json.RawMessage) (bool, bool, error) {
-	return true, false, nil
-}
-
-func (s *freshStubApprover) ApproveFresh(_ context.Context, _ string, subject string, _ json.RawMessage) (bool, string, error) {
-	s.calls++
-	s.subject = subject
-	return s.allow, s.reason, nil
-}
-
 func (s *stubApprover) Approve(ctx context.Context, tool, subject string, args json.RawMessage) (bool, bool, error) {
 	s.calls++
 	return s.allow, s.remember, s.err
+}
+
+type policyReasonApprover struct {
+	reason string
+}
+
+func (a *policyReasonApprover) Approve(context.Context, string, string, json.RawMessage) (bool, bool, error) {
+	return true, false, nil
+}
+
+func (a *policyReasonApprover) ApproveWithPolicyReason(_ context.Context, _, _ string, _ json.RawMessage, reason string) (bool, bool, string, error) {
+	a.reason = reason
+	return true, false, "", nil
+}
+
+func TestGateReportsMatchedPermissionRule(t *testing.T) {
+	args := json.RawMessage(`{"command":"git status && git push origin main"}`)
+	approver := &policyReasonApprover{}
+	askGate := NewGate(New("allow", nil, []string{"Bash(git push:*)"}, nil), approver)
+	if allow, _, err := askGate.Check(context.Background(), "bash", args, false); err != nil || !allow {
+		t.Fatalf("ask-gated call = allow %v, err %v", allow, err)
+	}
+	if got, want := approver.reason, "Matched permission rule: ask Bash(git push:*)"; got != want {
+		t.Fatalf("approval reason = %q, want %q", got, want)
+	}
+
+	denyGate := NewGate(New("allow", nil, nil, []string{"Bash(git push:*)"}), nil)
+	allow, reason, err := denyGate.Check(context.Background(), "bash", args, false)
+	if err != nil || allow {
+		t.Fatalf("deny-gated call = allow %v, err %v", allow, err)
+	}
+	if !strings.Contains(reason, "Matched permission rule: deny Bash(git push:*)") {
+		t.Fatalf("deny reason = %q, want matched rule", reason)
+	}
+}
+
+func TestMatchedRuleDoesNotReportAskRuleOverriddenForOneEndpoint(t *testing.T) {
+	p := New("ask", nil, []string{"Edit(src/**)"}, nil).
+		WithSessionAllow([]string{"Edit(src/**)"})
+	args := json.RawMessage(`{"source_path":"src/old.go","destination_path":"generated/new.go"}`)
+	if got := p.Decide("move_file", false, args); got != Ask {
+		t.Fatalf("move decision = %v, want Ask from uncovered destination fallback", got)
+	}
+	if rule, ok := p.MatchedRule("move_file", Ask, args); ok {
+		t.Fatalf("MatchedRule = %q, want no rule provenance for fallback Ask", rule)
+	}
 }
 
 func TestGateHeadlessAllowsAsk(t *testing.T) {
@@ -310,128 +361,6 @@ func TestGateInteractive(t *testing.T) {
 	allow, _, _ = g4.Check(context.Background(), "bash", json.RawMessage(`{"command":"ok go"}`), false)
 	if !allow || ap4.calls != 0 {
 		t.Errorf("allow-listed call reached approver: allow=%v calls=%d", allow, ap4.calls)
-	}
-}
-
-func TestGateFreshApprovalIgnoresAllowButHonorsDeny(t *testing.T) {
-	ap := &freshStubApprover{allow: true}
-	g := NewGate(New("allow", []string{"mcp__srv__danger"}, nil, nil), ap)
-	allow, reason, err := g.CheckFresh(context.Background(), "mcp__srv__danger", "srv/danger", json.RawMessage(`{"target":"x"}`), true)
-	if err != nil || !allow || reason != "" || ap.calls != 1 || ap.subject != "srv/danger" {
-		t.Fatalf("fresh allow = (%v,%q,%v), calls=%d subject=%q", allow, reason, err, ap.calls, ap.subject)
-	}
-
-	deniedApprover := &freshStubApprover{allow: true}
-	denied := NewGate(New("allow", nil, nil, []string{"mcp__srv__danger"}), deniedApprover)
-	allow, reason, err = denied.CheckFresh(context.Background(), "mcp__srv__danger", "srv/danger", nil, false)
-	if err != nil || allow || reason == "" || deniedApprover.calls != 0 {
-		t.Fatalf("fresh explicit deny = (%v,%q,%v), approver calls=%d", allow, reason, err, deniedApprover.calls)
-	}
-}
-
-func TestGateFreshApprovalFailsClosedWithoutFreshApprover(t *testing.T) {
-	g := NewGate(New("allow", nil, nil, nil), nil)
-	allow, reason, err := g.CheckFresh(context.Background(), "mcp__srv__danger", "srv/danger", nil, false)
-	if err != nil || allow || !strings.Contains(reason, "fresh human approval") {
-		t.Fatalf("headless fresh approval = (%v,%q,%v), want fail closed", allow, reason, err)
-	}
-}
-
-func TestGateMCPApprovalPrecedence(t *testing.T) {
-	args := json.RawMessage(`{"path":"target"}`)
-	t.Run("explicit deny beats approve", func(t *testing.T) {
-		ap := &mcpStubApprover{stubApprover: stubApprover{allow: true}}
-		g := NewGate(New("allow", nil, nil, []string{"mcp__srv__tool"}), ap)
-		allow, _, err := g.CheckMCP(context.Background(), "mcp__srv__tool", "srv/tool", args, false, false, "approve", "auto_review")
-		if err != nil || allow || ap.mcpCalls != 0 {
-			t.Fatalf("deny result allow=%v err=%v reviewer calls=%d", allow, err, ap.mcpCalls)
-		}
-	})
-
-	t.Run("destructive beats approve and forwards reviewer", func(t *testing.T) {
-		ap := &mcpStubApprover{stubApprover: stubApprover{allow: true}}
-		g := NewGate(New("allow", []string{"mcp__srv__tool"}, nil, nil), ap)
-		allow, _, err := g.CheckMCP(context.Background(), "mcp__srv__tool", "srv/tool", args, true, true, "approve", "auto_review")
-		if err != nil || !allow || ap.mcpCalls != 1 || !ap.destructive || !ap.forced || ap.reviewer != "auto_review" || ap.subject != "srv/tool" {
-			t.Fatalf("destructive result allow=%v err=%v approver=%+v", allow, err, ap)
-		}
-	})
-
-	t.Run("prompt reviews readers and writers", func(t *testing.T) {
-		for _, readOnly := range []bool{true, false} {
-			ap := &mcpStubApprover{stubApprover: stubApprover{allow: true}}
-			g := NewGate(New("allow", []string{"mcp__srv__tool"}, nil, nil), ap)
-			allow, _, err := g.CheckMCP(context.Background(), "mcp__srv__tool", "srv/tool", args, readOnly, false, "prompt", "user")
-			if err != nil || !allow || ap.mcpCalls != 1 {
-				t.Fatalf("readOnly=%v allow=%v err=%v calls=%d", readOnly, allow, err, ap.mcpCalls)
-			}
-		}
-	})
-
-	t.Run("writes reviews only writers", func(t *testing.T) {
-		ap := &mcpStubApprover{stubApprover: stubApprover{allow: true}}
-		g := NewGate(New("allow", nil, nil, nil), ap)
-		allow, _, _ := g.CheckMCP(context.Background(), "mcp__srv__tool", "srv/tool", args, true, false, "writes", "user")
-		if !allow || ap.mcpCalls != 0 {
-			t.Fatalf("reader allow=%v calls=%d", allow, ap.mcpCalls)
-		}
-		allow, _, _ = g.CheckMCP(context.Background(), "mcp__srv__tool", "srv/tool", args, false, false, "writes", "user")
-		if !allow || ap.mcpCalls != 1 {
-			t.Fatalf("writer allow=%v calls=%d", allow, ap.mcpCalls)
-		}
-	})
-
-	t.Run("approve overrides ordinary ask", func(t *testing.T) {
-		ap := &mcpStubApprover{stubApprover: stubApprover{allow: false}}
-		g := NewGate(New("ask", nil, []string{"mcp__srv__tool"}, nil), ap)
-		allow, _, err := g.CheckMCP(context.Background(), "mcp__srv__tool", "srv/tool", args, false, false, "approve", "user")
-		if err != nil || !allow || ap.calls != 0 || ap.mcpCalls != 0 {
-			t.Fatalf("approve allow=%v err=%v normal=%d mcp=%d", allow, err, ap.calls, ap.mcpCalls)
-		}
-	})
-
-	t.Run("approve overrides global deny fallback", func(t *testing.T) {
-		ap := &mcpStubApprover{stubApprover: stubApprover{allow: false}}
-		g := NewGate(New("deny", nil, nil, nil), ap)
-		allow, _, err := g.CheckMCP(context.Background(), "mcp__srv__tool", "srv/tool", args, false, false, "approve", "user")
-		if err != nil || !allow || ap.mcpCalls != 0 {
-			t.Fatalf("approve allow=%v err=%v mcp=%d", allow, err, ap.mcpCalls)
-		}
-	})
-
-	t.Run("auto routes an ask to the configured reviewer", func(t *testing.T) {
-		ap := &mcpStubApprover{stubApprover: stubApprover{allow: true}}
-		g := NewGate(New("ask", nil, []string{"mcp__srv__tool"}, nil), ap)
-		allow, _, err := g.CheckMCP(context.Background(), "mcp__srv__tool", "srv/tool", args, false, false, "auto", "auto_review")
-		if err != nil || !allow || ap.calls != 0 || ap.mcpCalls != 1 || ap.forced {
-			t.Fatalf("auto allow=%v err=%v normal=%d mcp=%d", allow, err, ap.calls, ap.mcpCalls)
-		}
-	})
-
-	t.Run("auto without reviewer preserves legacy approver", func(t *testing.T) {
-		ap := &mcpStubApprover{stubApprover: stubApprover{allow: true}}
-		g := NewGate(New("ask", nil, []string{"mcp__srv__tool"}, nil), ap)
-		allow, _, err := g.CheckMCP(context.Background(), "mcp__srv__tool", "srv/tool", args, false, false, "auto", "")
-		if err != nil || !allow || ap.calls != 1 || ap.mcpCalls != 0 {
-			t.Fatalf("legacy auto allow=%v err=%v normal=%d mcp=%d", allow, err, ap.calls, ap.mcpCalls)
-		}
-	})
-}
-
-func TestGateMCPConfiguredReviewFailsClosedWithoutReviewer(t *testing.T) {
-	g := NewGate(New("allow", nil, nil, nil), nil)
-	for _, tc := range []struct {
-		mode        string
-		destructive bool
-	}{
-		{mode: "prompt"},
-		{mode: "writes"},
-		{mode: "approve", destructive: true},
-	} {
-		allow, reason, err := g.CheckMCP(context.Background(), "mcp__srv__tool", "srv/tool", nil, false, tc.destructive, tc.mode, "user")
-		if err != nil || allow || !strings.Contains(reason, "non-interactive") {
-			t.Fatalf("mode=%s destructive=%v result=(%v,%q,%v)", tc.mode, tc.destructive, allow, reason, err)
-		}
 	}
 }
 

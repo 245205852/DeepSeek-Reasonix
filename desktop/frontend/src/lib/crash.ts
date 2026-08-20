@@ -4,6 +4,7 @@
 import { addBreadcrumb, dumpBreadcrumbs, snapshotBreadcrumbs, type Breadcrumb } from "./breadcrumbs";
 import { writeClipboardText } from "./clipboard";
 import { t } from "./i18n";
+import { sessionPipelineDiagnostics, type SessionPipelineDiagnostics } from "./sessionDiagnostics";
 
 declare const __BUILD_COMMIT__: string;
 declare const __BUILD_CHANNEL__: string;
@@ -43,6 +44,11 @@ export type PerformanceSnapshot = {
     rttMs?: number;
     saveData?: boolean;
   };
+  // Session-switch/history pipeline diagnostics (Phase F): last activation
+  // timings, last HistorySlice page stats with index hit/miss, virtual mounted
+  // rows, markdown worker counters, transcript cache weights. All optional —
+  // absent before the first switch/page or when a provider never registered.
+  sessionPipeline?: SessionPipelineDiagnostics;
 };
 
 export type CrashPayload = {
@@ -56,6 +62,10 @@ export type CrashPayload = {
   stack?: string;
   componentStack?: string;
   topFrame?: string;
+  // Optional, non-display grouping context for otherwise opaque WebView errors.
+  // It is deliberately restricted to build/view/breadcrumb categories and never
+  // contains breadcrumb messages, tab IDs, paths, or user content.
+  fingerprintHint?: string;
   buildCommit: string;
   channel: string;
   language: string;
@@ -114,6 +124,7 @@ const LONG_TASK_PROMPT_MS = 800;
 // user-visible jank, so the cumulative prompt only fires past half of that budget spent blocked.
 const LONG_TASK_TOTAL_PROMPT_MS = 3_000;
 const EVENT_LOOP_LAG_PROMPT_MS = 1_200;
+const EVENT_LOOP_LAG_CONSECUTIVE_SAMPLES = 2;
 const STARTUP_GRACE_MS = 15_000;
 const PROMPT_COOLDOWN_MS = 10 * 60_000;
 const MAX_LAG_SAMPLES = 60;
@@ -360,6 +371,7 @@ function networkSnapshot(): PerformanceSnapshot["connection"] {
 function performanceSnapshot(reason: string, currentLagMs = 0): PerformanceSnapshot {
   const nav = typeof navigator === "undefined" ? undefined : (navigator as BrowserNavigator);
   const doc = typeof document === "undefined" ? undefined : document;
+  const pipeline = sessionPipelineDiagnostics();
   return {
     reason,
     uptimeMs: typeof performance !== "undefined" ? performance.now() : 0,
@@ -372,6 +384,7 @@ function performanceSnapshot(reason: string, currentLagMs = 0): PerformanceSnaps
     eventLoopLag: eventLoopLagSummary(currentLagMs),
     longTasks: typeof performance !== "undefined" ? longTaskSummary() : undefined,
     connection: networkSnapshot(),
+    sessionPipeline: Object.keys(pipeline).length > 0 ? pipeline : undefined,
   };
 }
 
@@ -422,6 +435,44 @@ export function formatPerformanceContext(snapshot: PerformanceSnapshot): string 
     ].filter(Boolean);
     if (parts.length) lines.push(`connection: ${parts.join(", ")}`);
   }
+  const pipeline = snapshot.sessionPipeline;
+  if (pipeline?.activation) {
+    const a = pipeline.activation;
+    const parts = [`request ${a.requestId}`];
+    if (a.tabId) parts.push(`tab ${a.tabId}`);
+    if (a.ticketToStartingMs !== undefined) parts.push(`ticket→starting ${fmtNumber(a.ticketToStartingMs)}ms`);
+    if (a.startingToReadyMs !== undefined) parts.push(`starting→ready ${fmtNumber(a.startingToReadyMs)}ms`);
+    if (a.totalMs !== undefined) parts.push(`total ${fmtNumber(a.totalMs)}ms`);
+    if (a.outcome) parts.push(`outcome ${a.outcome}`);
+    if (a.failureClass) parts.push(`failure ${a.failureClass}`);
+    lines.push(`activation: ${parts.join(", ")}`);
+  }
+  if (pipeline?.history) {
+    const h = pipeline.history;
+    lines.push(
+      `history page: ${h.entries} entries, ${fmtNumber(h.inlineBytes / 1024, 1)} KiB inline, ${fmtNumber(h.durationMs)}ms, source ${h.source || "unknown"}${h.stale ? ", stale" : ""} ` +
+        `(pages ${h.pages}, stale ${h.staleCount}, index hits ${h.indexHits}, misses ${h.indexMisses})`,
+    );
+  }
+  if (pipeline?.mountedRows) {
+    lines.push(`mounted rows: ${pipeline.mountedRows.mounted} of ${pipeline.mountedRows.total}`);
+  }
+  if (pipeline?.markdownWorker) {
+    const w = pipeline.markdownWorker;
+    lines.push(
+      `markdown worker: ${w.pending} pending, ${w.completed} parsed, avg ${fmtNumber(w.avgParseMs, 1)}ms, max ${fmtNumber(w.maxParseMs)}ms` +
+        `${w.fallbackActive ? ", fallback active" : ""}${w.workerFailures > 0 ? `, ${w.workerFailures} worker failures` : ""}`,
+    );
+  }
+  if (pipeline?.transcriptCache) {
+    const c = pipeline.transcriptCache;
+    lines.push(
+      `transcript cache: ${c.residentSessions}/${c.maxResidentSessions} resident sessions, ` +
+        `bodies ${fmtMb(c.bodyBytes / 1048576)} of ${fmtMb(c.bodyBudgetBytes / 1048576)}, ` +
+        `markdown ${fmtMb(c.markdownBytes / 1048576)} of ${fmtMb(c.markdownBudgetBytes / 1048576)}, ` +
+        `evictions ${c.historyEvictions} history + ${c.markdownEvictions} markdown`,
+    );
+  }
   return lines.join("\n");
 }
 
@@ -431,6 +482,17 @@ export function performanceLabelForReason(reason: string): string {
   if (normalized.startsWith("long task")) return "performance.longtask";
   if (normalized.startsWith("js heap")) return "performance.heap";
   return "performance.pressure";
+}
+
+export function performanceFingerprintHintForReason(reason: string): string | undefined {
+  const normalized = reason.trim().toLowerCase();
+  if (!normalized.startsWith("js heap")) return undefined;
+  const match = normalized.match(/(\d+(?:\.\d+)?)%/);
+  const percent = match ? Number(match[1]) : Number.NaN;
+  if (!Number.isFinite(percent)) return "frontend.performance.heap.unknown";
+  return percent >= 95
+    ? "frontend.performance.heap.critical"
+    : "frontend.performance.heap.high";
 }
 
 export function shouldRecordLongTaskSample(
@@ -448,6 +510,19 @@ export function shouldRecordLongTaskSample(
 
 export function shouldPromptForLongTasks(summary: { count: number; totalMs: number; maxMs: number }): boolean {
   return summary.maxMs >= LONG_TASK_PROMPT_MS || (summary.count >= 3 && summary.totalMs >= LONG_TASK_TOTAL_PROMPT_MS);
+}
+
+export function shouldPromptForEventLoopLag(
+  samples: readonly number[],
+  longTask?: { count: number; totalMs: number; maxMs: number },
+): boolean {
+  const recent = samples.slice(-EVENT_LOOP_LAG_CONSECUTIVE_SAMPLES);
+  const sustained =
+    recent.length === EVENT_LOOP_LAG_CONSECUTIVE_SAMPLES &&
+    recent.every((sample) => sample >= EVENT_LOOP_LAG_PROMPT_MS);
+  const current = samples.length ? samples[samples.length - 1] : 0;
+  const corroborated = current >= EVENT_LOOP_LAG_PROMPT_MS && Boolean(longTask && shouldPromptForLongTasks(longTask));
+  return sustained || corroborated;
 }
 
 type TaskAttributionLike = {
@@ -543,6 +618,7 @@ export function buildPerformancePayload(snapshot: PerformanceSnapshot): CrashPay
     errorType: "PerformancePressure",
     errorMessage,
     topFrame: "frontend.performance",
+    fingerprintHint: performanceFingerprintHintForReason(snapshot.reason),
     buildCommit,
     channel: typeof __BUILD_CHANNEL__ === "string" ? __BUILD_CHANNEL__ : "",
     language: typeof navigator !== "undefined" ? navigator.language || "" : "",
@@ -573,6 +649,23 @@ export function buildCrashPayload(label: string, err: unknown, extra?: string): 
     breadcrumbs: snapshotBreadcrumbs(),
     occurredAt: new Date().toISOString(),
   };
+}
+
+export function opaqueScriptFingerprintHint(
+  rawView = currentView(),
+  breadcrumbs = snapshotBreadcrumbs(),
+  buildCommit = currentBuildCommit(),
+): string {
+  const view = rawView
+    .replace(/[?#].*$/, "")
+    .replace(/\b[0-9a-f]{8,}\b/gi, "_")
+    .replace(/\/\d+(?=\/|$)/g, "/_");
+  const categories = breadcrumbs
+    .slice(-8)
+    .map((crumb) => crumb.cat?.trim().toLowerCase().replace(/[^a-z0-9_.-]+/g, "_") ?? "")
+    .filter(Boolean)
+    .join(">");
+  return clip(`build:${buildCommit.slice(0, 16)}|view:${view}|cats:${categories || "none"}`, 300);
 }
 
 function sendButton(
@@ -724,7 +817,17 @@ function globalCrashEventMessages(e: GlobalCrashEventLike): string[] {
 export function shouldReportGlobalCrashEvent(e: GlobalCrashEventLike): boolean {
   if (e.defaultPrevented) return false;
   if (globalCrashEventMessages(e).some((message) => RESIZE_OBSERVER_LOOP_MESSAGE_RE.test(message))) return false;
+  if (globalCrashEventMessages(e).some((message) => /Minified React error #520\b/.test(message))) return false;
   return true;
+}
+
+export function isOpaqueScriptErrorEvent(e: GlobalCrashEventLike): boolean {
+  return (
+    (e.error === undefined || e.error === null) &&
+    typeof e.message === "string" &&
+    e.message.trim() === OPAQUE_SCRIPT_ERROR_MESSAGE &&
+    globalScriptErrorLocation(e) === ""
+  );
 }
 
 function globalScriptErrorLocation(e: GlobalCrashEventLike): string {
@@ -902,14 +1005,19 @@ export function installPerformancePressureMonitor() {
     if (!shouldRecordEventLoopLagSample(isHidden(), now - visibleSince, isFocused(), now - focusedSince)) return;
     lagSamples.push(lagMs);
     if (lagSamples.length > MAX_LAG_SAMPLES) lagSamples.shift();
-    if (lagMs >= EVENT_LOOP_LAG_PROMPT_MS) promptPerformanceReport(`event loop lag ${fmtNumber(lagMs)}ms`, lagMs);
+    if (shouldPromptForEventLoopLag(lagSamples, longTaskSummary(now))) {
+      promptPerformanceReport(`event loop lag ${fmtNumber(lagMs)}ms`, lagMs);
+    }
     maybePromptForHeapPressure();
   }, 1000);
 }
 
 export function installGlobalCrashHandlers() {
   window.addEventListener("error", (e) => {
-    if (shouldReportGlobalCrashEvent(e)) reportCrash("window.error", globalCrashReportReason(e));
+    if (!shouldReportGlobalCrashEvent(e)) return;
+    const payload = buildCrashPayload("window.error", globalCrashReportReason(e));
+    if (isOpaqueScriptErrorEvent(e)) payload.fingerprintHint = opaqueScriptFingerprintHint();
+    paint(payload);
   });
   window.addEventListener("unhandledrejection", (e) => {
     if (shouldReportGlobalCrashEvent(e)) reportCrash("unhandledrejection", e.reason);

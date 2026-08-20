@@ -1,14 +1,29 @@
 package boot
 
 import (
+	"context"
 	"path/filepath"
 	"testing"
+	"time"
 
+	"reasonix/internal/ablation"
 	"reasonix/internal/agent"
+	"reasonix/internal/billing"
 	"reasonix/internal/config"
+	"reasonix/internal/event"
+	"reasonix/internal/provider"
 	"reasonix/internal/skill"
 	"reasonix/internal/tool"
 )
+
+type staticResolver struct {
+	catalog []provider.Descriptor
+}
+
+func (r *staticResolver) Catalog() []provider.Descriptor { return r.catalog }
+func (r *staticResolver) Resolve(provider.Selection) (provider.Provider, error) {
+	return nil, nil
+}
 
 func TestSubagentModelRefUsesConfiguredDefault(t *testing.T) {
 	cfg := config.Default()
@@ -108,25 +123,73 @@ func TestSubagentEffectiveIdentityUsesResolvedModelAndEffort(t *testing.T) {
 		t.Fatal("custom provider should resolve")
 	}
 
-	model, effort := subagentEffectiveIdentity(cfg, "custom", base, "", "")
+	model, effort := subagentEffectiveIdentity(cfg, nil, "custom", base, "", "")
 	if model != "custom/beta" || effort != "high" {
 		t.Fatalf("identity = %q/%q, want custom/beta/high", model, effort)
 	}
 
-	model, effort = subagentEffectiveIdentity(cfg, "custom", base, "alpha", "low")
+	model, effort = subagentEffectiveIdentity(cfg, nil, "custom", base, "alpha", "low")
 	if model != "custom/alpha" || effort != "low" {
 		t.Fatalf("override identity = %q/%q, want custom/alpha/low", model, effort)
 	}
 }
 
+func TestSubagentEffectiveIdentityUsesAuthoritativeExternalResolver(t *testing.T) {
+	cfg := config.Default()
+	base := &config.ProviderEntry{Name: "openai", Model: "gpt"}
+	resolver := &staticResolver{catalog: []provider.Descriptor{{
+		Ref: "anthropic/claude-sonnet", DisplayName: "anthropic", Model: "claude-sonnet",
+		Efforts: []string{"low", "high"}, DefaultEffort: "high",
+	}}}
+
+	model, effort := subagentEffectiveIdentity(cfg, resolver, "openai/gpt", base, "anthropic/claude-sonnet", "high")
+	if model != "anthropic/claude-sonnet" || effort != "high" {
+		t.Fatalf("identity = %q/%q, want anthropic/claude-sonnet/high", model, effort)
+	}
+}
+
+func TestSubagentSkillOptionsPreserveScheduledQuoteContext(t *testing.T) {
+	ratedAt := time.Date(2026, time.August, 17, 4, 0, 0, 0, time.UTC)
+	quoteCtx := &event.QuoteContext{
+		Now: func() time.Time { return ratedAt },
+		PricingContextForModel: func(modelRef string) billing.PricingContext {
+			if modelRef != "deepseek-pro/deepseek-v4-pro" {
+				t.Fatalf("pricing context model = %q", modelRef)
+			}
+			return billing.PricingContext{
+				ProviderKind: "deepseek",
+				ModelID:      "deepseek-v4-pro",
+				BillingMode:  billing.BillingModePAYG,
+				ScheduleID:   billing.ScheduleDeepSeekV4August2026,
+			}
+		},
+	}
+	factory := newSubagentSkillOptionsFactory(config.AgentConfig{}, quoteCtx, nil, 0, 1, ablation.Set{}, nil, nil)
+	opts := factory(context.Background(), 5, &provider.Pricing{CacheHit: 0.30, Input: 9, Output: 27, Currency: "CNY"}, 1_000_000, 1)
+	if opts.QuoteContext != quoteCtx {
+		t.Fatal("skill subagent did not retain the host QuoteContext")
+	}
+
+	quote := event.EnsureCostQuote(event.Event{
+		Kind:        event.Usage,
+		ModelRef:    "deepseek-pro/deepseek-v4-pro",
+		Usage:       &provider.Usage{PromptTokens: 1_000_000, TotalTokens: 1_000_000},
+		Pricing:     opts.Pricing,
+		UsageSource: event.UsageSourceSubagent,
+	}, opts.QuoteContext)
+	if quote == nil || quote.RateBand != billing.RateBandOffPeak || quote.Original.Amount != "4.5" {
+		t.Fatalf("skill subagent quote = %+v, want CNY 4.5 off-peak", quote)
+	}
+}
+
 func TestNewSubagentStoreRequiresSessionDir(t *testing.T) {
-	if got, err := newSubagentStore(""); err != nil || got != nil {
+	if got, err := newSubagentStore("", nil); err != nil || got != nil {
 		if err != nil {
 			t.Fatalf("empty session dir error = %v", err)
 		}
 		t.Fatalf("empty session dir should disable subagent store, got %#v", got)
 	}
-	if got, err := newSubagentStore(t.TempDir()); err != nil || got == nil {
+	if got, err := newSubagentStore(t.TempDir(), nil); err != nil || got == nil {
 		if err != nil {
 			t.Fatalf("non-empty session dir error = %v", err)
 		}
@@ -156,7 +219,7 @@ func TestNewSubagentStoreCleansStaleRunningRefs(t *testing.T) {
 	ref := run.Ref
 	run.Release()
 
-	got, err := newSubagentStore(sessionDir)
+	got, err := newSubagentStore(sessionDir, nil)
 	if err != nil {
 		t.Fatalf("newSubagentStore: %v", err)
 	}

@@ -7,9 +7,27 @@ import (
 	"testing"
 
 	"reasonix/internal/event"
+	"reasonix/internal/hook"
 	"reasonix/internal/provider"
 	"reasonix/internal/tool"
 )
+
+func TestToolHooksMayMutateWorkspaceUsesRunnerCapabilities(t *testing.T) {
+	if toolHooksMayMutateWorkspace(hook.NewRunner(nil, "/tmp", nil, nil)) {
+		t.Fatal("empty hook runner must not create a checkpoint coverage gap")
+	}
+	sessionOnly := hook.NewRunner([]hook.ResolvedHook{{Event: hook.SessionStart}}, "/tmp", nil, nil)
+	if toolHooksMayMutateWorkspace(sessionOnly) {
+		t.Fatal("non-tool hooks must not create a tool mutation coverage gap")
+	}
+	preTool := hook.NewRunner([]hook.ResolvedHook{{Event: hook.PreToolUse}}, "/tmp", nil, nil)
+	if !toolHooksMayMutateWorkspace(preTool) {
+		t.Fatal("PreToolUse shell hook must preserve the conservative coverage gap")
+	}
+	if !toolHooksMayMutateWorkspace(&stubHooks{}) {
+		t.Fatal("custom legacy ToolHooks without a capability report must remain conservative")
+	}
+}
 
 // stubHooks blocks PreToolUse for named tools and records what it saw.
 type stubHooks struct {
@@ -66,12 +84,12 @@ func TestSubagentStopFiresForForegroundTask(t *testing.T) {
 	h := &stubHooks{}
 	a := New(nil, reg, NewSession(""), Options{Hooks: h}, event.Discard)
 
-	a.executeBatch(context.Background(), []provider.ToolCall{{Name: "task", Arguments: `{"prompt":"x"}`}})
+	a.executeBatch(context.Background(), &a.turn, []provider.ToolCall{{Name: "task", Arguments: `{"prompt":"x"}`}})
 	if len(h.subagentSeen) != 1 || h.subagentSeen[0] != "ok" {
 		t.Fatalf("foreground task should fire SubagentStop with the answer, saw %v", h.subagentSeen)
 	}
 
-	a.executeBatch(context.Background(), []provider.ToolCall{{Name: "task", Arguments: `{"run_in_background":true}`}})
+	a.executeBatch(context.Background(), &a.turn, []provider.ToolCall{{Name: "task", Arguments: `{"run_in_background":true}`}})
 	if len(h.subagentSeen) != 1 {
 		t.Errorf("backgrounded task must not fire SubagentStop, saw %v", h.subagentSeen)
 	}
@@ -88,7 +106,7 @@ func TestPreToolUseHookBlocks(t *testing.T) {
 	h := &stubHooks{blockPre: map[string]bool{"bash": true}}
 	a := New(nil, reg, NewSession(""), Options{Hooks: h}, event.Discard)
 
-	blocked := a.executeOne(context.Background(), provider.ToolCall{Name: "bash", Arguments: `{"command":"x"}`})
+	blocked := a.executeOne(context.Background(), &a.turn, provider.ToolCall{Name: "bash", Arguments: `{"command":"x"}`})
 	if !blocked.blocked || !strings.HasPrefix(blocked.output, "blocked:") {
 		t.Errorf("PreToolUse block should yield a blocked result, got %+v", blocked)
 	}
@@ -96,7 +114,7 @@ func TestPreToolUseHookBlocks(t *testing.T) {
 		t.Errorf("block reason should be surfaced to the model, got %q", blocked.output)
 	}
 
-	ok := a.executeOne(context.Background(), provider.ToolCall{Name: "read_file", Arguments: `{"path":"/a"}`})
+	ok := a.executeOne(context.Background(), &a.turn, provider.ToolCall{Name: "read_file", Arguments: `{"path":"/a"}`})
 	if ok.blocked || !strings.Contains(ok.output, "done") {
 		t.Errorf("unblocked call should run, got %+v", ok)
 	}
@@ -115,7 +133,7 @@ func TestPostToolUseFailureUsesFailureHook(t *testing.T) {
 	reg.Add(failTool{name: "broken"})
 	h := &stubHooks{}
 	a := New(nil, reg, NewSession(""), Options{Hooks: h}, event.Discard)
-	a.executeOne(context.Background(), provider.ToolCall{Name: "broken", Arguments: `{}`})
+	a.executeOne(context.Background(), &a.turn, provider.ToolCall{Name: "broken", Arguments: `{}`})
 	if got := strings.Join(h.postFailureSeen, ","); got != "broken" {
 		t.Fatalf("failure hooks = %q", got)
 	}

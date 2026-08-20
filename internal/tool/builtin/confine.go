@@ -12,6 +12,7 @@ import (
 	"reasonix/internal/netclient"
 	"reasonix/internal/sandbox"
 	"reasonix/internal/secrets"
+	"reasonix/internal/sessiontemp"
 	"reasonix/internal/tool"
 )
 
@@ -20,6 +21,10 @@ import (
 // each command through the sandbox (see package sandbox). guard appends a
 // warning to command output when the command references Reasonix's own session
 // stores (see SessionDataGuard).
+//
+// Session-private temporary directories are bound separately via
+// BindSessionTemp (or Workspace.SessionTemp) so the timeout variadic form stays
+// stable for existing callers.
 func ConfineBash(spec sandbox.Spec, guard SessionDataGuard, timeout ...time.Duration) tool.Tool {
 	shell := spec.Shell
 	if shell.Path == "" {
@@ -30,6 +35,51 @@ func ConfineBash(spec sandbox.Spec, guard SessionDataGuard, timeout ...time.Dura
 		b.timeout = timeout[0]
 	}
 	return b
+}
+
+// BindSessionTemp attaches a session-private temporary directory manager to a
+// confined bash (and, when present, grep) tool. ok is false when tl is not a
+// bash tool (including wrappers that do not unwrap).
+func BindSessionTemp(tl tool.Tool, m *sessiontemp.Manager) (tool.Tool, bool) {
+	switch t := tl.(type) {
+	case bash:
+		t.sessionTemp = m
+		return t, true
+	case grepTool:
+		t.sessionTemp = m
+		return t, true
+	default:
+		return nil, false
+	}
+}
+
+// RebindBashWriteRoots returns a copy of bash with its complete write surface
+// narrowed to roots. ok is false when tl is not a confined bash tool, when the
+// sandbox is not enforcing (cannot honour narrower roots), or when roots is empty.
+// Callers that wrap bash (e.g. foreground-only subagent wrappers) must unwrap
+// before calling and re-wrap the result.
+func RebindBashWriteRoots(tl tool.Tool, roots []string) (tool.Tool, bool) {
+	b, ok := tl.(bash)
+	if !ok || !b.sb.Enforce() {
+		return nil, false
+	}
+	rs := realRoots(roots)
+	if len(rs) == 0 {
+		return nil, false
+	}
+	spec := b.sb
+	spec.WriteRoots = rs
+	// Sub-agent claims are strict capability boundaries. Do not add the normal
+	// build-cache and temporary-directory allowances outside the claimed roots.
+	spec.MinimalWrites = true
+	// Do not inherit a wider AppContainer write lane from the parent workspace
+	// confinement — the claim roots are the only allowed write surface.
+	spec.AppContainerWriteRoots = append([]string(nil), rs...)
+	b.sb = spec
+	// rootSet is preserved so later session grants still apply inside the claim.
+	// sessionTemp is preserved: sub-agent write-root rebinding must not drop
+	// the session-private temporary directory manager.
+	return b, true
 }
 
 // ConfineWebFetch returns the web_fetch built-in bound to Reasonix proxy

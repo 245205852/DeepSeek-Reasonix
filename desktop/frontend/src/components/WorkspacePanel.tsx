@@ -6,14 +6,12 @@ import type {
   KeyboardEvent,
   MouseEvent as ReactMouseEvent,
   PointerEvent as ReactPointerEvent,
-  ReactElement,
 } from "react";
 import {
   ChevronDown,
   ChevronRight,
   FileText,
   Folder,
-  FolderOpen,
   FolderTree,
   FolderX,
   GitBranch,
@@ -38,18 +36,63 @@ import {
 } from "../lib/workspaceSplit";
 import { createRafResizeUpdater } from "../lib/resizeDrag";
 import { closeWorkspacePreviewTab } from "../lib/workspacePreviewTabs";
+import { useWorkspaceRefresh } from "../lib/workspaceRefreshStore";
+import { useWorkspaceRefreshInvalidation, workspaceRefreshFallbackSequence } from "../lib/workspaceRefreshInvalidation";
+import { createWorkspaceRefreshScheduler } from "../lib/workspaceRefreshScheduler";
 import { shouldScrollWorkspaceTreeSelection } from "../lib/workspaceTreeReveal";
 import { mergeWorkspaceSearchResults } from "../lib/workspaceTreeSearch";
-import type { DirEntry, FilePreview, GitCommitView, GitCommitDetailView, WorkspaceChangesView } from "../lib/types";
+import {
+  readWorkspaceTreeMemory,
+  rememberWorkspaceTreeOpenDirs,
+  rememberWorkspaceTreeState,
+  touchWorkspaceTreeVisit,
+  workspaceTreeVisitId,
+} from "../lib/workspaceTreeMemory";
+import { useWorkspaceTreeScrollPersistence } from "../lib/useWorkspaceTreeScrollPersistence";
+import { loadLayoutSize, loadOptionalLayoutSize } from "../lib/layoutPreferences";
+import {
+  RIGHT_DOCK_PREVIEW_DEFAULT_WIDTH,
+  defaultCreationRightDockTreeWidth,
+  defaultRightDockTreeWidth,
+} from "../store/layout";
+import type {
+  DirEntry,
+  FilePreview,
+  GitCommitView,
+  GitCommitDetailView,
+  RewindResultView,
+  WorkspaceChangeDetailView,
+  WireCompletionSummary,
+} from "../lib/types";
+import { workspaceGitStatusLabel } from "../lib/workspaceChanges";
 import { formatWorkspaceReference, WORKSPACE_REF_DRAG_TYPE } from "../lib/workspaceDrag";
 import { formatSelectionReference, languageFor } from "../lib/selectedTextContext";
 import { cleanGitDiff } from "../lib/diff";
 import { CodeViewer } from "./CodeViewer";
+import { DiffView } from "./DiffView";
 import { ContextMenu, contextMenuPointFromEvent, type ContextMenuItem, type ContextMenuPoint } from "./ContextMenu";
 import { FloatingMenu, FloatingMenuItems } from "./FloatingMenu";
 import { Markdown } from "./Markdown";
 import { Tooltip } from "./Tooltip";
 import { AnchoredPopover } from "./AnchoredPopover";
+import { MarkdownImageTabContext } from "./MarkdownImageContext";
+import { WorkspaceFileIcon } from "./WorkspaceFileIcon";
+import { WorkspaceMediaPreview } from "./WorkspaceMediaPreview";
+import { WorkspaceTreeMenu } from "./WorkspaceTreeMenu";
+import { WORKSPACE_TURN_VERIFICATION_ID, WorkspaceTurnVerification } from "./WorkspaceTurnVerification";
+import { useWorkspaceChangesResource } from "../lib/useWorkspaceChangesResource";
+import {
+  workspaceBasename as basename, workspaceEntryPath as entryPath,
+  workspaceFormatBytes as formatBytes, workspaceFormatCommitDate as formatCommitDate,
+  workspaceParentDirs as parentDirs, workspaceParentPath as parentPath,
+  workspaceShortCwd as shortCwd, workspaceTopLevelDirPath as topLevelDirPath,
+} from "../lib/workspacePanelFormat";
+import {
+  beginKeyedResourceRequest,
+  emptyKeyedResource,
+  rejectKeyedResourceRequest,
+  resolveKeyedResourceRequest,
+} from "../lib/keyedResource";
 
 const WORKSPACE_TREE_MIN_WIDTH = 140;
 const WORKSPACE_TREE_DEFAULT_WIDTH = 300;
@@ -57,12 +100,12 @@ const WORKSPACE_TREE_RAIL_WIDTH = 44;
 const WORKSPACE_PREVIEW_MIN_WIDTH = 140;
 const WORKSPACE_PREVIEW_TARGET_WIDTH = 360;
 const WORKSPACE_DUAL_PANEL_TARGET_WIDTH = WORKSPACE_TREE_DEFAULT_WIDTH + WORKSPACE_PREVIEW_TARGET_WIDTH;
-const WORKSPACE_CONTEXT_MENU_FILE_HEIGHT = 136;
-const WORKSPACE_CONTEXT_MENU_REF_HEIGHT = 92;
 const WORKSPACE_CONTEXT_MENU_SELECTION_HEIGHT = 48;
 const WORKSPACE_MAX_PREVIEW_TABS = 5;
 
 type WorkspaceRevealRequest = { id: number; path: string };
+export { WORKSPACE_TURN_VERIFICATION_ID } from "./WorkspaceTurnVerification";
+export type WorkspaceVerificationRevealRequest = { id: number; summary: WireCompletionSummary; tabId: string; turnStartAt: number; currentSummary?: WireCompletionSummary };
 type WorkspaceFileListRequest = { id: number; paths: string[] };
 type WorkspaceChangeListEntry = { key: string; path: string; meta: string; time: string; detail: string };
 type WorkspaceChangeListRequest = { id: number; changes: WorkspaceChangeListEntry[] };
@@ -77,78 +120,6 @@ function clampWorkspaceTreeWidth(width: number, panelWidth?: number): number {
   });
 }
 
-function entryPath(dir: string, entry: DirEntry): string {
-  const prefix = dir === "" || dir.endsWith("/") ? dir : dir + "/";
-  return prefix + entry.name + (entry.isDir ? "/" : "");
-}
-
-function basename(path: string): string {
-  const parts = path.split("/").filter(Boolean);
-  return parts[parts.length - 1] ?? "";
-}
-
-function parentPath(path: string): string {
-  const clean = path.replace(/\/$/, "");
-  const parts = clean.split("/").filter(Boolean);
-  return parts.slice(0, -1).join("/");
-}
-
-function parentDirs(path: string): string[] {
-  const parts = path.split("/").filter(Boolean);
-  const dirs: string[] = [""];
-  let acc = "";
-  for (let i = 0; i < parts.length - 1; i++) {
-    acc += parts[i] + "/";
-    dirs.push(acc);
-  }
-  return dirs;
-}
-
-function renderMediaPreview(preview: FilePreview): ReactElement | null {
-  if (!preview.url) return null;
-  if (preview.kind === "image") {
-    return (
-      <div className="workspace-media workspace-media--image">
-        <img src={preview.url} alt={basename(preview.path)} decoding="async" draggable={false} />
-      </div>
-    );
-  }
-  if (preview.kind === "pdf") {
-    return (
-      <iframe
-        className="workspace-media workspace-media--pdf"
-        src={preview.url}
-        title={basename(preview.path)}
-      />
-    );
-  }
-  return null;
-}
-
-function shortCwd(cwd?: string): string {
-  if (!cwd) return "";
-  const parts = cwd.split("/").filter(Boolean);
-  if (parts.length <= 2) return cwd;
-  return "…/" + parts.slice(-2).join("/");
-}
-
-function formatBytes(n: number): string {
-  if (n >= 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`;
-  if (n >= 1024) return `${Math.ceil(n / 1024)} KB`;
-  return `${n} B`;
-}
-
-function formatCommitDate(dateStr: string): string {
-  const d = new Date(dateStr);
-  if (isNaN(d.getTime())) return dateStr;
-  const day = String(d.getDate()).padStart(2, "0");
-  const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-  const month = monthNames[d.getMonth()];
-  const year = d.getFullYear();
-  const hours = String(d.getHours()).padStart(2, "0");
-  const minutes = String(d.getMinutes()).padStart(2, "0");
-  return `${day} ${month} ${year} ${hours}:${minutes}`;
-}
 interface TreeRow {
   key: string;
   path: string;
@@ -157,6 +128,8 @@ interface TreeRow {
   active: boolean;
   isOpen?: boolean;
   isSearch?: boolean;
+  compactPaths?: string[];
+  displayName?: string;
 }
 
 export function WorkspacePanel({
@@ -170,17 +143,27 @@ export function WorkspacePanel({
   onPreviewModeChange,
   onAddToChat,
   onAddCodeToChat,
+  onOpenInTerminal,
   onRequestPanelWidth,
   onFileTreeRefresh,
-  refreshKey,
+  onSessionRevertCommitted,
   initialViewMode = "files",
   revealPathRequest,
   changeRevealRequest,
+  verificationRevealRequest,
   fileListRequest,
   changeListRequest,
   showViewTabs = true,
   workspaceScopeKey: workspaceScopeKeyProp,
+  workspaceMemoryKey: workspaceMemoryKeyProp,
+  workspaceMemoryVisitId: workspaceMemoryVisitIdProp,
+  dockTreeWidth,
+  dockPreviewWidth,
+  onRestoreDockWidths,
   creationMode = false,
+  completionSummary,
+  turnStartAt = 0,
+  qualityFloor,
 }: {
   open: boolean;
   tabId?: string;
@@ -192,35 +175,71 @@ export function WorkspacePanel({
   onPreviewModeChange?: (active: boolean) => void;
   onAddToChat?: (text: string) => void;
   onAddCodeToChat?: (path: string, code: string) => void;
+  onOpenInTerminal?: (path: string) => void;
   onRequestPanelWidth?: (width: number) => void;
   onFileTreeRefresh?: () => void;
-  refreshKey?: number;
+  onSessionRevertCommitted?: (tabId: string, result: RewindResultView) => void;
   initialViewMode?: "files" | "changed";
   revealPathRequest?: WorkspaceRevealRequest | null;
   changeRevealRequest?: WorkspaceRevealRequest | null;
+  verificationRevealRequest?: WorkspaceVerificationRevealRequest | null;
   fileListRequest?: WorkspaceFileListRequest | null;
   changeListRequest?: WorkspaceChangeListRequest | null;
   showViewTabs?: boolean;
   workspaceScopeKey?: string;
+  workspaceMemoryKey?: string;
+  workspaceMemoryVisitId?: number;
+  dockTreeWidth?: number;
+  dockPreviewWidth?: number;
+  onRestoreDockWidths?: (treeWidth: number, previewWidth: number) => void;
   creationMode?: boolean;
+  completionSummary?: WireCompletionSummary;
+  turnStartAt?: number;
+  qualityFloor?: "standard" | "delivery";
 }) {
   const t = useT();
   const workspaceTabId = tabId ?? "";
+  const activeVerificationRevealRequest = verificationRevealRequest?.tabId === workspaceTabId
+    && verificationRevealRequest.turnStartAt === turnStartAt
+    && verificationRevealRequest.currentSummary === completionSummary ? verificationRevealRequest : null;
+  const visibleCompletionSummary = activeVerificationRevealRequest?.summary ?? completionSummary;
   const workspaceScopeKey = workspaceScopeKeyProp ?? `${workspaceTabId}\u0000${cwd ?? ""}`;
+  const workspaceMemoryKey = workspaceMemoryKeyProp ?? workspaceScopeKey;
+  const workspaceMemoryVisitId = workspaceMemoryVisitIdProp ?? workspaceTreeVisitId(workspaceMemoryKey);
+  const workspaceRefresh = useWorkspaceRefresh(workspaceTabId, workspaceScopeKey, open);
+  const initialWorkspaceMemory = readWorkspaceTreeMemory(workspaceMemoryKey);
+  const legacyTreeWidth = loadOptionalLayoutSize("workspaceTreeWidth");
   const panelRef = useRef<HTMLElement>(null);
   const treeRef = useRef<HTMLDivElement>(null);
+  const onWorkspaceTreeScroll = useWorkspaceTreeScrollPersistence({ memoryKey: workspaceMemoryKey, open, scrollRef: treeRef });
   const filterRef = useRef<HTMLInputElement>(null);
   const previewBodyRef = useRef<HTMLDivElement>(null);
   const [entriesByDir, setEntriesByDir] = useState<Record<string, DirEntry[]>>({});
-  const [openDirs, setOpenDirs] = useState<Set<string>>(() => new Set([""]));
-  const [selectedPath, setSelectedPath] = useState<string | null>(null);
+  const [openDirs, setOpenDirs] = useState<Set<string>>(
+    () => new Set(initialWorkspaceMemory?.openDirs ?? [""]),
+  );
+  const [revealedRootPaths, setRevealedRootPaths] = useState<Set<string> | null>(
+    () => initialWorkspaceMemory && initialWorkspaceMemory.visitId !== workspaceMemoryVisitId ? new Set() : null,
+  );
+  // File preview and working-tree diff selection are independent navigation
+  // states.  Keeping a single path here used to erase the user's file context
+  // whenever the Changes tab refreshed or became active.
+  const [selectedFilePath, setSelectedFilePath] = useState<string | null>(
+    () => initialWorkspaceMemory?.selectedFilePath ?? null,
+  );
+  const [selectedChangePath, setSelectedChangePath] = useState<string | null>(
+    () => initialWorkspaceMemory?.selectedChangePath ?? null,
+  );
   const [openTabs, setOpenTabs] = useState<string[]>([]);
-  const [preview, setPreview] = useState<FilePreview | null>(null);
-  const [loadingPreview, setLoadingPreview] = useState(false);
+  const [previewResource, setPreviewResource] = useState(() => emptyKeyedResource<FilePreview>());
   const [viewMode, setViewMode] = useState<"files" | "changed">(initialViewMode);
-  const [gitHistory, setGitHistory] = useState<GitCommitView[]>([]);
-  const [workspaceChanges, setWorkspaceChanges] = useState<WorkspaceChangesView | null>(null);
-  const [loadingHistory, setLoadingHistory] = useState(false);
+  const selectedPath = viewMode === "changed" ? selectedChangePath : selectedFilePath;
+  // Both creation and regular workspaces use the same three-layer change view;
+  // keep the prop in the seam for older callers while making history collapsed
+  // by default everywhere.
+  const groupedChangesLayout = creationMode !== false || viewMode === "changed";
+  const [gitHistoryResource, setGitHistoryResource] = useState(() => emptyKeyedResource<GitCommitView[]>());
+  const [changeDetailResource, setChangeDetailResource] = useState(() => emptyKeyedResource<WorkspaceChangeDetailView>());
   const [expandedCommit, setExpandedCommit] = useState<string | null>(null);
   const [commitDetail, setCommitDetail] = useState<GitCommitDetailView | null>(null);
   const [loadingCommit, setLoadingCommit] = useState(false);
@@ -232,16 +251,22 @@ export function WorkspacePanel({
   const [scopedFilePaths, setScopedFilePaths] = useState<string[] | null>(null);
   const [scopedChangeRows, setScopedChangeRows] = useState<WorkspaceChangeListEntry[] | null>(null);
   const [treeVisible, setTreeVisible] = useState(true);
-  const [treeWidth, setTreeWidth] = useState(WORKSPACE_TREE_DEFAULT_WIDTH);
-  const [treeWidthMode, setTreeWidthMode] = useState<WorkspaceSplitTreeWidthMode>("manual");
+  const [treeWidth, setTreeWidth] = useState(initialWorkspaceMemory?.treeWidth ?? legacyTreeWidth ?? WORKSPACE_TREE_DEFAULT_WIDTH);
+  const [treeWidthMode, setTreeWidthMode] = useState<WorkspaceSplitTreeWidthMode>(
+    initialWorkspaceMemory?.treeWidthMode ?? "manual",
+  );
   const [treeResizing, setTreeResizing] = useState(false);
   const [recentOpen, setRecentOpen] = useState(false);
+  const [codeSearchRequestPending, setCodeSearchRequestPending] = useState(false);
+  const [codeSearchRequestPath, setCodeSearchRequestPath] = useState<string | null>(null);
   /** Changes overview: commit history is secondary and starts collapsed. */
   const [commitHistoryOpen, setCommitHistoryOpen] = useState(false);
   const lastPreviewModeActiveRef = useRef<boolean | null>(null);
   const lastRevealRequestIdRef = useRef<number | null>(null);
   const dismissedRevealRequestIdRef = useRef<number | null>(null);
   const lastChangeRevealRequestIdRef = useRef<number | null>(null);
+  const lastVerificationRevealRequestIdRef = useRef<number | null>(null);
+  const verificationSummaryRef = useRef<HTMLElement | null>(null);
   const dismissedChangeRevealRequestIdRef = useRef<number | null>(null);
   const lastFileListRequestIdRef = useRef<number | null>(null);
   const dismissedFileListRequestIdRef = useRef<number | null>(null);
@@ -249,19 +274,111 @@ export function WorkspacePanel({
   const dismissedChangeListRequestIdRef = useRef<number | null>(null);
   const currentWorkspaceScopeKeyRef = useRef(workspaceScopeKey);
   const lastWorkspaceScopeKeyRef = useRef(workspaceScopeKey);
-  const workspaceChangesRequestIdRef = useRef(0);
+  const changeDetailRequestIdRef = useRef(0);
   const gitHistoryRequestIdRef = useRef(0);
+  const previewRequestIdRef = useRef(0);
   const commitDetailRequestIdRef = useRef(0);
   const dirLoadGenerationRef = useRef(0);
   const dirLoadRequestIdsRef = useRef<Record<string, number>>({});
+  const compactProbeInFlightRef = useRef(new Set<string>());
   const recentAnchorRef = useRef<HTMLButtonElement>(null);
   const openDirsRef = useRef(openDirs);
   const pendingTreeRevealPathRef = useRef<string | null>(null);
+  const lastRestoredMemoryKeyRef = useRef(workspaceMemoryKey);
+  const memoryRestorePendingRef = useRef(false);
+  const workingTreeRefreshSchedulerRef = useRef<ReturnType<typeof createWorkspaceRefreshScheduler> | null>(null);
+  const gitMetaRefreshSchedulerRef = useRef<ReturnType<typeof createWorkspaceRefreshScheduler> | null>(null);
+  if (!workingTreeRefreshSchedulerRef.current) {
+    workingTreeRefreshSchedulerRef.current = createWorkspaceRefreshScheduler(300);
+  }
+  if (!gitMetaRefreshSchedulerRef.current) {
+    gitMetaRefreshSchedulerRef.current = createWorkspaceRefreshScheduler(750);
+  }
   currentWorkspaceScopeKeyRef.current = workspaceScopeKey;
+  const previewKey = selectedPath ? `${workspaceScopeKey}\u0000preview\u0000${selectedPath}` : null;
+  const changeDetailKey = selectedPath ? `${workspaceScopeKey}\u0000change\u0000${selectedPath}` : null;
+  const gitHistoryKey = `${workspaceScopeKey}\u0000history\u0000${selectedPath ?? ""}`;
+  const preview = previewKey && previewResource.key === previewKey ? previewResource.data : null;
+  const loadingPreview = previewKey != null && previewResource.key === previewKey && previewResource.status === "refreshing";
+  const previewErr = previewKey && previewResource.key === previewKey ? previewResource.error : "";
+  const changeDetail = changeDetailKey && changeDetailResource.key === changeDetailKey ? changeDetailResource.data : null;
+  const loadingChangeDetail = changeDetailKey != null && changeDetailResource.key === changeDetailKey && changeDetailResource.status === "refreshing";
+  const changeDetailErr = changeDetailKey && changeDetailResource.key === changeDetailKey ? changeDetailResource.error : "";
+  const gitHistory = gitHistoryResource.key === gitHistoryKey ? gitHistoryResource.data ?? [] : [];
+  const loadingHistory = gitHistoryResource.key === gitHistoryKey && gitHistoryResource.status === "refreshing";
+  const gitHistoryErr = gitHistoryResource.key === gitHistoryKey ? gitHistoryResource.error : "";
+  const { workspaceChanges, loadingWorkspaceChanges, workspaceChangesErr, loadWorkspaceChanges, resetWorkspaceChanges } =
+    useWorkspaceChangesResource(workspaceTabId, workspaceScopeKey, workspaceRefresh.revisions.workingTree);
+  const overviewResourceStatus = workspaceChangesErr && workspaceChanges
+    ? { error: true, text: `${t("workspace.changesUnavailable")}: ${workspaceChangesErr}` }
+    : gitHistoryErr && gitHistory.length > 0
+      ? { error: true, text: `${t("workspace.historyUnavailable")}: ${gitHistoryErr}` }
+      : loadingWorkspaceChanges && workspaceChanges
+        ? { error: false, text: t("workspace.loadingChanges") }
+        : loadingHistory && gitHistory.length > 0 ? { error: false, text: t("workspace.loading") } : null;
 
   useEffect(() => {
     openDirsRef.current = openDirs;
   }, [openDirs]);
+
+  const updateOpenDirs = useCallback(
+    (update: (previous: ReadonlySet<string>) => Set<string>) => {
+      setOpenDirs((previous) => {
+        const next = update(previous);
+        rememberWorkspaceTreeOpenDirs(workspaceMemoryKey, next, workspaceMemoryVisitId);
+        return next;
+      });
+    },
+    [workspaceMemoryKey, workspaceMemoryVisitId],
+  );
+
+  useEffect(() => {
+    memoryRestorePendingRef.current = true;
+    const remembered = readWorkspaceTreeMemory(workspaceMemoryKey);
+    const nextOpenDirs = new Set(remembered?.openDirs ?? [""]);
+    setOpenDirs(nextOpenDirs);
+    openDirsRef.current = nextOpenDirs;
+    setRevealedRootPaths(remembered && remembered.visitId !== workspaceMemoryVisitId ? new Set() : null);
+    if (remembered) touchWorkspaceTreeVisit(workspaceMemoryKey, workspaceMemoryVisitId);
+    else rememberWorkspaceTreeOpenDirs(workspaceMemoryKey, nextOpenDirs, workspaceMemoryVisitId);
+    onRestoreDockWidths?.(
+      remembered?.dockTreeWidth ?? loadLayoutSize(
+        "rightDockTreeWidth",
+        creationMode ? defaultCreationRightDockTreeWidth() : defaultRightDockTreeWidth(),
+      ),
+      remembered?.dockPreviewWidth ?? loadLayoutSize("rightDockPreviewWidth", RIGHT_DOCK_PREVIEW_DEFAULT_WIDTH),
+    );
+    if (lastRestoredMemoryKeyRef.current !== workspaceMemoryKey) {
+      lastRestoredMemoryKeyRef.current = workspaceMemoryKey;
+      setSelectedFilePath(remembered?.selectedFilePath ?? null);
+      setSelectedChangePath(remembered?.selectedChangePath ?? null);
+      setTreeWidth(remembered?.treeWidth ?? legacyTreeWidth ?? WORKSPACE_TREE_DEFAULT_WIDTH);
+      setTreeWidthMode(remembered?.treeWidthMode ?? "manual");
+      requestAnimationFrame(() => {
+        const tree = treeRef.current;
+        if (tree) tree.scrollTop = remembered?.scrollTop ?? 0;
+      });
+    }
+  }, [creationMode, legacyTreeWidth, onRestoreDockWidths, workspaceMemoryKey, workspaceMemoryVisitId]);
+
+  useEffect(() => {
+    if (memoryRestorePendingRef.current) return;
+    rememberWorkspaceTreeState(workspaceMemoryKey, { selectedFilePath, selectedChangePath });
+  }, [selectedChangePath, selectedFilePath, workspaceMemoryKey]);
+
+  useEffect(() => {
+    if (memoryRestorePendingRef.current) return;
+    rememberWorkspaceTreeState(workspaceMemoryKey, { treeWidth, treeWidthMode });
+  }, [treeWidth, treeWidthMode, workspaceMemoryKey]);
+
+  useEffect(() => {
+    if (memoryRestorePendingRef.current || dockTreeWidth == null || dockPreviewWidth == null) return;
+    rememberWorkspaceTreeState(workspaceMemoryKey, { dockTreeWidth, dockPreviewWidth });
+  }, [dockPreviewWidth, dockTreeWidth, workspaceMemoryKey]);
+
+  useEffect(() => {
+    memoryRestorePendingRef.current = false;
+  });
 
   const loadDir = useCallback(async (dir: string) => {
     const requestTabId = workspaceTabId;
@@ -269,56 +386,56 @@ export function WorkspacePanel({
     const generation = dirLoadGenerationRef.current;
     const requestId = (dirLoadRequestIdsRef.current[dir] ?? 0) + 1;
     dirLoadRequestIdsRef.current[dir] = requestId;
-    const entries = await app.ListDirForTab(requestTabId, dir).catch((): DirEntry[] => []);
+    const entries = asArray(await app.ListDirForTab(requestTabId, dir).catch((): DirEntry[] => []));
     if (
       currentWorkspaceScopeKeyRef.current !== requestScopeKey ||
       dirLoadGenerationRef.current !== generation ||
       dirLoadRequestIdsRef.current[dir] !== requestId
-    ) return;
-    setEntriesByDir((prev) => ({ ...prev, [dir]: asArray(entries) }));
+    ) return null;
+    setEntriesByDir((prev) => ({ ...prev, [dir]: entries }));
+    return entries;
   }, [workspaceScopeKey, workspaceTabId]);
 
   const loadGitHistory = useCallback(async () => {
     const requestId = ++gitHistoryRequestIdRef.current;
     const requestTabId = workspaceTabId;
     const requestScopeKey = workspaceScopeKey;
-    setLoadingHistory(true);
+    const requestKey = `${requestScopeKey}\u0000history\u0000${selectedPath ?? ""}`;
+    setGitHistoryResource((current) => beginKeyedResourceRequest(current, requestKey, requestId, workspaceRefresh.revisions.gitMeta));
     try {
       const result = await app.WorkspaceGitHistory(requestTabId, selectedPath || "");
       if (gitHistoryRequestIdRef.current === requestId && currentWorkspaceScopeKeyRef.current === requestScopeKey) {
-        setGitHistory(result || []);
+        setGitHistoryResource((current) => resolveKeyedResourceRequest(current, requestKey, requestId, result || [], workspaceRefresh.revisions.gitMeta));
       }
     } catch (err) {
       if (gitHistoryRequestIdRef.current === requestId && currentWorkspaceScopeKeyRef.current === requestScopeKey) {
-        setGitHistory([]);
-      }
-    } finally {
-      if (gitHistoryRequestIdRef.current === requestId && currentWorkspaceScopeKeyRef.current === requestScopeKey) {
-        setLoadingHistory(false);
+        setGitHistoryResource((current) => rejectKeyedResourceRequest(current, requestKey, requestId, String((err as { message?: unknown })?.message ?? err)));
       }
     }
-  }, [selectedPath, workspaceScopeKey, workspaceTabId]);
+  }, [selectedPath, workspaceRefresh.revisions.gitMeta, workspaceScopeKey, workspaceTabId]);
 
-  const loadWorkspaceChanges = useCallback(async () => {
-    const requestId = ++workspaceChangesRequestIdRef.current;
+  const loadChangeDetail = useCallback(async () => {
+    const requestId = ++changeDetailRequestIdRef.current;
     const requestTabId = workspaceTabId;
     const requestScopeKey = workspaceScopeKey;
+    const requestPath = selectedPath;
+    if (!requestPath) {
+      setChangeDetailResource(emptyKeyedResource());
+      return;
+    }
+    const requestKey = `${requestScopeKey}\u0000change\u0000${requestPath}`;
+    setChangeDetailResource((current) => beginKeyedResourceRequest(current, requestKey, requestId, workspaceRefresh.revisions.content));
     try {
-      const result = await app.WorkspaceChanges(requestTabId);
-      if (workspaceChangesRequestIdRef.current === requestId && currentWorkspaceScopeKeyRef.current === requestScopeKey) {
-        setWorkspaceChanges({
-          files: Array.isArray(result?.files) ? result.files : [],
-          gitAvailable: result?.gitAvailable !== false,
-          gitErr: result?.gitErr,
-          gitBranch: result?.gitBranch,
-        });
+      const detail = await app.WorkspaceChangeDetail(requestTabId, requestPath);
+      if (changeDetailRequestIdRef.current === requestId && currentWorkspaceScopeKeyRef.current === requestScopeKey) {
+        setChangeDetailResource((current) => resolveKeyedResourceRequest(current, requestKey, requestId, detail ?? {}, workspaceRefresh.revisions.content));
       }
-    } catch {
-      if (workspaceChangesRequestIdRef.current === requestId && currentWorkspaceScopeKeyRef.current === requestScopeKey) {
-        setWorkspaceChanges({ files: [], gitAvailable: false });
+    } catch (err) {
+      if (changeDetailRequestIdRef.current === requestId && currentWorkspaceScopeKeyRef.current === requestScopeKey) {
+        setChangeDetailResource((current) => rejectKeyedResourceRequest(current, requestKey, requestId, String((err as { message?: unknown })?.message ?? err)));
       }
     }
-  }, [workspaceScopeKey, workspaceTabId]);
+  }, [selectedPath, workspaceRefresh.revisions.content, workspaceScopeKey, workspaceTabId]);
 
   const toggleCommit = useCallback((hash: string) => {
     setExpandedCommit((prev) => {
@@ -363,7 +480,7 @@ export function WorkspacePanel({
   }, [expandedCommit, selectedPath, open, workspaceScopeKey, workspaceTabId]);
 
   const selectFile = useCallback(
-    (path: string) => {
+    (path: string, targetMode: "files" | "changed" = viewMode) => {
       const initializeSplit = shouldInitializeWorkspaceSplitOnFileSelect({
         previewVisible: openTabs.length > 0 || selectedPath !== null,
         treeVisible,
@@ -379,7 +496,8 @@ export function WorkspacePanel({
         setTreeWidthMode("even");
       }
       pendingTreeRevealPathRef.current = path;
-      setSelectedPath(path);
+      if (targetMode === "changed") setSelectedChangePath(path);
+      else setSelectedFilePath(path);
       setScopedFilePaths((current) => {
         if (current) dismissedFileListRequestIdRef.current = lastFileListRequestIdRef.current;
         return null;
@@ -391,22 +509,23 @@ export function WorkspacePanel({
       setFilter("");
       setOpenTabs((tabs) => [...tabs.filter((tab) => tab !== path), path].slice(-WORKSPACE_MAX_PREVIEW_TABS));
       const dirs = parentDirs(path);
-      setOpenDirs((prev) => new Set([...Array.from(prev), ...dirs]));
+      updateOpenDirs((prev) => new Set([...Array.from(prev), ...dirs]));
       dirs.forEach((dir) => void loadDir(dir));
     },
-    [loadDir, openTabs.length, panelWidth, selectedPath, treeVisible],
+    [loadDir, openTabs.length, panelWidth, selectedPath, treeVisible, updateOpenDirs, viewMode],
   );
 
   useEffect(() => {
     if (!open) return;
     dirLoadGenerationRef.current += 1;
     dirLoadRequestIdsRef.current = {};
+    compactProbeInFlightRef.current.clear();
     setEntriesByDir({});
-    setOpenDirs(new Set([""]));
-    setSelectedPath(null);
     setOpenTabs([]);
-    setPreview(null);
-    setGitHistory([]);
+    setPreviewResource(emptyKeyedResource());
+    setGitHistoryResource(emptyKeyedResource());
+    changeDetailRequestIdRef.current += 1;
+    setChangeDetailResource(emptyKeyedResource());
     setExpandedCommit(null);
     setCommitDetail(null);
     setSelectionMenu(null);
@@ -422,11 +541,14 @@ export function WorkspacePanel({
     if (!open) return;
     if (lastWorkspaceScopeKeyRef.current === workspaceScopeKey) return;
     lastWorkspaceScopeKeyRef.current = workspaceScopeKey;
-    workspaceChangesRequestIdRef.current += 1;
+    workingTreeRefreshSchedulerRef.current?.cancel();
+    gitMetaRefreshSchedulerRef.current?.cancel();
+    changeDetailRequestIdRef.current += 1;
     gitHistoryRequestIdRef.current += 1;
     commitDetailRequestIdRef.current += 1;
-    setWorkspaceChanges(null);
-    setGitHistory([]);
+    resetWorkspaceChanges();
+    setChangeDetailResource(emptyKeyedResource());
+    setGitHistoryResource(emptyKeyedResource());
     setCommitHistoryOpen(false);
     setExpandedCommit(null);
     setCommitDetail(null);
@@ -436,11 +558,15 @@ export function WorkspacePanel({
     lastChangeListRequestIdRef.current = null;
     dismissedChangeListRequestIdRef.current = null;
     if (viewMode === "changed") {
-      setSelectedPath(null);
       setOpenTabs([]);
-      setPreview(null);
+      setPreviewResource(emptyKeyedResource());
     }
-  }, [open, viewMode, workspaceScopeKey]);
+  }, [open, resetWorkspaceChanges, viewMode, workspaceScopeKey]);
+
+  useEffect(() => () => {
+    workingTreeRefreshSchedulerRef.current?.cancel();
+    gitMetaRefreshSchedulerRef.current?.cancel();
+  }, []);
 
   // A tab/scope switch must discard the floating menus: their text and paths
   // were captured from the previous scope, while add-to-chat routes to
@@ -458,14 +584,13 @@ export function WorkspacePanel({
     setCommitHistoryOpen(false);
     setExpandedCommit(null);
     setCommitDetail(null);
+    changeDetailRequestIdRef.current += 1;
+    setChangeDetailResource(emptyKeyedResource());
     setSelectionMenu(null);
     setTreeMenu(null);
     setRecentOpen(false);
     if (initialViewMode === "changed") {
       setScopedFilePaths(null);
-      setSelectedPath(null);
-      setOpenTabs([]);
-      setPreview(null);
       return;
     }
     setScopedChangeRows(null);
@@ -497,18 +622,18 @@ export function WorkspacePanel({
     setViewMode("files");
     setTreeVisible(true);
     setScopedFilePaths(paths);
-    setSelectedPath(null);
+    setSelectedFilePath(null);
     setOpenTabs([]);
-    setPreview(null);
+    setPreviewResource(emptyKeyedResource());
     setFilter("");
     setExpandedCommit(null);
     setCommitDetail(null);
     setSelectionMenu(null);
     setTreeMenu(null);
     const dirs = Array.from(new Set(paths.flatMap(parentDirs)));
-    setOpenDirs((prev) => new Set([...Array.from(prev), ...dirs]));
+    updateOpenDirs((prev) => new Set([...Array.from(prev), ...dirs]));
     dirs.forEach((dir) => void loadDir(dir));
-  }, [fileListRequest, loadDir, open, scopedFilePaths, viewMode]);
+  }, [fileListRequest, loadDir, open, scopedFilePaths, updateOpenDirs, viewMode]);
 
   useEffect(() => {
     if (!open || changeListRequest) return;
@@ -537,16 +662,15 @@ export function WorkspacePanel({
     setViewMode("changed");
     setScopedChangeRows(changes);
     setScopedFilePaths(null);
-    setSelectedPath(null);
+    setSelectedChangePath(null);
     setOpenTabs([]);
-    setPreview(null);
+    setPreviewResource(emptyKeyedResource());
     setFilter("");
     setExpandedCommit(null);
     setCommitDetail(null);
     setSelectionMenu(null);
     setTreeMenu(null);
-    void loadGitHistory();
-  }, [changeListRequest, loadGitHistory, open, scopedChangeRows, viewMode]);
+  }, [changeListRequest, open, scopedChangeRows, viewMode]);
 
   useEffect(() => {
     if (!open || revealPathRequest) return;
@@ -572,7 +696,7 @@ export function WorkspacePanel({
     setScopedChangeRows(null);
     setExpandedCommit(null);
     setCommitDetail(null);
-    selectFile(revealPathRequest.path);
+    selectFile(revealPathRequest.path, "files");
   }, [open, revealPathRequest, selectFile, selectedPath, viewMode]);
 
   useEffect(() => {
@@ -596,9 +720,9 @@ export function WorkspacePanel({
     setViewMode("changed");
     setScopedFilePaths(null);
     setScopedChangeRows(null);
-    setSelectedPath(changeRevealRequest.path);
+    setSelectedChangePath(changeRevealRequest.path);
     setOpenTabs([]);
-    setPreview(null);
+    setPreviewResource(emptyKeyedResource());
     setFilter("");
     setExpandedCommit(null);
     setCommitDetail(null);
@@ -607,21 +731,37 @@ export function WorkspacePanel({
   }, [changeRevealRequest, open, selectedPath, viewMode]);
 
   useEffect(() => {
-    if (!open) return;
-    if (viewMode === "changed") {
-      void loadGitHistory();
-      void loadWorkspaceChanges();
+    if (!open || !activeVerificationRevealRequest) return;
+    if (lastVerificationRevealRequestIdRef.current !== activeVerificationRevealRequest.id) {
+      lastVerificationRevealRequestIdRef.current = activeVerificationRevealRequest.id;
+      setViewMode("changed");
+      setSelectedChangePath(null);
+      setOpenTabs([]);
+      setPreviewResource(emptyKeyedResource());
+      setFilter("");
+      setExpandedCommit(null);
+      setCommitDetail(null);
+      setSelectionMenu(null);
+      setTreeMenu(null);
+      setScopedChangeRows(null);
+      if (viewMode !== "changed" || selectedChangePath) return;
     }
-  }, [selectedPath, viewMode, loadGitHistory, loadWorkspaceChanges, open]);
+    if (viewMode !== "changed" || selectedChangePath) return;
+    const node = verificationSummaryRef.current ?? document.getElementById(WORKSPACE_TURN_VERIFICATION_ID);
+    node?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, [activeVerificationRevealRequest, open, selectedChangePath, viewMode]);
 
   useEffect(() => {
-    if (!open || !refreshKey) return;
+    if (!open) return;
     if (viewMode === "changed") {
-      void loadGitHistory();
       void loadWorkspaceChanges();
+      if (selectedPath) void loadChangeDetail();
+      if (commitHistoryOpen) void loadGitHistory();
+    } else {
+      changeDetailRequestIdRef.current += 1;
+      setChangeDetailResource(emptyKeyedResource());
     }
-    openDirsRef.current.forEach((dir) => void loadDir(dir));
-  }, [loadGitHistory, loadWorkspaceChanges, loadDir, open, refreshKey, viewMode]);
+  }, [commitHistoryOpen, selectedPath, viewMode, loadChangeDetail, loadGitHistory, loadWorkspaceChanges, open]);
 
   useEffect(() => {
     if (!selectionMenu && !treeMenu) return;
@@ -637,12 +777,13 @@ export function WorkspacePanel({
     // mousedown only fires when the user starts another interaction, and FloatingMenu
     // stops propagation so pressing its buttons never counts as an outside press.
     window.addEventListener("mousedown", close);
-    window.addEventListener("scroll", close, true);
+    const panel = panelRef.current;
+    panel?.addEventListener("scroll", close, true);
     window.addEventListener("resize", close);
     window.addEventListener("keydown", onKey);
     return () => {
       window.removeEventListener("mousedown", close);
-      window.removeEventListener("scroll", close, true);
+      panel?.removeEventListener("scroll", close, true);
       window.removeEventListener("resize", close);
       window.removeEventListener("keydown", onKey);
     };
@@ -653,65 +794,98 @@ export function WorkspacePanel({
     setSelectionMenu(null);
     setTreeMenu(null);
     if (viewMode === "changed") {
-      void loadGitHistory();
+      workingTreeRefreshSchedulerRef.current?.cancel();
+      gitMetaRefreshSchedulerRef.current?.cancel();
       void loadWorkspaceChanges();
+      if (selectedPath) void loadChangeDetail();
+      // Manual refresh is the explicit escape hatch and includes collapsed
+      // history even when ordinary file writes do not.
+      void loadGitHistory();
       return;
     }
     onFileTreeRefresh?.();
     const dirs = Array.from(openDirsRef.current);
     dirs.forEach((dir) => void loadDir(dir));
-  }, [loadGitHistory, loadWorkspaceChanges, loadDir, onFileTreeRefresh, viewMode]);
+  }, [loadChangeDetail, loadGitHistory, loadWorkspaceChanges, loadDir, onFileTreeRefresh, selectedPath, viewMode]);
 
   const refreshSelected = useCallback(() => {
     if (!selectedPath) return;
+    const requestId = ++previewRequestIdRef.current;
+    const requestScopeKey = workspaceScopeKey;
+    const requestPath = selectedPath;
+    const requestKey = `${requestScopeKey}\u0000preview\u0000${requestPath}`;
     let live = true;
-    setLoadingPreview(true);
+    setPreviewResource((current) => beginKeyedResourceRequest(current, requestKey, requestId, workspaceRefresh.revisions.content));
     app
-      .ReadFileForTab(workspaceTabId, selectedPath)
+      .ReadFileForTab(workspaceTabId, requestPath)
       .then((next) => {
-        if (live) setPreview(next);
-      })
-      .catch((err) => {
-        if (live) {
-          setPreview({
-            path: selectedPath,
-            body: "",
-            size: 0,
-            truncated: false,
-            binary: false,
-            err: String(err?.message ?? err),
-          });
+        if (live && previewRequestIdRef.current === requestId && currentWorkspaceScopeKeyRef.current === requestScopeKey) {
+          setPreviewResource((current) => resolveKeyedResourceRequest(current, requestKey, requestId, next, workspaceRefresh.revisions.content));
         }
       })
-      .finally(() => {
-        if (live) setLoadingPreview(false);
+      .catch((err) => {
+        if (live && previewRequestIdRef.current === requestId && currentWorkspaceScopeKeyRef.current === requestScopeKey) {
+          setPreviewResource((current) => rejectKeyedResourceRequest(current, requestKey, requestId, String(err?.message ?? err)));
+        }
       });
     return () => {
       live = false;
     };
-  }, [selectedPath, workspaceScopeKey, workspaceTabId]);
-
-
+  }, [selectedPath, workspaceRefresh.revisions.content, workspaceScopeKey, workspaceTabId]);
 
   useEffect(() => {
     if (!open || !selectedPath) return;
     return refreshSelected();
   }, [open, refreshSelected, selectedPath]);
 
+  useWorkspaceRefreshInvalidation({ commitHistoryOpen,
+    filter,
+    gitMetaSchedulerRef: gitMetaRefreshSchedulerRef,
+    loadChangeDetail,
+    loadDir,
+    loadGitHistory,
+    loadWorkspaceChanges,
+    open,
+    openDirsRef,
+    refreshSelected,
+    selectedPath,
+    setSearchResults,
+    viewMode,
+    workingTreeSchedulerRef: workingTreeRefreshSchedulerRef,
+    workspaceRefresh,
+    workspaceScopeKey,
+  });
+
   const toggleDir = useCallback(
-    (dir: string) => {
-      setOpenDirs((prev) => {
-        const next = new Set(prev);
-        if (next.has(dir)) {
-          next.delete(dir);
-        } else {
-          next.add(dir);
-          void loadDir(dir);
+    (dir: string, compactPaths: string[] = [dir]) => {
+      const firstPath = compactPaths[0] ?? dir;
+      const rootPath = topLevelDirPath(firstPath);
+      if (revealedRootPaths !== null && !revealedRootPaths.has(rootPath)) {
+        setRevealedRootPaths((current) => new Set([...(current ?? []), rootPath]));
+        const remembered = openDirsRef.current;
+        if (!remembered.has(firstPath)) {
+          updateOpenDirs((previous) => new Set([...previous, ...compactPaths]));
+          compactPaths.forEach((path) => void loadDir(path));
+          return;
         }
+        remembered.forEach((path) => {
+          if (path === rootPath || path.startsWith(rootPath)) void loadDir(path);
+        });
+        return;
+      }
+
+      const isOpen = openDirsRef.current.has(firstPath);
+      updateOpenDirs((previous) => {
+        const next = new Set(previous);
+        compactPaths.forEach((path) => {
+          if (isOpen) next.delete(path);
+          else next.add(path);
+        });
         return next;
       });
+      if (!isOpen) compactPaths.forEach((path) => void loadDir(path));
     },
-    [loadDir],
+    [loadDir, revealedRootPaths, updateOpenDirs],
   );
 
   const breadcrumbDirs = selectedPath ? parentDirs(selectedPath) : [""];
@@ -743,22 +917,61 @@ export function WorkspacePanel({
         {changes.map((change) => {
           const dir = parentPath(change.path);
           return (
-            <button
-              key={change.path}
-              className="workspace-change"
-              type="button"
-              onClick={() => selectFile(change.path)}
-            >
-              <FileText size={14} />
-              <span className="workspace-change__body">
-                <span className="workspace-change__name">{basename(change.path)}</span>
-                {dir && <span className="workspace-change__path">{dir}</span>}
-                {change.latestPrompt && <span className="workspace-change__detail">{change.latestPrompt}</span>}
-              </span>
-              <span className="workspace-change__meta">
-                {change.gitStatus && <span className="workspace-change__badge workspace-change__badge--git">{change.gitStatus}</span>}
-              </span>
-            </button>
+            <div key={change.path} className="workspace-change-row">
+              <button
+                className="workspace-change"
+                type="button"
+                onClick={() => selectFile(change.path)}
+              >
+                <FileText size={14} />
+                <span className="workspace-change__body">
+                  <span className="workspace-change__name">{basename(change.path)}</span>
+                  {dir && <span className="workspace-change__path">{dir}</span>}
+                  {change.latestPrompt && <span className="workspace-change__detail">{change.latestPrompt}</span>}
+                </span>
+                <span className="workspace-change__meta">
+                  {change.gitStatus && <span className="workspace-change__badge workspace-change__badge--git">{workspaceGitStatusLabel(change.gitStatus, t)}</span>}
+                </span>
+              </button>
+              {change.canSessionRevert && change.sources.includes("session") && (
+                <button
+                  type="button"
+                  className="workspace-change__revert"
+                  title={t("workspace.revertSessionFile")}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    void (async () => {
+                      const plan = await app.PreviewWorkspaceFileRevertForTab(workspaceTabId, change.path);
+                      if (!plan?.ok && !plan?.canFiles && !(plan?.conflicts?.length)) {
+                        return;
+                      }
+					  const resolution = plan?.conflicts?.length ? "overwrite_checkpoint" : "";
+                      if (plan?.conflicts?.length) {
+                        const ok = window.confirm(
+                          t("workspace.revertSessionFileConflict", {
+                            path: change.path,
+                            conflicts: (plan.conflicts || []).join("\n"),
+                          }),
+                        );
+                        if (!ok) return;
+                      }
+                      const result = await app.CommitWorkspaceFileRevertForTab(
+                        workspaceTabId,
+                        plan.planId || "",
+                        resolution,
+                      );
+                      if (result?.ok) {
+                        onSessionRevertCommitted?.(workspaceTabId, result);
+                        void loadWorkspaceChanges();
+                        if (selectedPath === change.path) void loadChangeDetail();
+                      }
+                    })();
+                  }}
+                >
+                  {t("workspace.revertSessionFileShort")}
+                </button>
+              )}
+            </div>
           );
         })}
       </div>
@@ -776,6 +989,8 @@ export function WorkspacePanel({
     : currentFileDir;
   const recentFiles = useMemo(() => [...openTabs].reverse(), [openTabs]);
 
+  const workspaceSearchFallbackSequence = workspaceRefreshFallbackSequence(workspaceRefresh);
+
   useEffect(() => {
     const q = filter.trim();
     if (!open || viewMode === "changed" || !q || scopedFilePaths) {
@@ -789,7 +1004,7 @@ export function WorkspacePanel({
       if (!cancelled) setSearchResults(null);
     });
     return () => { cancelled = true; };
-  }, [filter, viewMode, scopedFilePaths, open, workspaceScopeKey, workspaceTabId]);
+  }, [filter, viewMode, scopedFilePaths, open, workspaceRefresh.revisions.tree, workspaceSearchFallbackSequence, workspaceScopeKey, workspaceTabId]);
 
   const flattened = useMemo(() => {
     const q = filter.trim().toLowerCase();
@@ -826,32 +1041,77 @@ export function WorkspacePanel({
     const build = (dir: string, depth: number) => {
       const entries = entriesByDir[dir] ?? [];
       for (const entry of entries) {
-        const path = entryPath(dir, entry);
-        const isOpen = openDirs.has(path);
-        const active = selectedPath === path;
+        const firstPath = entryPath(dir, entry);
+        if (!entry.isDir) {
+          acc.push({
+            key: firstPath,
+            path: firstPath,
+            depth,
+            entry,
+            active: selectedPath === firstPath,
+            isOpen: false,
+          });
+          continue;
+        }
+
+        const compactPaths = [firstPath];
+        const compactNames = [entry.name];
+        let lastPath = firstPath;
+        let lastEntry = entry;
+        while (true) {
+          const children = entriesByDir[lastPath];
+          if (!children || children.length !== 1 || !children[0]?.isDir) break;
+          lastEntry = children[0];
+          lastPath = entryPath(lastPath, lastEntry);
+          compactPaths.push(lastPath);
+          compactNames.push(lastEntry.name);
+        }
+        const rootPath = topLevelDirPath(firstPath);
+        const isRevealed = revealedRootPaths === null || revealedRootPaths.has(rootPath);
+        const isOpen = isRevealed && openDirs.has(firstPath);
         acc.push({
-          key: path,
-          path,
+          key: lastPath,
+          path: lastPath,
           depth,
-          entry,
-          active,
+          entry: lastEntry,
+          active: selectedPath === lastPath,
           isOpen,
+          compactPaths,
+          displayName: compactNames.join(" / "),
         });
-        if (entry.isDir && isOpen) {
-          build(path, depth + 1);
+        if (isOpen) {
+          build(lastPath, depth + 1);
         }
       }
     };
     build("", 0);
     return acc;
-  }, [flattened, entriesByDir, openDirs, selectedPath]);
+  }, [flattened, entriesByDir, openDirs, revealedRootPaths, selectedPath]);
+  const getTreeRowKey = useCallback((index: number) => treeRows[index]?.key ?? index, [treeRows]);
 
   const virtualizer = useVirtualizer({
     count: treeRows.length,
     getScrollElement: () => treeRef.current,
     estimateSize: () => 24,
+    getItemKey: getTreeRowKey,
     overscan: 10,
+    directDomUpdates: true,
   });
+  const virtualTreeItems = virtualizer.getVirtualItems();
+  const compactProbePaths = virtualTreeItems
+    .map((item) => treeRows[item.index])
+    .filter((row): row is TreeRow => Boolean(row?.entry.isDir && entriesByDir[row.path] === undefined))
+    .map((row) => row.path);
+  const compactProbeKey = compactProbePaths.join("\u0000");
+
+  useEffect(() => {
+    if (!open || !compactProbeKey) return;
+    compactProbePaths.forEach((path) => {
+      if (compactProbeInFlightRef.current.has(path)) return;
+      compactProbeInFlightRef.current.add(path);
+      void loadDir(path).finally(() => compactProbeInFlightRef.current.delete(path));
+    });
+  }, [compactProbeKey, loadDir, open]);
 
   const searchPlaceholder = t(scopedFilePaths ? "workspace.filterReferencedFiles" : changedMode ? "workspace.filterChanges" : "workspace.filter");
 
@@ -872,7 +1132,7 @@ export function WorkspacePanel({
   const actualTreeVisible = changedMode ? false : treeVisible && (!previewVisible || splitPanesFit);
   const previewModeActive = open && (filePreviewActive || changeDetailActive);
   const embeddedDockMode = !showViewTabs;
-  const showFileTools = showViewTabs || filePreviewActive;
+  const showFileTools = true;
   const effectiveTreeWidth = useMemo(
     () =>
       resolveWorkspaceSplitTreeWidth({
@@ -957,15 +1217,19 @@ export function WorkspacePanel({
     if (lastChangeRevealRequestIdRef.current === changeRevealRequest?.id) {
       dismissedChangeRevealRequestIdRef.current = changeRevealRequest.id;
     }
-    const nextPreviewTabs = closeWorkspacePreviewTab(openTabs, selectedPath);
-    setSelectedPath(nextPreviewTabs.selectedPath);
-    setOpenTabs(nextPreviewTabs.openTabs);
-    setPreview(null);
+    if (viewMode === "changed") {
+      setSelectedChangePath(null);
+    } else {
+      const nextPreviewTabs = closeWorkspacePreviewTab(openTabs, selectedFilePath);
+      setSelectedFilePath(nextPreviewTabs.selectedPath);
+      setOpenTabs(nextPreviewTabs.openTabs);
+    }
+    setPreviewResource(emptyKeyedResource());
     setSelectionMenu(null);
     setTreeMenu(null);
     setRecentOpen(false);
     setTreeVisible(true);
-  }, [changeRevealRequest, openTabs, revealPathRequest, selectedPath]);
+  }, [changeRevealRequest, openTabs, revealPathRequest, selectedFilePath, viewMode]);
 
   const setSavedTreeWidth = useCallback(
     (width: number) => {
@@ -1039,6 +1303,15 @@ export function WorkspacePanel({
     [effectiveTreeWidth, maxTreeWidthForPanel, setSavedTreeWidth],
   );
 
+  useEffect(() => {
+    setCodeSearchRequestPending(false);
+    setCodeSearchRequestPath(null);
+  }, [selectedPath]);
+
+  const consumeCodeSearchRequest = useCallback(() => {
+    setCodeSearchRequestPending(false);
+  }, []);
+
   if (!open) return null;
 
   const selectedTextFromPreview = (): string => {
@@ -1053,7 +1326,7 @@ export function WorkspacePanel({
   };
 
   const openSelectionMenu = (event: ReactMouseEvent<HTMLDivElement>) => {
-    if (!selectedPath || loadingPreview || preview?.err || preview?.binary || preview?.kind) return;
+    if (!selectedPath || (loadingPreview && !preview) || previewErr || preview?.err || preview?.binary || preview?.kind) return;
     const text = selectedTextFromPreview();
     if (text.trim() === "") return;
     event.preventDefault();
@@ -1068,7 +1341,7 @@ export function WorkspacePanel({
     // Mouseup on the floating button bubbles back here through the portal's
     // React tree; let the button handle it.
     if ((event.target as HTMLElement | null)?.closest(".floating-menu")) return;
-    if (!selectedPath || loadingPreview || preview?.err || preview?.binary || preview?.kind) return;
+    if (!selectedPath || (loadingPreview && !preview) || previewErr || preview?.err || preview?.binary || preview?.kind) return;
     const text = selectedTextFromPreview();
     if (text.trim() === "") return;
     setSelectionMenu({ x: event.clientX, y: event.clientY + 8, text, path: selectedPath });
@@ -1134,14 +1407,8 @@ export function WorkspacePanel({
     }
   };
 
-  const revealInFileManager = () => {
-    if (!treeMenu) return;
-    setTreeMenu(null);
-    void app.RevealWorkspacePathForTab(workspaceTabId, treeMenu.path).catch(() => {});
-  };
-
   const renderNormalRow = (row: TreeRow) => {
-    const { path, depth, entry, isOpen, active } = row;
+    const { path, depth, entry, isOpen, active, compactPaths = [path], displayName = entry.name } = row;
     return (
       <button
         key={path}
@@ -1151,10 +1418,10 @@ export function WorkspacePanel({
         onDragStart={(event) => startTreeDrag(event, path, entry.isDir)}
         onClick={() => {
           if (entry.isDir) {
-            toggleDir(path);
+            toggleDir(path, compactPaths);
           } else {
             if (selectedPath === path) {
-              setSelectedPath(null);
+              setSelectedFilePath(null);
             } else {
               selectFile(path);
             }
@@ -1163,6 +1430,17 @@ export function WorkspacePanel({
         onContextMenu={(event) => openTreeMenu(event, path, entry.isDir)}
         style={{ paddingLeft: 8 + depth * 14 }}
       >
+        {depth > 0 && (
+          <span className="workspace-tree__guides" aria-hidden="true">
+            {Array.from({ length: depth }, (_, index) => (
+              <span
+                className="workspace-tree__guide"
+                key={index}
+                style={{ left: 14 + index * 14 }}
+              />
+            ))}
+          </span>
+        )}
         {entry.isDir ? (
           <ChevronRight
             size={13}
@@ -1178,9 +1456,9 @@ export function WorkspacePanel({
         {entry.isDir ? (
           <Folder size={14} className="workspace-tree__icon workspace-tree__icon--dir" />
         ) : (
-          <FileText size={14} className="workspace-tree__icon" />
+          <WorkspaceFileIcon fileName={entry.name} />
         )}
-        <span className="workspace-tree__name">{entry.name}</span>
+        <span className="workspace-tree__name">{displayName}</span>
       </button>
     );
   };
@@ -1200,7 +1478,7 @@ export function WorkspacePanel({
             toggleDir(path);
           } else {
             if (selectedPath === path) {
-              setSelectedPath(null);
+              setSelectedFilePath(null);
             } else {
               selectFile(path);
             }
@@ -1211,7 +1489,7 @@ export function WorkspacePanel({
         {entry.isDir ? (
           <Folder size={14} className="workspace-tree__icon workspace-tree__icon--dir" />
         ) : (
-          <FileText size={14} className="workspace-tree__icon" />
+          <WorkspaceFileIcon fileName={entry.name} />
         )}
         <span className="workspace-tree__result">
           <span className="workspace-tree__result-name">{basename(path)}</span>
@@ -1226,12 +1504,18 @@ export function WorkspacePanel({
     selectedPath &&
       !changedMode &&
       preview &&
-      !loadingPreview &&
+      !(loadingPreview && !preview) &&
+      !previewErr &&
       !preview.err &&
       !preview.kind &&
       !preview.binary &&
       !isMarkdown,
   );
+  const openCodeSearch = () => {
+    if (!codePreviewActive || !selectedPath) return;
+    setCodeSearchRequestPath(selectedPath);
+    setCodeSearchRequestPending(true);
+  };
   const treeBlankMenuItems: ContextMenuItem[] = [
     {
       key: "refresh-tree",
@@ -1242,11 +1526,23 @@ export function WorkspacePanel({
   ];
 
   return (
+    <MarkdownImageTabContext.Provider value={workspaceTabId}>
     <aside
       ref={panelRef}
       className={`workspace-panel${embeddedDockMode ? " workspace-panel--embedded" : ""}${showTreeRail ? " workspace-panel--with-tree-rail" : ""}${changedMode ? " workspace-panel--detail-only" : ""}${changedMode && !selectedPath ? " workspace-panel--changed-overview" : ""}${previewVisible && actualTreeVisible ? " workspace-panel--split-preview" : ""}${actualTreeVisible ? "" : " workspace-panel--tree-hidden"}${previewVisible ? "" : " workspace-panel--preview-hidden"}${treeResizing ? " workspace-panel--tree-resizing" : ""}`}
       aria-label={t("workspace.title")}
       style={panelStyle}
+      onKeyDownCapture={(event) => {
+        if (
+          codePreviewActive
+          && (event.ctrlKey || event.metaKey)
+          && event.key.toLowerCase() === "f"
+        ) {
+          event.preventDefault();
+          event.stopPropagation();
+          openCodeSearch();
+        }
+      }}
     >
       {previewVisible && <section className="workspace-preview">
         <header className="workspace-preview__head">
@@ -1277,6 +1573,19 @@ export function WorkspacePanel({
           </div>
 
           <div className="workspace-preview__window-actions">
+            {codePreviewActive && (
+              <Tooltip label={t("workspace.searchPlaceholder")}>
+                <button
+                  className="workspace-iconbtn"
+                  type="button"
+                  aria-label={t("workspace.searchPlaceholder")}
+                  aria-keyshortcuts="Control+F Meta+F"
+                  onClick={openCodeSearch}
+                >
+                  <Search size={15} />
+                </button>
+              </Tooltip>
+            )}
             <Tooltip label={maximized ? t("workspace.restore") : t("workspace.maximize")}>
               <button className="workspace-iconbtn" onClick={onToggleMaximized}>
                 {maximized ? <Minimize2 size={15} /> : <Maximize2 size={15} />}
@@ -1307,7 +1616,7 @@ export function WorkspacePanel({
                   type="button"
                   className={`workspace-recent-menu__item${path === selectedPath ? " workspace-recent-menu__item--active" : ""}`}
                   onClick={() => {
-                    setSelectedPath(path);
+                    setSelectedFilePath(path);
                     setRecentOpen(false);
                   }}
                 >
@@ -1329,7 +1638,7 @@ export function WorkspacePanel({
               onClick={() => {
                 setFilter("");
                 showTreeEvenSplit();
-                setOpenDirs((prev) => new Set([...Array.from(prev), ""]));
+                updateOpenDirs((prev) => new Set([...Array.from(prev), ""]));
                 void loadDir("");
               }}
             >
@@ -1349,7 +1658,7 @@ export function WorkspacePanel({
                       if (isLast) return;
                       showTreeEvenSplit();
                       setFilter("");
-                      setOpenDirs((prev) => new Set([...Array.from(prev), ...breadcrumbDirs, dir]));
+                      updateOpenDirs((prev) => new Set([...Array.from(prev), ...breadcrumbDirs, dir]));
                       void loadDir(dir);
                     }}
                   >
@@ -1363,7 +1672,7 @@ export function WorkspacePanel({
         </div>
 
         <div
-          className={`workspace-preview__body${codePreviewActive ? " workspace-preview__body--code" : ""}`}
+          className={`workspace-preview__body${selectedPath && !changedMode && !isMarkdown && !previewErr && !preview?.err && !preview?.kind && !preview?.binary ? " workspace-preview__body--code" : ""}`}
           ref={previewBodyRef}
           onContextMenu={openSelectionMenu}
           onMouseUp={showSelectionToolbar}
@@ -1380,10 +1689,9 @@ export function WorkspacePanel({
                     onClick={() => {
                       dismissedChangeListRequestIdRef.current = lastChangeListRequestIdRef.current;
                       setScopedChangeRows(null);
-                      setSelectedPath(null);
+                      setSelectedChangePath(null);
                       setExpandedCommit(null);
                       setCommitDetail(null);
-                      void loadGitHistory();
                     }}
                   >
                     <X size={12} />
@@ -1421,22 +1729,31 @@ export function WorkspacePanel({
             </div>
           ) : viewMode === "changed" && !selectedPath ? (
             <div className="workspace-git-history">
+              {visibleCompletionSummary && <WorkspaceTurnVerification ref={verificationSummaryRef} summary={visibleCompletionSummary} qualityFloor={qualityFloor} />}
               {workspaceGitWarning && (
                 <div className="workspace-note workspace-note--warning" role="status">
                   {workspaceGitWarning}
                 </div>
               )}
-              {creationMode ? (
+              {overviewResourceStatus && (
+                <div className={`workspace-resource-status${overviewResourceStatus.error ? " workspace-resource-status--error" : ""}`} role={overviewResourceStatus.error ? "alert" : "status"}>
+                  {overviewResourceStatus.text}
+                </div>
+              )}
+              {groupedChangesLayout ? (
                 <>
                   {sessionChanges.length > 0 && renderChangeScope(t("context.sessionChanges"), sessionChanges)}
                   {gitWorkingChanges.length > 0 && renderChangeScope(t("workspace.workingChanges"), gitWorkingChanges)}
-                  {!loadingHistory && !hasFileChanges && !workspaceGitWarning && (
+                  {!loadingWorkspaceChanges && !workspaceChangesErr && !hasFileChanges && !workspaceGitWarning && (
                     <div className="workspace-empty">{t("context.noChanges")}</div>
                   )}
-                  {loadingHistory ? (
-                    <div className="workspace-empty">{t("workspace.loading")}</div>
-                  ) : gitHistory.length > 0 ? (
-                    <section className={`workspace-commit-history${commitHistoryOpen ? " workspace-commit-history--open" : ""}`}>
+                  {loadingWorkspaceChanges && !workspaceChanges && (
+                    <div className="workspace-empty">{t("workspace.loadingChanges")}</div>
+                  )}
+                  {workspaceChangesErr && !workspaceChanges && (
+                    <div className="workspace-empty workspace-empty--error">{t("workspace.changesUnavailable")}: {workspaceChangesErr}</div>
+                  )}
+                  <section className={`workspace-commit-history${commitHistoryOpen ? " workspace-commit-history--open" : ""}`}>
                       <button
                         className="workspace-commit-history__toggle"
                         type="button"
@@ -1450,7 +1767,13 @@ export function WorkspacePanel({
                         <span>{t("workspace.commitHistory")}</span>
                         <small>{t("workspace.commitHistoryMeta", { count: gitHistory.length })}</small>
                       </button>
-                      {commitHistoryOpen && (
+                      {commitHistoryOpen && (loadingHistory && gitHistory.length === 0 ? (
+                        <div className="workspace-empty">{t("workspace.loading")}</div>
+                      ) : gitHistoryErr && gitHistory.length === 0 ? (
+                        <div className="workspace-empty workspace-empty--error">{t("workspace.historyUnavailable")}: {gitHistoryErr}</div>
+                      ) : gitHistory.length === 0 ? (
+                        <div className="workspace-empty">{t("workspace.noCommitHistory")}</div>
+                      ) : (
                         <div className="workspace-git-history__list">
                           {gitHistory.map((commit) => (
                             <div key={commit.hash} className={`workspace-git-history__item${expandedCommit === commit.hash ? " workspace-git-history__item--expanded" : ""}`}>
@@ -1495,16 +1818,18 @@ export function WorkspacePanel({
                             </div>
                           ))}
                         </div>
-                      )}
+                      ))}
                     </section>
-                  ) : null}
                 </>
               ) : (
                 <>
                   {sessionChanges.length > 0 && renderChangeScope(t("workspace.changedTab"), sessionChanges)}
-                  {loadingHistory ? (
+                  {gitWorkingChanges.length > 0 && renderChangeScope(t("workspace.workingChanges"), gitWorkingChanges)}
+                  {loadingHistory && gitHistory.length === 0 ? (
                     <div className="workspace-empty">{t("workspace.loading")}</div>
-                  ) : gitHistory.length === 0 && sessionChanges.length === 0 ? (
+                  ) : gitHistoryErr && gitHistory.length === 0 ? (
+                    <div className="workspace-empty workspace-empty--error">{t("workspace.historyUnavailable")}: {gitHistoryErr}</div>
+                  ) : gitHistory.length === 0 && !hasFileChanges ? (
                     <div className="workspace-empty">{workspaceGitWarning ? t("workspace.gitChangesUnknown") : t("workspace.noChanges")}</div>
                   ) : (
                     <div className="workspace-git-history__list">
@@ -1557,62 +1882,127 @@ export function WorkspacePanel({
             </div>
           ) : viewMode === "changed" && selectedPath ? (
             <div className="workspace-git-history">
-              {loadingHistory ? (
-                <div className="workspace-empty">{t("workspace.loading")}</div>
-              ) : gitHistory.length === 0 ? (
-                <div className="workspace-empty">{t("workspace.noChanges")}</div>
-              ) : (
-                <div className="workspace-git-history__list">
-                  {gitHistory.map((commit) => (
-                    <div key={commit.hash} className={`workspace-git-history__item${expandedCommit === commit.hash ? " workspace-git-history__item--expanded" : ""}`}>
-                      <button
-                        className="workspace-git-history__head"
-                        onClick={() => void toggleCommit(commit.hash)}
-                      >
-                        <div className="workspace-git-history__head-top">
-                          {expandedCommit === commit.hash ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-                          <span className="workspace-git-history__message">{commit.message}</span>
-                        </div>
-                        <div className="workspace-git-history__head-bottom">
-                          <span className="workspace-git-history__author">{commit.author}</span>
-                          <span className="workspace-git-history__date">
-                            {formatCommitDate(commit.date)} <span className="workspace-git-history__hash">{commit.hash.substring(0, 7)}</span>
-                          </span>
-                        </div>
-                      </button>
-                      {expandedCommit === commit.hash && (
-                        <div className="workspace-git-history__detail">
-                          {loadingCommit ? (
-                            <div className="workspace-empty">{t("workspace.loading")}</div>
-                          ) : commitDetail?.diff ? (
-                            <CodeViewer value={cleanGitDiff(commitDetail.diff)} language="diff" />
-                          ) : (
-                            <div className="workspace-empty">No details available</div>
+              <section className="workspace-current-change">
+                <header className="workspace-current-change__head">
+                  <div>
+                    <strong>{t("workspace.currentChanges")}</strong>
+                    {changeDetail?.source && (
+                      <span>{t(changeDetail.source === "git" ? "workspace.currentChangesSourceGit" : "workspace.currentChangesSourceSession")}</span>
+                    )}
+                  </div>
+                  {(changeDetail?.added || changeDetail?.removed) ? (
+                    <small>
+                      <span className="workspace-current-change__added">+{changeDetail.added ?? 0}</span>
+                      <span className="workspace-current-change__removed">-{changeDetail.removed ?? 0}</span>
+                    </small>
+                  ) : null}
+                </header>
+                <div className="workspace-current-change__body">
+                  {loadingChangeDetail && changeDetail && <div className="workspace-resource-status" role="status">{t("workspace.loading")}</div>}
+                  {changeDetailErr && changeDetail && <div className="workspace-resource-status workspace-resource-status--error">{t("workspace.changeDetailUnavailable")}: {changeDetailErr}</div>}
+                  {loadingChangeDetail && !changeDetail ? (
+                    <div className="workspace-empty">{t("workspace.loading")}</div>
+                  ) : changeDetailErr && !changeDetail ? (
+                    <div className="workspace-empty workspace-empty--error">{t("workspace.changeDetailUnavailable")}: {changeDetailErr}</div>
+                  ) : changeDetail?.truncated ? (
+                    <div className="workspace-empty">{t("workspace.changeDetailTooLarge")}</div>
+                  ) : changeDetail?.binary ? (
+                    <div className="workspace-empty">{t("workspace.binaryChange")}</div>
+                  ) : changeDetail?.diff ? (
+                    changeDetail.diff.includes("@@") ? (
+                      <DiffView diff={changeDetail.diff} language={languageFor(selectedPath)} />
+                    ) : (
+                      <CodeViewer value={changeDetail.diff} language="diff" />
+                    )
+                  ) : (
+                    <div className="workspace-empty">{t("workspace.noCurrentDiff")}</div>
+                  )}
+                </div>
+              </section>
+              <section className={`workspace-commit-history${commitHistoryOpen ? " workspace-commit-history--open" : ""}`}>
+                <button
+                  className="workspace-commit-history__toggle"
+                  type="button"
+                  aria-expanded={commitHistoryOpen}
+                  onClick={() => {
+                    setCommitHistoryOpen((value) => !value);
+                    setExpandedCommit(null);
+                  }}
+                >
+                  {commitHistoryOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                  <span>{t("workspace.commitHistory")}</span>
+                  <small>{loadingHistory && gitHistory.length === 0 ? t("workspace.loading") : t("workspace.commitHistoryMeta", { count: gitHistory.length })}</small>
+                </button>
+                {commitHistoryOpen && (
+                  loadingHistory && gitHistory.length === 0 ? (
+                    <div className="workspace-empty">{t("workspace.loading")}</div>
+                  ) : gitHistoryErr && gitHistory.length === 0 ? (
+                    <div className="workspace-empty workspace-empty--error">{t("workspace.historyUnavailable")}: {gitHistoryErr}</div>
+                  ) : gitHistory.length === 0 ? (
+                    <div className="workspace-empty">{t("workspace.noCommitHistory")}</div>
+                  ) : (
+                    <div className="workspace-git-history__list">
+                      {gitHistory.map((commit) => (
+                        <div key={commit.hash} className={`workspace-git-history__item${expandedCommit === commit.hash ? " workspace-git-history__item--expanded" : ""}`}>
+                          <button className="workspace-git-history__head" onClick={() => void toggleCommit(commit.hash)}>
+                            <div className="workspace-git-history__head-top">
+                              {expandedCommit === commit.hash ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                              <span className="workspace-git-history__message">{commit.message}</span>
+                            </div>
+                            <div className="workspace-git-history__head-bottom">
+                              <span className="workspace-git-history__author">{commit.author}</span>
+                              <span className="workspace-git-history__date">
+                                {formatCommitDate(commit.date)} <span className="workspace-git-history__hash">{commit.hash.substring(0, 7)}</span>
+                              </span>
+                            </div>
+                          </button>
+                          {expandedCommit === commit.hash && (
+                            <div className="workspace-git-history__detail">
+                              {loadingCommit ? (
+                                <div className="workspace-empty">{t("workspace.loading")}</div>
+                              ) : commitDetail?.diff ? (
+                                <CodeViewer value={cleanGitDiff(commitDetail.diff)} language="diff" />
+                              ) : (
+                                <div className="workspace-empty">{t("workspace.noCommitDetail")}</div>
+                              )}
+                            </div>
                           )}
                         </div>
-                      )}
+                      ))}
                     </div>
-                  ))}
-                </div>
-              )}
+                  )
+                )}
+              </section>
             </div>
           ) : !selectedPath ? (
             <div className="workspace-empty">{t("workspace.pickFile")}</div>
-          ) : loadingPreview ? (
+          ) : loadingPreview && !preview ? (
             <div className="workspace-empty">{t("workspace.loading")}</div>
-          ) : preview?.err ? (
-            <div className="workspace-empty workspace-empty--error">{preview.err}</div>
+          ) : preview?.err || (previewErr && !preview) ? (
+            <div className="workspace-empty workspace-empty--error">
+              {/no such file|not found|enoent/i.test(previewErr || preview?.err || "") ? t("workspace.fileDeleted") : (previewErr || preview?.err)}
+            </div>
           ) : preview?.kind ? (
-            renderMediaPreview(preview)
+            <WorkspaceMediaPreview preview={preview} />
           ) : preview?.binary ? (
             <div className="workspace-empty">{t("workspace.binary")}</div>
           ) : preview ? (
             <>
+              {loadingPreview && <div className="workspace-resource-status" role="status">{t("workspace.loading")}</div>}
+              {previewErr && <div className="workspace-resource-status workspace-resource-status--error">{previewErr}</div>}
               {preview.truncated && <div className="workspace-note">{t("workspace.truncated")}</div>}
               {isMarkdown ? (
                 <Markdown text={preview.body} />
               ) : (
-                <CodeViewer value={preview.body || " "} language={languageFor(selectedPath)} />
+                <CodeViewer
+                  value={preview.body || " "}
+                  language={languageFor(selectedPath)}
+                  scrollMode="expand"
+                  sourceSize={preview.size}
+                  showLineNumbers
+                  searchRequestPending={codeSearchRequestPending && codeSearchRequestPath === selectedPath}
+                  onSearchRequestConsumed={consumeCodeSearchRequest}
+                />
               )}
             </>
           ) : null}
@@ -1691,7 +2081,6 @@ export function WorkspacePanel({
                   className={viewMode === "changed" ? "workspace-files__tab workspace-files__tab--active" : "workspace-files__tab"}
                   onClick={() => {
                     setViewMode("changed");
-                    void loadGitHistory();
                   }}
                 >
                   <GitBranch size={13} />
@@ -1699,12 +2088,29 @@ export function WorkspacePanel({
                 </button>
               </div>
             )}
-            {showViewTabs && (
-              <Tooltip label={t("workspace.refreshChanges")}>
-                <button className="workspace-iconbtn" onClick={() => { void loadGitHistory(); void loadWorkspaceChanges(); }}>
-                  <RefreshCw size={14} />
-                </button>
-              </Tooltip>
+            <Tooltip label={t("workspace.refreshChanges")}>
+              <button
+                className="workspace-iconbtn"
+                type="button"
+                aria-label={t("workspace.refreshChanges")}
+                aria-busy={loadingPreview || loadingHistory}
+                onClick={() => {
+                  refreshWorkspaceList();
+                  void refreshSelected();
+                }}
+              >
+                <RefreshCw size={14} />
+              </button>
+            </Tooltip>
+            {workspaceRefresh.watchState !== "active" && (
+              <span
+                className="workspace-watch-status"
+                role="status"
+                title={t(workspaceRefresh.watchState === "degraded" ? "workspace.watchDegraded" : "workspace.watchUnavailable")}
+                aria-label={t(workspaceRefresh.watchState === "degraded" ? "workspace.watchDegraded" : "workspace.watchUnavailable")}
+              >
+                •
+              </span>
             )}
           </div>
         )}
@@ -1736,6 +2142,7 @@ export function WorkspacePanel({
           className="workspace-tree"
           ref={treeRef}
           onContextMenu={openTreeBlankMenu}
+          onScroll={onWorkspaceTreeScroll}
           style={{
             height: "100%",
             overflow: "auto",
@@ -1744,14 +2151,14 @@ export function WorkspacePanel({
         >
           {treeRows.length > 0 ? (
             <div
+              ref={virtualizer.containerRef}
               className="workspace-tree__sizer"
               style={{
-                height: virtualizer.getTotalSize(),
                 width: "100%",
                 position: "relative",
               }}
             >
-              {virtualizer.getVirtualItems().map((row) => {
+              {virtualTreeItems.map((row) => {
                 const item = treeRows[row.index];
                 if (!item) return null;
                 return (
@@ -1764,7 +2171,6 @@ export function WorkspacePanel({
                       top: 0,
                       left: 0,
                       width: "100%",
-                      transform: `translateY(${row.start}px)`,
                     }}
                   >
                     {item.isSearch ? renderSearchRow(item) : renderNormalRow(item)}
@@ -1776,36 +2182,15 @@ export function WorkspacePanel({
         </div>
       </section>
       {treeMenu && (
-        <FloatingMenu
-          x={treeMenu.x}
-          y={treeMenu.y}
-          estimatedHeight={treeMenu.isDir ? WORKSPACE_CONTEXT_MENU_REF_HEIGHT : WORKSPACE_CONTEXT_MENU_FILE_HEIGHT}
-          className="workspace-tree-menu"
-        >
-          <FloatingMenuItems
-            items={[
-              {
-                icon: <MessageSquarePlus size={14} />,
-                label: treeMenu.isDir ? t("workspace.addFolderReferenceToChat") : t("workspace.addFileReferenceToChat"),
-                onSelect: addTreeReferenceToChat,
-              },
-              ...(treeMenu.isDir
-                ? []
-                : [
-                    {
-                      icon: <FileText size={14} />,
-                      label: t("workspace.addFileContentToChat"),
-                      onSelect: () => void addTreeFileToChat(),
-                    },
-                  ]),
-              {
-                icon: <FolderOpen size={14} />,
-                label: t("workspace.revealInFileManager"),
-                onSelect: revealInFileManager,
-              },
-            ]}
-          />
-        </FloatingMenu>
+        <WorkspaceTreeMenu
+          target={treeMenu}
+          workspaceTabId={workspaceTabId}
+          isScopeCurrent={() => currentWorkspaceScopeKeyRef.current === workspaceScopeKey}
+          onClose={() => setTreeMenu(null)}
+          onOpenInTerminal={onOpenInTerminal}
+          onAddReference={addTreeReferenceToChat}
+          onAddFile={() => void addTreeFileToChat()}
+        />
       )}
       <ContextMenu
         open={Boolean(treeBlankMenuPoint)}
@@ -1816,5 +2201,6 @@ export function WorkspacePanel({
         onClose={() => setTreeBlankMenuPoint(null)}
       />
     </aside>
+    </MarkdownImageTabContext.Provider>
   );
 }

@@ -6,7 +6,9 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"html"
 	"io"
 	"net/http"
 	"os"
@@ -18,6 +20,7 @@ import (
 	"time"
 
 	"reasonix/internal/fileref"
+	"reasonix/internal/instruction"
 	"reasonix/internal/proc"
 	"reasonix/internal/secrets"
 )
@@ -134,7 +137,7 @@ func EscapeRefPath(path string) string {
 	}
 	var b strings.Builder
 	b.Grow(len(path) + 8)
-	for i := 0; i < len(path); i++ {
+	for i := range len(path) {
 		if path[i] == ' ' || path[i] == '\t' {
 			b.WriteByte('\\')
 		}
@@ -151,7 +154,7 @@ func UnescapeRefPath(path string) string {
 	}
 	var b strings.Builder
 	b.Grow(len(path))
-	for i := 0; i < len(path); i++ {
+	for i := range len(path) {
 		if path[i] == '\\' && i+1 < len(path) && (path[i+1] == ' ' || path[i+1] == '\t') {
 			continue
 		}
@@ -464,16 +467,6 @@ func (c *Controller) SearchExternalFolderRefs(query string, limit int) []Externa
 	return out
 }
 
-// ExternalFolderRefLocalPath resolves a registered external-folder token path to
-// the local filesystem path authorized for this controller session.
-func (c *Controller) ExternalFolderRefLocalPath(tokenPath string) (path, displayPath string, ok bool) {
-	_, rel, abs, ok := c.externalFolderRefTarget(tokenPath)
-	if !ok {
-		return "", "", false
-	}
-	return filepath.Join(abs, filepath.FromSlash(rel)), externalFolderDisplayPath(abs, rel), true
-}
-
 func sortExternalFolderRefEntries(entries []ExternalFolderRefEntry) {
 	sort.Slice(entries, func(i, j int) bool {
 		return strings.ToLower(entries[i].DisplayName) < strings.ToLower(entries[j].DisplayName)
@@ -553,6 +546,13 @@ func (c *Controller) inputImages(line string) []string {
 	if !c.imageInputEnabled() {
 		return nil
 	}
+	return c.resolveInputImageCandidates(line)
+}
+
+// resolveInputImageCandidates resolves authorized image references without
+// consulting the active model capability. The parent controller uses this only
+// to hand candidates to a child; the child decides whether to embed them.
+func (c *Controller) resolveInputImageCandidates(line string) []string {
 	var urls []string
 	for _, r := range c.detectRefs(line) {
 		baseDir := c.workspaceRoot
@@ -843,6 +843,14 @@ func (c *Controller) resolveRefs(ctx context.Context, line string, scopedOnly bo
 	refs := c.detectRefsMode(line, scopedOnly)
 	refs = resolveBareNames(refs, c.workspaceRoot)
 	var b strings.Builder
+	includedInstructionPaths := map[string]bool{}
+	includedInstructionBodies := map[string]bool{}
+	if current := c.memory.current(); current != nil {
+		for _, doc := range current.Docs {
+			includedInstructionPaths[cleanAbsPath(doc.Path)] = true
+			includedInstructionBodies[doc.Body] = true
+		}
+	}
 	for _, r := range refs {
 		switch r.kind {
 		case refResource:
@@ -862,6 +870,13 @@ func (c *Controller) resolveRefs(ctx context.Context, line string, scopedOnly bo
 				errs = append(errs, "@"+r.raw+" — "+err.Error())
 				continue
 			}
+			pathInstructions, diagnostics := c.resolveReferencedInstructions(r, baseDir, includedInstructionPaths, includedInstructionBodies)
+			if pathInstructions != "" {
+				appendRefBlock(&b, "path-instructions", `target="`+html.EscapeString(displayPathForRef(r))+`"`, pathInstructions)
+			}
+			for _, diagnostic := range diagnostics {
+				errs = append(errs, "@"+r.raw+" — "+diagnostic.Message)
+			}
 			tag := "file"
 			if isDir {
 				tag = "dir"
@@ -876,6 +891,52 @@ func (c *Controller) resolveRefs(ctx context.Context, line string, scopedOnly bo
 		}
 	}
 	return b.String(), errs
+}
+
+func (c *Controller) resolveReferencedInstructions(r ref, baseDir string, includedPaths, includedBodies map[string]bool) (string, []instruction.Diagnostic) {
+	mem := c.memory.current()
+	if mem == nil || strings.TrimSpace(c.workspaceRoot) == "" || r.baseDir != "" {
+		return "", nil
+	}
+	absPath, absBase, ok := resolveAbsRef(r.path, baseDir)
+	if !ok || cleanAbsPath(absBase) != cleanAbsPath(c.workspaceRoot) {
+		return "", nil
+	}
+	targetDir := absPath
+	if info, err := os.Stat(absPath); err != nil || !info.IsDir() {
+		targetDir = filepath.Dir(absPath)
+	}
+	resolved := instruction.Resolve(instruction.ResolveOptions{
+		WorkspaceRoot: c.workspaceRoot,
+		TargetDir:     targetDir,
+		UserDir:       mem.UserDir,
+	})
+	var delta []instruction.Document
+	for _, doc := range resolved.Documents {
+		pathKey := cleanAbsPath(doc.Path)
+		if includedPaths[pathKey] || includedBodies[doc.Body] {
+			continue
+		}
+		includedPaths[pathKey] = true
+		includedBodies[doc.Body] = true
+		delta = append(delta, doc)
+	}
+	return instruction.Block(delta), resolved.Diagnostics
+}
+
+func displayPathForRef(r ref) string {
+	if r.displayPath != "" {
+		return r.displayPath
+	}
+	return r.path
+}
+
+func cleanAbsPath(path string) string {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return filepath.Clean(path)
+	}
+	return filepath.Clean(abs)
 }
 
 func appendRefBlock(b *strings.Builder, tag, attr, body string) {
@@ -954,7 +1015,7 @@ func readFileRef(path, baseDir string) (content string, isDir bool, err error) {
 
 	buf := make([]byte, maxFileRefBytes+1)
 	n, rerr := io.ReadFull(f, buf)
-	if rerr != nil && rerr != io.ErrUnexpectedEOF && rerr != io.EOF {
+	if rerr != nil && !errors.Is(rerr, io.ErrUnexpectedEOF) && !errors.Is(rerr, io.EOF) {
 		return "", false, rerr
 	}
 	data := buf[:n]
@@ -1033,7 +1094,7 @@ func readFileRefUnscoped(path string) (content string, isDir bool, err error) {
 
 	buf := make([]byte, maxFileRefBytes+1)
 	n, rerr := io.ReadFull(f, buf)
-	if rerr != nil && rerr != io.ErrUnexpectedEOF && rerr != io.EOF {
+	if rerr != nil && !errors.Is(rerr, io.ErrUnexpectedEOF) && !errors.Is(rerr, io.EOF) {
 		return "", false, rerr
 	}
 	data := buf[:n]
@@ -1167,14 +1228,14 @@ func extractPDFTextDefault(path string) (pdfExtractResult, error) {
 	python, err := findPython()
 	if err != nil {
 		if firstErr != nil {
-			return pdfExtractResult{}, fmt.Errorf("pdftotext failed (%v), and Python PDF libraries are not available", firstErr)
+			return pdfExtractResult{}, fmt.Errorf("pdftotext failed (%w), and Python PDF libraries are not available", firstErr)
 		}
 		return pdfExtractResult{}, fmt.Errorf("pdftotext and Python PDF libraries are not available")
 	}
 	text, truncated, err := runPDFTextCommand(python, []string{"-c", pythonPDFExtractScript, path})
 	if err != nil {
 		if firstErr != nil {
-			return pdfExtractResult{}, fmt.Errorf("pdftotext failed (%v), Python PDF extraction failed (%w)", firstErr, err)
+			return pdfExtractResult{}, fmt.Errorf("pdftotext failed (%w), Python PDF extraction failed (%w)", firstErr, err)
 		}
 		return pdfExtractResult{}, err
 	}
@@ -1193,7 +1254,7 @@ func findPython() (string, error) {
 func runPDFTextCommand(name string, args []string) (string, bool, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), pdfExtractTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, name, args...)
+	cmd := proc.CommandContext(ctx, name, args...)
 	cmd.Env = secrets.ProcessEnv()
 	setShellKillTree(cmd)
 	cmd.WaitDelay = pdfExtractWaitDelay

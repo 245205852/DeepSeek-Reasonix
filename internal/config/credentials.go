@@ -1,12 +1,14 @@
 package config
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/joho/godotenv"
 
@@ -55,8 +57,20 @@ var credentialSourceTracker = struct {
 	byKey map[string]trackedCredentialSource
 }{byKey: map[string]trackedCredentialSource{}}
 
+// userCredentialEditMu serializes Reasonix-owned credential-store writes.
+// LockUserCredentialEdits also takes a path-derived advisory file lock so a
+// Desktop window, CLI process, or background catalog save can share one
+// compare-and-apply boundary with credential rotation.
+var userCredentialEditMu sync.Mutex
+
 var storedCredentialValueLookup = storedCredentialValue
-var legacyKeyringCredentialValueLookup = legacyKeyringCredentialValue
+
+// legacyKeyringProbeLookup is the test-facing single-key hook returning the full
+// four-state outcome under a caller-owned context (shared 1s migration budget).
+var legacyKeyringProbeLookup = legacyKeyringProbe
+
+// legacyKeyringLookupTimeout is the shared budget for one legacy keyring scan.
+var legacyKeyringLookupTimeout = time.Second
 
 // CredentialResolver resolves credentials repeatedly for one caller-owned view
 // build. It keeps expensive global credential-store lookups bounded to one per
@@ -174,6 +188,10 @@ func credentialEnvNamesFromConfig(cfg *Config) []string {
 		add(conn.Credential.AppSecretEnv)
 		add(conn.Credential.TokenEnv)
 	}
+	for _, h := range cfg.Remote.Hosts {
+		add(h.PassphraseEnv)
+		add(h.PasswordEnv)
+	}
 	sort.Strings(out)
 	return out
 }
@@ -257,6 +275,43 @@ func StoreCredentialLines(lines []string) (string, error) {
 	if len(assignments) == 0 {
 		return CredentialsTargetDescription(), nil
 	}
+	unlock, err := LockUserCredentialEdits()
+	if err != nil {
+		return "", err
+	}
+	defer unlock()
+	return storeCredentialAssignmentsLocked(assignments)
+}
+
+// storeCredentialIfAbsentAndNotCleared writes key=value only when the current
+// credential store still lacks a value and a cleared tombstone for key. The
+// re-check and write share LockUserCredentialEdits so a concurrent settings
+// save or tombstone cannot be overwritten by a stale keyring import.
+// stored is false when the write was skipped because the key is already present
+// or cleared; err is non-nil only on lock/IO failures.
+func storeCredentialIfAbsentAndNotCleared(key, value string) (stored bool, err error) {
+	key = strings.TrimSpace(key)
+	if key == "" || !isCredentialKey(key) {
+		return false, nil
+	}
+	if strings.ContainsAny(value, "\r\n") {
+		return false, fmt.Errorf("credential value for %s contains a newline", key)
+	}
+	unlock, err := LockUserCredentialEdits()
+	if err != nil {
+		return false, err
+	}
+	defer unlock()
+	if credentialCurrentStoreHasKey(key) || credentialCurrentStoreClearedKey(key) {
+		return false, nil
+	}
+	if _, err := storeCredentialAssignmentsLocked(map[string]string{key: value}); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func storeCredentialAssignmentsLocked(assignments map[string]string) (string, error) {
 	if err := storeCredentialsInFile(UserCredentialsPath(), assignments); err != nil {
 		return "", err
 	}
@@ -275,6 +330,38 @@ func SetCredential(key, value string) (string, error) {
 	return StoreCredentialLines([]string{key + "=" + value})
 }
 
+// SetCredentialIfRevision stores one credential only when the global
+// credential file still has expectedRevision. The comparison and write share
+// the same process and advisory file lock, preventing a stale setup page in one
+// Reasonix process from overwriting a credential saved by another process.
+func SetCredentialIfRevision(key, value, expectedRevision string) (string, bool, error) {
+	key = strings.TrimSpace(key)
+	if !isCredentialKey(key) {
+		return "", false, fmt.Errorf("invalid credential key %q", key)
+	}
+	if strings.ContainsAny(value, "\r\n") {
+		return "", false, fmt.Errorf("credential value for %s contains a newline", key)
+	}
+	assignments := parseCredentialLines([]string{key + "=" + value})
+	if len(assignments) != 1 {
+		return "", false, fmt.Errorf("invalid credential assignment for %s", key)
+	}
+
+	unlock, err := LockUserCredentialEdits()
+	if err != nil {
+		return "", false, err
+	}
+	defer unlock()
+	if expectedRevision == "" || CredentialStoreRevision() != expectedRevision {
+		return CredentialsTargetDescription(), false, nil
+	}
+	path, err := storeCredentialAssignmentsLocked(assignments)
+	if err != nil {
+		return "", false, err
+	}
+	return path, true, nil
+}
+
 // IsValidCredentialKey reports whether key can be stored in Reasonix's dotenv
 // credential file and exposed as an environment variable.
 func IsValidCredentialKey(key string) bool {
@@ -286,12 +373,61 @@ func RemoveCredential(key string) error {
 	if key == "" || !isCredentialKey(key) {
 		return nil
 	}
+	unlock, err := LockUserCredentialEdits()
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	if path := UserCredentialsPath(); path != "" {
 		if err := removeCredentialFromFile(path, key); err != nil {
 			return err
 		}
 	}
 	return os.Unsetenv(key)
+}
+
+// LockUserCredentialEdits serializes credential-store compare/write
+// transactions in this process and across Reasonix processes. When both the
+// user config and credential store are needed, acquire LockUserConfigEdits
+// first, then this lock.
+func LockUserCredentialEdits() (func(), error) {
+	userCredentialEditMu.Lock()
+	path := UserCredentialsPath()
+	if strings.TrimSpace(path) == "" {
+		userCredentialEditMu.Unlock()
+		return nil, fmt.Errorf("credentials store unavailable")
+	}
+	unlockFile, err := acquireConfigFileEditLockWithTimeout(path, configEditLockTimeout)
+	if err != nil {
+		userCredentialEditMu.Unlock()
+		return nil, fmt.Errorf("lock credential edits: %w", err)
+	}
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			unlockFile()
+			userCredentialEditMu.Unlock()
+		})
+	}, nil
+}
+
+// CredentialStoreRevision returns a content-derived revision for the current
+// Reasonix credential store. Callers performing compare-and-apply must hold
+// LockUserCredentialEdits from this read through their commit.
+func CredentialStoreRevision() string {
+	path := UserCredentialsPath()
+	if strings.TrimSpace(path) == "" {
+		return "unavailable"
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "missing"
+		}
+		return "unreadable"
+	}
+	sum := sha256.Sum256(data)
+	return fmt.Sprintf("sha256:%x", sum[:])
 }
 
 func CredentialIsSet(key string) bool {

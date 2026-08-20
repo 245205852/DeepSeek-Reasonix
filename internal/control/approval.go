@@ -9,11 +9,53 @@ import (
 	"sync"
 	"time"
 
+	"reasonix/internal/agent"
 	"reasonix/internal/event"
 	"reasonix/internal/i18n"
 	"reasonix/internal/permission"
-	"reasonix/internal/tool"
 )
+
+// Approve answers a pending ApprovalRequest by ID. It remains the compatibility
+// bridge for clients that do not yet call the scope-aware resolver directly.
+func (c *Controller) Approve(id string, allow, session, persist bool) {
+	if pending := c.approval.peek(id); pending.reply != nil && pending.kind == writeAccessKind {
+		_ = c.ResolveApproval(id, allow, scopeFromApprove(allow, session, persist))
+		return
+	}
+	c.mu.Lock()
+	gate := c.recoveryGate
+	c.mu.Unlock()
+	if gate != nil && gate.HasApproval(id) {
+		action := agent.RecoveryActionRevise
+		if allow {
+			action = agent.RecoveryActionContinue
+		}
+		_ = c.ResolveRecovery(id, action, "")
+		return
+	}
+	pending := c.approval.resolve(id)
+	if pending.reply == nil {
+		return
+	}
+	outcome := "deny"
+	if pending.tool == planApprovalTool {
+		outcome = string(PlanDecisionRevisePlan)
+		if allow {
+			outcome = string(PlanDecisionStartExecution)
+		}
+	} else if allow {
+		switch {
+		case persist:
+			outcome = "allow_persistent"
+		case session:
+			outcome = "allow_session"
+		default:
+			outcome = "allow_once"
+		}
+	}
+	c.recordDecisionReceipt(pending, outcome)
+	pending.reply <- approvalReply{allow: allow, session: session, persist: persist}
+}
 
 // approvalManager owns the approval/ask prompt bookkeeping and the runtime
 // approval posture, behind its own locks and off the controller's c.mu. It is a
@@ -58,6 +100,10 @@ type approvalManager struct {
 	// requestApproval): Sink implementations must not block and must not call
 	// back into Ask or the tool-approval chain, or they deadlock the prompt.
 	promptMu sync.Mutex
+	// promptEmitMu serializes prompt registration and emission with an SSE
+	// attach handoff. It is separate from promptMu because promptMu remains
+	// held while waiting for the user's answer.
+	promptEmitMu sync.Mutex
 }
 
 func newApprovalManager(policy permission.Policy, mode string, timeout time.Duration) approvalManager {
@@ -72,9 +118,10 @@ func newApprovalManager(policy permission.Policy, mode string, timeout time.Dura
 	}
 }
 
-// NewHeadlessPermissionGate builds the non-interactive gate used by `reasonix run`
-// and sub-agents. It preserves headless autonomy for ordinary Ask decisions, but
-// refuses tools whose contract requires a fresh human approval.
+// NewHeadlessPermissionGate builds the legacy bootstrap gate used before a
+// frontend declares its approval posture. Interactive frontends replace it
+// before running; callers that are actually headless must pass a non-empty mode
+// through BuildHeadlessApprovalGate.
 func NewHeadlessPermissionGate(policy permission.Policy) *freshHumanHeadlessGate {
 	return &freshHumanHeadlessGate{gate: permission.NewGate(policy, nil)}
 }
@@ -86,16 +133,20 @@ func NewHeadlessPermissionGate(policy permission.Policy) *freshHumanHeadlessGate
 // the `task`/`read_only_task` sub-agent, writer-capable skill sub-agents
 // (run_skill/install_skill), and the planner runner — so all of them share the
 // CLI-selected headless approval mode instead of only the parent executor
-// getting it while the rest silently keep the mode-unaware default (ask
-// resolves to allow), which let a task sub-agent run a write an explicit ask
+// getting it while the rest silently keep the mode-unaware default, which let
+// a task sub-agent run a write an explicit ask
 // rule was supposed to deny under auto.
 func BuildHeadlessApprovalGate(policy permission.Policy, mode string) *freshHumanHeadlessGate {
+	// An empty mode is the boot-time placeholder used by interactive frontends
+	// before they install their real gate. Keep that compatibility path distinct
+	// from an explicit headless Ask posture, which has nobody to approve it.
+	if strings.TrimSpace(mode) == "" {
+		return NewHeadlessPermissionGate(policy)
+	}
 	switch normalizeToolApprovalMode(mode) {
 	case ToolApprovalYolo:
 		policy.Mode = permission.Allow
-		gate := NewHeadlessPermissionGate(policy)
-		gate.bypassMCPAuto = true
-		return gate
+		return &freshHumanHeadlessGate{gate: permission.NewGate(policy, nil), dynamicBashBypass: true}
 	case ToolApprovalAuto:
 		policy.Mode = permission.Allow
 		return &freshHumanHeadlessGate{gate: permission.NewGate(policy, denyPermissionApprover{})}
@@ -103,7 +154,8 @@ func BuildHeadlessApprovalGate(policy permission.Policy, mode string) *freshHuma
 		policy.Mode = permission.Deny
 		return &freshHumanHeadlessGate{gate: permission.NewGate(policy, denyPermissionApprover{})}
 	default:
-		return NewHeadlessPermissionGate(policy)
+		policy.Mode = permission.Ask
+		return &freshHumanHeadlessGate{gate: permission.NewGate(policy, denyPermissionApprover{})}
 	}
 }
 
@@ -151,41 +203,38 @@ func (g *SharedHeadlessGate) Check(ctx context.Context, toolName string, args js
 	return gate.Check(ctx, toolName, args, readOnly)
 }
 
-func (g *SharedHeadlessGate) CheckFresh(ctx context.Context, toolName, subject string, args json.RawMessage, readOnly bool) (bool, string, error) {
+func (g *SharedHeadlessGate) ExplicitlyDenies(toolName string, args json.RawMessage) bool {
 	g.mu.RLock()
 	gate := g.gate
 	g.mu.RUnlock()
-	return gate.CheckFresh(ctx, toolName, subject, args, readOnly)
-}
-
-func (g *SharedHeadlessGate) CheckMCP(ctx context.Context, toolName, subject string, args json.RawMessage, readOnly, destructive bool, mode, reviewer string) (bool, string, error) {
-	g.mu.RLock()
-	gate := g.gate
-	g.mu.RUnlock()
-	return gate.CheckMCP(ctx, toolName, subject, args, readOnly, destructive, mode, reviewer)
+	return gate.ExplicitlyDenies(toolName, args)
 }
 
 type freshHumanHeadlessGate struct {
-	gate          *permission.Gate
-	bypassMCPAuto bool
+	gate                    *permission.Gate
+	dynamicBashBypass       bool
+	allowLowRiskFreshAction func(toolName string, args json.RawMessage) bool
 }
 
 func (g *freshHumanHeadlessGate) Check(ctx context.Context, toolName string, args json.RawMessage, readOnly bool) (bool, string, error) {
 	if RequiresFreshHumanApprovalTool(toolName) {
+		if !g.gate.ExplicitlyDenies(toolName, args) &&
+			g.allowLowRiskFreshAction != nil &&
+			g.allowLowRiskFreshAction(toolName, args) {
+			return true, "", nil
+		}
 		return false, "this tool requires fresh human approval and cannot run in a non-interactive session. Use an interactive session or a user-initiated memory command.", nil
+	}
+	if strings.EqualFold(toolName, "bash") && permission.BashSubjectRequiresExplicitApproval(permission.Subject(args)) {
+		if g.gate.Policy.Decide(toolName, readOnly, args) != permission.Allow && !g.dynamicBashBypass {
+			return false, "this dynamic shell command requires human approval and cannot run in a non-interactive session. Inline interpreter code (python -c, node -e) is blocked because the host cannot audit it; write the code to a file with write_file and run that file instead (e.g. `python repro.py`), or use read_file/grep for inspection. The user can also switch to an interactive session or YOLO mode.", nil
+		}
 	}
 	return g.gate.Check(ctx, toolName, args, readOnly)
 }
 
-func (g *freshHumanHeadlessGate) CheckFresh(context.Context, string, string, json.RawMessage, bool) (bool, string, error) {
-	return false, "this tool requires fresh human approval and cannot run in a non-interactive session.", nil
-}
-
-func (g *freshHumanHeadlessGate) CheckMCP(ctx context.Context, toolName, subject string, args json.RawMessage, readOnly, destructive bool, mode, reviewer string) (bool, string, error) {
-	if g.bypassMCPAuto && !destructive && tool.NormalizeMCPApprovalMode(mode) == tool.MCPApprovalAuto {
-		reviewer = ""
-	}
-	return g.gate.CheckMCP(ctx, toolName, subject, args, readOnly, destructive, mode, reviewer)
+func (g *freshHumanHeadlessGate) ExplicitlyDenies(toolName string, args json.RawMessage) bool {
+	return g.gate.Policy.ExplicitlyDenies(toolName, args)
 }
 
 // preApproved reports whether a tool call can skip the prompt — either the
@@ -201,35 +250,91 @@ func (a *approvalManager) preApproved(tool, subject string, args json.RawMessage
 // class. Fresh user decisions may reuse an explicit session grant, but they are
 // never answered by YOLO/full-access or the approved-plan execution window.
 func (a *approvalManager) preApprovedForDecision(tool, subject string, args json.RawMessage, fresh bool) bool {
+	return a.preApprovedForDecisionOptions(tool, subject, args, fresh, false)
+}
+
+func (a *approvalManager) preApprovedForDecisionOptions(tool, subject string, args json.RawMessage, fresh, requireHuman bool) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if fresh {
 		return a.sessionGrantAllowsLocked(tool, subject)
 	}
+	if requireHuman {
+		return a.toolApprovalMode == ToolApprovalYolo || a.sessionGrantAllowsLocked(tool, subject)
+	}
 	return a.bypassAllowsLocked(tool, subject, args) || a.sessionGrantAllowsLocked(tool, subject)
+}
+
+func (a *approvalManager) preApprovedForRequiredHuman(tool, subject string) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.toolApprovalMode == ToolApprovalYolo || a.sessionGrantAllowsLocked(tool, subject)
 }
 
 // register allocates an approval ID, records the pending prompt, and returns the
 // reply channel the resolve path will signal.
 func (a *approvalManager) register(tool, subject, reason string) (string, chan approvalReply) {
-	return a.registerDecision(tool, subject, reason, false)
+	return a.registerWithInput(tool, subject, reason, nil)
+}
+
+func (a *approvalManager) registerWithInput(tool, subject, reason string, rawInput json.RawMessage) (string, chan approvalReply) {
+	return a.registerDecisionWithInput(tool, subject, reason, rawInput, false, false)
 }
 
 // registerDecision allocates an approval ID for either an ordinary tool
 // permission or a fresh user decision. Fresh decisions are not auto-drained when
 // the user switches to auto/yolo tool approval while the prompt is visible.
-func (a *approvalManager) registerDecision(tool, subject, reason string, fresh bool) (string, chan approvalReply) {
+func (a *approvalManager) registerDecision(tool, subject, reason string, fresh, requireHuman bool) (string, chan approvalReply) {
+	return a.registerDecisionWithInput(tool, subject, reason, nil, fresh, requireHuman)
+}
+
+func (a *approvalManager) registerDecisionWithInput(tool, subject, reason string, rawInput json.RawMessage, fresh, requireHuman bool) (string, chan approvalReply) {
+	return a.registerDecisionKindWithInput(tool, subject, reason, rawInput, fresh, requireHuman, "", nil)
+}
+
+// registerDecisionKind is registerDecision with optional Kind/Recovery payload
+// so Auto Guard cards survive ReplayPendingPrompts.
+func (a *approvalManager) registerDecisionKind(tool, subject, reason string, fresh, requireHuman bool, kind string, rec *event.RecoveryApproval) (string, chan approvalReply) {
+	return a.registerDecisionKindWithInput(tool, subject, reason, nil, fresh, requireHuman, kind, rec)
+}
+
+func (a *approvalManager) registerDecisionKindWithInput(tool, subject, reason string, rawInput json.RawMessage, fresh, requireHuman bool, kind string, rec *event.RecoveryApproval) (string, chan approvalReply) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.nextID++
 	id := strconv.Itoa(a.nextID)
 	reply := make(chan approvalReply, 1)
 	autoDrain := false
-	if !fresh {
-		autoDrain = a.autoApprovalWouldAllowLocked(tool, subject)
+	if !fresh && !requireHuman {
+		autoDrain = a.autoApprovalWouldAllowLocked(tool, subject, rawInput)
 	}
-	a.approvals[id] = pendingApproval{tool: tool, subject: subject, reason: reason, fresh: fresh, autoDrain: autoDrain, reply: reply}
+	a.approvals[id] = pendingApproval{
+		id:   id,
+		tool: tool, subject: subject, reason: reason, rawInput: append(json.RawMessage(nil), rawInput...), fresh: fresh, requireHuman: requireHuman,
+		autoDrain: autoDrain, kind: kind, recovery: rec, reply: reply,
+	}
 	return id, reply
+}
+
+func (a *approvalManager) registerWriteAccess(tool, subject, reason string, rawInput json.RawMessage, payload *event.WriteAccessApproval) (string, chan approvalReply) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.nextID++
+	id := strconv.Itoa(a.nextID)
+	reply := make(chan approvalReply, 1)
+	a.approvals[id] = pendingApproval{
+		id: id, tool: tool, subject: subject, reason: reason,
+		rawInput: append(json.RawMessage(nil), rawInput...),
+		fresh:    true, requireHuman: true, kind: writeAccessKind,
+		writeAccess: event.NormalizeWriteAccessApproval(payload), reply: reply,
+	}
+	return id, reply
+}
+
+func (a *approvalManager) peek(id string) pendingApproval {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.approvals[id]
 }
 
 // grantSession records a session-scoped grant so future calls in the same scope
@@ -266,6 +371,7 @@ func (a *approvalManager) grantPlanModeReadOnlyCommand(prefix string) {
 type SessionAuthorizations struct {
 	Grants                   []string
 	PlanModeReadOnlyCommands []string
+	WriteRoots               []string
 }
 
 func (a *approvalManager) snapshotSessionAuthorizations() SessionAuthorizations {
@@ -311,16 +417,56 @@ func (a *approvalManager) resolve(id string) pendingApproval {
 	return p
 }
 
+// resolveTool removes id only when it belongs to the expected specialized
+// decision surface. A mismatched bridge call must not consume another approval
+// type that happens to share the same short numeric id.
+func (a *approvalManager) resolveTool(id, tool string) (pendingApproval, bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	p, ok := a.approvals[id]
+	if !ok || p.tool != tool {
+		return pendingApproval{}, false
+	}
+	delete(a.approvals, id)
+	return p, true
+}
+
 // registerAsk allocates an ask ID, records the pending question batch, and
-// returns the reply channel.
+// returns the reply channel. The ask starts queued: registering before the
+// prompt lock is what makes a question waiting behind another prompt visible
+// at all, instead of existing only inside a blocked goroutine.
 func (a *approvalManager) registerAsk(questions []event.AskQuestion) (string, chan []event.AskAnswer) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.nextID++
 	id := strconv.Itoa(a.nextID)
 	reply := make(chan []event.AskAnswer, 1)
-	a.asks[id] = pendingAsk{questions: questions, reply: reply}
+	a.asks[id] = pendingAsk{questions: questions, reply: reply, queued: true}
 	return id, reply
+}
+
+// markAskEmitted clears the queued flag once the ask has reached a frontend,
+// which is what makes it eligible for replay.
+func (a *approvalManager) markAskEmitted(id string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if p, ok := a.asks[id]; ok {
+		p.queued = false
+		a.asks[id] = p
+	}
+}
+
+// queuedAsks reports asks registered but not yet shown.
+func (a *approvalManager) queuedAsks() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	n := 0
+	for _, p := range a.asks {
+		if p.queued {
+			n++
+		}
+	}
+	return n
 }
 
 // cancelAsk drops a pending ask (timeout/abort path).
@@ -346,6 +492,19 @@ func (a *approvalManager) clearAll() {
 	defer a.mu.Unlock()
 	clear(a.approvals)
 	clear(a.asks)
+}
+
+// clearKind drops pending approvals of one specialized kind. Session recovery
+// state uses this during rotations so a card from the previous session cannot
+// be answered against the newly active one.
+func (a *approvalManager) clearKind(kind string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for id, pending := range a.approvals {
+		if pending.kind == kind {
+			delete(a.approvals, id)
+		}
+	}
 }
 
 // hasPending reports whether any prompt is awaiting a user decision.
@@ -400,10 +559,18 @@ func (a *approvalManager) snapshotPrompts() ([]event.Approval, []event.Ask) {
 	defer a.mu.Unlock()
 	approvals := make([]event.Approval, 0, len(a.approvals))
 	for id, p := range a.approvals {
-		approvals = append(approvals, event.Approval{ID: id, Tool: p.tool, Subject: p.subject, Reason: p.reason, Fresh: p.fresh})
+		approvals = append(approvals, event.Approval{
+			ID: id, Tool: p.tool, Subject: p.subject, Reason: p.reason, RawInput: append(json.RawMessage(nil), p.rawInput...), Fresh: p.fresh,
+			Kind: p.kind, Recovery: p.recovery, WriteAccess: event.NormalizeWriteAccessApproval(p.writeAccess),
+		})
 	}
 	asks := make([]event.Ask, 0, len(a.asks))
 	for id, p := range a.asks {
+		// A queued ask has never been shown; replaying it would put a question
+		// on screen ahead of the prompt it is waiting behind.
+		if p.queued {
+			continue
+		}
 		asks = append(asks, event.Ask{ID: id, Questions: p.questions})
 	}
 	return approvals, asks
@@ -413,9 +580,17 @@ func normalizePlanModeReadOnlyCommandPrefix(prefix string) string {
 	return strings.Join(strings.Fields(strings.TrimSpace(prefix)), " ")
 }
 
-// --- decision helpers (caller holds a.mu) ---
+// decision helpers (caller holds a.mu)
 
 func (a *approvalManager) bypassAllowsLocked(tool, subject string, args json.RawMessage) bool {
+	if isMemoryApprovalTool(tool) {
+		switch a.toolApprovalMode {
+		case ToolApprovalYolo:
+			return true
+		case ToolApprovalAuto:
+			return a.autoApprovalWouldAllowLocked(tool, subject, args)
+		}
+	}
 	if requiresFreshApprovalTool(tool) {
 		return false
 	}
@@ -433,12 +608,15 @@ func (a *approvalManager) bypassAllowsLocked(tool, subject string, args json.Raw
 	return policy.DecideSubject(tool, false, subject) == permission.Allow
 }
 
-func (a *approvalManager) autoApprovalWouldAllowLocked(tool, subject string) bool {
-	if requiresFreshApprovalTool(tool) {
+func (a *approvalManager) autoApprovalWouldAllowLocked(tool, subject string, args json.RawMessage) bool {
+	if requiresFreshApprovalTool(tool) && !isMemoryApprovalTool(tool) {
 		return false
 	}
 	policy := a.policy
 	policy.Mode = permission.Allow
+	if len(args) > 0 {
+		return policy.Decide(tool, false, args) == permission.Allow
+	}
 	return policy.DecideSubject(tool, false, subject) == permission.Allow
 }
 
@@ -456,7 +634,7 @@ func (a *approvalManager) sessionGrantAllowsLocked(tool, subject string) bool {
 
 // drainedApproval is a pending approval removed by a posture switch, keeping
 // its prompt id so frontends can dismiss exactly the prompts the new posture
-// resolved (fresh/plan/memory prompts stay pending and must stay visible).
+// resolved (plan/sandbox/config prompts stay pending and must stay visible).
 type drainedApproval struct {
 	id    string
 	reply chan approvalReply
@@ -467,7 +645,15 @@ type drainedApproval struct {
 func (a *approvalManager) drainLocked(includeExplicitAsk bool) []drainedApproval {
 	pending := make([]drainedApproval, 0, len(a.approvals))
 	for id, approval := range a.approvals {
-		if approval.fresh || requiresFreshApprovalTool(approval.tool) {
+		memoryBypass := isMemoryApprovalTool(approval.tool) && (a.toolApprovalMode == ToolApprovalYolo ||
+			a.toolApprovalMode == ToolApprovalAuto && approval.autoDrain)
+		if approval.kind == writeAccessKind {
+			continue
+		}
+		if (approval.fresh || requiresFreshApprovalTool(approval.tool)) && !memoryBypass {
+			continue
+		}
+		if approval.requireHuman && !includeExplicitAsk {
 			continue
 		}
 		if !includeExplicitAsk && !approval.autoDrain {
@@ -479,7 +665,7 @@ func (a *approvalManager) drainLocked(includeExplicitAsk bool) []drainedApproval
 	return pending
 }
 
-// --- pure approval helpers ---
+// pure approval helpers
 
 func normalizeToolApprovalMode(mode string) string {
 	switch strings.ToLower(strings.TrimSpace(mode)) {
@@ -494,12 +680,23 @@ func normalizeToolApprovalMode(mode string) string {
 	}
 }
 
-// RequiresFreshHumanApprovalTool reports whether a tool must be answered by a
-// human decision, not by YOLO/auto approval, Guardian, or a non-interactive nil
-// approver. A small subset may still opt into explicit session grants.
+// RequiresFreshHumanApprovalTool reports tools that session grants,
+// Guardian/hooks, and headless nil approvers cannot authorize. Interactive Auto
+// treats remember/forget as normal policy fallback, while interactive YOLO may
+// also bypass explicit memory ask rules. A controller that owns the scoped
+// memory store may still auto-allow a bounded create-only project memory.
 func RequiresFreshHumanApprovalTool(tool string) bool {
 	switch tool {
 	case planApprovalTool, memoryRememberTool, memoryForgetTool, SandboxEscapeApprovalTool, ManagedConfigWriteApprovalTool:
+		return true
+	default:
+		return false
+	}
+}
+
+func isMemoryApprovalTool(tool string) bool {
+	switch tool {
+	case memoryRememberTool, memoryForgetTool:
 		return true
 	default:
 		return false

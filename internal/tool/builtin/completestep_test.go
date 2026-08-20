@@ -204,7 +204,7 @@ func TestCompleteStepExplainsRenewalAgainstCompletedTodoList(t *testing.T) {
 func TestCompleteStepDeliveryRejectsOpaqueEvalVerification(t *testing.T) {
 	ledger := evidence.NewLedger()
 	ledger.Record(evidence.ReceiptFromToolCall("bash", json.RawMessage(`{"command":"node -e 'console.log(1)'"}`), true, false))
-	ctx := evidence.WithDeliveryProfile(evidence.WithLedger(context.Background(), ledger))
+	ctx := evidence.WithClosedLoopExecution(evidence.WithLedger(context.Background(), ledger))
 
 	_, err := completeStep{}.Execute(ctx, json.RawMessage(`{
 		"step":"Check JavaScript",
@@ -214,7 +214,7 @@ func TestCompleteStepDeliveryRejectsOpaqueEvalVerification(t *testing.T) {
 	if err == nil {
 		t.Fatal("delivery complete_step should reject a command the final gate cannot recognize")
 	}
-	for _, want := range []string{"not a recognized delivery verification", "node --check"} {
+	for _, want := range []string{"not a recognized closed-loop verification", "node --check"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("error %q missing recovery hint %q", err, want)
 		}
@@ -225,7 +225,7 @@ func TestCompleteStepDeliveryAcceptsNodeSyntaxCheck(t *testing.T) {
 	ledger := evidence.NewLedger()
 	ledger.Record(evidence.ReceiptFromToolCall("edit_file", json.RawMessage(`{"path":"app.js"}`), true, false))
 	ledger.Record(evidence.ReceiptFromToolCall("bash", json.RawMessage(`{"command":"node --check app.js"}`), true, false))
-	ctx := evidence.WithDeliveryProfile(evidence.WithLedger(context.Background(), ledger))
+	ctx := evidence.WithClosedLoopExecution(evidence.WithLedger(context.Background(), ledger))
 
 	if _, err := (completeStep{}).Execute(ctx, json.RawMessage(`{
 		"step":"Check JavaScript",
@@ -239,7 +239,7 @@ func TestCompleteStepDeliveryAcceptsNodeSyntaxCheck(t *testing.T) {
 func TestCompleteStepDeliveryKeepsReadOnlyEvidenceCompatibility(t *testing.T) {
 	ledger := evidence.NewLedger()
 	ledger.Record(evidence.ReceiptFromToolCall("bash", json.RawMessage(`{"command":"grep -n TODO app.js"}`), true, false))
-	ctx := evidence.WithDeliveryProfile(evidence.WithLedger(context.Background(), ledger))
+	ctx := evidence.WithClosedLoopExecution(evidence.WithLedger(context.Background(), ledger))
 
 	if _, err := (completeStep{}).Execute(ctx, json.RawMessage(`{
 		"step":"Inspect JavaScript",
@@ -528,6 +528,62 @@ func TestCompleteStepMatchesParaphrasedCommands(t *testing.T) {
 	}
 }
 
+func TestCompleteStepAcceptsSuccessfulReviewEvidence(t *testing.T) {
+	ledger := evidence.NewLedger()
+	ledger.Record(evidence.ReceiptFromToolCall("review", json.RawMessage(`{"task":"review changes"}`), true, true))
+	ctx := evidence.WithLedger(context.Background(), ledger)
+
+	if _, err := (completeStep{}).Execute(ctx, json.RawMessage(`{
+		"step":"Review code","result":"review completed",
+		"evidence":[{"kind":"review","summary":"the built-in review completed"}]}`)); err != nil {
+		t.Fatalf("successful review evidence rejected: %v", err)
+	}
+}
+
+func TestCompleteStepRejectsFailedReviewEvidence(t *testing.T) {
+	ledger := evidence.NewLedger()
+	ledger.Record(evidence.ReceiptFromToolCall("review", json.RawMessage(`{"task":"review changes"}`), false, true))
+	ctx := evidence.WithLedger(context.Background(), ledger)
+
+	if _, err := (completeStep{}).Execute(ctx, json.RawMessage(`{
+		"step":"Review code","result":"review completed",
+		"evidence":[{"kind":"review","summary":"the built-in review completed"}]}`)); err == nil {
+		t.Fatal("failed review task must not satisfy review evidence")
+	}
+}
+
+func TestCompleteStepRejectsReviewEvidenceBeforeLatestMutation(t *testing.T) {
+	ledger := evidence.NewLedger()
+	ledger.Record(evidence.ReceiptFromToolCall("review", json.RawMessage(`{"task":"review changes"}`), true, true))
+	ledger.Record(evidence.ReceiptFromToolCall("edit_file", json.RawMessage(`{"path":"changed.go"}`), true, false))
+	ctx := evidence.WithLedger(context.Background(), ledger)
+
+	_, err := (completeStep{}).Execute(ctx, json.RawMessage(`{
+		"step":"Review code","result":"review completed",
+		"evidence":[{"kind":"review","summary":"the built-in review completed"}]}`))
+	if err == nil || !strings.Contains(err.Error(), "review must be newer and cover the changed result") {
+		t.Fatalf("stale review evidence should be rejected with recovery guidance, got %v", err)
+	}
+}
+
+func TestCompleteStepAcceptsStructuredReviewWithBlockingFindings(t *testing.T) {
+	ledger := evidence.NewLedger()
+	ledger.Record(evidence.ReceiptFromToolCall("edit_file", json.RawMessage(`{"path":"changed.go"}`), true, false))
+	ledger.Record(evidence.Receipt{ToolName: "review_report", Success: true, Args: json.RawMessage(`{
+		"kind":"review",
+		"verdict":"block",
+		"reviewed_paths":["changed.go"],
+		"findings":[{"severity":"critical","summary":"must fix","path":"changed.go"}]
+	}`)})
+	ctx := evidence.WithLedger(context.Background(), ledger)
+
+	if _, err := (completeStep{}).Execute(ctx, json.RawMessage(`{
+		"step":"Review code","result":"review found blocking follow-up",
+		"evidence":[{"kind":"review","summary":"structured review completed with a blocking finding"}]}`)); err != nil {
+		t.Fatalf("a blocking verdict should complete the review activity while remaining enforceable by delivery gates: %v", err)
+	}
+}
+
 func TestCompleteStepExplainsFailedCommandReceipt(t *testing.T) {
 	ledger := evidence.NewLedger()
 	ledger.Record(evidence.Receipt{ToolName: "bash", Success: false, Command: "ls scripts/test_lines.txt 2>&1"})
@@ -581,7 +637,7 @@ func TestCompleteStepSessionFallbackUsesNormalizedMatching(t *testing.T) {
 		{Role: provider.RoleTool, ToolCallID: "c1", Name: "bash", Content: "ok\nPASS"},
 	}
 	ctx := evidence.WithLedger(context.Background(), evidence.NewLedger())
-	ctx = evidence.WithSessionMessages(ctx, msgs)
+	ctx = evidence.WithSessionMessages(ctx, func() []provider.Message { return msgs })
 
 	if _, err := (completeStep{}).Execute(ctx, json.RawMessage(`{
 		"step":"x","result":"y",
@@ -598,7 +654,7 @@ func TestCompleteStepSessionFallbackSkipsFailedCalls(t *testing.T) {
 		{Role: provider.RoleTool, ToolCallID: "c1", Name: "bash", Content: "error: command exited: exit status 1\nFAIL"},
 	}
 	ctx := evidence.WithLedger(context.Background(), evidence.NewLedger())
-	ctx = evidence.WithSessionMessages(ctx, msgs)
+	ctx = evidence.WithSessionMessages(ctx, func() []provider.Message { return msgs })
 
 	if _, err := (completeStep{}).Execute(ctx, json.RawMessage(`{
 		"step":"x","result":"y",
@@ -639,7 +695,7 @@ func TestCompleteStepSessionFallbackResolvesDiffPaths(t *testing.T) {
 		{Role: provider.RoleTool, ToolCallID: "w1", Name: "write_file", Content: "wrote 10 lines"},
 	}
 	ctx := evidence.WithLedger(context.Background(), evidence.NewLedger())
-	ctx = evidence.WithSessionMessages(ctx, msgs)
+	ctx = evidence.WithSessionMessages(ctx, func() []provider.Message { return msgs })
 
 	if _, err := (completeStep{}).Execute(ctx, json.RawMessage(`{
 		"step":"x","result":"y",
@@ -656,7 +712,7 @@ func TestCompleteStepSessionFallbackSkipsFailedWrite(t *testing.T) {
 		{Role: provider.RoleTool, ToolCallID: "w1", Name: "write_file", Content: "error: permission denied"},
 	}
 	ctx := evidence.WithLedger(context.Background(), evidence.NewLedger())
-	ctx = evidence.WithSessionMessages(ctx, msgs)
+	ctx = evidence.WithSessionMessages(ctx, func() []provider.Message { return msgs })
 
 	if _, err := (completeStep{}).Execute(ctx, json.RawMessage(`{
 		"step":"x","result":"y",

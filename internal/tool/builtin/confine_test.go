@@ -3,6 +3,8 @@ package builtin
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,8 +13,19 @@ import (
 	"reasonix/internal/config"
 	"reasonix/internal/sandbox"
 	"reasonix/internal/secrets"
+	"reasonix/internal/testenv"
 	"reasonix/internal/tool"
 )
+
+func isolateBuiltinTestUserState(t *testing.T) string {
+	t.Helper()
+	cleanup, err := testenv.IsolateUserState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(cleanup)
+	return os.Getenv("HOME")
+}
 
 func TestWithin(t *testing.T) {
 	root := filepath.FromSlash("/work/proj")
@@ -38,6 +51,66 @@ func TestWithin(t *testing.T) {
 func TestConfineUnconfinedWhenNoRoots(t *testing.T) {
 	if err := confine(nil, "/anywhere/at/all"); err != nil {
 		t.Errorf("empty roots should be unconfined, got %v", err)
+	}
+}
+
+func TestRebindBashWriteRootsUsesMinimalWriteSurface(t *testing.T) {
+	root := t.TempDir()
+	claim := filepath.Join(root, "claimed")
+	tool, ok := RebindBashWriteRoots(ConfineBash(sandbox.Spec{
+		Mode:       "enforce",
+		WriteRoots: []string{root},
+	}, SessionDataGuard{}), []string{claim})
+	if !ok {
+		t.Fatal("expected confined bash to be rebound")
+	}
+	rebound, ok := tool.(bash)
+	if !ok {
+		t.Fatalf("rebound tool type = %T, want bash", tool)
+	}
+	if !rebound.sb.MinimalWrites {
+		t.Fatal("rebound bash must disable write allowances outside claim roots")
+	}
+	want := realRoots([]string{claim})
+	if len(rebound.sb.WriteRoots) != 1 || rebound.sb.WriteRoots[0] != want[0] {
+		t.Fatalf("write roots = %v, want %v", rebound.sb.WriteRoots, want)
+	}
+	if len(rebound.sb.AppContainerWriteRoots) != 1 || rebound.sb.AppContainerWriteRoots[0] != want[0] {
+		t.Fatalf("app-container write roots = %v, want %v", rebound.sb.AppContainerWriteRoots, want)
+	}
+}
+
+func TestReboundBashCannotWriteOutsideClaim(t *testing.T) {
+	if !sandbox.Available() {
+		t.Skip("OS sandbox unavailable")
+	}
+	root := t.TempDir()
+	claim := filepath.Join(root, "claimed")
+	if err := os.MkdirAll(claim, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rebound, ok := RebindBashWriteRoots(ConfineBash(sandbox.Spec{
+		Mode:       "enforce",
+		WriteRoots: []string{root},
+	}, SessionDataGuard{}), []string{claim})
+	if !ok {
+		t.Fatal("expected confined bash to be rebound")
+	}
+
+	inside := filepath.Join(claim, "inside.txt")
+	args, _ := json.Marshal(map[string]string{"command": fmt.Sprintf("printf inside > %q", inside)})
+	if _, err := rebound.Execute(context.Background(), args); err != nil {
+		t.Fatalf("write inside claim failed: %v", err)
+	}
+	if _, err := os.Stat(inside); err != nil {
+		t.Fatalf("write inside claim did not land: %v", err)
+	}
+
+	outside := filepath.Join(t.TempDir(), "escaped.txt")
+	args, _ = json.Marshal(map[string]string{"command": fmt.Sprintf("printf escaped > %q", outside)})
+	_, _ = rebound.Execute(context.Background(), args)
+	if _, err := os.Stat(outside); !os.IsNotExist(err) {
+		t.Fatalf("rebound bash wrote outside claim, stat err=%v", err)
 	}
 }
 
@@ -102,11 +175,7 @@ func TestWriteFileConfinement(t *testing.T) {
 }
 
 func TestWriteFileDefaultRootsDenyUserConfigUnlessAllowed(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
-	t.Setenv("AppData", filepath.Join(home, "AppData", "Roaming"))
+	home := isolateBuiltinTestUserState(t)
 
 	project := filepath.Join(home, "project")
 	if err := os.MkdirAll(project, 0o755); err != nil {
@@ -151,11 +220,7 @@ func (s *stubConfigWriteApprover) ApproveManagedConfigWrite(_ context.Context, r
 }
 
 func TestManagedConfigWriteFailsClosedWithoutApprover(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
-	t.Setenv("AppData", filepath.Join(home, "AppData", "Roaming"))
+	home := isolateBuiltinTestUserState(t)
 
 	project := filepath.Join(home, "project")
 	if err := os.MkdirAll(project, 0o755); err != nil {
@@ -182,11 +247,7 @@ func TestManagedConfigWriteFailsClosedWithoutApprover(t *testing.T) {
 }
 
 func TestManagedConfigWriteGatedOnApprover(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
-	t.Setenv("AppData", filepath.Join(home, "AppData", "Roaming"))
+	home := isolateBuiltinTestUserState(t)
 
 	project := filepath.Join(home, "project")
 	if err := os.MkdirAll(project, 0o755); err != nil {
@@ -330,7 +391,7 @@ func TestUnconfinedWriterWritesAnywhere(t *testing.T) {
 	}
 }
 
-// --- confineRead & ConfineReaders ---
+// confineRead & ConfineReaders
 
 func TestConfineReadEmpty(t *testing.T) {
 	if confineRead(nil, "/anywhere") {
@@ -382,7 +443,8 @@ func TestConfineReadBlocksReadFile(t *testing.T) {
 	if err == nil {
 		t.Error("read_file should refuse a forbid-read path")
 	}
-	if _, ok := err.(*os.PathError); !ok {
+	var pathErr *os.PathError
+	if !errors.As(err, &pathErr) {
 		t.Errorf("read_file forbid-read error should be *os.PathError, got %T: %v", err, err)
 	}
 	// Unconfined (nil forbidRoots) should work.
@@ -474,7 +536,7 @@ func TestGlobFiltersSensitiveMatchesWhenProtected(t *testing.T) {
 	}
 }
 
-// --- grep forbid-read ---
+// grep forbid-read
 
 func TestConfineReadBlocksGrepFile(t *testing.T) {
 	forbidDir := t.TempDir()
@@ -489,7 +551,8 @@ func TestConfineReadBlocksGrepFile(t *testing.T) {
 	if err == nil {
 		t.Error("grep on a forbid-read file should error, not return (no matches)")
 	}
-	if _, ok := err.(*os.PathError); !ok {
+	var pathErr *os.PathError
+	if !errors.As(err, &pathErr) {
 		t.Errorf("grep forbid-read error should be *os.PathError, got %T: %v", err, err)
 	}
 	// Unconfined (nil forbidRoots) should work.

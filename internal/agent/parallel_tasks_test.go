@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -12,6 +13,7 @@ import (
 
 	"reasonix/internal/event"
 	"reasonix/internal/provider"
+	"reasonix/internal/runtimepolicy"
 	"reasonix/internal/tool"
 	"reasonix/internal/workspacelease"
 )
@@ -71,6 +73,28 @@ func TestParallelTasksRejectsHiddenDependencyFieldBeforeRuntimeLookup(t *testing
 	}
 }
 
+func TestParallelTasksRejectsUnboundedBatchBeforeRuntimeLookup(t *testing.T) {
+	tasks := make([]parallelTaskItem, parallelTasksMaxTasks+1)
+	for i := range tasks {
+		tasks[i].Prompt = "inspect"
+	}
+	args, err := json.Marshal(map[string]any{"tasks": tasks})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+
+	_, err = (&ParallelTasksTool{}).Execute(context.Background(), args)
+	if err == nil {
+		t.Fatal("Execute returned nil error for an oversized batch")
+	}
+	if !strings.Contains(err.Error(), "at most 64 tasks") {
+		t.Fatalf("Execute error = %v, want bounded-task rejection", err)
+	}
+	if strings.Contains(err.Error(), "not configured") {
+		t.Fatalf("Execute looked up runtime before enforcing the batch cap: %v", err)
+	}
+}
+
 func TestParallelTasksForegroundCompletesAndClosesWorkers(t *testing.T) {
 	task := newTestTaskTool(t, parallelStaticProvider{}, tool.NewRegistry(), "sys", "", "", nil)
 	parallel := NewParallelTasksTool(task, tool.NewRegistry())
@@ -105,6 +129,56 @@ func TestParallelTasksForegroundCompletesAndClosesWorkers(t *testing.T) {
 	}
 }
 
+func TestParallelTasksLongResultsStayIndependentlyRetrievable(t *testing.T) {
+	workspace := t.TempDir()
+	store := NewSubagentStore(t.TempDir())
+	task := NewTaskTool(parallelLongResultProvider{}, nil, tool.NewRegistry(), 20, 0, 0, 0, 0, 0, 0, 0.0, "", "sys", nil, 0, "", "", nil).
+		WithTranscripts(store, workspace, "base-model", "base-effort")
+	parallel := NewParallelTasksTool(task, tool.NewRegistry())
+	ctx := WithParentSession(withCallContext(context.Background(), "parallel-call", event.Discard, nil, false), "parent-session")
+
+	out, err := parallel.Execute(ctx, json.RawMessage(`{"tasks":[{"prompt":"first report"},{"prompt":"second report"}]}`))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if len(out) > subagentAggregateBudgetBytes {
+		t.Fatalf("aggregate bytes = %d, want <= %d", len(out), subagentAggregateBudgetBytes)
+	}
+	if _, notice := truncateToolOutput(out); notice != "" {
+		t.Fatalf("bounded aggregate still hit the generic truncator: %s", notice)
+	}
+	if strings.Count(out, "Subagent reference: sa_") != 2 {
+		t.Fatalf("aggregate did not preserve every child ref:\n%s", out)
+	}
+	if !strings.Contains(out, "preview truncated; read the full result") {
+		t.Fatalf("aggregate did not explain lossless retrieval:\n%s", out)
+	}
+
+	refs := subagentRefsFromText(out)
+	if len(refs) != 2 {
+		t.Fatalf("refs = %v, want 2", refs)
+	}
+	reader := NewSubagentResultTool(task)
+	for i, ref := range refs {
+		page, readErr := reader.Execute(ctx, json.RawMessage(fmt.Sprintf(`{"ref":%q,"limit_bytes":24576}`, ref)))
+		if readErr != nil {
+			t.Fatalf("read result %d: %v", i+1, readErr)
+		}
+		wantBegin, wantEnd := "FIRST-BEGIN", "FIRST-END"
+		if i == 1 {
+			wantBegin, wantEnd = "SECOND-BEGIN", "SECOND-END"
+		}
+		if !strings.Contains(page, wantBegin) || !strings.Contains(page, wantEnd) || !strings.Contains(page, "End of subagent result") {
+			t.Fatalf("read result %d was not complete: head=%q tail=%q", i+1, page[:minInt(120, len(page))], page[max(0, len(page)-120):])
+		}
+	}
+
+	otherCtx := WithParentSession(context.Background(), "other-session")
+	if _, err := reader.Execute(otherCtx, json.RawMessage(fmt.Sprintf(`{"ref":%q}`, refs[0]))); err == nil {
+		t.Fatal("reader accepted a result from an unrelated parent session")
+	}
+}
+
 func TestParallelTasksInjectsWorkspaceContextIntoChildren(t *testing.T) {
 	workspace := t.TempDir()
 	task := NewTaskTool(promptRoutingProvider{}, nil, tool.NewRegistry(), 20, 0, 0, 0, 0, 0, 0, 0.0, "", "sys", nil, 0, "", "", nil).
@@ -118,8 +192,8 @@ func TestParallelTasksInjectsWorkspaceContextIntoChildren(t *testing.T) {
 	}
 	if !strings.Contains(out, "Current workspace: "+strconv.Quote(workspace)) ||
 		!strings.Contains(out, `prefer "." or relative paths`) ||
-		!strings.Contains(out, "inspect one ok") ||
-		!strings.Contains(out, "inspect two ok") {
+		!strings.Contains(out, "inspect one") ||
+		!strings.Contains(out, "inspect two") {
 		t.Fatalf("parallel output = %q, want child workspace context and prompt", out)
 	}
 }
@@ -134,8 +208,7 @@ func TestParallelTasksInjectsWorkspaceContextIntoChildren(t *testing.T) {
 func TestParallelTasksDeliveryClassifiesPristinePrompt(t *testing.T) {
 	workspace := t.TempDir()
 	task := NewTaskTool(promptRoutingProvider{}, nil, tool.NewRegistry(), 20, 0, 0, 0, 0, 0, 0, 0.0, "", "sys", nil, 0, "", "", nil).
-		WithTranscripts(NewSubagentStore(t.TempDir()), workspace, "base-model", "base-effort").
-		WithDeliveryProfile(true)
+		WithTranscripts(NewSubagentStore(t.TempDir()), workspace, "base-model", "base-effort")
 	parallel := NewParallelTasksTool(task, tool.NewRegistry())
 	ctx := withCallContext(context.Background(), "parallel-call", event.Discard, nil, false)
 
@@ -263,7 +336,7 @@ func TestParallelTasksCancelReturnsPartialAggregate(t *testing.T) {
 		if strings.Contains(got.out, "Completed 2 parallel tasks") {
 			t.Fatalf("cancelled aggregate reported full completion:\n%s", got.out)
 		}
-		if !strings.Contains(got.out, "done child ok") {
+		if !strings.Contains(got.out, "done child") || !strings.Contains(got.out, "ok") {
 			t.Fatalf("cancelled aggregate lost completed child output:\n%s", got.out)
 		}
 		if !strings.Contains(strings.ToLower(got.out), "cancelled") {
@@ -284,6 +357,32 @@ func (parallelStaticProvider) Stream(context.Context, provider.Request) (<-chan 
 	ch <- provider.Chunk{Type: provider.ChunkDone}
 	close(ch)
 	return ch, nil
+}
+
+type parallelLongResultProvider struct{}
+
+func (parallelLongResultProvider) Name() string { return "parallel-long-result" }
+
+func (parallelLongResultProvider) Stream(_ context.Context, req provider.Request) (<-chan provider.Chunk, error) {
+	begin, end, fill := "FIRST-BEGIN", "FIRST-END", "a"
+	if strings.Contains(lastUser(req), "second report") {
+		begin, end, fill = "SECOND-BEGIN", "SECOND-END", "b"
+	}
+	ch := make(chan provider.Chunk, 2)
+	ch <- provider.Chunk{Type: provider.ChunkText, Text: begin + "\n" + strings.Repeat(fill, 20*1024) + "\n" + end}
+	ch <- provider.Chunk{Type: provider.ChunkDone}
+	close(ch)
+	return ch, nil
+}
+
+func subagentRefsFromText(text string) []string {
+	var refs []string
+	for line := range strings.SplitSeq(text, "\n") {
+		if after, ok := strings.CutPrefix(line, "Subagent reference: "); ok {
+			refs = append(refs, strings.TrimSpace(after))
+		}
+	}
+	return refs
 }
 
 type promptRoutingProvider struct{}
@@ -391,11 +490,22 @@ func TestChildMaxStepsSharedDefault(t *testing.T) {
 	}
 }
 
-func TestTaskToolPropagatesDeliveryProfileToSubagents(t *testing.T) {
-	task := (&TaskTool{}).WithDeliveryProfile(true)
-	opts := task.subagentOptions(context.Background(), 0, nil, 0, 1)
-	if !opts.DeliveryProfile {
-		t.Fatal("sub-agent options did not inherit delivery profile")
+func TestTaskToolPropagatesInheritedExecutionToSubagents(t *testing.T) {
+	parent := runtimepolicy.InheritedExecutionContext{
+		Constraints:  runtimepolicy.Constraints{ForbidMutation: true},
+		PlanReadOnly: true,
+		GoalScopeID:  "goal-1",
+	}
+	task := &TaskTool{}
+	opts := task.subagentOptions(runtimepolicy.WithInherited(context.Background(), parent), 0, nil, 0, 1, "", nil)
+	if opts.InheritedExecution == nil {
+		t.Fatal("sub-agent options did not inherit parent execution context")
+	}
+	if !opts.InheritedExecution.PlanReadOnly || !opts.InheritedExecution.Constraints.ForbidMutation {
+		t.Fatalf("inherited execution = %+v", opts.InheritedExecution)
+	}
+	if opts.InheritedExecution.GoalScopeID != "goal-1" {
+		t.Fatalf("inherited goal scope = %q", opts.InheritedExecution.GoalScopeID)
 	}
 }
 
@@ -405,8 +515,27 @@ func TestTaskToolSharesWorkspaceLeaseWithSubagents(t *testing.T) {
 		t.Fatalf("New workspace lease: %v", err)
 	}
 	task := (&TaskTool{}).WithWorkspaceLease(owner)
-	opts := task.subagentOptions(context.Background(), 0, nil, 0, 1)
+	opts := task.subagentOptions(context.Background(), 0, nil, 0, 1, "", nil)
 	if opts.WorkspaceLease != owner {
 		t.Fatal("sub-agent options did not share the parent's workspace lease owner")
+	}
+}
+
+func TestTaskToolPropagatesWorkspaceRootToSubagents(t *testing.T) {
+	root := t.TempDir()
+	task := &TaskTool{workspaceRoot: root}
+	opts := task.subagentOptions(context.Background(), 0, nil, 0, 1, "", nil)
+	if opts.WriteWorkspaceRoot != root {
+		t.Fatalf("sub-agent workspace root = %q, want %q", opts.WriteWorkspaceRoot, root)
+	}
+}
+
+func TestSubagentRecoveryTaskIDIsStableAndIsolated(t *testing.T) {
+	ctx := WithToolCallContext(context.Background(), "call-17", event.Discard, nil, false)
+	if got := subagentRecoveryTaskID(ctx, ""); got != "subagent:call-17" {
+		t.Fatalf("call-scoped recovery task id = %q", got)
+	}
+	if got := subagentRecoveryTaskID(ctx, "ref-abc"); got != "subagent:ref-abc" {
+		t.Fatalf("transcript-scoped recovery task id = %q", got)
 	}
 }

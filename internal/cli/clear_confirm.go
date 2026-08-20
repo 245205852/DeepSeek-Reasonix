@@ -55,13 +55,14 @@ func (m *chatTUI) resetFreshContextView(clearTranscript bool) {
 	m.pendingApproval = nil
 	m.bubblePending = false
 	m.turnDiscarded = false
+	m.sessionCostQuote = nil
 	if clearTranscript {
 		m.clearTranscriptDisplay()
 		m.sessionSwitch = true
 	} else {
 		m.commitLine("")
 	}
-	m.commitLine(strings.TrimRight(renderTUIBanner(m.label, "", transcriptContentWidth(m.width, m.nativeScrollback)), "\n"))
+	m.commitTranscriptSource(transcriptSource{kind: transcriptSourceBanner})
 	m.transcriptDirty = true
 	m.forceGotoBottom = true
 }

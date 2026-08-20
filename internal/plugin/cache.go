@@ -1,10 +1,10 @@
 // Package-internal cache for MCP handshake results. The handshake (initialize +
 // listTools, plus optional listPrompts/listResources) costs hundreds of ms to a
 // few seconds per server on cold start. We persist the tool schema +
-// capabilities under the user cache dir keyed by a fingerprint of the load-
-// bearing Spec fields, so the next launch can register tools optimistically
+// capabilities under the user cache dir keyed by load-bearing, non-secret Spec
+// fields, so the next launch can register tools optimistically
 // without waiting for the network/subprocess. Caching is purely an
-// optimisation: any failure (missing dir, bad JSON, hash mismatch) silently
+// optimisation: any failure (missing dir, bad JSON, key mismatch) silently
 // degrades to a fresh handshake.
 package plugin
 
@@ -36,7 +36,7 @@ func cacheableToolsOf(tools []tool.Tool) []CachedTool {
 		if !ok {
 			continue
 		}
-		declaredReadOnly, _, _, destructive, _ := rt.securitySnapshot()
+		declaredReadOnly, _, destructive := rt.securitySnapshot()
 		out = append(out, CachedTool{
 			Name:         rt.rawName,
 			Description:  rt.desc,
@@ -55,12 +55,14 @@ func cacheableToolsOf(tools []tool.Tool) []CachedTool {
 const cacheVersion = 2
 
 // CachedSchema is the persisted snapshot of one server's handshake result.
-// SpecHash gates reuse — Capabilities/Tools are only trusted when the
-// caller's expectedHash (from SpecFingerprint of the current Spec) matches,
+// CacheKey gates reuse — Capabilities/Tools are only trusted when the
+// caller's expectedKey (from SchemaCacheKey of the current Spec) matches,
 // so renaming env vars or swapping a command never serves stale tools.
 type CachedSchema struct {
-	Version       int             `json:"version"`
-	SpecHash      string          `json:"spec_hash"`
+	Version int `json:"version"`
+	// Keep the historical JSON key so older versions can reuse the same
+	// best-effort cache during rolling upgrades.
+	CacheKey      string          `json:"spec_hash"`
 	Capabilities  map[string]bool `json:"capabilities"`
 	Tools         []CachedTool    `json:"tools"`
 	LastValidated time.Time       `json:"last_validated"`
@@ -69,7 +71,7 @@ type CachedSchema struct {
 // CachedTool mirrors the subset of an MCP tool definition we need to register
 // a placeholder before the real handshake completes: Name (raw, server-local),
 // Description (model-visible), Schema (raw JSON for input validation),
-// ReadOnly and Destructive (drive local approval policy).
+// ReadOnly and Destructive (drive Plan/read-only safety classification).
 type CachedTool struct {
 	Name         string          `json:"name"`
 	Description  string          `json:"description"`
@@ -79,28 +81,28 @@ type CachedTool struct {
 	Destructive  bool            `json:"destructive,omitempty"`
 }
 
-// SpecFingerprint hashes the load-bearing, non-secret parts of a Spec. Secret
+// SchemaCacheKey hashes the load-bearing, non-secret parts of a Spec. Secret
 // values in env and headers are intentionally excluded: credential rotation
 // must not leak through a stable digest or force an unrelated trust review.
 // Their sorted key names remain identity-bearing, so adding/removing a runtime
 // input still invalidates the cached schema.
-func SpecFingerprint(s Spec) string {
-	return specFingerprintForURL(s, normalizeIdentityURL(s.URL))
+func SchemaCacheKey(s Spec) string {
+	return schemaCacheKeyForURL(s, normalizeIdentityURL(s.URL))
 }
 
-// legacySpecFingerprint recomputes the cache fingerprint with the
+// legacySchemaCacheKey recomputes the cache key with the
 // pre-credential-aware URL normalization, or ("", false) when it cannot
 // differ. LoadCachedSchemaForSpec uses it to upgrade old cache entries in
 // place; remove together with legacyNormalizeIdentityURL.
-func legacySpecFingerprint(s Spec) (string, bool) {
+func legacySchemaCacheKey(s Spec) (string, bool) {
 	legacyURL := legacyNormalizeIdentityURL(s.URL)
 	if strings.TrimSpace(s.URL) == "" || legacyURL == normalizeIdentityURL(s.URL) {
 		return "", false
 	}
-	return specFingerprintForURL(s, legacyURL), true
+	return schemaCacheKeyForURL(s, legacyURL), true
 }
 
-func specFingerprintForURL(s Spec, urlValue string) string {
+func schemaCacheKeyForURL(s Spec, urlValue string) string {
 	h := sha256.New()
 	writeField(h, "name", s.Name)
 	writeField(h, "type", s.Type)
@@ -112,38 +114,32 @@ func specFingerprintForURL(s Spec, urlValue string) string {
 	}
 	writeKeys(h, "env", s.Env)
 	writeKeys(h, "headers", s.Headers)
-	if len(s.ReadOnlyToolNames) > 0 {
-		writeBoolKV(h, "read_only_tool", s.ReadOnlyToolNames)
-	}
-	if len(s.ReadOnlyModelToolNames) > 0 {
-		writeBoolKV(h, "read_only_model_tool", s.ReadOnlyModelToolNames)
-	}
 	return hex.EncodeToString(h.Sum(nil))
 }
 
 // LoadCachedSchema returns the cached schema for name iff it exists, parses,
-// and matches expectedHash. Any error → (nil, false): cache is best-effort,
+// and matches expectedKey. Any error → (nil, false): cache is best-effort,
 // a corrupt file just means we re-handshake. Returning an error here would
 // only invite callers to log it on every launch — silence is intentional.
-func LoadCachedSchema(name, expectedHash string) (*CachedSchema, bool) {
-	cs, ok, hashOK := LoadCachedSchemaAny(name, expectedHash)
-	if !ok || !hashOK {
+func LoadCachedSchema(name, expectedKey string) (*CachedSchema, bool) {
+	cs, ok, keyOK := LoadCachedSchemaAny(name, expectedKey)
+	if !ok || !keyOK {
 		return nil, false
 	}
 	return cs, true
 }
 
 // LoadCachedSchemaForSpec returns the cached schema matching the spec's
-// current fingerprint, transparently rewriting an entry still saved under the
-// legacy URL fingerprint. Without the in-place upgrade, credential rotation or
+// current key, transparently rewriting an entry still saved under the legacy
+// URL key. Without the in-place upgrade, credential rotation or
 // the credential-aware normalization rollout would force a pointless
 // re-handshake even though nothing observable changed.
 func LoadCachedSchemaForSpec(s Spec) (*CachedSchema, bool) {
-	current := SpecFingerprint(s)
+	current := SchemaCacheKey(s)
 	if cs, ok := LoadCachedSchema(s.Name, current); ok {
 		return cs, true
 	}
-	legacy, ok := legacySpecFingerprint(s)
+	legacy, ok := legacySchemaCacheKey(s)
 	if !ok {
 		return nil, false
 	}
@@ -151,16 +147,16 @@ func LoadCachedSchemaForSpec(s Spec) (*CachedSchema, bool) {
 	if !ok {
 		return nil, false
 	}
-	cs.SpecHash = current
+	cs.CacheKey = current
 	_ = SaveCachedSchema(s.Name, *cs)
 	return cs, true
 }
 
-// LoadCachedSchemaAny returns the cached schema regardless of spec-hash match,
-// plus whether the hash matched expectedHash. Catalog building uses it so a
-// fingerprint-mismatched cache can still surface tools as stale candidates;
+// LoadCachedSchemaAny returns the cached schema regardless of cache-key match,
+// plus whether the key matched expectedKey. Catalog building uses it so a
+// mismatched cache can still surface tools as stale candidates;
 // execution paths must keep using LoadCachedSchema, which refuses mismatches.
-func LoadCachedSchemaAny(name, expectedHash string) (cs *CachedSchema, ok bool, hashOK bool) {
+func LoadCachedSchemaAny(name, expectedKey string) (cs *CachedSchema, ok bool, keyOK bool) {
 	p := cachePath(name)
 	if p == "" {
 		return nil, false, false
@@ -177,7 +173,7 @@ func LoadCachedSchemaAny(name, expectedHash string) (cs *CachedSchema, ok bool, 
 		return nil, false, false
 	}
 	out.Tools = filterValidCachedTools(out.Tools)
-	return &out, true, out.SpecHash == expectedHash
+	return &out, true, out.CacheKey == expectedKey
 }
 
 func filterValidCachedTools(tools []CachedTool) []CachedTool {
@@ -284,22 +280,5 @@ func writeKeys(h io.Writer, key string, m map[string]string) {
 	sort.Strings(keys)
 	for _, k := range keys {
 		writeField(h, key+"."+k, "present")
-	}
-}
-
-func writeBoolKV(h io.Writer, key string, m map[string]bool) {
-	if len(m) == 0 {
-		writeField(h, key, "")
-		return
-	}
-	keys := make([]string, 0, len(m))
-	for k, v := range m {
-		if v {
-			keys = append(keys, k)
-		}
-	}
-	sort.Strings(keys)
-	for _, k := range keys {
-		writeField(h, key+"."+k, "true")
 	}
 }

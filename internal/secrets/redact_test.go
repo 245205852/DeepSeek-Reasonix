@@ -1,7 +1,10 @@
 package secrets
 
 import (
+	"errors"
+	"fmt"
 	"strings"
+	"sync"
 	"testing"
 
 	"reasonix/internal/provider"
@@ -30,6 +33,40 @@ func TestRedactMasksCommonSecretShapes(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Fatalf("redacted output missing %q:\n%s", want, got)
 		}
+	}
+}
+
+func TestRedactLongConcurrentTranscriptAvoidsRegexpBacktracking(t *testing.T) {
+	const secret = "sk-real-secret-value-1234567890"
+	var transcript strings.Builder
+	for i := range 2_000 {
+		fmt.Fprintf(&transcript, "message %d payload=%s DEEPSEEK_API_KEY=%s Authorization: Bearer %s\n", i, strings.Repeat("x", i%31), secret, secret)
+	}
+	input := transcript.String()
+
+	const workers = 24
+	const iterations = 20
+	var wg sync.WaitGroup
+	errs := make(chan string, workers)
+	for range workers {
+		wg.Go(func() {
+			for range iterations {
+				got := Redact(input)
+				if strings.Contains(got, secret) {
+					errs <- "long concurrent redaction leaked the test secret"
+					return
+				}
+				if again := Redact(got); again != got {
+					errs <- "long concurrent redaction was not idempotent"
+					return
+				}
+			}
+		})
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Error(err)
 	}
 }
 
@@ -86,6 +123,89 @@ func TestRedactMasksNonBearerAuthorizationSchemes(t *testing.T) {
 	}
 	if again := Redact(got); again != got {
 		t.Fatalf("authorization redaction not idempotent:\nonce:  %q\ntwice: %q", got, again)
+	}
+}
+
+func TestRedactMasksURLUserInfo(t *testing.T) {
+	in := "proxy request failed: https://proxy-user:pa@ss@proxy.example.com:8443/connect"
+	got := Redact(in)
+	for _, leaked := range []string{"proxy-user", "pa", "ss"} {
+		if strings.Contains(got, leaked) {
+			t.Fatalf("URL credential leaked %q in:\n%s", leaked, got)
+		}
+	}
+	for _, want := range []string{"https://[redacted]@proxy.example.com:8443/connect", "proxy request failed"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("redacted output missing %q:\n%s", want, got)
+		}
+	}
+	if again := Redact(got); again != got {
+		t.Fatalf("URL redaction not idempotent:\nonce:  %q\ntwice: %q", got, again)
+	}
+}
+
+func TestRedactCredentialsForExternalErrors(t *testing.T) {
+	tests := []struct {
+		name   string
+		err    error
+		leaked []string
+		want   string
+	}{
+		{
+			name:   "prose api key",
+			err:    errors.New("provider rejected api key: relaykey_abcdefghijklmn"),
+			leaked: []string{"relaykey_abcdefghijklmn"},
+			want:   "provider rejected api key:",
+		},
+		{
+			name:   "partially masked token",
+			err:    errors.New("provider rejected token ****ae54"),
+			leaked: []string{"ae54"},
+			want:   "provider rejected token",
+		},
+		{
+			name:   "bearer token",
+			err:    errors.New("upstream returned Authorization: Bearer abcdef0123456789abcdef"),
+			leaked: []string{"abcdef0123456789abcdef"},
+			want:   "upstream returned",
+		},
+		{
+			name:   "proxy URL user info",
+			err:    errors.New("dial https://proxy-user:pa@ss@proxy.example.com:8443: refused"),
+			leaked: []string{"proxy-user", "pa", "ss"},
+			want:   "proxy.example.com:8443",
+		},
+		{
+			name:   "key value is idempotent",
+			err:    errors.New("provider rejected DEEPSEEK_API_KEY=sk-real-secret-value-123456"),
+			leaked: []string{"sk-real-secret-value-123456"},
+			want:   "provider rejected DEEPSEEK_API_KEY=",
+		},
+		{
+			name:   "opaque mixed case token",
+			err:    errors.New("credential relayKeyAbcdefghijkl rejected"),
+			leaked: []string{"relayKeyAbcdefghijkl"},
+			want:   "credential",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := RedactError(tt.err)
+			for _, leaked := range tt.leaked {
+				if strings.Contains(got, leaked) {
+					t.Fatalf("credential leaked %q in %q", leaked, got)
+				}
+			}
+			if !strings.Contains(got, tt.want) {
+				t.Fatalf("diagnostic context missing %q in %q", tt.want, got)
+			}
+			if again := RedactCredentials(got); again != got {
+				t.Fatalf("external error redaction not idempotent:\nonce:  %q\ntwice: %q", got, again)
+			}
+		})
+	}
+	if got := RedactError(nil); got != "" {
+		t.Fatalf("RedactError(nil) = %q, want empty", got)
 	}
 }
 
@@ -180,22 +300,6 @@ func TestProcessEnvAlwaysFiltersRegisteredCredentialKeys(t *testing.T) {
 	}
 	if !strings.Contains(joined, "REASONIX_TEST_BENIGN_ENV=visible") {
 		t.Fatalf("ordinary env was removed with opt-in filtering off:\n%s", joined)
-	}
-}
-
-func TestRedactToolOutputHonorsToggle(t *testing.T) {
-	const in = "DEEPSEEK_API_KEY=sk-real-secret-value-123456"
-	if got := RedactToolOutput(in); strings.Contains(got, "sk-real-secret-value-123456") {
-		t.Fatalf("tool output not redacted by default:\n%s", got)
-	}
-	SetRedactToolOutput(false)
-	t.Cleanup(func() { SetRedactToolOutput(true) })
-	if got := RedactToolOutput(in); got != in {
-		t.Fatalf("RedactToolOutput altered output with the toggle off:\n%s", got)
-	}
-	// The durable-surface entry point ignores the toggle.
-	if got := Redact(in); strings.Contains(got, "sk-real-secret-value-123456") {
-		t.Fatalf("Redact must stay active regardless of the toggle:\n%s", got)
 	}
 }
 

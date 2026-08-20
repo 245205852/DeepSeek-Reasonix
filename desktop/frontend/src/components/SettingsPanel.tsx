@@ -1,13 +1,17 @@
-import { lazy, memo, Suspense, useCallback, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent, type ReactNode } from "react";
-import { Bot as BotIcon, Check, CheckCircle2, ChevronDown, ChevronUp, Clipboard, GripVertical, KeyRound, Loader2, MessageCircle, Minus, Play, Plus, QrCode, RefreshCw, RotateCcw, Send } from "lucide-react";
+import { lazy, memo, Suspense, startTransition, useCallback, useDeferredValue, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
+import { ArrowRight, BrainCircuit, Check, CheckCircle2, ChevronDown, ChevronUp, CircleDollarSign, Clipboard, ExternalLink, KeyRound, Languages, ListChecks, Loader2, Monitor, MoreHorizontal, PanelBottom, Play, Power, QrCode, RefreshCw, Send, ShieldCheck, SlidersHorizontal, Trash2, Volume2 } from "lucide-react";
 import { asArray } from "../lib/array";
+import { CHANNEL_ICONS } from "./channelIcons";
+import { botAccessEntryCount, botAccessReady, botConnectionCredentialSummary, botConnectionLabel, botConnectionScopeLabel, botConnectionSecretEnv, botConnectionSecretPatch, botInstallTargetForConnection, botInstallTargetMatchesConnection, botTargetHint, botTargetLabel, diagnosticMessage, diagnosticReportDetail, firstConnectionRemote, formatInstallTimeLeft, formatInstallUserCode, qqBotAdded, type BotInstallTarget, type BotOfficialInstallTarget } from "./botConnectionSettings";
 import { useDeferredClose } from "../lib/useMountTransition";
-import { app } from "../lib/bridge";
+import { app, openExternal } from "../lib/bridge";
 import { normalizeLangPref, useI18n, useT, type DictKey, type LangPref } from "../lib/i18n";
-import { apiKeyEnvFromProviderName, inferredVisionModels, mergedFetchedProviderModels, providerApiKeyEnvForSave, providerDefaultModel, providerIsConfigured, providerModelCandidates, providerRequiresKey } from "../lib/providerModels";
+import { apiKeyEnvFromProviderName, createLatestRequestGate, inferredVisionModels, mergedFetchedProviderModels, mergeProviderModelContextWindows, providerApiKeyEnvForSave, providerDefaultModel, providerIsConfigured, providerModelCandidates, providerModelContextWindowDrafts, providerModelContextWindowIsSmall, providerRequiresKey } from "../lib/providerModels";
+import { cachedFetchProviderModels, invalidateProviderCacheByAPIKeyEnv, shouldSkipAutoRefresh } from "../lib/providerModelCache";
+import { providerBaseURLForSave, providerRequestURLFromConfig, trimmedBaseURL } from "../lib/providerEndpoint";
+import { opencodeGoPresetDescriptionKeys } from "../lib/providerPresetDescriptions";
 import { useUpdater } from "../lib/useUpdater";
 import {
-  THEME_STYLES,
   applyTheme,
   getTheme,
   getThemeStyle,
@@ -16,8 +20,21 @@ import {
   type Theme,
   type ThemeStyle,
 } from "../lib/theme";
-import { TEXT_SIZES, applyTextSize, getTextSize, type TextSize } from "../lib/textSize";
-import { DEFAULT_ZOOM, MAX_ZOOM, MIN_ZOOM, ZOOM_STEP, snapZoom, zoomToPercent, saveRestartZoom, getRestartZoom, type ZoomLevel } from "../lib/dpiScale";
+import {
+  applyTerminalThemePreference,
+  createTerminalThemeSaveQueue,
+  getTerminalThemePreference,
+  normalizeTerminalThemePreference,
+  type TerminalThemePreference,
+} from "../lib/terminalTheme";
+import {
+  applyConversationWidth,
+  getCachedConversationWidth,
+  normalizeConversationWidth,
+  type ConversationWidth,
+} from "../lib/conversationWidth";
+import { applyTextSize, getTextSize, type TextSize } from "../lib/textSize";
+import { snapZoom, zoomToPercent, saveRestartZoom, getRestartZoom, type ZoomLevel } from "../lib/dpiScale";
 import {
   applyFontFamily,
   applyMonoFontFamily,
@@ -30,10 +47,10 @@ import {
   type FontFamily,
   type MonoFontFamily,
 } from "../lib/fontFamily";
-import { getAvailableFontFamilies, getAvailableMonoFontFamilies } from "../lib/fontAvailability";
 import { getDisplayMode, onDisplayModeChange, setDisplayMode as setLocalDisplayMode } from "../lib/displayMode";
 import { getProcessFoldPreference, onProcessFoldPreferenceChange, setProcessFoldPreference, type ProcessFoldPreference } from "../lib/processFoldPreference";
-import { DEFAULT_STATUS_BAR_ITEMS, normalizeStatusBarItems, type StatusBarItemId } from "../lib/statusBarItems";
+import { applyReasoningDisplayMode, useReasoningDisplayMode, type ReasoningDisplayMode } from "../lib/reasoningDisplayPreference";
+import { normalizeStatusBarItems, type StatusBarItemId } from "../lib/statusBarItems";
 import { normalizeToolApprovalMode } from "../lib/types";
 import {
   comboFromKeyboardEvent,
@@ -43,11 +60,14 @@ import {
   resetCustomShortcuts,
   resolvedShortcutCombo,
   saveCustomShortcut,
+  shortcutAcceptsCombo,
   shortcutConflict,
   shortcutDefinitions,
   type ShortcutAction,
 } from "../lib/keyboardShortcuts";
-import type { BotAccessView, BotAllowlistView, BotConnectionDiagnostic, BotConnectionView, BotInstallStartResult, BotRouteView, BotSettingsView, HookConfigView, HooksSettingsView, NetworkView, ProviderPresetView, ProviderView, SettingsTab, SettingsView } from "../lib/types";
+import type { BotAccessView, BotAllowlistView, BotConnectionDiagnostic, BotConnectionView, BotInstallStartResult, BotRouteView, BotSettingsView, HookConfigView, HooksSettingsView, NetworkView, ProviderModelCatalogUpdate, ProviderPresetView, ProviderView, SettingsTab, SettingsView } from "../lib/types";
+import { AppearanceOverview } from "./AppearanceOverview";
+import { applyConfiguredBaseAppearance, setBaseAppearance } from "../lib/themePack";
 import { InlineConfirmButton } from "./InlineConfirmButton";
 import { Tooltip } from "./Tooltip";
 import { AnchoredPopover } from "./AnchoredPopover";
@@ -56,22 +76,27 @@ import { SoundSelect } from "./SoundSelect";
 import { getSuccessPreference, setSuccessPreference, getAttentionPreference, setAttentionPreference, playSuccessChime, playAttentionChime, type SoundWavPref } from "../lib/sound";
 import { ModalCloseButton } from "./ModalCloseButton";
 import { ShortcutComboDisplay } from "./ShortcutComboDisplay";
-
-const SETTINGS_TABS: SettingsTab[] = ["general", "models", "bots", "mcp", "skills", "subagents", "plugins", "memory", "hooks", "diagnostics", "shortcuts", "permissions", "sandbox", "network", "appearance", "updates"];
-export type SettingsInitialFocus = { target: "bot-allowlist"; connectionId?: string };
+import { SettingsNavigation, SETTINGS_NAV_TABS } from "./SettingsNavigation";
+import { StatusBarItemsEditor } from "./StatusBarItemsEditor";
+import { DesktopCloseBehaviorHint } from "./DesktopCloseBehaviorHint";
+export type SettingsInitialFocus =
+  | { target: "bot-allowlist"; connectionId?: string; requestId?: number }
+  | { target: "model-access"; requestId?: number }
+  | { target: "model-stats"; requestId: number };
 type DesktopPlatform = "darwin" | "windows" | "linux";
 
 const MCPServersSettingsPage = lazy(() => import("./CapabilitiesPanel").then((module) => ({ default: module.MCPServersSettingsPage })));
+const RemoteHostsPage = lazy(() => import("./RemoteHostsPage").then((module) => ({ default: module.RemoteHostsPage })));
 const SkillsSettingsPage = lazy(() => import("./CapabilitiesPanel").then((module) => ({ default: module.SkillsSettingsPage })));
 const PluginsSettingsPage = lazy(() => import("./CapabilitiesPanel").then((module) => ({ default: module.PluginsSettingsPage })));
 const MemorySettingsPage = lazy(() => import("./MemoryPanel").then((module) => ({ default: module.MemorySettingsPage })));
 const SubagentsSettingsPage = lazy(() => import("./SubagentsPanel").then((module) => ({ default: module.SubagentsSettingsPage })));
 const DiagnosticsSettingsPage = lazy(() => import("./DiagnosticsSettingsPage").then((module) => ({ default: module.DiagnosticsSettingsPage })));
+const StorageSettingsPage = lazy(() => import("./StorageSettingsPage").then((module) => ({ default: module.StorageSettingsPage })));
+const UsageStatsPanel = lazy(() => import("./UsageStatsPanel").then((module) => ({ default: module.UsageStatsPanel })));
 const QRCodeSVG = lazy(() => import("qrcode.react").then((module) => ({ default: module.QRCodeSVG })));
 
-// SettingsPanel is the desktop settings centre — a centred modal with left
-// navigation and a right content area. It hosts all settings pages plus MCP,
-// Skills, and Memory management, replacing the old per-feature drawers.
+// SettingsPanel is the desktop settings centre: a modal hosting settings pages and capability management.
 export function SettingsPanel({
   onClose,
   onChanged,
@@ -80,6 +105,7 @@ export function SettingsPanel({
   agentRunning = false,
   desktopPlatform,
   onUseSubagent,
+  activeWorkspaceKey = "",
 }: {
   onClose: () => void;
   onChanged: (settings?: SettingsView | null) => void;
@@ -88,6 +114,7 @@ export function SettingsPanel({
   agentRunning?: boolean;
   desktopPlatform: DesktopPlatform;
   onUseSubagent: (command: string) => void;
+  activeWorkspaceKey?: string;
 }) {
   const t = useT();
   const [s, setS] = useState<SettingsView | null>(null);
@@ -98,6 +125,8 @@ export function SettingsPanel({
   const [warning, setWarning] = useState<string | null>(null);
   const [theme, setThemeState] = useState<Theme>(getTheme());
   const [themeStyle, setThemeStyleState] = useState<ThemeStyle>(() => getThemeStyle(getTheme()));
+  const [terminalTheme, setTerminalThemeState] = useState<TerminalThemePreference>(getTerminalThemePreference());
+  const [conversationWidth, setConversationWidth] = useState<ConversationWidth>(() => getCachedConversationWidth());
   const [textSize, setTextSizeState] = useState<TextSize>(getTextSize());
   const [zoomPct, setZoomPct] = useState<number>(zoomToPercent(getRestartZoom()));
   const [fontFamily, setFontFamilyState] = useState<FontFamily>(getFontFamily());
@@ -105,6 +134,7 @@ export function SettingsPanel({
   const [customFontName, setCustomFontNameState] = useState<string>(getCustomFontName());
   const [customMonoFontName, setCustomMonoFontNameState] = useState<string>(getCustomMonoFontName());
   const [tab, setTab] = useState<SettingsTab>(initialTab === "providers" ? "models" : initialTab ?? "general");
+  const settingsContentRef = useRef<HTMLElement>(null);
   const pendingSubagentCommandRef = useRef<string | null>(null);
   // Play the modal exit animation, then let the parent unmount us and focus
   // the composer with the selected slash command.
@@ -115,6 +145,12 @@ export function SettingsPanel({
     if (command) onUseSubagent(command);
   }, 240);
   const zoomSaveSeq = useRef(0);
+  const terminalThemeSaveSeq = useRef(0);
+  const terminalThemeSavePending = useRef(false);
+  const terminalThemeSaveQueue = useRef<ReturnType<typeof createTerminalThemeSaveQueue> | null>(null);
+  if (!terminalThemeSaveQueue.current) {
+    terminalThemeSaveQueue.current = createTerminalThemeSaveQueue((next) => app.SetDesktopTerminalTheme(next));
+  }
 
   const reload = useCallback(async () => {
     setLoadingSettings(true);
@@ -136,12 +172,22 @@ export function SettingsPanel({
     if (initialTab) setTab(initialTab === "providers" ? "models" : initialTab);
   }, [initialTab, reload]);
   useEffect(() => {
+    const content = settingsContentRef.current;
+    if (!content) return;
+    content.scrollTop = 0;
+    content.scrollLeft = 0;
+  }, [tab]);
+  useEffect(() => {
     if (!s) return;
     const nextTheme = normalizeThemePreference(s.desktopTheme);
     const nextStyle = normalizeThemeStyleForTheme(s.desktopThemeStyle, nextTheme);
     setThemeState(nextTheme);
     setThemeStyleState(nextStyle);
-  }, [s?.desktopTheme, s?.desktopThemeStyle]);
+    if (!terminalThemeSavePending.current) {
+      setTerminalThemeState(applyTerminalThemePreference(s.desktopTerminalTheme));
+    }
+    setConversationWidth(applyConversationWidth(s.conversationWidth));
+  }, [s?.conversationWidth, s?.desktopTheme, s?.desktopThemeStyle, s?.desktopTerminalTheme]);
   useEffect(() => {
     if (desktopPlatform !== "windows") return;
     let cancelled = false;
@@ -170,11 +216,25 @@ export function SettingsPanel({
       const result = await fn();
       const next = await reload();
       onChanged(next);
+      window.dispatchEvent(new Event("reasonix:model-catalog-changed"));
       if (typeof result === "string" && result.trim()) {
         setWarning(result.trim());
       }
+      return true;
     } catch (e) {
+      // Settings writes can be two-phase: persistence may succeed before a
+      // runtime refresh reports a real boot error. Re-read the authoritative
+      // state even on failure so the UI never offers an action that already
+      // committed (for example, a DeepSeek protocol upgrade).
+      try {
+        const next = await reload();
+        onChanged(next);
+        window.dispatchEvent(new Event("reasonix:model-catalog-changed"));
+      } catch {
+        // Keep the original mutation error; it is the actionable failure.
+      }
       setErr(formatSettingsError(e, t));
+      return false;
     } finally {
       setBusy(false);
     }
@@ -186,10 +246,40 @@ export function SettingsPanel({
       await fn();
       const next = await reload();
       onChanged(next);
+      window.dispatchEvent(new Event("reasonix:model-catalog-changed"));
     } catch (e) {
       setErr(formatSettingsError(e, t));
     }
   }, [reload, onChanged, t]);
+  const setTerminalThemePreference = useCallback((next: TerminalThemePreference) => {
+    const seq = ++terminalThemeSaveSeq.current;
+    const previous = getTerminalThemePreference();
+    terminalThemeSavePending.current = true;
+    setErr(null);
+    setWarning(null);
+    applyTerminalThemePreference(next);
+    setTerminalThemeState(next);
+
+    void terminalThemeSaveQueue.current!(next)
+      .then(async () => {
+        if (seq !== terminalThemeSaveSeq.current) return;
+        const refreshed = await reload();
+        if (seq !== terminalThemeSaveSeq.current) return;
+        terminalThemeSavePending.current = false;
+        onChanged(refreshed);
+      })
+      .catch(async (error) => {
+        if (seq !== terminalThemeSaveSeq.current) return;
+        const refreshed = await reload();
+        if (seq !== terminalThemeSaveSeq.current) return;
+        const restored = normalizeTerminalThemePreference(refreshed?.desktopTerminalTheme ?? previous);
+        applyTerminalThemePreference(restored);
+        setTerminalThemeState(restored);
+        terminalThemeSavePending.current = false;
+        setErr(formatSettingsError(error, t));
+        onChanged(refreshed);
+      });
+  }, [onChanged, reload, t]);
   const setRestartZoom = useCallback(async (zoom: ZoomLevel) => {
     const snapped = snapZoom(zoom);
     const seq = ++zoomSaveSeq.current;
@@ -215,12 +305,19 @@ export function SettingsPanel({
     return () => document.removeEventListener("keydown", onKey);
   }, [requestClose]);
 
-  // The settings-reliant pages (general, models, network, permissions,
-  // sandbox, appearance, updates) need SettingsView loaded. MCP, Skills, Plugins,
-  // and Memory
-  // load their own data and render regardless.
+  // These pages need SettingsView; capability pages load their own data.
   const needsSettings = tab === "general" || tab === "models" || tab === "bots" || tab === "subagents" || tab === "network" || tab === "permissions" || tab === "sandbox" || tab === "appearance" || tab === "updates";
   const lazySettingsPageFallback = <div className="empty">{t("settings.loading")}</div>;
+  const settingsNavigationItems = useMemo(() => SETTINGS_NAV_TABS.map((id) => ({
+    id,
+    label: settingsTabLabel(id, t),
+    meta: s ? settingsTabMeta(id, s, t) : "",
+    searchTerms: id === "general" ? [
+      "settings.desktopLayoutStyle", "settings.language", "settings.currency", "settings.displayMode",
+      "settings.reasoningDisplay", "settings.processFold", "settings.closeBehavior",
+      "settings.defaultToolApprovalMode", "settings.sound", "settings.statusBarStyle", "settings.statusBarItems",
+    ].map((key) => t(key as DictKey)).join(" ") : "",
+  })), [s, t]);
 
   return (
     <div className="management-modal-backdrop settings-modal-backdrop" data-state={status} onMouseDown={(e) => { if (e.target === e.currentTarget) requestClose(); }}>
@@ -231,19 +328,8 @@ export function SettingsPanel({
         </header>
 
         <div className="settings-center">
-          <nav className="settings-center__nav" aria-label={t("settings.title")}>
-            {SETTINGS_TABS.map((id) => (
-              <button
-                key={id}
-                className={`settings-center__navitem${tab === id ? " settings-center__navitem--active" : ""}`}
-                onClick={() => setTab(id)}
-              >
-                <span>{settingsTabLabel(id, t)}</span>
-                {s && <small>{settingsTabMeta(id, s, t)}</small>}
-              </button>
-            ))}
-          </nav>
-          <main className="settings-center__content">
+          <SettingsNavigation items={settingsNavigationItems} activeTab={tab} onSelect={setTab} />
+          <main ref={settingsContentRef} className="settings-center__content">
             {needsSettings && settingsLoadFailed && (
               <div className="banner banner--error settings-load-error" role="alert">
                 <span>{t("settings.loadFailed")}</span>
@@ -257,10 +343,11 @@ export function SettingsPanel({
             ) : (
               <>
                 {tab === "general" && s && <SettingsPageShell key={tab} s={s} tab={tab} busy={busy} apply={apply}><GeneralSection s={s} busy={busy} apply={apply} agentRunning={agentRunning} /></SettingsPageShell>}
-                {tab === "models" && s && <SettingsPageShell key={tab} s={s} tab={tab} busy={busy} apply={apply}><ModelsSection s={s} busy={busy} apply={apply} backgroundApply={backgroundApply} /></SettingsPageShell>}
+                {tab === "models" && s && <SettingsPageShell key={tab} s={s} tab={tab} busy={busy} apply={apply}><ModelsSection s={s} busy={busy} apply={apply} backgroundApply={backgroundApply} initialFocus={initialFocus} /></SettingsPageShell>}
                 {tab === "bots" && s && <SettingsPageShell key={tab} s={s} tab={tab} busy={busy} apply={apply}><BotsSection s={s} busy={busy} apply={apply} initialFocus={initialFocus} /></SettingsPageShell>}
                 {tab === "mcp" && <SettingsPageShell key={tab} s={s} tab={tab} busy={false} apply={apply}><Suspense fallback={lazySettingsPageFallback}><MCPServersSettingsPage /></Suspense></SettingsPageShell>}
-                {tab === "skills" && <SettingsPageShell key={tab} s={s} tab={tab} busy={false} apply={apply}><Suspense fallback={lazySettingsPageFallback}><SkillsSettingsPage /></Suspense></SettingsPageShell>}
+                {tab === "remote" && <SettingsPageShell key={tab} s={s} tab={tab} busy={false} apply={apply}><Suspense fallback={lazySettingsPageFallback}><RemoteHostsPage /></Suspense></SettingsPageShell>}
+                {tab === "skills" && <SettingsPageShell key={tab} s={s} tab={tab} busy={false} apply={apply}><Suspense fallback={lazySettingsPageFallback}><SkillsSettingsPage activeWorkspaceKey={activeWorkspaceKey} /></Suspense></SettingsPageShell>}
                 {tab === "subagents" && s && <SettingsPageShell key={tab} s={s} tab={tab} busy={busy} apply={apply}><Suspense fallback={lazySettingsPageFallback}><SubagentsSettingsPage s={s} onUseInChat={(command) => {
                   pendingSubagentCommandRef.current = command;
                   requestClose();
@@ -275,9 +362,11 @@ export function SettingsPanel({
                 {tab === "network" && s && <SettingsPageShell key={tab} s={s} tab={tab} busy={busy} apply={apply}><NetworkSection s={s} busy={busy} apply={apply} /></SettingsPageShell>}
                 {tab === "appearance" && s && (
                   <SettingsPageShell key={tab} s={s} tab={tab} busy={busy} apply={apply}>
-                    <AppearanceSection
+                    <AppearanceOverview
                       theme={theme}
                       themeStyle={themeStyle}
+                      terminalTheme={terminalTheme}
+                      conversationWidth={conversationWidth}
                       textSize={textSize}
                       showDisplayZoom={desktopPlatform === "windows"}
                       zoomPct={zoomPct}
@@ -286,15 +375,23 @@ export function SettingsPanel({
                       customFontName={customFontName}
                       customMonoFontName={customMonoFontName}
                       onTheme={(nextTheme) => {
-                        applyTheme(nextTheme, themeStyle, { persist: false });
+                        applyConfiguredBaseAppearance(nextTheme, themeStyle);
                         setThemeState(nextTheme);
                         void apply(() => app.SetDesktopAppearance(nextTheme, themeStyle));
                       }}
-                      onThemeStyle={(style) => {
-                        applyTheme(theme, style, { persist: false });
-                        setThemeStyleState(style);
-                        void apply(() => app.SetDesktopAppearance(theme, style));
+                      onConversationWidth={(width) => {
+                        applyConversationWidth(width);
+                        setConversationWidth(width);
+                        void apply(() => app.SetDesktopConversationWidth(width));
                       }}
+                      onThemeStyle={(style) => {
+                        // AppearanceOverview already persists via ActivateBaseStyle /
+                        // experience APIs. Parent only mirrors React + DOM state.
+                        applyTheme(getTheme(), style, { persist: false });
+                        setThemeStyleState(style);
+                        setBaseAppearance(getTheme(), style);
+                      }}
+                      onTerminalTheme={setTerminalThemePreference}
                       onTextSize={(size) => {
                         applyTextSize(size);
                         setTextSizeState(size);
@@ -321,10 +418,12 @@ export function SettingsPanel({
                     />
                   </SettingsPageShell>
                 )}
+                {tab === "storage" && <SettingsPageShell key={tab} s={s} tab={tab} busy={false} apply={apply}><Suspense fallback={lazySettingsPageFallback}><StorageSettingsPage /></Suspense></SettingsPageShell>}
                 {tab === "updates" && s && (
                   <SettingsPageShell key={tab} s={s} tab={tab} busy={busy} apply={apply}>
                     <UpdatesSection
                       configPath={s.configPath}
+                      shadowedByPath={s.shadowedByPath}
                       checkUpdates={s.checkUpdates}
                       telemetry={s.telemetry !== false}
                       metrics={s.metrics !== false}
@@ -342,16 +441,18 @@ export function SettingsPanel({
   );
 }
 
-function SettingsPageShell({ s: _s, tab, children }: { s: SettingsView | null; tab: SettingsTab; busy: boolean; apply: (fn: () => Promise<unknown>) => Promise<void>; children: ReactNode }) {
+function SettingsPageShell({ s: _s, tab, children }: { s: SettingsView | null; tab: SettingsTab; busy: boolean; apply: (fn: () => Promise<unknown>) => Promise<boolean>; children: ReactNode }) {
   const t = useT();
   const descKey = `settings.pageDesc.${tab}` as keyof typeof import("../locales/en").en;
   const desc = t(descKey as any);
   return (
     <div className={`settings-page settings-page--${settingsPageKind(tab)} settings-page--${tab}`}>
-      <div className="settings-page__header">
-        <h2 className="settings-page__title">{settingsTabPageTitle(tab, t)}</h2>
-        {typeof desc === "string" && desc !== `settings.pageDesc.${tab}` && <p className="settings-page__desc">{desc}</p>}
-      </div>
+      {tab !== "appearance" ? (
+        <div className="settings-page__header">
+          <h2 className="settings-page__title">{settingsTabPageTitle(tab, t)}</h2>
+          {typeof desc === "string" && desc !== `settings.pageDesc.${tab}` && <p className="settings-page__desc">{desc}</p>}
+        </div>
+      ) : null}
       {children}
     </div>
   );
@@ -361,10 +462,12 @@ function settingsPageKind(tab: SettingsTab): "form" | "manager" {
   switch (tab) {
     case "models":
     case "mcp":
+    case "remote":
     case "skills":
     case "subagents":
     case "plugins":
     case "memory":
+    case "appearance":
       return "manager";
     default:
       return "form";
@@ -406,25 +509,30 @@ function SettingsSection({
 function SettingsField({
   label,
   hint,
+  icon,
   children,
   className,
   stacked = false,
 }: {
   label: ReactNode;
   hint?: ReactNode;
+  icon?: ReactNode;
   children: ReactNode;
   className?: string;
   stacked?: boolean;
 }) {
   return (
     <div className={`settings-field${stacked ? " settings-field--stacked" : ""}${className ? ` ${className}` : ""}`}>
-      <div className="settings-field__copy">
-        <div className="settings-field__label">{label}</div>
-        {hint && (
-          <div className="settings-field__hint">
-            <SettingsHint hint={hint} />
-          </div>
-        )}
+      <div className={`settings-field__copy${icon ? " settings-field__copy--icon" : ""}`}>
+        {icon && <span className="settings-field__icon" aria-hidden="true">{icon}</span>}
+        <div className="settings-field__copy-body">
+          <div className="settings-field__label">{label}</div>
+          {hint && (
+            <div className="settings-field__hint">
+              <SettingsHint hint={hint} />
+            </div>
+          )}
+        </div>
       </div>
       <div className="settings-field__control">{children}</div>
     </div>
@@ -458,11 +566,12 @@ function settingsTabPageTitle(id: SettingsTab, t: ReturnType<typeof useT>): stri
 type SectionProps = {
   s: SettingsView;
   busy: boolean;
-  apply: (fn: () => Promise<unknown>) => Promise<void>;
+  apply: (fn: () => Promise<unknown>) => Promise<boolean>;
 };
 
 type ModelsSectionProps = SectionProps & {
   backgroundApply: (fn: () => Promise<void>) => Promise<void>;
+  initialFocus?: SettingsInitialFocus;
 };
 
 function settingsTabLabel(id: SettingsTab, t: ReturnType<typeof useT>): string {
@@ -477,6 +586,8 @@ function settingsTabLabel(id: SettingsTab, t: ReturnType<typeof useT>): string {
       return t("settings.tab.bots");
     case "mcp":
       return t("settings.tab.mcp");
+    case "remote":
+      return t("settings.tab.remote");
     case "skills":
       return t("settings.tab.skills");
     case "subagents":
@@ -497,8 +608,8 @@ function settingsTabLabel(id: SettingsTab, t: ReturnType<typeof useT>): string {
       return t("settings.tab.permissions");
     case "sandbox":
       return t("settings.tab.sandbox");
-    case "appearance":
-      return t("settings.tab.appearance");
+    case "appearance": return t("settings.tab.appearance");
+    case "storage": return t("settings.tab.storage");
     case "updates":
       return t("settings.tab.updates");
   }
@@ -516,8 +627,10 @@ function settingsTabMeta(id: SettingsTab, s: SettingsView, t: ReturnType<typeof 
       return botSettingsMeta(s.bot, t);
     case "mcp":
       return t("caps.connectorsTab");
+    case "remote":
+      return t("remote.tabHint");
     case "skills":
-      return t("caps.skillsTab");
+      return t("settings.tabSub.skills");
     case "subagents":
       return t("subagents.tabHint");
     case "plugins":
@@ -536,8 +649,8 @@ function settingsTabMeta(id: SettingsTab, s: SettingsView, t: ReturnType<typeof 
       return permissionModeLabel(s.permissions.mode, t);
     case "sandbox":
       return sandboxModeLabel(s.sandbox.bash, t);
-    case "appearance":
-      return t("settings.appearanceMeta");
+    case "appearance": return t("settings.appearanceMeta");
+    case "storage": return t("settings.storageMeta");
     case "updates":
       return t("settings.updatesMeta");
   }
@@ -561,28 +674,58 @@ function botSettingsMeta(bot: BotSettingsView, t: ReturnType<typeof useT>): stri
   return t("settings.botConnectionCount", { n: connections });
 }
 
-function ShortcutsSection() {
+export function ShortcutsSection() {
   const t = useT();
   const [platform] = useState(() => detectShortcutPlatform());
   const [revision, setRevision] = useState(0);
   const [recording, setRecording] = useState<ShortcutAction | null>(null);
   const [conflict, setConflict] = useState<{ action: ShortcutAction; conflictAction: ShortcutAction } | null>(null);
+  const [unsupportedAction, setUnsupportedAction] = useState<ShortcutAction | null>(null);
 
   useEffect(() => onShortcutsChanged(() => setRevision((value) => value + 1)), []);
 
   const definitions = shortcutDefinitions();
   const commitShortcut = (action: ShortcutAction, event: ReactKeyboardEvent<HTMLButtonElement>) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      setConflict(null);
+      setUnsupportedAction(null);
+      setRecording(null);
+      return;
+    }
     const combo = comboFromKeyboardEvent(event.nativeEvent);
     if (!combo) return;
+    if (!shortcutAcceptsCombo(action, combo)) {
+      // Let the browser move focus before onBlur cancels recording. Updating
+      // recording state synchronously here can keep focus on the re-rendered
+      // button in WebKit.
+      if (event.key === "Tab") {
+        const recorder = event.currentTarget;
+        queueMicrotask(() => {
+          // Native Tab normally moves focus first. If this WebView does not,
+          // release focus so the recorder cannot become a keyboard trap.
+          if (document.activeElement === recorder) recorder.blur();
+        });
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      setConflict(null);
+      setUnsupportedAction(action);
+      return;
+    }
     event.preventDefault();
     event.stopPropagation();
     const conflictDefinition = shortcutConflict(action, combo, platform);
     if (conflictDefinition) {
+      setUnsupportedAction(null);
       setConflict({ action, conflictAction: conflictDefinition.action });
       return;
     }
     saveCustomShortcut(action, combo);
     setConflict(null);
+    setUnsupportedAction(null);
     setRecording(null);
     setRevision((value) => value + 1);
   };
@@ -600,6 +743,7 @@ function ShortcutsSection() {
           onClick={() => {
             resetCustomShortcuts();
             setConflict(null);
+            setUnsupportedAction(null);
             setRecording(null);
             setRevision((value) => value + 1);
           }}
@@ -614,6 +758,13 @@ function ShortcutsSection() {
             {t("settings.shortcutsConflict", {
               action: t(definitions.find((definition) => definition.action === conflict.action)?.labelKey ?? "settings.tab.shortcuts"),
               conflict: t(definitions.find((definition) => definition.action === conflict.conflictAction)?.labelKey ?? "settings.tab.shortcuts"),
+            })}
+          </div>
+        )}
+        {unsupportedAction && (
+          <div className="shortcuts-settings__conflict" role="alert">
+            {t("settings.shortcutsEnterOnly", {
+              action: t(definitions.find((definition) => definition.action === unsupportedAction)?.labelKey ?? "settings.tab.shortcuts"),
             })}
           </div>
         )}
@@ -633,12 +784,24 @@ function ShortcutsSection() {
                 <button
                   className={`shortcuts-settings__key${isRecording ? " shortcuts-settings__key--recording" : ""}${definition.configurable === false ? " shortcuts-settings__key--locked" : ""}`}
                   type="button"
+                  data-shortcut-action={definition.action}
                   disabled={definition.configurable === false}
                   aria-label={isRecording ? t("settings.shortcutsRecording") : display}
                   aria-pressed={isRecording}
-                  onClick={() => {
+                  onClick={(event) => {
                     setRecording(definition.action);
                     setConflict(null);
+                    setUnsupportedAction(null);
+                    // WebKit (the desktop WKWebView) does not focus buttons on
+                    // click, and the recorder listens for keys on the button —
+                    // without this the recorder never receives any keydown.
+                    event.currentTarget.focus();
+                  }}
+                  onBlur={() => {
+                    if (!isRecording) return;
+                    setConflict(null);
+                    setUnsupportedAction(null);
+                    setRecording(null);
                   }}
                   onKeyDown={(event) => isRecording && commitShortcut(definition.action, event)}
                 >
@@ -651,6 +814,7 @@ function ShortcutsSection() {
                   onClick={() => {
                     saveCustomShortcut(definition.action, null);
                     setConflict(null);
+                    setUnsupportedAction(null);
                     setRecording(null);
                     setRevision((value) => value + 1);
                   }}
@@ -694,11 +858,15 @@ const PROXY_MODES = ["auto", "custom", "off"] as const;
 // The settings UI uses it for subagent defaults; provider-specific levels are
 // inferred by the backend or edited in TOML for rare gateways.
 export const EFFORT_PRESETS: readonly string[] = ["low", "medium", "high", "xhigh", "max"];
-const REASONING_PROTOCOLS: readonly string[] = ["", "deepseek", "openai", "none"];
+const COMPACT_RATIO_PRESETS = [
+  [0.7, "settings.compactRatioPreset.70"],
+  [0.8, "settings.compactRatioPreset.80"],
+  [0.85, "settings.compactRatioPreset.85"],
+] as const;
+const REASONING_PROTOCOLS: readonly string[] = ["", "deepseek", "glm", "kimi-k3", "openai", "none"];
 const THINKING_MODES: readonly string[] = ["", "enabled", "disabled", "adaptive"];
 const PROXY_TYPES = ["http", "https", "socks5", "socks5h"] as const;
 const LANGUAGE_PREFS: LangPref[] = ["", "zh", "en"];
-const AUTO_PLAN_MODES = ["off", "on"] as const;
 const TOOL_APPROVAL_MODES = ["ask", "auto", "yolo"] as const;
 const BOT_TOOL_APPROVAL_MODES = ["", "ask", "auto", "yolo"] as const;
 const BOT_QUEUE_MODES = ["steer", "followup", "collect", "interrupt"] as const;
@@ -706,7 +874,6 @@ const BOT_QUEUE_DROPS = ["summarize", "old", "new"] as const;
 const BOT_ROUTE_CHAT_TYPES = ["", "dm", "group", "guild", "direct", "thread"] as const;
 
 type ProxyMode = (typeof PROXY_MODES)[number];
-type AutoPlanMode = (typeof AUTO_PLAN_MODES)[number];
 
 function normalizeProxyMode(mode: string): ProxyMode {
   switch (mode) {
@@ -723,10 +890,6 @@ function normalizeNetworkView(network: NetworkView): NetworkView {
   return { ...network, proxyMode: normalizeProxyMode(network.proxyMode) };
 }
 
-function normalizeAutoPlan(mode: string | undefined): AutoPlanMode {
-  return mode === "ask" || mode === "on" ? "on" : "off";
-}
-
 function normalizeReasoningProtocol(protocol: string | undefined): string {
   return REASONING_PROTOCOLS.includes(protocol ?? "") ? protocol ?? "" : "";
 }
@@ -740,24 +903,6 @@ export function providerEditorEffectiveKind(isNewCustomProvider: boolean, kind: 
   void isNewCustomProvider;
   const selected = kind.trim();
   return selected || kinds[0] || "openai";
-}
-
-function trimmedURL(value: string): string {
-  return value.trim().replace(/\/+$/, "");
-}
-
-export function providerChatURLPreview(baseUrl: string, chatUrl: string, fullURL: boolean): string {
-  if (fullURL) return trimmedURL(chatUrl);
-  const base = trimmedURL(baseUrl);
-  return base ? `${base}/chat/completions` : "";
-}
-
-export function providerBaseURLFromChatURL(chatUrl: string): string {
-  const full = trimmedURL(chatUrl);
-  for (const suffix of ["/chat/completions", "/responses", "/response"]) {
-    if (full.endsWith(suffix)) return trimmedURL(full.slice(0, -suffix.length));
-  }
-  return full;
 }
 
 function formatProviderHeaders(headers: Record<string, string> | null | undefined): string {
@@ -804,10 +949,21 @@ function formatSettingsError(error: unknown, t: ReturnType<typeof useT>): string
   if (providerNotAdded) return t("settings.errorModelProviderMissing", { model: providerNotAdded[1], provider: providerNotAdded[2] });
   const providerNoKey = /^model (.+) is not available because provider (.+) has no key$/i.exec(msg);
   if (providerNoKey) return t("settings.errorModelProviderNoKey", { model: providerNoKey[1], provider: providerNoKey[2] });
+  if (/^background session is still open; reopen or close it before upgrading the DeepSeek provider protocol$/i.test(msg)) {
+    return t("settings.errorProviderDetached");
+  }
   const removeAccessBusy = /^finish or cancel active work using (.+) before removing the provider access$/i.exec(msg);
   if (removeAccessBusy) return t("settings.errorRemoveAccessBusy", { provider: removeAccessBusy[1] });
+  const removeAccessDetached = /^background session is still using (.+); reopen or close it before removing the provider access$/i.exec(msg);
+  if (removeAccessDetached) return t("settings.errorProviderDetached");
+  const removeAccessNoFallback = /^remove provider access: (.+) is in use and no other configured provider exists$/i.exec(msg);
+  if (removeAccessNoFallback) return t("settings.errorRemoveProviderNoFallback", { provider: removeAccessNoFallback[1] });
+  const deleteProviderNoFallback = /^remove provider: (.+) is in use and no other configured provider exists$/i.exec(msg);
+  if (deleteProviderNoFallback) return t("settings.errorRemoveProviderNoFallback", { provider: deleteProviderNoFallback[1] });
   const deleteProviderBusy = /^finish or cancel active work using (.+) before deleting the provider$/i.exec(msg);
   if (deleteProviderBusy) return t("settings.errorDeleteProviderBusy", { provider: deleteProviderBusy[1] });
+  const deleteProviderDetached = /^background session is still using (.+); reopen or close it before deleting the provider$/i.exec(msg);
+  if (deleteProviderDetached) return t("settings.errorProviderDetached");
   const saveBeforeRemoveAccess = /^save current session before removing provider access: (.+)$/is.exec(msg);
   if (saveBeforeRemoveAccess) return t("settings.errorSaveBeforeRemoveAccess", { err: saveBeforeRemoveAccess[1] });
   const saveBeforeDeleteProvider = /^save current session before deleting provider: (.+)$/is.exec(msg);
@@ -959,6 +1115,7 @@ function defaultBotSettings(): BotSettingsView {
       qq: [],
       feishu: [],
       weixin: [],
+      dingtalk: [],
     },
     control: {
       enabled: false,
@@ -986,6 +1143,10 @@ function defaultBotSettings(): BotSettingsView {
       qqGroups: [],
       feishuGroups: [],
       weixinGroups: [],
+      dingtalkUsers: [],
+      dingtalkApprovers: [],
+      dingtalkAdmins: [],
+      dingtalkGroups: [],
     },
     qq: { enabled: false, appId: "", appSecretEnv: "QQ_BOT_APP_SECRET", secretSet: false, sandbox: false, model: "", toolApprovalMode: "ask", workspaceRoot: "", access: defaultBotAccess() },
     feishu: {
@@ -1005,6 +1166,18 @@ function defaultBotSettings(): BotSettingsView {
       tokenEnv: "WEIXIN_BOT_TOKEN",
       tokenSet: false,
       apiBase: "https://ilinkai.weixin.qq.com",
+    },
+    dingtalk: {
+      enabled: false,
+      clientId: "",
+      clientSecretEnv: "DINGTALK_CLIENT_SECRET",
+      secretSet: false,
+      botName: "",
+      requireMention: true,
+      model: "",
+      toolApprovalMode: "",
+      workspaceRoot: "",
+      access: defaultBotAccess(),
     },
     connections: [],
   };
@@ -1056,6 +1229,7 @@ function normalizeBotSettings(bot: BotSettingsView | null | undefined): BotSetti
       qq: asArray(selfUserIds.qq),
       feishu: asArray(selfUserIds.feishu),
       weixin: asArray(selfUserIds.weixin),
+      dingtalk: asArray(selfUserIds.dingtalk),
     },
     control: {
       enabled: Boolean(control.enabled),
@@ -1083,6 +1257,10 @@ function normalizeBotSettings(bot: BotSettingsView | null | undefined): BotSetti
       qqGroups: asArray(allowlist.qqGroups),
       feishuGroups: asArray(allowlist.feishuGroups),
       weixinGroups: asArray(allowlist.weixinGroups),
+      dingtalkUsers: asArray(allowlist.dingtalkUsers),
+      dingtalkApprovers: asArray(allowlist.dingtalkApprovers),
+      dingtalkAdmins: asArray(allowlist.dingtalkAdmins),
+      dingtalkGroups: asArray(allowlist.dingtalkGroups),
     },
     qq: {
       ...fallback.qq,
@@ -1094,6 +1272,12 @@ function normalizeBotSettings(bot: BotSettingsView | null | undefined): BotSetti
     },
     feishu: { ...fallback.feishu, ...bot?.feishu, domain: bot?.feishu?.domain === "lark" ? "lark" : "feishu", mode },
     weixin: { ...fallback.weixin, ...bot?.weixin },
+    dingtalk: {
+      ...fallback.dingtalk,
+      ...bot?.dingtalk,
+      toolApprovalMode: normalizeBotToolApprovalMode(bot?.dingtalk?.toolApprovalMode),
+      access: normalizeBotAccess(bot?.dingtalk?.access, fallback.dingtalk.access),
+    },
     connections: asArray(bot?.connections).map(normalizeBotConnection),
   };
 }
@@ -1173,29 +1357,41 @@ function normalizeExtraBodyMap(value: unknown): Record<string, unknown> {
   return out;
 }
 
-function normalizeProviderView(p: ProviderView): ProviderView {
+export function normalizeProviderView(p: ProviderView): ProviderView {
   const visionModels = asArray(p.visionModels);
   const requiresKey = providerRequiresKey(p);
   return {
     ...p,
+    name: String(p.name ?? ""),
+    baseUrl: String(p.baseUrl ?? ""),
     builtIn: Boolean(p.builtIn),
     added: Boolean(p.added),
     chatUrl: p.chatUrl ?? "",
+    requestUrl: p.requestUrl ?? "",
     models: asArray(p.models),
     visionModels,
     visionModelsConfigured: Boolean(p.visionModelsConfigured ?? visionModels.length > 0),
+    visionCapability: p.visionCapability === "unsupported" || p.visionCapability === "configurable"
+      ? p.visionCapability
+      : undefined,
     modelsUrl: p.modelsUrl ?? "",
     headers: normalizeStringMap(p.headers),
     extraBody: normalizeExtraBodyMap(p.extraBody),
     authHeader: Boolean(p.authHeader),
     reasoningProtocol: normalizeReasoningProtocol(p.reasoningProtocol),
     thinking: normalizeThinkingMode(p.thinking),
+    webSearch: Boolean(p.webSearch),
+    serverWebSearchCapability: typeof p.serverWebSearchCapability === "boolean"
+      ? p.serverWebSearchCapability
+      : undefined,
     supportedEfforts: asArray(p.supportedEfforts),
     modelOverrides: asArray(p.modelOverrides),
+    recommendedUpgradeAvailable: Boolean(p.recommendedUpgradeAvailable),
     requiresKey,
     configured: providerIsConfigured({ ...p, requiresKey }),
     keySource: p.keySource ?? "",
     keySourcePath: p.keySourcePath ?? "",
+    modelCatalogFingerprint: p.modelCatalogFingerprint ?? "",
   };
 }
 
@@ -1239,11 +1435,16 @@ function normalizeSettingsView(view: SettingsView | null | undefined): SettingsV
     noProxy: "",
     proxy: { type: "socks5", server: "", port: 0, username: "", password: "" },
   };
-  const agent = view.agent ?? { temperature: 0, maxSteps: 0, plannerMaxSteps: 0, maxSubagentDepth: 2, systemPrompt: "", coldResumePrune: true, reasoningLanguage: "auto" };
+  const agent = view.agent ?? { temperature: 0, maxSteps: 0, plannerMaxSteps: 0, maxSubagentDepth: 2, maxSubagentConcurrency: 6, maxParallelWriters: 3, systemPrompt: "", reasoningLanguage: "auto", compactRatio: 0.80 };
   agent.plannerMaxSteps = Number.isFinite(agent.plannerMaxSteps) ? Math.max(0, Math.trunc(agent.plannerMaxSteps)) : 0;
   agent.maxSteps = Number.isFinite(agent.maxSteps) ? Math.max(0, Math.trunc(agent.maxSteps)) : 0;
   agent.maxSubagentDepth = Number.isFinite(agent.maxSubagentDepth) && agent.maxSubagentDepth <= 1 ? 1 : 2;
   agent.reasoningLanguage = normalizeReasoningLanguage(agent.reasoningLanguage);
+  agent.compactRatio = Number.isFinite(agent.compactRatio) && Number(agent.compactRatio) > 0 ? Number(agent.compactRatio) : 0.80;
+  agent.effectiveCompactRatio = Number.isFinite(agent.effectiveCompactRatio) && Number(agent.effectiveCompactRatio) > 0
+    ? Number(agent.effectiveCompactRatio)
+    : agent.compactRatio;
+  agent.compactRatioOverridden = Boolean(agent.compactRatioOverridden);
   return {
     ...view,
     providers: asArray(view.providers).map(normalizeProviderView),
@@ -1269,21 +1470,30 @@ function normalizeSettingsView(view: SettingsView | null | undefined): SettingsV
     },
     agent,
     bot: normalizeBotSettings(view.bot),
-    autoPlan: normalizeAutoPlan(view.autoPlan),
+    autoPlan: "off",
     defaultToolApprovalMode: normalizeToolApprovalMode(view.defaultToolApprovalMode),
     autoApproveTools: Boolean(view.autoApproveTools ?? view.bypass),
     bypass: Boolean(view.autoApproveTools ?? view.bypass),
     desktopLanguage: normalizeLangPref(view.desktopLanguage),
+    desktopCurrency: normalizeDesktopCurrency(view.desktopCurrency),
     desktopLayoutStyle: normalizeDesktopLayoutStyle(view.desktopLayoutStyle),
     desktopTheme: normalizeThemePreference(view.desktopTheme),
     desktopThemeStyle: normalizeThemeStyleForTheme(view.desktopThemeStyle, normalizeThemePreference(view.desktopTheme)),
+    desktopTerminalTheme: normalizeTerminalThemePreference(view.desktopTerminalTheme),
     closeBehavior: normalizeCloseBehavior(view.closeBehavior),
     displayMode: normalizeDisplayMode(view.displayMode),
     statusBarStyle: normalizeStatusBarStyle(view.statusBarStyle),
     statusBarItems: normalizeStatusBarItems(view.statusBarItems),
+    conversationWidth: normalizeConversationWidth(view.conversationWidth),
     checkUpdates: view.checkUpdates !== false,
-    memoryCompilerEnabled: view.memoryCompilerEnabled !== false,
+    updateChannel: "stable",
   };
+}
+
+type DesktopCurrency = "" | "CNY" | "USD";
+
+function normalizeDesktopCurrency(currency: string | undefined): DesktopCurrency {
+  return currency === "CNY" || currency === "USD" ? currency : "";
 }
 
 type CloseBehavior = "background" | "quit";
@@ -1311,12 +1521,6 @@ function desktopLayoutStyleLabel(style: DesktopLayoutStyle, t: ReturnType<typeof
 }
 
 type StatusBarStyle = "icon" | "text";
-type StatusBarDropPlacement = "before" | "after";
-type StatusBarDragTarget = {
-  id: StatusBarItemId;
-  placement: StatusBarDropPlacement;
-};
-
 function normalizeStatusBarStyle(style: string | undefined): StatusBarStyle {
   return style === "icon" ? "icon" : "text";
 }
@@ -1337,6 +1541,12 @@ function statusBarItemLabel(id: StatusBarItemId, t: ReturnType<typeof useT>): st
       return t("status.sessionTokensLabel");
     case "turn_tokens":
       return t("status.turnTokensLabel");
+    case "turn_tps":
+      return t("status.tpsLabel");
+    case "turn_output_tokens":
+      return t("status.outputTokensLabel");
+    case "turn_cache_tokens":
+      return t("status.cacheTokensLabel");
     case "turn_cost":
       return t("status.turnCostLabel");
     case "session_turns":
@@ -1390,6 +1600,8 @@ function reasoningProtocolLabel(protocol: string, t: ReturnType<typeof useT>): s
   switch (protocol) {
     case "deepseek":
       return t("settings.reasoningProtocol.deepseek");
+    case "glm": return t("settings.reasoningProtocol.glm");
+    case "kimi-k3": return t("settings.reasoningProtocol.kimiK3");
     case "openai":
       return t("settings.reasoningProtocol.openai");
     case "none":
@@ -1411,27 +1623,22 @@ function thinkingModeLabel(mode: string, t: ReturnType<typeof useT>): string {
       return t("settings.thinkingMode.auto");
   }
 }
-
 function GeneralSection({ s, busy, apply, agentRunning }: SectionProps & { agentRunning: boolean }) {
   const { t, setPref } = useI18n();
   const closeBehavior = normalizeCloseBehavior(s.closeBehavior);
   const [displayMode, setDisplayMode] = useState<DisplayMode>(() => normalizeDisplayMode(getDisplayMode()));
   const [processFold, setProcessFold] = useState<ProcessFoldPreference>(getProcessFoldPreference);
-  const [statusBarItemsExpanded, setStatusBarItemsExpanded] = useState(false);
-  const [draggingStatusBarItem, setDraggingStatusBarItem] = useState<StatusBarItemId | null>(null);
-  const [statusBarDragTarget, setStatusBarDragTargetState] = useState<StatusBarDragTarget | null>(null);
-  const draggingStatusBarItemRef = useRef<StatusBarItemId | null>(null);
-  const statusBarDragTargetRef = useRef<StatusBarDragTarget | null>(null);
-  const mouseDragCleanupRef = useRef<(() => void) | null>(null);
+  const reasoningDisplayMode = useReasoningDisplayMode();
   const soundPanelId = useId();
-  const statusBarItemsPanelId = useId();
   useEffect(() => onDisplayModeChange((mode) => setDisplayMode(mode)), []);
   useEffect(() => onProcessFoldPreferenceChange((pref) => setProcessFold(pref)), []);
-  useEffect(() => () => mouseDragCleanupRef.current?.(), []);
-  const autoPlan = normalizeAutoPlan(s.autoPlan);
   const defaultToolApprovalMode = normalizeToolApprovalMode(s.defaultToolApprovalMode);
-  const memoryCompilerEnabled = s.memoryCompilerEnabled !== false;
+  const saveReasoningDisplayMode = useCallback(async (mode: ReasoningDisplayMode) => {
+    const ok = await apply(() => app.SetReasoningDisplayMode(mode));
+    if (ok) applyReasoningDisplayMode(mode);
+  }, [apply]);
   const languagePref = normalizeLangPref(s.desktopLanguage);
+  const desktopCurrency = normalizeDesktopCurrency(s.desktopCurrency);
   const desktopLayoutStyle = normalizeDesktopLayoutStyle(s.desktopLayoutStyle);
   const [genMusicPreset, setGenMusicPreset] = useState<GenerativePreset>(getGenerativePreset());
   const [soundPref, setSoundPref] = useState<SoundWavPref>(getSuccessPreference());
@@ -1440,11 +1647,6 @@ function GeneralSection({ s, busy, apply, agentRunning }: SectionProps & { agent
   const statusBarStyle = normalizeStatusBarStyle(s.statusBarStyle);
   const statusBarItems = normalizeStatusBarItems(s.statusBarItems);
   const soundStatus = summarizeSoundStatus(genMusicPreset, soundPref, attentionPref);
-  const visibleStatusItems = new Set<StatusBarItemId>(statusBarItems);
-  const orderedStatusItems = [
-    ...statusBarItems,
-    ...DEFAULT_STATUS_BAR_ITEMS.filter((id) => !visibleStatusItems.has(id)),
-  ];
   const applyStatusBarItems = (items: StatusBarItemId[]) => {
     const contentScrollTop = document.querySelector<HTMLElement>(".settings-center__content")?.scrollTop ?? 0;
     const navScrollTop = document.querySelector<HTMLElement>(".settings-center__nav")?.scrollTop ?? 0;
@@ -1461,135 +1663,28 @@ function GeneralSection({ s, busy, apply, agentRunning }: SectionProps & { agent
       });
     });
   };
-  const toggleStatusBarItem = (id: StatusBarItemId) => {
-    if (visibleStatusItems.has(id)) {
-      if (statusBarItems.length <= 1) return;
-      applyStatusBarItems(statusBarItems.filter((item) => item !== id));
-      return;
-    }
-    applyStatusBarItems([...statusBarItems, id]);
-  };
-  const moveStatusBarItem = (id: StatusBarItemId, direction: -1 | 1) => {
-    const idx = statusBarItems.indexOf(id);
-    const nextIdx = idx + direction;
-    if (idx < 0 || nextIdx < 0 || nextIdx >= statusBarItems.length) return;
-    const next = [...statusBarItems];
-    [next[idx], next[nextIdx]] = [next[nextIdx], next[idx]];
-    applyStatusBarItems(next);
-  };
-  const reorderStatusBarItem = (fromId: StatusBarItemId, toId: StatusBarItemId, placement: StatusBarDropPlacement) => {
-    const fromIdx = statusBarItems.indexOf(fromId);
-    const toIdx = statusBarItems.indexOf(toId);
-    if (fromIdx < 0 || toIdx < 0 || fromIdx === toIdx) return;
-    const next = statusBarItems.filter((item) => item !== fromId);
-    const insertAt = next.indexOf(toId);
-    if (insertAt < 0) return;
-    next.splice(placement === "after" ? insertAt + 1 : insertAt, 0, fromId);
-    if (next.every((item, index) => item === statusBarItems[index])) return;
-    applyStatusBarItems(next);
-  };
-  const statusBarItemFromPoint = (x: number, y: number): StatusBarDragTarget | null => {
-    const row = document.elementFromPoint(x, y)?.closest<HTMLElement>("[data-statusbar-setting-item]");
-    const id = row?.dataset.statusbarSettingItem as StatusBarItemId | undefined;
-    if (!row || !id || !statusBarItems.includes(id)) return null;
-    const rect = row.getBoundingClientRect();
-    return { id, placement: y < rect.top + rect.height / 2 ? "before" : "after" };
-  };
-  const setStatusBarDragTarget = (target: StatusBarDragTarget | null) => {
-    const current = statusBarDragTargetRef.current;
-    if (current?.id === target?.id && current?.placement === target?.placement) return;
-    statusBarDragTargetRef.current = target;
-    setStatusBarDragTargetState(target);
-  };
-  const beginStatusBarDrag = (id: StatusBarItemId, visible: boolean): boolean => {
-    if (busy || !visible) return false;
-    mouseDragCleanupRef.current?.();
-    mouseDragCleanupRef.current = null;
-    draggingStatusBarItemRef.current = id;
-    statusBarDragTargetRef.current = null;
-    setDraggingStatusBarItem(id);
-    setStatusBarDragTargetState(null);
-    return true;
-  };
-  const updateStatusBarDrag = (clientX: number, clientY: number) => {
-    const draggingId = draggingStatusBarItemRef.current;
-    if (!draggingId) return;
-    const target = statusBarItemFromPoint(clientX, clientY);
-    setStatusBarDragTarget(target && target.id !== draggingId ? target : null);
-  };
-  const finishStatusBarDrag = (clientX?: number, clientY?: number) => {
-    const draggingId = draggingStatusBarItemRef.current;
-    let target = statusBarDragTargetRef.current;
-    if (draggingId && clientX !== undefined && clientY !== undefined) {
-      const pointerTarget = statusBarItemFromPoint(clientX, clientY);
-      if (pointerTarget && pointerTarget.id !== draggingId) target = pointerTarget;
-    }
-    if (draggingId && target) reorderStatusBarItem(draggingId, target.id, target.placement);
-    draggingStatusBarItemRef.current = null;
-    statusBarDragTargetRef.current = null;
-    setDraggingStatusBarItem(null);
-    setStatusBarDragTargetState(null);
-  };
-  const cancelStatusBarDrag = () => {
-    mouseDragCleanupRef.current?.();
-    mouseDragCleanupRef.current = null;
-    draggingStatusBarItemRef.current = null;
-    statusBarDragTargetRef.current = null;
-    setDraggingStatusBarItem(null);
-    setStatusBarDragTargetState(null);
-  };
-  const startStatusBarPointerDrag = (event: PointerEvent<HTMLElement>, id: StatusBarItemId, visible: boolean) => {
-    if (event.button !== 0 || !beginStatusBarDrag(id, visible)) return;
-    event.preventDefault();
-    event.currentTarget.setPointerCapture(event.pointerId);
-  };
-  const moveStatusBarPointerDrag = (event: PointerEvent<HTMLElement>) => {
-    if (!draggingStatusBarItemRef.current) return;
-    event.preventDefault();
-    updateStatusBarDrag(event.clientX, event.clientY);
-  };
-  const endStatusBarPointerDrag = (event: PointerEvent<HTMLElement>) => {
-    if (!draggingStatusBarItemRef.current) return;
-    event.preventDefault();
-    try {
-      event.currentTarget.releasePointerCapture(event.pointerId);
-    } catch {
-      // Pointer capture may already be released by the browser.
-    }
-    finishStatusBarDrag(event.clientX, event.clientY);
-  };
-  const cancelStatusBarPointerDrag = (event: PointerEvent<HTMLElement>) => {
-    event.preventDefault();
-    cancelStatusBarDrag();
-  };
-  const startStatusBarMouseDrag = (event: ReactMouseEvent<HTMLElement>, id: StatusBarItemId, visible: boolean) => {
-    if (event.button !== 0 || !beginStatusBarDrag(id, visible)) return;
-    event.preventDefault();
-    const handleMove = (moveEvent: MouseEvent) => {
-      moveEvent.preventDefault();
-      updateStatusBarDrag(moveEvent.clientX, moveEvent.clientY);
-    };
-    const cleanup = () => {
-      window.removeEventListener("mousemove", handleMove);
-      window.removeEventListener("mouseup", handleUp);
-    };
-    const handleUp = (upEvent: MouseEvent) => {
-      upEvent.preventDefault();
-      cleanup();
-      mouseDragCleanupRef.current = null;
-      finishStatusBarDrag(upEvent.clientX, upEvent.clientY);
-    };
-    window.addEventListener("mousemove", handleMove);
-    window.addEventListener("mouseup", handleUp);
-    mouseDragCleanupRef.current = cleanup;
-  };
   const setLanguage = (next: LangPref) => {
     setPref(next);
     void apply(() => app.SetDesktopLanguage(next));
   };
   return (
-    <SettingsSection>
-      <SettingsField label={t("settings.language")}>
+    <>
+      <SettingsSection title={t("settings.general.sectionAppearance")} description={t("settings.general.sectionAppearanceHint")}>
+      <SettingsField label={t("settings.desktopLayoutStyle")} hint={t("settings.desktopLayoutStyleHint")} icon={<Monitor size={18} />}>
+        <div className="set-seg">
+          {(["workbench", "classic", "creation"] as const).map((style) => (
+            <button
+              key={style}
+              className={`set-seg__btn${desktopLayoutStyle === style ? " set-seg__btn--on" : ""}`}
+              disabled={busy}
+              onClick={() => void apply(() => app.SetDesktopLayoutStyle(style))}
+            >
+              {desktopLayoutStyleLabel(style, t)}
+            </button>
+          ))}
+        </div>
+      </SettingsField>
+      <SettingsField label={t("settings.language")} hint={t("settings.languageHint")} icon={<Languages size={18} />}>
         <div className="set-seg">
           {LANGUAGE_PREFS.map((pref) => (
             <button
@@ -1603,21 +1698,78 @@ function GeneralSection({ s, busy, apply, agentRunning }: SectionProps & { agent
           ))}
         </div>
       </SettingsField>
-      <SettingsField label={t("settings.desktopLayoutStyle")}>
+      <SettingsField label={t("settings.currency")} hint={t("settings.currencyHint")} icon={<CircleDollarSign size={18} />}>
         <div className="set-seg">
-          {(["classic", "workbench", "creation"] as const).map((style) => (
+          {(["", "CNY", "USD"] as DesktopCurrency[]).map((currency) => (
             <button
-              key={style}
-              className={`set-seg__btn${desktopLayoutStyle === style ? " set-seg__btn--on" : ""}`}
-              disabled={busy}
-              onClick={() => void apply(() => app.SetDesktopLayoutStyle(style))}
+              key={currency || "auto"}
+              className={`set-seg__btn${desktopCurrency === currency ? " set-seg__btn--on" : ""}`}
+              disabled={busy || agentRunning}
+              onClick={() => void apply(() => app.SetDesktopCurrency(currency))}
             >
-              {desktopLayoutStyleLabel(style, t)}
+              {currency === "" ? t("settings.currencyAuto") : currency}
             </button>
           ))}
         </div>
       </SettingsField>
-      <SettingsField label={t("settings.closeBehavior")}>
+      </SettingsSection>
+
+      <SettingsSection title={t("settings.general.sectionConversation")} description={t("settings.sessionContentDisplayHint")}>
+        <SettingsField label={t("settings.displayMode")} hint={t("settings.displayModeHint")} icon={<SlidersHorizontal size={18} />}>
+          <div className="set-seg" role="radiogroup" aria-label={t("settings.displayMode")}>
+            {(["standard", "compact"] as const).map((mode) => (
+              <button key={mode} type="button"
+                className={`set-seg__btn${displayMode === mode ? " set-seg__btn--on" : ""}`}
+                aria-pressed={displayMode === mode}
+                disabled={busy}
+                onClick={() => {
+                  setLocalDisplayMode(mode);
+                  void apply(() => app.SetDisplayMode(mode));
+                }}
+              >
+                {t(`settings.displayMode.${mode}`)}
+              </button>
+            ))}
+          </div>
+        </SettingsField>
+        <SettingsField label={t("settings.reasoningDisplay")} hint={t("settings.reasoningDisplayHint")} icon={<BrainCircuit size={18} />}>
+          <div>
+            <div className="set-seg" role="radiogroup" aria-label={t("settings.reasoningDisplay")}>
+              {(["hidden", "summary", "auto", "expanded"] as const).map((mode) => (
+                <button
+                  key={mode}
+                  type="button"
+                  className={`set-seg__btn${reasoningDisplayMode === mode ? " set-seg__btn--on" : ""}`}
+                  aria-pressed={reasoningDisplayMode === mode}
+                  disabled={busy}
+                  onClick={() => void saveReasoningDisplayMode(mode)}
+                >
+                  {t(`settings.reasoningDisplay.${mode}`)}
+                </button>
+              ))}
+            </div>
+            {reasoningDisplayMode === "legacy-collapsed" && <div className="settings-inline-hint" role="status">{t("settings.reasoningDisplay.legacy")}</div>}
+          </div>
+        </SettingsField>
+        <SettingsField label={t("settings.processFold")} hint={t("settings.processFoldHint")} icon={<ListChecks size={18} />}>
+          <div className="set-seg" role="radiogroup" aria-label={t("settings.processFold")}>
+            {(["auto", "expanded"] as const).map((pref) => (
+              <button
+                key={pref}
+                type="button"
+                className={`set-seg__btn${processFold === pref ? " set-seg__btn--on" : ""}`}
+                aria-pressed={processFold === pref}
+                onClick={() => setProcessFoldPreference(pref)}
+              >
+                {t(`settings.processFold.${pref}`)}
+              </button>
+            ))}
+          </div>
+        </SettingsField>
+      </SettingsSection>
+
+      <SettingsSection title={t("settings.general.sectionSystem")} description={t("settings.general.sectionSystemHint")}>
+      <SettingsField label={t("settings.closeBehavior")} hint={<DesktopCloseBehaviorHint backgroundSelected={closeBehavior === "background"} hint={t("settings.closeBehaviorHint")} unavailableHint={t("settings.closeBehaviorUnavailable")} />} icon={<Power size={18} />}>
         <div className="set-seg">
           {(["background", "quit"] as const).map((mode) => (
             <button
@@ -1631,37 +1783,7 @@ function GeneralSection({ s, busy, apply, agentRunning }: SectionProps & { agent
           ))}
         </div>
       </SettingsField>
-      <SettingsField label={t("settings.displayMode")}>
-        <div className="set-seg">
-          {(["standard", "compact"] as const).map((mode) => (
-            <button
-              key={mode}
-              className={`set-seg__btn${displayMode === mode ? " set-seg__btn--on" : ""}`}
-              disabled={busy}
-              onClick={() => {
-                setLocalDisplayMode(mode);
-                void apply(() => app.SetDisplayMode(mode));
-              }}
-            >
-              {t(`settings.displayMode.${mode}`)}
-            </button>
-          ))}
-        </div>
-      </SettingsField>
-      <SettingsField label={t("settings.processFold")} hint={t("settings.processFoldHint")}>
-        <div className="set-seg">
-          {(["auto", "expanded"] as const).map((pref) => (
-            <button
-              key={pref}
-              className={`set-seg__btn${processFold === pref ? " set-seg__btn--on" : ""}`}
-              onClick={() => setProcessFoldPreference(pref)}
-            >
-              {t(`settings.processFold.${pref}`)}
-            </button>
-          ))}
-        </div>
-      </SettingsField>
-      <SettingsField label={t("settings.defaultToolApprovalMode")} hint={t("settings.defaultToolApprovalModeHint")}>
+      <SettingsField label={t("settings.defaultToolApprovalMode")} hint={t("settings.defaultToolApprovalModeHint")} icon={<ShieldCheck size={18} />}>
         <div className="set-seg">
           {TOOL_APPROVAL_MODES.map((mode) => (
             <button
@@ -1675,28 +1797,7 @@ function GeneralSection({ s, busy, apply, agentRunning }: SectionProps & { agent
           ))}
         </div>
       </SettingsField>
-      <SettingsField label={t("settings.autoPlan")}>
-        <div className="set-seg">
-          {AUTO_PLAN_MODES.map((mode) => (
-            <button
-              key={mode}
-              className={`set-seg__btn${autoPlan === mode ? " set-seg__btn--on" : ""}`}
-              disabled={busy}
-              onClick={() => void apply(() => app.SetAutoPlan(mode))}
-            >
-              {t(`settings.autoPlan.${mode}`)}
-            </button>
-          ))}
-        </div>
-      </SettingsField>
-      <SettingsField label={t("settings.memoryCompiler")} hint={t("settings.memoryCompilerHint")}>
-        <ToggleSegment
-          value={memoryCompilerEnabled}
-          disabled={busy}
-          onChange={(enabled) => void apply(() => app.SetMemoryCompilerEnabled(enabled))}
-        />
-      </SettingsField>
-      <SettingsField label={t("settings.sound")} hint={t("settings.soundHint")} stacked>
+      <SettingsField label={t("settings.sound")} hint={t("settings.soundHint")} icon={<Volume2 size={18} />} stacked>
         <div className={`settings-sound-editor${soundExpanded ? " settings-sound-editor--expanded" : ""}`}>
           <div className="settings-sound-editor__summary">
             <span className={`settings-sound-editor__status settings-sound-editor__status--${soundStatus}`}>
@@ -1769,7 +1870,7 @@ function GeneralSection({ s, busy, apply, agentRunning }: SectionProps & { agent
           )}
         </div>
       </SettingsField>
-      <SettingsField label={t("settings.statusBarStyle")}>
+      <SettingsField label={t("settings.statusBarStyle")} hint={t("settings.statusBarStyleHint")} icon={<PanelBottom size={18} />}>
         <div className="set-seg">
           {(["icon", "text"] as const).map((style) => (
             <button
@@ -1783,109 +1884,16 @@ function GeneralSection({ s, busy, apply, agentRunning }: SectionProps & { agent
           ))}
         </div>
       </SettingsField>
-      <SettingsField label={t("settings.statusBarItems")} hint={t("settings.statusBarItemsHint")} stacked>
-        <div className={`status-bar-items-editor${statusBarItemsExpanded ? " status-bar-items-editor--expanded" : ""}`}>
-          <div className="status-bar-items-editor__summary">
-            <span className="status-bar-items-editor__summary-text">
-              {t("settings.statusBarItemsSummary", { visible: statusBarItems.length, total: DEFAULT_STATUS_BAR_ITEMS.length })}
-            </span>
-            <Tooltip label={t(statusBarItemsExpanded ? "settings.statusBarItemsCollapse" : "settings.statusBarItemsExpand")}>
-              <button
-                type="button"
-                className="status-bar-items-editor__toggle"
-                aria-expanded={statusBarItemsExpanded}
-                aria-controls={statusBarItemsPanelId}
-                aria-label={t(statusBarItemsExpanded ? "settings.statusBarItemsCollapse" : "settings.statusBarItemsExpand")}
-                onClick={() => setStatusBarItemsExpanded((open) => !open)}
-              >
-                {statusBarItemsExpanded ? <ChevronUp size={15} aria-hidden="true" /> : <ChevronDown size={15} aria-hidden="true" />}
-              </button>
-            </Tooltip>
-          </div>
-          {statusBarItemsExpanded && (
-            <div className="status-bar-items-editor__list" id={statusBarItemsPanelId}>
-              {orderedStatusItems.map((id) => {
-                const label = statusBarItemLabel(id, t);
-                const visible = visibleStatusItems.has(id);
-                const visibleIndex = statusBarItems.indexOf(id);
-                const disableHide = visible && statusBarItems.length <= 1;
-                const dragLabel = t("settings.statusBarItem.drag", { label });
-                const moveUpLabel = t("settings.statusBarItem.moveUp", { label });
-                const moveDownLabel = t("settings.statusBarItem.moveDown", { label });
-                const dropPlacement = statusBarDragTarget?.id === id ? statusBarDragTarget.placement : null;
-                return (
-                  <div
-                    className={[
-                      "status-bar-item-row",
-                      visible ? "" : "status-bar-item-row--hidden",
-                      draggingStatusBarItem === id ? "status-bar-item-row--dragging" : "",
-                      dropPlacement ? "status-bar-item-row--drag-over" : "",
-                      dropPlacement === "before" ? "status-bar-item-row--drop-before" : "",
-                      dropPlacement === "after" ? "status-bar-item-row--drop-after" : "",
-                    ].filter(Boolean).join(" ")}
-                    data-statusbar-setting-item={id}
-                    key={id}
-                  >
-                    <Tooltip label={dragLabel}>
-                      <button
-                        type="button"
-                        className="status-bar-item-row__drag"
-                        disabled={!visible || busy}
-                        aria-label={dragLabel}
-                        title={dragLabel}
-                        onPointerDown={(event) => startStatusBarPointerDrag(event, id, visible)}
-                        onPointerMove={moveStatusBarPointerDrag}
-                        onPointerUp={endStatusBarPointerDrag}
-                        onPointerCancel={cancelStatusBarPointerDrag}
-                        onMouseDown={(event) => startStatusBarMouseDrag(event, id, visible)}
-                      >
-                        <GripVertical size={14} aria-hidden="true" />
-                      </button>
-                    </Tooltip>
-                    <label className="status-bar-item-row__toggle">
-                      <input
-                        type="checkbox"
-                        checked={visible}
-                        disabled={busy || disableHide}
-                        onChange={() => toggleStatusBarItem(id)}
-                      />
-                      <span className="status-bar-item-row__check" aria-hidden="true">
-                        {visible && <Check size={12} />}
-                      </span>
-                      <span className="status-bar-item-row__label">{label}</span>
-                    </label>
-                    <div className="status-bar-item-row__actions">
-                      <Tooltip label={moveUpLabel}>
-                        <button
-                          type="button"
-                          className="status-bar-item-row__order"
-                          disabled={busy || !visible || visibleIndex <= 0}
-                          onClick={() => moveStatusBarItem(id, -1)}
-                          aria-label={moveUpLabel}
-                        >
-                          <ChevronUp size={14} aria-hidden="true" />
-                        </button>
-                      </Tooltip>
-                      <Tooltip label={moveDownLabel}>
-                        <button
-                          type="button"
-                          className="status-bar-item-row__order"
-                          disabled={busy || !visible || visibleIndex < 0 || visibleIndex >= statusBarItems.length - 1}
-                          onClick={() => moveStatusBarItem(id, 1)}
-                          aria-label={moveDownLabel}
-                        >
-                          <ChevronDown size={14} aria-hidden="true" />
-                        </button>
-                      </Tooltip>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
+      <SettingsField label={t("settings.statusBarItems")} hint={t("settings.statusBarItemsHint")} icon={<ListChecks size={18} />} className="status-bar-items-setting" stacked>
+        <StatusBarItemsEditor
+          items={statusBarItems}
+          busy={busy}
+          onChange={applyStatusBarItems}
+          itemLabel={(id) => statusBarItemLabel(id, t)}
+        />
       </SettingsField>
     </SettingsSection>
+    </>
   );
 }
 
@@ -2089,8 +2097,6 @@ function NetworkSection({ s, busy, apply }: SectionProps) {
   );
 }
 
-type BotInstallTarget = "qq" | "feishu" | "lark" | "weixin";
-type BotOfficialInstallTarget = Exclude<BotInstallTarget, "qq">;
 const BOT_ALLOWLIST_TEXT_KEYS = [
   "qqUsers",
   "feishuUsers",
@@ -2104,6 +2110,10 @@ const BOT_ALLOWLIST_TEXT_KEYS = [
   "qqGroups",
   "feishuGroups",
   "weixinGroups",
+  "dingtalkUsers",
+  "dingtalkApprovers",
+  "dingtalkAdmins",
+  "dingtalkGroups",
 ] as const;
 type BotAllowlistTextKey = typeof BOT_ALLOWLIST_TEXT_KEYS[number];
 type BotSelfUserTextKey = keyof BotSettingsView["selfUserIds"];
@@ -2114,12 +2124,13 @@ type BotInstallState = {
   timeLeft: number;
   message: string;
 };
-const BOT_INSTALL_TARGETS: BotInstallTarget[] = ["qq", "feishu", "lark", "weixin"];
+const BOT_INSTALL_TARGETS: BotInstallTarget[] = ["qq", "feishu", "lark", "weixin", "dingtalk"];
 const BOT_INSTALL_DEFAULT_TIMEOUT_SECONDS = 300;
 const BOT_INSTALL_MIN_POLL_SECONDS = 3;
 const DEFAULT_QQ_SECRET_ENV = "QQ_BOT_APP_SECRET";
 const QQ_CONNECTION_ID = "__qq_bot__";
-const BOT_PLATFORM_KEYS = ["qq", "feishu", "weixin"] as const;
+const DINGTALK_CONNECTION_ID = "__dingtalk_bot__";
+const BOT_PLATFORM_KEYS = ["qq", "feishu", "weixin", "dingtalk"] as const;
 type BotPlatformKey = typeof BOT_PLATFORM_KEYS[number];
 const BOT_ALLOWLIST_ROLES = ["Users", "Groups", "Approvers", "Admins"] as const;
 type BotAllowlistRole = typeof BOT_ALLOWLIST_ROLES[number];
@@ -2132,12 +2143,14 @@ function botAllowlistKey(platform: BotPlatformKey, role: BotAllowlistRole): BotA
 function botConnectionPlatform(connection: BotConnectionView): BotPlatformKey {
   if (connection.provider === "weixin") return "weixin";
   if (connection.provider === "qq") return "qq";
+  if (connection.provider === "dingtalk") return "dingtalk";
   return "feishu";
 }
 
 function botPlatformLabel(platform: BotPlatformKey, t: ReturnType<typeof useT>): string {
   if (platform === "qq") return "QQ";
   if (platform === "weixin") return t("settings.botWeixin");
+  if (platform === "dingtalk") return t("settings.botDingtalk");
   return t("settings.botPlatformFeishuLark");
 }
 
@@ -2161,6 +2174,9 @@ function BotsSection({ s, busy, apply, initialFocus }: BotsSectionProps) {
   const [connectionSecrets, setConnectionSecrets] = useState<Record<string, string>>({});
   const [accessText, setAccessText] = useState<Record<string, string>>({});
   const [qqSecretValue, setQQSecretValue] = useState("");
+  const [dingtalkSecretValue, setDingtalkSecretValue] = useState("");
+  const [dingtalkTesting, setDingtalkTesting] = useState(false);
+  const [runtimePlatforms, setRuntimePlatforms] = useState<Record<string, string>>({});
   const [expandedConnectionId, setExpandedConnectionId] = useState("");
   const [advancedMode, setAdvancedMode] = useState(false);
   const installRef = useRef(install);
@@ -2182,6 +2198,24 @@ function BotsSection({ s, busy, apply, initialFocus }: BotsSectionProps) {
     setQQSecretValue("");
     setTestTargets({});
   }, [s.bot]);
+  // 轮询 bot runtime 的真实平台连接状态，用于 channel 在线徽章（如钉钉黄/绿点）。
+  useEffect(() => {
+    let cancelled = false;
+    const refresh = () => {
+      if (typeof app.BotRuntimeStatus !== "function") return;
+      void app.BotRuntimeStatus()
+        .then((status) => {
+          if (!cancelled) setRuntimePlatforms(status.platforms ?? {});
+        })
+        .catch(() => {});
+    };
+    refresh();
+    const id = window.setInterval(refresh, 5000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, []);
   const focusAccessStep = () => {
     if (!expandedConnectionId && connectionItems.length > 0) {
       const first = connectionItems[0];
@@ -2284,6 +2318,14 @@ function BotsSection({ s, busy, apply, initialFocus }: BotsSectionProps) {
     updateQQ({ access: normalizeBotAccess({ ...draft.qq.access, ...patch }) });
   const persistQQAccess = (patch: Partial<BotAccessView>) =>
     persistQQ({ access: normalizeBotAccess({ ...draft.qq.access, ...patch }) });
+  const updateDingtalk = (patch: Partial<BotSettingsView["dingtalk"]>) =>
+    setDraft((prev) => ({ ...prev, dingtalk: { ...prev.dingtalk, ...patch } }));
+  const persistDingtalk = (patch: Partial<BotSettingsView["dingtalk"]>) =>
+    persistBotDraft({ ...draft, dingtalk: { ...draft.dingtalk, ...patch } });
+  const updateDingtalkAccess = (patch: Partial<BotAccessView>) =>
+    updateDingtalk({ access: normalizeBotAccess({ ...draft.dingtalk.access, ...patch }) });
+  const persistDingtalkAccess = (patch: Partial<BotAccessView>) =>
+    persistDingtalk({ access: normalizeBotAccess({ ...draft.dingtalk.access, ...patch }) });
   const updateConnectionAccess = (id: string, patch: Partial<BotAccessView>) =>
     setConnections((items) => items.map((item) => item.id === id ? { ...item, access: normalizeBotAccess({ ...item.access, ...patch }) } : item));
   const persistConnectionAccess = (connection: BotConnectionView, patch: Partial<BotAccessView>) =>
@@ -2316,6 +2358,7 @@ function BotsSection({ s, busy, apply, initialFocus }: BotsSectionProps) {
   const installQrURL = install.result?.url ?? "";
   const installQrIsImage = installQrURL.startsWith("data:image/");
   const isQQInstallTarget = installTarget === "qq";
+  const isDingtalkInstallTarget = installTarget === "dingtalk";
   const selectedInstallLabel = botTargetLabel(installTarget, t);
   const installUserCode = install.result?.userCode && installTarget !== "weixin" ? formatInstallUserCode(install.result.userCode) : "";
   const qqSecretEnv = draft.qq.appSecretEnv.trim() || DEFAULT_QQ_SECRET_ENV;
@@ -2326,12 +2369,17 @@ function BotsSection({ s, busy, apply, initialFocus }: BotsSectionProps) {
   const nativeRuntimeAvailable = typeof window !== "undefined" && Boolean(window.runtime);
   const browserPreviewBotConfigured = !nativeRuntimeAvailable && (qqAdded || draft.connections.length > 0);
   const qqOnline = qqConfigured && nativeRuntimeAvailable;
+  const dingtalkSecretEnv = draft.dingtalk.clientSecretEnv.trim() || "DINGTALK_CLIENT_SECRET";
+  const dingtalkConfigured = Boolean(draft.dingtalk.enabled && draft.dingtalk.clientId.trim() && dingtalkSecretEnv && draft.dingtalk.secretSet);
+  // 保存按钮仅在用户输入了新的密钥后才可点；已保存过密钥但没有新输入时置灰。
+  const dingtalkCanSaveAndEnable = Boolean(draft.dingtalk.clientId.trim() && dingtalkSecretEnv && dingtalkSecretValue.trim());
+  const dingtalkOnline = runtimePlatforms["dingtalk"] === "running" || runtimePlatforms["dingtalk"] === "degraded";
   const connectionItems: BotConnectionListItem[] = [
     ...(qqAdded ? [{ kind: "qq" as const }] : []),
     ...draft.connections.map((connection) => ({ kind: "connection" as const, connection })),
   ];
-  const selectedInstallConnection = isQQInstallTarget ? undefined : draft.connections.find((connection) => botInstallTargetMatchesConnection(installTarget, connection));
-  const selectedChannelConfigured = isQQInstallTarget ? qqAdded : Boolean(selectedInstallConnection);
+  const selectedInstallConnection = isQQInstallTarget || isDingtalkInstallTarget ? undefined : draft.connections.find((connection) => botInstallTargetMatchesConnection(installTarget, connection));
+  const selectedChannelConfigured = isQQInstallTarget ? qqAdded : isDingtalkInstallTarget ? dingtalkConfigured : Boolean(selectedInstallConnection);
   const routeConnectionOptions = [
     ...(qqAdded ? [{ id: "qq", label: "QQ" }] : []),
     ...draft.connections.map((connection) => ({
@@ -2461,6 +2509,15 @@ function BotsSection({ s, busy, apply, initialFocus }: BotsSectionProps) {
       }));
     }
   };
+  const testDingtalkBot = async () => {
+    setDingtalkTesting(true);
+    try {
+      const diag = await app.TestDingtalkBot();
+      setDiagnostics((prev) => ({ ...prev, dingtalk: diag }));
+    } finally {
+      setDingtalkTesting(false);
+    }
+  };
   const ensureReportableDiagnostic = async (connection: BotConnectionView) => {
     return diagnoseConnection(connection.id);
   };
@@ -2517,6 +2574,15 @@ function BotsSection({ s, busy, apply, initialFocus }: BotsSectionProps) {
     });
     setQQSecretValue("");
   };
+  const clearDingtalkSecret = async () => {
+    const env = draft.dingtalk.clientSecretEnv.trim() || "DINGTALK_CLIENT_SECRET";
+    if (!env) return;
+    await apply(async () => {
+      await saveBot();
+      await app.ClearBotSecret(env);
+    });
+    setDingtalkSecretValue("");
+  };
   const focusQQAccessSettings = () => {
     setDiagnostics((prev) => ({ ...prev, [QQ_CONNECTION_ID]: t("settings.botQQAccessRequired") }));
     setExpandedConnectionId(QQ_CONNECTION_ID);
@@ -2546,6 +2612,38 @@ function BotsSection({ s, busy, apply, initialFocus }: BotsSectionProps) {
     setDraft(nextDraft);
     setQQSecretValue("");
   };
+  const saveDingtalkAndEnable = async () => {
+    const env = draft.dingtalk.clientSecretEnv.trim() || "DINGTALK_CLIENT_SECRET";
+    const secret = dingtalkSecretValue.trim();
+    const nextDraft = botDraftWithDerivedGatewayState({
+      ...draft,
+      dingtalk: {
+        ...draft.dingtalk,
+        enabled: true,
+        clientId: draft.dingtalk.clientId.trim(),
+        clientSecretEnv: env,
+        secretSet: draft.dingtalk.secretSet || Boolean(secret),
+      },
+    });
+    await apply(async () => {
+      await app.SetBotSettings(nextDraft);
+      if (secret) await app.SetBotSecret(env, secret);
+    });
+    setDraft(nextDraft);
+    setDingtalkSecretValue("");
+  };
+  const removeDingtalkBot = async () => {
+    const env = draft.dingtalk.clientSecretEnv.trim() || "DINGTALK_CLIENT_SECRET";
+    const nextDraft = botDraftWithDerivedGatewayState({
+      ...draft,
+      dingtalk: { enabled: false, clientId: "", clientSecretEnv: "DINGTALK_CLIENT_SECRET", secretSet: false, botName: "", requireMention: true, model: "", toolApprovalMode: "", workspaceRoot: "", access: defaultBotAccess() },
+    });
+    await apply(async () => {
+      await app.SetBotSettings(nextDraft);
+      if (draft.dingtalk.secretSet) await app.ClearBotSecret(env);
+    });
+    setDraft(nextDraft);
+  };
   const removeQQBot = async () => {
     const env = draft.qq.appSecretEnv.trim() || DEFAULT_QQ_SECRET_ENV;
     const nextDraft = botDraftWithDerivedGatewayState({
@@ -2561,7 +2659,8 @@ function BotsSection({ s, busy, apply, initialFocus }: BotsSectionProps) {
     setExpandedConnectionId("");
   };
   const selectedQQ = isQQInstallTarget && qqAdded;
-  const selectedConnection = isQQInstallTarget ? null : selectedInstallConnection ?? null;
+  const selectedConnection = isQQInstallTarget || isDingtalkInstallTarget ? null : selectedInstallConnection ?? null;
+  const selectedDingtalk = isDingtalkInstallTarget && dingtalkConfigured;
   const selectedDiagnostic = selectedConnection ? diagnostics[selectedConnection.id] : undefined;
   const selectedDiagnosticDetail = diagnosticReportDetail(selectedDiagnostic);
   const selectedConnectionRemote = selectedConnection ? firstConnectionRemote(selectedConnection) : "";
@@ -2577,9 +2676,9 @@ function BotsSection({ s, busy, apply, initialFocus }: BotsSectionProps) {
   const platformFilterAvailable = connectedPlatforms.size > 0 &&
     BOT_PLATFORM_KEYS.some((platform) => !connectedPlatforms.has(platform) && !platformHasAllowlistText(platform));
   const botChannelConnectionForTarget = (target: BotInstallTarget) =>
-    target === "qq" ? null : draft.connections.find((connection) => botInstallTargetMatchesConnection(target, connection));
+    target === "qq" || target === "dingtalk" ? null : draft.connections.find((connection) => botInstallTargetMatchesConnection(target, connection));
   const botChannelIsConfigured = (target: BotInstallTarget) =>
-    target === "qq" ? qqAdded : Boolean(botChannelConnectionForTarget(target));
+    target === "qq" ? qqAdded : target === "dingtalk" ? dingtalkConfigured : Boolean(botChannelConnectionForTarget(target));
   const openBotChannel = (target: BotInstallTarget) => {
     setInstallTarget(target);
     const connection = botChannelConnectionForTarget(target);
@@ -2878,6 +2977,208 @@ function BotsSection({ s, busy, apply, initialFocus }: BotsSectionProps) {
     </article>
   );
 
+  const dingtalkDetailCard = (
+    <article className="bot-detail-card" aria-labelledby="bot-detail-title">
+      <div className="bot-detail-card__head">
+        <div className="bot-detail-card__identity">
+          <div className="bot-detail-card__title" id="bot-detail-title">
+            DingTalk Bot
+            <span className="badge badge--neutral">DingTalk</span>
+            <span className={`badge ${dingtalkOnline ? "badge--project" : dingtalkConfigured ? "badge--feedback" : "badge--feedback"}`}>
+              {dingtalkOnline ? t("settings.botConnectionConnected") : dingtalkConfigured ? t("settings.botConnectionConfigured") : t("settings.botConnectionDisconnected")}
+            </span>
+          </div>
+          <div className="bot-detail-card__desc">{t("settings.botAutoSaveHint")}</div>
+        </div>
+        <div className="bot-detail-card__actions">
+          <button type="button" className="btn btn--small" disabled={busy || !dingtalkConfigured || dingtalkTesting} onClick={() => void testDingtalkBot()}>
+            {dingtalkTesting ? t("settings.botTesting") : t("settings.botTest")}
+          </button>
+        </div>
+      </div>
+
+      <section className="bot-detail-section">
+        <div className="bot-detail-section__head">{t("settings.botConnectionSummary")}</div>
+        <div className="bot-detail-summary">
+          <div>
+            <span>{t("settings.botConnectionColumnChannel")}</span>
+            <strong>DingTalk</strong>
+          </div>
+          <div>
+            <span>{t("settings.botDingtalkClientId")}</span>
+            <code title={draft.dingtalk.clientId.trim() || undefined}>{draft.dingtalk.clientId.trim() || "—"}</code>
+          </div>
+          <div>
+            <span>{t("settings.botConnectionColumnScope")}</span>
+            <strong>{t("settings.botScopeGlobal")}</strong>
+          </div>
+          <div>
+            <span>{t("settings.botConnectionColumnStatus")}</span>
+            <strong>{dingtalkOnline ? t("settings.botConnectionConnected") : dingtalkConfigured ? t("settings.botConnectionConfigured") : t("settings.botConnectionDisconnected")}</strong>
+          </div>
+        </div>
+      </section>
+
+      <section className="bot-detail-section bot-detail-section--runtime-primary">
+        <SettingsField label={t("settings.botEnableBot")} hint={t("settings.botGatewayEnabled")}>
+          <ToggleSegment
+            value={draft.dingtalk.enabled}
+            disabled={busy}
+            onChange={(enabled) => {
+              updateDingtalk({ enabled });
+              void persistDingtalk({ enabled });
+            }}
+          />
+        </SettingsField>
+        <SettingsField label={t("settings.botToolApprovalMode")} hint={t("settings.botToolApprovalModeHint")}>
+          <div className="provider-add-segmented" role="group" aria-label={t("settings.botToolApprovalMode")}>
+            {TOOL_APPROVAL_MODES.map((mode) => (
+              <button
+                key={mode}
+                type="button"
+                className={normalizeBotToolApprovalMode(draft.dingtalk.toolApprovalMode, true) === mode ? "provider-add-segmented__item provider-add-segmented__item--active" : "provider-add-segmented__item"}
+                disabled={busy}
+                onClick={() => {
+                  updateDingtalk({ toolApprovalMode: mode });
+                  // 热更新运行中 gateway，不重启 bot runtime（避免面板跳变）。
+                  void app.SetBotDingtalkToolApprovalMode(mode).catch((e) => {
+                    console.warn("set dingtalk approval mode failed", e);
+                  });
+                }}
+              >
+                {t(`settings.botToolApprovalMode.${mode}` as DictKey)}
+              </button>
+            ))}
+          </div>
+        </SettingsField>
+        <SettingsField label={t("settings.botChannelModel")} hint={t("settings.botChannelModelHint")}>
+          <ModelPicker
+            s={s}
+            refs={refs}
+            value={toRef(draft.dingtalk.model, s)}
+            disabled={busy}
+            emptyOptionLabel={t("settings.botChannelModelAuto")}
+            emptyOptionHint={settingsModelMeta(s, t)}
+            onPick={(model) => {
+              updateDingtalk({ model });
+              void persistDingtalk({ model });
+            }}
+          />
+        </SettingsField>
+      </section>
+
+      {renderBotAccessSection(DINGTALK_CONNECTION_ID, draft.dingtalk.access, updateDingtalkAccess, (patch) => void persistDingtalkAccess(patch))}
+
+      <section className="bot-detail-section">
+        <div className="bot-detail-section__head">{t("settings.botRuntimeSettings")}</div>
+        <SettingsField label={t("settings.botWorkspaceRoot")} hint={t("settings.botWorkspaceRootHint")}>
+          <input
+            className="mem-input"
+            value={draft.dingtalk.workspaceRoot}
+            disabled={busy}
+            placeholder={t("settings.botWorkspaceRootPlaceholder")}
+            spellCheck={false}
+            onChange={(event) => updateDingtalk({ workspaceRoot: event.target.value })}
+            onBlur={(event) => void persistDingtalk({ workspaceRoot: event.currentTarget.value })}
+          />
+        </SettingsField>
+        <SettingsField label={t("settings.botDingtalkBotName")} hint={t("settings.botDingtalkBotNameHint")}>
+          <input
+            className="mem-input"
+            value={draft.dingtalk.botName}
+            disabled={busy}
+            placeholder={t("settings.botDingtalkBotName")}
+            spellCheck={false}
+            onChange={(event) => updateDingtalk({ botName: event.target.value })}
+            onBlur={(event) => void persistDingtalk({ botName: event.currentTarget.value })}
+          />
+        </SettingsField>
+        <SettingsField label={t("settings.botDingtalkRequireMention")} hint={t("settings.botDingtalkRequireMentionHint")}>
+          <ToggleSegment
+            value={draft.dingtalk.requireMention}
+            disabled={busy}
+            onLabel={t("settings.toggleOn")}
+            offLabel={t("settings.toggleOff")}
+            onChange={(requireMention) => {
+              updateDingtalk({ requireMention });
+              void persistDingtalk({ requireMention });
+            }}
+          />
+        </SettingsField>
+      </section>
+
+      <section className="bot-detail-section">
+        <div className="bot-detail-section__head">{t("settings.botCredential")}</div>
+        <div className="bot-credential-stack">
+          <div className="bot-credential-line">
+            <span>{draft.dingtalk.clientId.trim() ? t("settings.botCredentialClientId", { value: draft.dingtalk.clientId.trim() }) : t("settings.botCredentialConfigured")}</span>
+            <strong>{draft.dingtalk.secretSet ? t("settings.botSecretSet") : t("settings.botSecretMissing")}</strong>
+          </div>
+          <div className="bot-secret-row bot-secret-row--dingtalk">
+            <input
+              className="mem-input"
+              value={draft.dingtalk.clientId}
+              disabled={busy}
+              placeholder={t("settings.botDingtalkClientId")}
+              spellCheck={false}
+              aria-label={t("settings.botDingtalkClientId")}
+              onChange={(event) => updateDingtalk({ clientId: event.target.value })}
+              onBlur={(event) => void persistDingtalk({ clientId: event.currentTarget.value })}
+            />
+            <input
+              className="mem-input"
+              value={draft.dingtalk.clientSecretEnv || "DINGTALK_CLIENT_SECRET"}
+              disabled={busy}
+              placeholder="DINGTALK_CLIENT_SECRET"
+              spellCheck={false}
+              aria-label={t("settings.botSecretEnv")}
+              onChange={(event) => updateDingtalk({ clientSecretEnv: event.target.value })}
+              onBlur={(event) => void persistDingtalk({ clientSecretEnv: event.currentTarget.value || "DINGTALK_CLIENT_SECRET" })}
+            />
+            <input
+              className="mem-input"
+              type="password"
+              value={dingtalkSecretValue}
+              disabled={busy}
+              placeholder={draft.dingtalk.secretSet ? t("settings.botSecretReplace") : t("settings.botSecretPaste")}
+              aria-label={t("settings.botDingtalkClientSecret")}
+              onChange={(event) => setDingtalkSecretValue(event.target.value)}
+            />
+            <div className="bot-secret-row__actions">
+              <button type="button" className="btn btn--secondary btn--small" disabled={busy || !dingtalkCanSaveAndEnable} onClick={() => void saveDingtalkAndEnable()}>
+                {draft.dingtalk.secretSet ? t("settings.saveKey") : t("settings.botSaveAndEnable")}
+              </button>
+              <button type="button" className="btn btn--secondary btn--small" disabled={busy || !draft.dingtalk.secretSet} onClick={() => void clearDingtalkSecret()}>
+                {t("settings.clearKey")}
+              </button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {diagnosticMessage(diagnostics.dingtalk) ? (
+        <div className="bot-detail-notice">
+          <span>{diagnosticMessage(diagnostics.dingtalk)}</span>
+        </div>
+      ) : null}
+
+      <section className="bot-detail-section bot-detail-section--danger">
+        <div>
+          <div className="bot-detail-section__head">{t("settings.botDangerZone")}</div>
+          <p>{t("settings.deleteBotHint")}</p>
+        </div>
+        <InlineConfirmButton
+          label={t("settings.deleteBot")}
+          confirmLabel={t("settings.confirmDeleteBot")}
+          cancelLabel={t("common.cancel")}
+          disabled={busy}
+          danger
+          onConfirm={() => void removeDingtalkBot()}
+        />
+      </section>
+    </article>
+  );
+
   const connectionDetailCard = selectedConnection ? (
     <article className="bot-detail-card" aria-labelledby="bot-detail-title">
       <div className="bot-detail-card__head">
@@ -3027,12 +3328,14 @@ function BotsSection({ s, busy, apply, initialFocus }: BotsSectionProps) {
                 placeholder={selectedConnection.credential.secretSet ? t("settings.botSecretReplace") : t("settings.botSecretPaste")}
                 onChange={(event) => setConnectionSecrets((prev) => ({ ...prev, [selectedConnection.id]: event.target.value }))}
               />
-              <button type="button" className="btn btn--secondary btn--small" disabled={busy || !(connectionSecrets[selectedConnection.id] ?? "").trim()} onClick={() => void saveConnectionSecret(selectedConnection)}>
-                {t("settings.saveKey")}
-              </button>
-              <button type="button" className="btn btn--secondary btn--small" disabled={busy || !selectedConnection.credential.secretSet} onClick={() => void clearConnectionSecret(selectedConnection)}>
-                {t("settings.clearKey")}
-              </button>
+              <div className="bot-secret-row__actions">
+                <button type="button" className="btn btn--secondary btn--small" disabled={busy || !(connectionSecrets[selectedConnection.id] ?? "").trim()} onClick={() => void saveConnectionSecret(selectedConnection)}>
+                  {t("settings.saveKey")}
+                </button>
+                <button type="button" className="btn btn--secondary btn--small" disabled={busy || !selectedConnection.credential.secretSet} onClick={() => void clearConnectionSecret(selectedConnection)}>
+                  {t("settings.clearKey")}
+                </button>
+              </div>
             </div>
           ) : null}
         </div>
@@ -3106,6 +3409,71 @@ function BotsSection({ s, busy, apply, initialFocus }: BotsSectionProps) {
                 </button>
               </div>
               {!qqCanEnableAccess ? <div className="bot-connect-panel__hint bot-connect-panel__hint--warning">{t("settings.botQQAccessRequired")}</div> : null}
+            </div>
+          </div>
+        </div>
+      ) : isDingtalkInstallTarget ? (
+        <div className="bot-connect-panel bot-connect-panel--manual bot-connect-panel--dingtalk">
+          <div className="bot-connect-panel__body">
+            <div className="bot-qq-simple__head">
+              <div>
+                <strong>{selectedInstallLabel}</strong>
+                <p>{t("settings.botInstallManualDingtalk")}</p>
+              </div>
+              <span className={`bot-qq-simple__status${dingtalkConfigured ? " bot-qq-simple__status--ready" : ""}`}>
+                {dingtalkConfigured ? <CheckCircle2 aria-hidden="true" /> : <KeyRound aria-hidden="true" />}
+                {draft.dingtalk.secretSet ? t("settings.botSecretSet") : t("settings.botSecretMissing")}
+              </span>
+            </div>
+            <div className="bot-manual-form bot-manual-form--dingtalk">
+              <div className="bot-card-field">
+                <span>{t("settings.botDingtalkClientId")}</span>
+                <div>
+                  <input
+                    className="mem-input"
+                    aria-label={t("settings.botDingtalkClientId")}
+                    value={draft.dingtalk.clientId}
+                    disabled={busy}
+                    spellCheck={false}
+                    onChange={(event) => updateDingtalk({ clientId: event.target.value })}
+                    onBlur={(event) => void persistDingtalk({ clientId: event.currentTarget.value })}
+                  />
+                </div>
+              </div>
+              <div className="bot-card-field">
+                <span>{t("settings.botDingtalkClientSecret")}</span>
+                <div>
+                  <input
+                    className="mem-input"
+                    type="password"
+                    value={dingtalkSecretValue}
+                    disabled={busy}
+                    placeholder={draft.dingtalk.secretSet ? t("settings.botSecretSavedOptional") : t("settings.botSecretPaste")}
+                    spellCheck={false}
+                    aria-label={t("settings.botDingtalkClientSecret")}
+                    onChange={(event) => setDingtalkSecretValue(event.target.value)}
+                  />
+                </div>
+              </div>
+              <div className="bot-card-field">
+                <span>{t("settings.botDingtalkBotName")}</span>
+                <div>
+                  <input
+                    className="mem-input"
+                    aria-label={t("settings.botDingtalkBotName")}
+                    value={draft.dingtalk.botName}
+                    disabled={busy}
+                    spellCheck={false}
+                    onChange={(event) => updateDingtalk({ botName: event.target.value })}
+                    onBlur={(event) => void persistDingtalk({ botName: event.currentTarget.value })}
+                  />
+                </div>
+              </div>
+              <div className="bot-qq-simple__actions">
+                <button type="button" className="btn btn--primary btn--small" disabled={busy || !dingtalkCanSaveAndEnable} onClick={() => void saveDingtalkAndEnable()}>
+                  {t("settings.botSaveAndEnable")}
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -3201,7 +3569,10 @@ function BotsSection({ s, busy, apply, initialFocus }: BotsSectionProps) {
                 onClick={() => openBotChannel(target)}
               >
                 <span className="bot-channel-tab__icon" aria-hidden="true">
-                  {target === "qq" || target === "weixin" ? <MessageCircle size={24} /> : <BotIcon size={24} />}
+                  {(() => {
+                    const Icon = CHANNEL_ICONS[target];
+                    return <Icon className="bot-channel-tab__brand" />;
+                  })()}
                 </span>
                 <span className="bot-channel-tab__text">
                   <strong>{botTargetLabel(target, t)}</strong>
@@ -3226,6 +3597,8 @@ function BotsSection({ s, busy, apply, initialFocus }: BotsSectionProps) {
             </article>
           ) : selectedQQ ? (
             qqDetailCard
+          ) : selectedDingtalk ? (
+            dingtalkDetailCard
           ) : selectedConnection ? (
             connectionDetailCard
           ) : (
@@ -3672,114 +4045,6 @@ function BotsSection({ s, busy, apply, initialFocus }: BotsSectionProps) {
   );
 }
 
-function diagnosticMessage(diag?: BotConnectionDiagnostic | string): string {
-  if (typeof diag === "string") return diag;
-  return diag?.message || diag?.status || "";
-}
-
-function diagnosticReportDetail(diag?: BotConnectionDiagnostic | string): string {
-  if (typeof diag === "string") return "";
-  return diag?.reportDetail || "";
-}
-
-function botTargetLabel(target: BotInstallTarget, t: ReturnType<typeof useT>): string {
-  switch (target) {
-    case "qq": return "QQ";
-    case "lark": return "Lark";
-    case "weixin": return t("settings.botWeixin");
-    default: return t("settings.botFeishu");
-  }
-}
-
-function botTargetHint(target: BotInstallTarget, t: ReturnType<typeof useT>): string {
-  switch (target) {
-    case "qq": return t("settings.botInstallQQHint");
-    case "lark": return t("settings.botInstallLarkHint");
-    case "weixin": return t("settings.botInstallWeixinHint");
-    default: return t("settings.botInstallFeishuHint");
-  }
-}
-
-function qqBotAdded(qq: BotSettingsView["qq"]): boolean {
-  return Boolean(qq.enabled || qq.secretSet || qq.appId.trim());
-}
-
-function botAccessEntryCount(access: BotAccessView): number {
-  return [
-    ...asArray(access.users),
-    ...asArray(access.groups),
-    ...asArray(access.approvers),
-    ...asArray(access.admins),
-  ].filter((value) => value.trim()).length;
-}
-
-function botAccessReady(access: BotAccessView): boolean {
-  if (access.allowAll || access.pairingEnabled) return true;
-  if (!access.enabled) return false;
-  return botAccessEntryCount(access) > 0;
-}
-
-function botInstallTargetMatchesConnection(target: BotOfficialInstallTarget, connection: BotConnectionView): boolean {
-  if (target === "weixin") return connection.provider === "weixin";
-  if (target === "lark") return connection.provider === "feishu" && connection.domain === "lark";
-  return connection.provider === "feishu" && connection.domain !== "lark";
-}
-
-function botInstallTargetForConnection(connection: BotConnectionView): BotInstallTarget {
-  if (connection.provider === "weixin") return "weixin";
-  if (connection.provider === "feishu" && connection.domain === "lark") return "lark";
-  if (connection.provider === "qq") return "qq";
-  return "feishu";
-}
-
-function formatInstallUserCode(code: string): string {
-  const compact = code.replace(/[^a-z0-9]/gi, "").toUpperCase().slice(0, 8);
-  if (compact.length <= 4) return compact;
-  return `${compact.slice(0, 4)}-${compact.slice(4)}`;
-}
-
-function formatInstallTimeLeft(seconds: number): string {
-  const value = Math.max(0, Math.floor(seconds));
-  const minutes = Math.floor(value / 60);
-  const rest = value % 60;
-  return `${minutes}:${String(rest).padStart(2, "0")}`;
-}
-
-function botConnectionLabel(connection: BotConnectionView, t: ReturnType<typeof useT>): string {
-  if (connection.domain === "lark") return "Lark";
-  if (connection.provider === "weixin") return t("settings.botWeixin");
-  if (connection.provider === "qq") return "QQ";
-  return t("settings.botFeishu");
-}
-
-function firstConnectionRemote(connection: BotConnectionView): string {
-  return connection.sessionMappings.find((mapping) => mapping.remoteId.trim())?.remoteId ?? "";
-}
-
-function botConnectionScopeLabel(connection: BotConnectionView, t: ReturnType<typeof useT>): string {
-  return connection.workspaceRoot.trim() ? t("settings.botScopeProject") : t("settings.botScopeGlobal");
-}
-
-function botConnectionSecretEnv(connection: BotConnectionView): string {
-  return connection.provider === "weixin" ? connection.credential.tokenEnv : connection.credential.appSecretEnv;
-}
-
-function botConnectionSecretPatch(connection: BotConnectionView, value: string): Partial<BotConnectionView["credential"]> {
-  return connection.provider === "weixin" ? { tokenEnv: value } : { appSecretEnv: value };
-}
-
-function botConnectionCredentialSummary(connection: BotConnectionView, t: ReturnType<typeof useT>): string {
-  if (connection.provider === "weixin") {
-    return connection.credential.accountId
-      ? t("settings.botCredentialAccount", { value: connection.credential.accountId })
-      : t("settings.botCredentialLocalWeixin");
-  }
-  if (connection.credential.appId) {
-    return t("settings.botCredentialApp", { value: connection.credential.appId });
-  }
-  return t("settings.botCredentialConfigured");
-}
-
 function ToggleSegment({
   value,
   disabled,
@@ -3862,6 +4127,7 @@ function sanitizeBotDraft(draft: BotSettingsView): BotSettingsView {
       qq: uniqueStrings(bot.selfUserIds.qq.map((v) => v.trim())),
       feishu: uniqueStrings(bot.selfUserIds.feishu.map((v) => v.trim())),
       weixin: uniqueStrings(bot.selfUserIds.weixin.map((v) => v.trim())),
+      dingtalk: uniqueStrings(bot.selfUserIds.dingtalk.map((v) => v.trim())),
     },
     control: {
       enabled: bot.control.enabled,
@@ -3888,6 +4154,10 @@ function sanitizeBotDraft(draft: BotSettingsView): BotSettingsView {
       qqGroups: uniqueStrings(bot.allowlist.qqGroups.map((v) => v.trim())),
       feishuGroups: uniqueStrings(bot.allowlist.feishuGroups.map((v) => v.trim())),
       weixinGroups: uniqueStrings(bot.allowlist.weixinGroups.map((v) => v.trim())),
+      dingtalkUsers: uniqueStrings(bot.allowlist.dingtalkUsers.map((v) => v.trim())),
+      dingtalkApprovers: uniqueStrings(bot.allowlist.dingtalkApprovers.map((v) => v.trim())),
+      dingtalkAdmins: uniqueStrings(bot.allowlist.dingtalkAdmins.map((v) => v.trim())),
+      dingtalkGroups: uniqueStrings(bot.allowlist.dingtalkGroups.map((v) => v.trim())),
     },
     qq: {
       ...bot.qq,
@@ -3913,6 +4183,14 @@ function sanitizeBotDraft(draft: BotSettingsView): BotSettingsView {
       tokenEnv: bot.weixin.tokenEnv.trim(),
       apiBase: bot.weixin.apiBase.trim().replace(/\/+$/, ""),
     },
+    dingtalk: {
+      ...bot.dingtalk,
+      clientId: bot.dingtalk.clientId.trim(),
+      clientSecretEnv: bot.dingtalk.clientSecretEnv.trim(),
+      botName: bot.dingtalk.botName.trim(),
+      toolApprovalMode: normalizeBotToolApprovalMode(bot.dingtalk.toolApprovalMode),
+      access: sanitizeBotAccess(bot.dingtalk.access),
+    },
     connections: bot.connections.map((conn) => ({ ...normalizeBotConnection(conn), access: sanitizeBotAccess(conn.access) })).filter((conn) => conn.id && conn.provider),
   };
 }
@@ -3932,14 +4210,29 @@ function botDraftWithDerivedGatewayState(draft: BotSettingsView): BotSettingsVie
   const bot = sanitizeBotDraft(draft);
   return {
     ...bot,
-    enabled: bot.qq.enabled || bot.connections.some((connection) => connection.enabled),
+    enabled: bot.qq.enabled || bot.dingtalk.enabled || bot.connections.some((connection) => connection.enabled),
   };
 }
 
-function ModelsSection({ s, busy, apply, backgroundApply }: ModelsSectionProps) {
+function ModelsSection({ s, busy, apply, backgroundApply, initialFocus }: ModelsSectionProps) {
   const t = useT();
-  const [subtab, setSubtab] = useState<"usage" | "access">("usage");
+  const [subtab, setSubtab] = useState<"usage" | "access" | "stats">(
+    initialFocus?.target === "model-access"
+      ? "access"
+      : initialFocus?.target === "model-stats"
+        ? "stats"
+        : "usage",
+  );
+  // The command palette may re-target this section while the settings panel is
+  // already open (the subtab state is not remounted by a tab change). Each
+  // freshly allocated focus request runs this effect once, including repeated
+  // requests for the same target after the user changes subtabs.
+  useEffect(() => {
+    if (initialFocus?.target !== "model-access" && initialFocus?.target !== "model-stats") return;
+    setSubtab(initialFocus.target === "model-access" ? "access" : "stats");
+  }, [initialFocus?.target, initialFocus?.requestId]);
   const autoRefreshKeyRef = useRef("");
+  const autoRefreshGenerationRef = useRef(0);
   const refs = useMemo(() => allRefs(s), [s.providers]);
   const defaultRef = toRef(s.defaultModel, s);
   const plannerRef = toRef(s.plannerModel, s);
@@ -3952,10 +4245,80 @@ function ModelsSection({ s, busy, apply, backgroundApply }: ModelsSectionProps) 
     : !providerIsConfigured(defaultProviderView)
       ? t("settings.modelNeedsKey", { provider: modelProviderLabel(defaultProvider, defaultProviderView, t) })
       : "";
-  const agent = s.agent ?? { temperature: 0, maxSteps: 0, plannerMaxSteps: 0, maxSubagentDepth: 2, systemPrompt: "", coldResumePrune: true, reasoningLanguage: "auto" };
+  const agent = s.agent ?? { temperature: 0, maxSteps: 0, plannerMaxSteps: 0, maxSubagentDepth: 2, maxSubagentConcurrency: 6, maxParallelWriters: 3, systemPrompt: "", reasoningLanguage: "auto", compactRatio: 0.80 };
+  const compactRatio = agent.compactRatio ?? 0.80;
+  const compactRatioPercent = Math.round(compactRatio * 1000) / 10;
+  const [compactRatioDraft, setCompactRatioDraft] = useState(() => String(compactRatioPercent));
+  const [compactRatioCustomOpen, setCompactRatioCustomOpen] = useState(false);
+  const compactRatioCustomInputRef = useRef<HTMLInputElement>(null);
+  const compactRatioPreset = COMPACT_RATIO_PRESETS.find(([ratio]) => Math.abs(compactRatio - ratio) < 0.0001);
+  const compactRatioDraftPercent = Number(compactRatioDraft);
+  const compactRatioDraftValid = compactRatioDraft !== ""
+    && Number.isFinite(compactRatioDraftPercent)
+    && compactRatioDraftPercent >= 65
+    && compactRatioDraftPercent <= 85;
+  const compactRatioDraftDirty = compactRatioDraftValid
+    && Math.abs(compactRatioDraftPercent / 100 - compactRatio) > 0.0001;
+  const defaultModel = defaultRef.startsWith(`${defaultProvider}/`) ? defaultRef.slice(defaultProvider.length + 1) : "";
+  const modelContextWindow = defaultProviderView?.modelOverrides?.find((override) => override.model === defaultModel)?.contextWindow ?? 0;
+  const effectiveContextWindow = modelContextWindow > 0 ? modelContextWindow : (defaultProviderView?.contextWindow ?? 0);
+  const compactTokens = effectiveContextWindow > 0 ? Math.round(effectiveContextWindow * compactRatio) : 0;
+  const compactRatioImpact = compactTokens > 0
+    ? t("settings.compactRatioImpactWithTokens", { percent: compactRatioPercent, tokens: compactTokens.toLocaleString() })
+    : t("settings.compactRatioImpact", { percent: compactRatioPercent });
+  const compactRatioSelection = compactRatioPreset
+    ? t(compactRatioPreset[1])
+    : t("settings.compactRatioCustomValue", { percent: compactRatioPercent });
+  const compactRatioOverrideHint = agent.compactRatioOverridden
+    ? t("settings.compactRatioProjectOverride", { percent: Math.round((agent.effectiveCompactRatio ?? compactRatio) * 100) })
+    : "";
   const subagentDepth = Number.isFinite(agent.maxSubagentDepth) && agent.maxSubagentDepth <= 1 ? 1 : 2;
+  const subagentConcurrency = Number.isFinite(agent.maxSubagentConcurrency) && agent.maxSubagentConcurrency > 0
+    ? Math.max(1, Math.min(32, Math.floor(agent.maxSubagentConcurrency)))
+    : 6;
+  const parallelWriters = Number.isFinite(agent.maxParallelWriters) && agent.maxParallelWriters > 0
+    ? Math.max(1, Math.min(subagentConcurrency, Math.floor(agent.maxParallelWriters)))
+    : Math.min(3, subagentConcurrency);
 
   useEffect(() => {
+    setCompactRatioDraft(String(compactRatioPercent));
+  }, [compactRatioPercent]);
+
+  useEffect(() => {
+    if (compactRatioCustomOpen) compactRatioCustomInputRef.current?.focus();
+  }, [compactRatioCustomOpen]);
+
+  const persistCompactRatio = async (ratio: number) => {
+    if (await apply(() => app.SetCompactRatio(ratio))) setCompactRatioCustomOpen(false);
+  };
+
+  const openCompactRatioCustom = () => {
+    setCompactRatioDraft(String(compactRatioPercent));
+    setCompactRatioCustomOpen(true);
+  };
+
+  const closeCompactRatioCustom = () => {
+    setCompactRatioDraft(String(compactRatioPercent));
+    setCompactRatioCustomOpen(false);
+  };
+
+  const selectCompactRatioPreset = async (ratio: number) => {
+    if (Math.abs(compactRatio - ratio) < 0.0001) {
+      closeCompactRatioCustom();
+      return;
+    }
+    await persistCompactRatio(ratio);
+  };
+
+  const saveCompactRatioDraft = async () => {
+    if (!compactRatioDraftValid || !compactRatioDraftDirty || busy) return;
+    await persistCompactRatio(compactRatioDraftPercent / 100);
+  };
+
+  useEffect(() => {
+    const generation = ++autoRefreshGenerationRef.current;
+    let cancelled = false;
+    const stale = () => cancelled || autoRefreshGenerationRef.current !== generation;
     if (subtab !== "usage") return;
     const groups = providerAccessGroups(s.providers.filter((p) => p.added), t);
     const candidates = groups
@@ -3964,29 +4327,74 @@ function ModelsSection({ s, busy, apply, backgroundApply }: ModelsSectionProps) 
         return provider ? { group, provider } : null;
       })
       .filter((item): item is { group: ProviderAccessGroup; provider: ProviderView } => Boolean(item));
-    const refreshKey = candidates.map(({ group, provider }) => `${group.id}:${provider.apiKeyEnv || provider.name}:${provider.baseUrl}`).join("|");
+    // The backend token covers provider identity, current catalog, headers,
+    // and credential revision without persisting sensitive header values in
+    // sessionStorage. Older payloads without the token simply skip this
+    // opportunistic background refresh; manual refresh remains available.
+    if (candidates.some(({ provider }) => !provider.modelCatalogFingerprint?.trim())) return;
+    const refreshKey = candidates.map(({ group, provider }) => JSON.stringify([
+      group.id,
+      provider.modelCatalogFingerprint!.trim(),
+    ])).join("|");
     if (!refreshKey || autoRefreshKeyRef.current === refreshKey) return;
+
+    // Session-level cooldown per provider set: reopening the panel does not
+    // refetch the same providers, while a changed set refreshes immediately.
+    const autoRefreshStorageKey = `settings-auto-refresh-at:${refreshKey}`;
+    const lastAutoRefresh = sessionStorage.getItem(autoRefreshStorageKey);
+    if (lastAutoRefresh && Date.now() - Number(lastAutoRefresh) < 30_000) return;
+
+    // Respect slow network hints; background model-list refresh can wait.
+    if (shouldSkipAutoRefresh()) return;
+
     autoRefreshKeyRef.current = refreshKey;
+    sessionStorage.setItem(autoRefreshStorageKey, String(Date.now()));
 
     void backgroundApply(async () => {
+      // Batch-fetch models for all candidates in one round-trip.
+      const providersToFetch = candidates.map((c) => c.provider).filter((p) => p.models && p.models.length > 0);
+      let batchResults: Record<string, string[]> = {};
+      try {
+        batchResults = await app.FetchAllProviderModels(providersToFetch) as Record<string, string[]>;
+      } catch {
+        // Batch failed entirely — fall back to per-provider cached calls below.
+      }
+      if (stale()) return;
+
+      const updates: ProviderModelCatalogUpdate[] = [];
       for (const { provider } of candidates) {
-        // Background auto-refresh only protects a user-curated model list.
-        // If the user hasn't specified any models, don't silently populate
-        // the provider with every model from the API.
+        if (stale()) return;
         if (!provider.models || provider.models.length === 0) continue;
         try {
-          const fetched = await app.FetchProviderModels(provider);
-          if (fetched.length === 0) continue;
+          const fetched = batchResults[provider.name]
+            ?? await cachedFetchProviderModels((p) => app.FetchProviderModels(p), provider);
+          if (stale()) return;
+          if (!fetched || fetched.length === 0) continue;
           const models = mergedFetchedProviderModels(provider.models, fetched, { preserveCurated: true });
           const currentDefault = providerDefaultModel(provider.default, models);
           const visionModels = provider.visionModels.filter((model) => models.includes(model));
           if (sameStringList(provider.models, models) && provider.default === currentDefault && sameStringList(provider.visionModels, visionModels)) continue;
-          await app.SaveProvider({ ...provider, models, default: currentDefault, visionModels });
+          const expectedFingerprint = provider.modelCatalogFingerprint?.trim() ?? "";
+          if (!expectedFingerprint) continue;
+          updates.push({ name: provider.name, expectedFingerprint, models, default: currentDefault, visionModels });
         } catch {
           // Background discovery is opportunistic; manual refresh shows errors.
         }
       }
+      if (updates.length > 0) {
+        try {
+          if (stale()) return;
+          // Compare and apply narrow catalog updates in one transaction.
+          await app.SaveProviderModelCatalogs(updates);
+        } catch {
+          // Background discovery is opportunistic; explicit edits show errors.
+        }
+      }
     });
+    return () => {
+      cancelled = true;
+      if (autoRefreshGenerationRef.current === generation) autoRefreshGenerationRef.current += 1;
+    };
   }, [backgroundApply, s.providers, subtab, t]);
 
   return (
@@ -4007,6 +4415,14 @@ function ModelsSection({ s, busy, apply, backgroundApply }: ModelsSectionProps) 
           onClick={() => setSubtab("access")}
         >
           {t("settings.modelTab.access")}
+        </button>
+        <button
+          type="button"
+          className={`settings-subtab${subtab === "stats" ? " settings-subtab--active" : ""}`}
+          aria-selected={subtab === "stats"}
+          onClick={() => setSubtab("stats")}
+        >
+          {t("settings.modelTab.stats")}
         </button>
       </div>
 
@@ -4079,23 +4495,41 @@ function ModelsSection({ s, busy, apply, backgroundApply }: ModelsSectionProps) 
               </div>
             </SettingsField>
 
+            <SettingsField label={t("settings.subagentConcurrency")} hint={t("settings.subagentConcurrencyHint")}>
+              <input
+                className="mem-input"
+                type="number"
+                min={1}
+                max={32}
+                value={subagentConcurrency}
+                disabled={busy}
+                onChange={(e) => {
+                  const n = Number(e.target.value);
+                  if (!Number.isFinite(n)) return;
+                  void apply(() => app.SetMaxSubagentConcurrency(n));
+                }}
+              />
+            </SettingsField>
+
+            <SettingsField label={t("settings.parallelWriters")} hint={t("settings.parallelWritersHint")}>
+              <input
+                className="mem-input"
+                type="number"
+                min={1}
+                max={subagentConcurrency}
+                value={parallelWriters}
+                disabled={busy}
+                onChange={(e) => {
+                  const n = Number(e.target.value);
+                  if (!Number.isFinite(n)) return;
+                  void apply(() => app.SetMaxParallelWriters(n));
+                }}
+              />
+            </SettingsField>
+
             {modelIssue && <div className="provider-fetch-banner provider-fetch-banner--warn">{modelIssue}</div>}
           </SettingsSection>
           <SettingsSection title={t("settings.agentRuntime")} description={t("settings.agentRuntimeHint")}>
-            <SettingsField label={t("settings.coldResumePrune")} hint={t("settings.coldResumePruneHint")}>
-              <div className="set-seg">
-                {([true, false] as const).map((on) => (
-                  <button
-                    key={on ? "on" : "off"}
-                    className={`set-seg__btn${agent.coldResumePrune === on ? " set-seg__btn--on" : ""}`}
-                    disabled={busy}
-                    onClick={() => void apply(() => app.SetColdResumePrune(on))}
-                  >
-                    {on ? t("settings.coldResumePrune.on") : t("settings.coldResumePrune.off")}
-                  </button>
-                ))}
-              </div>
-            </SettingsField>
             <SettingsField label={t("settings.reasoningLanguage")} hint={t("settings.reasoningLanguageHint")}>
               <div className="set-seg">
                 {(["auto", "zh", "en"] as const).map((lang) => (
@@ -4110,10 +4544,100 @@ function ModelsSection({ s, busy, apply, backgroundApply }: ModelsSectionProps) 
                 ))}
               </div>
             </SettingsField>
+            <SettingsField label={t("settings.compactRatio")} hint={t("settings.compactRatioHint")} stacked>
+              <div className="compact-ratio-controls">
+                <div className="set-seg compact-ratio-presets" role="group" aria-label={t("settings.compactRatio")}>
+                  {COMPACT_RATIO_PRESETS.map(([ratio, labelKey]) => (
+                    <button
+                      key={ratio}
+                      type="button"
+                      className={`set-seg__btn${Math.abs(compactRatio - ratio) < 0.0001 ? " set-seg__btn--on" : ""}`}
+                      disabled={busy}
+                      aria-label={t(labelKey)}
+                      aria-pressed={Math.abs(compactRatio - ratio) < 0.0001}
+                      onClick={() => void selectCompactRatioPreset(ratio)}
+                    >
+                      <span className="compact-ratio-preset__percent" aria-hidden="true">{Math.round(ratio * 100)}%</span>
+                      <span className="compact-ratio-preset__caption" aria-hidden="true">{t(labelKey).split(" · ")[1]}</span>
+                    </button>
+                  ))}
+                </div>
+                <div className="compact-ratio-summary">
+                  <div className="compact-ratio-current">{t("settings.compactRatioCurrent", { value: compactRatioSelection })}</div>
+                  <button
+                    type="button"
+                    className="btn btn--small compact-ratio-custom-toggle"
+                    disabled={busy}
+                    aria-expanded={compactRatioCustomOpen}
+                    aria-controls="settings-compact-ratio-custom-panel"
+                    onClick={compactRatioCustomOpen ? closeCompactRatioCustom : openCompactRatioCustom}
+                  >
+                    {t("settings.compactRatioCustomOption")}
+                  </button>
+                </div>
+                <div className="compact-ratio-impact">{compactRatioImpact}</div>
+                {compactRatioCustomOpen && (
+                  <div id="settings-compact-ratio-custom-panel" className="compact-ratio-custom-panel">
+                    <div className="settings-inline-controls compact-ratio-custom">
+                      <label className="set-label" htmlFor="settings-compact-ratio-custom">{t("settings.compactRatioCustom")}</label>
+                      <input
+                        ref={compactRatioCustomInputRef}
+                        id="settings-compact-ratio-custom"
+                        className="mem-input set-narrow"
+                        type="number"
+                        min={65}
+                        max={85}
+                        step={0.1}
+                        inputMode="decimal"
+                        value={compactRatioDraft}
+                        disabled={busy}
+                        aria-label={t("settings.compactRatioCustomAria")}
+                        aria-describedby="settings-compact-ratio-custom-hint"
+                        aria-invalid={!compactRatioDraftValid}
+                        onInput={(event) => setCompactRatioDraft(event.currentTarget.value)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter") {
+                            event.preventDefault();
+                            void saveCompactRatioDraft();
+                          }
+                          if (event.key === "Escape") {
+                            event.preventDefault();
+                            closeCompactRatioCustom();
+                          }
+                        }}
+                      />
+                      <span className="compact-ratio-custom__suffix" aria-hidden="true">%</span>
+                      <button
+                        type="button"
+                        className="btn btn--small"
+                        disabled={busy || !compactRatioDraftValid || !compactRatioDraftDirty}
+                        onClick={() => void saveCompactRatioDraft()}
+                      >
+                        {t("settings.compactRatioApply")}
+                      </button>
+                      <button type="button" className="btn btn--small" disabled={busy} onClick={closeCompactRatioCustom}>
+                        {t("common.cancel")}
+                      </button>
+                    </div>
+                    <div
+                      id="settings-compact-ratio-custom-hint"
+                      className={`compact-ratio-custom__hint${compactRatioDraftValid ? "" : " compact-ratio-custom__hint--invalid"}`}
+                    >
+                      {t("settings.compactRatioCustomHint")}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </SettingsField>
+            {compactRatioOverrideHint && <div className="provider-fetch-banner provider-fetch-banner--warn">{compactRatioOverrideHint}</div>}
           </SettingsSection>
         </>
-      ) : (
+      ) : subtab === "access" ? (
         <ProvidersSection s={s} busy={busy} apply={apply} />
+      ) : (
+        <Suspense fallback={<div className="empty">{t("settings.loading")}</div>}>
+          <UsageStatsPanel />
+        </Suspense>
       )}
     </>
   );
@@ -4361,7 +4885,8 @@ function ProvidersSection({ s, busy, apply }: SectionProps) {
   const [editing, setEditing] = useState<string | null>(null);
   const [adding, setAdding] = useState<AddProviderMode>(null);
   const [revealedProvider, setRevealedProvider] = useState<string | null>(null);
-  const [fetchingProvider, setFetchingProvider] = useState<string | null>(null);
+  const [fetchingProviders, setFetchingProviders] = useState<Set<string>>(() => new Set());
+  const fetchGate = useMemo(createLatestRequestGate, []);
   const [fetchResults, setFetchResults] = useState<Record<string, ProviderFetchResult>>({});
   const [modelDrafts, setModelDrafts] = useState<Record<string, ProviderModelDraft>>({});
   const visibleProviders = useMemo(() => s.providers.filter((p) => p.added || p.name === revealedProvider), [s.providers, revealedProvider]);
@@ -4392,15 +4917,54 @@ function ProvidersSection({ s, busy, apply }: SectionProps) {
     });
   };
 
+  const beginGroupFetch = (groupID: string): number => {
+    const generation = fetchGate.begin(groupID);
+    setFetchingProviders((current) => {
+      if (current.has(groupID)) return current;
+      const next = new Set(current);
+      next.add(groupID);
+      return next;
+    });
+    return generation;
+  };
+
+  const groupFetchIsCurrent = (groupID: string, generation: number): boolean => (
+    fetchGate.isCurrent(groupID, generation)
+  );
+
+  const finishGroupFetch = (groupID: string, generation: number) => {
+    if (!groupFetchIsCurrent(groupID, generation)) return;
+    setFetchingProviders((current) => {
+      if (!current.has(groupID)) return current;
+      const next = new Set(current);
+      next.delete(groupID);
+      return next;
+    });
+  };
+
+  const cancelGroupFetch = (groupID: string) => {
+    fetchGate.cancel(groupID);
+    setFetchingProviders((current) => {
+      if (!current.has(groupID)) return current;
+      const next = new Set(current);
+      next.delete(groupID);
+      return next;
+    });
+  };
+
   const modelDraftForFetch = (p: ProviderView, fetched: string[]): ProviderModelDraft => {
     const candidates = providerModelCandidates(p.models, fetched);
     const selected = mergedFetchedProviderModels(p.models, fetched, { preserveCurated: true });
-    const visionSource = p.visionModelsConfigured ? p.visionModels : inferredVisionModels(candidates);
+    const visionCapability = providerVisionCapabilityForView(p);
+    const visionSource = visionCapability === "unsupported"
+      ? []
+      : (p.visionModelsConfigured ? p.visionModels : inferredVisionModels(candidates));
     return {
       providerName: p.name,
       candidates,
       selected: candidates.filter((model) => selected.includes(model)),
       visionModels: candidates.filter((model) => visionSource.includes(model)),
+      visionCapability,
     };
   };
 
@@ -4436,20 +5000,22 @@ function ProvidersSection({ s, busy, apply }: SectionProps) {
   };
 
   const refreshModels = async (group: ProviderAccessGroup, p: ProviderView) => {
-    setFetchingProvider(group.id);
+    const generation = beginGroupFetch(group.id);
     setGroupFetchResult(group.id, null);
     setGroupModelDraft(group.id, null);
     try {
       let fetched: string[];
       try {
-        fetched = await app.FetchProviderModels(p);
+        fetched = await cachedFetchProviderModels((provider) => app.FetchProviderModels(provider), p, true);
       } catch (e) {
+        if (!groupFetchIsCurrent(group.id, generation)) return;
         setGroupFetchResult(group.id, {
           kind: "warn",
           text: t("settings.fetchModelsFailedForProvider", { provider: group.label, err: String((e as Error)?.message ?? e) }),
         });
         return;
       }
+      if (!groupFetchIsCurrent(group.id, generation)) return;
       if (fetched.length === 0) {
         setGroupFetchResult(group.id, {
           kind: "warn",
@@ -4458,33 +5024,31 @@ function ProvidersSection({ s, busy, apply }: SectionProps) {
         return;
       }
       const draft = modelDraftForFetch(p, fetched);
-      setGroupModelDraft(group.id, draft);
-      setGroupFetchResult(group.id, {
-        kind: "ok",
-        text: t("settings.fetchModelsReadyForProvider", { provider: group.label, n: draft.candidates.length }),
+      startTransition(() => {
+        setGroupModelDraft(group.id, draft);
+        setGroupFetchResult(group.id, {
+          kind: "ok",
+          text: t("settings.fetchModelsReadyForProvider", { provider: group.label, n: draft.candidates.length }),
+        });
       });
     } finally {
-      setFetchingProvider(null);
+      finishGroupFetch(group.id, generation);
     }
-  };
-
-  const refreshGroup = async (group: ProviderAccessGroup) => {
-    const probe = group.providers[0];
-    if (!probe) return;
-    await refreshModels(group, probe);
   };
 
   const saveKeyEnvAndAutoRefresh = async (group: ProviderAccessGroup, apiKeyEnv: string, value: string) => {
     const probe = group.providers[0];
     if (!probe || !apiKeyEnv) return;
-    setFetchingProvider(group.id);
+    const generation = beginGroupFetch(group.id);
     setGroupFetchResult(group.id, null);
     setGroupModelDraft(group.id, null);
     try {
       await apply(async () => {
         await app.SaveProviderKey(apiKeyEnv, value);
+        invalidateProviderCacheByAPIKeyEnv(apiKeyEnv);
         try {
-          const fetched = await app.FetchProviderModels({ ...probe, apiKeyEnv });
+          const fetched = await cachedFetchProviderModels((provider) => app.FetchProviderModels(provider), { ...probe, apiKeyEnv });
+          if (!groupFetchIsCurrent(group.id, generation)) return;
           if (fetched.length > 0) {
             const draft = modelDraftForFetch({ ...probe, apiKeyEnv }, fetched);
             setGroupModelDraft(group.id, draft);
@@ -4499,6 +5063,7 @@ function ProvidersSection({ s, busy, apply }: SectionProps) {
             text: t("settings.fetchModelsEmptyForProvider", { provider: group.label }),
           });
         } catch (e) {
+          if (!groupFetchIsCurrent(group.id, generation)) return;
           setGroupFetchResult(group.id, {
             kind: "warn",
             text: t("settings.fetchModelsAfterKeyFailedForProvider", { provider: group.label, err: String((e as Error)?.message ?? e) }),
@@ -4506,20 +5071,38 @@ function ProvidersSection({ s, busy, apply }: SectionProps) {
         }
       });
     } finally {
-      setFetchingProvider(null);
+      finishGroupFetch(group.id, generation);
     }
   };
 
   const saveProviderKey = async (group: ProviderAccessGroup, apiKeyEnv: string, value: string) => {
     if (!apiKeyEnv) return;
+    cancelGroupFetch(group.id);
     setGroupFetchResult(group.id, null);
     setGroupModelDraft(group.id, null);
-    await apply(() => app.SetProviderKey(apiKeyEnv, value));
+    await apply(async () => {
+      const warning = await app.SetProviderKey(apiKeyEnv, value);
+      invalidateProviderCacheByAPIKeyEnv(apiKeyEnv);
+      return warning;
+    });
   };
 
-  const clearProviderKey = async (apiKeyEnv: string) => {
+  const clearProviderKey = async (group: ProviderAccessGroup, apiKeyEnv: string) => {
     if (!apiKeyEnv) return;
-    await apply(() => app.ClearProviderKey(apiKeyEnv));
+    cancelGroupFetch(group.id);
+    await apply(async () => {
+      await app.ClearProviderKey(apiKeyEnv);
+      invalidateProviderCacheByAPIKeyEnv(apiKeyEnv);
+    });
+  };
+
+  const saveProvider = async (provider: ProviderView, key: string) => {
+    if (key) {
+      const warning = await app.SaveProviderWithKey(provider, key);
+      invalidateProviderCacheByAPIKeyEnv(provider.apiKeyEnv);
+      return warning;
+    }
+    await app.SaveProvider(provider);
   };
 
   const saveModelDraft = async (group: ProviderAccessGroup) => {
@@ -4533,7 +5116,7 @@ function ProvidersSection({ s, busy, apply }: SectionProps) {
       await app.SaveProvider({
         ...provider,
         models,
-        visionModels,
+        visionModels: draft.visionCapability === "unsupported" ? [] : visionModels,
         visionModelsConfigured: true,
         default: providerDefaultModel(provider.default, models),
       });
@@ -4576,6 +5159,7 @@ function ProvidersSection({ s, busy, apply }: SectionProps) {
           <AddProviderPanel
             mode={adding}
             kinds={s.providerKinds}
+            officialProviders={s.officialProviders}
             providerPresets={s.providerPresets}
             busy={busy}
             onMode={setAdding}
@@ -4588,7 +5172,7 @@ function ProvidersSection({ s, busy, apply }: SectionProps) {
               setAdding(null);
             }}
             onResetPreset={(id) => apply(() => app.ResetProviderPresetAccess(id)).then(() => setAdding(null))}
-            onAddCustom={(pv, key) => apply(() => key ? app.SaveProviderWithKey(pv, key) : app.SaveProvider(pv)).then(() => setAdding(null))}
+            onAddCustom={(pv, key) => apply(() => saveProvider(pv, key ?? "")).then(() => setAdding(null))}
           />
         )}
         {adding === null && groups.map((group) => (
@@ -4596,7 +5180,7 @@ function ProvidersSection({ s, busy, apply }: SectionProps) {
             key={group.id}
             group={group}
             busy={busy}
-            fetching={fetchingProvider === group.id || group.providers.some((p) => fetchingProvider === p.name)}
+            fetching={fetchingProviders.has(group.id)}
             fetchResult={fetchResults[group.id]}
             modelDraft={modelDrafts[group.id]}
             defaultProvider={defaultProvider}
@@ -4604,11 +5188,14 @@ function ProvidersSection({ s, busy, apply }: SectionProps) {
             kinds={s.providerKinds}
             onEdit={setEditing}
             onCancelEdit={() => setEditing(null)}
-            onSave={(pv, key) => apply(() => key ? app.SaveProviderWithKey(pv, key) : app.SaveProvider(pv)).then(() => {
-              setEditing(null);
-              setGroupModelDraft(group.id, null);
-            })}
-            onRefresh={() => void refreshGroup(group)}
+            onSave={(pv, key) => {
+              cancelGroupFetch(group.id);
+              return apply(() => saveProvider(pv, key ?? "")).then(() => {
+                setEditing(null);
+                setGroupModelDraft(group.id, null);
+              });
+            }}
+            onRefresh={(provider) => void refreshModels(group, provider)}
             onToggleDraftModel={(model) => updateModelDraftSelection(group.id, (draft) => (
               draft.selected.includes(model)
                 ? draft.selected.filter((candidate) => candidate !== model)
@@ -4617,16 +5204,37 @@ function ProvidersSection({ s, busy, apply }: SectionProps) {
             onToggleDraftVision={(model) => toggleModelDraftVision(group.id, model)}
             onSelectAllDraftModels={() => updateModelDraftSelection(group.id, (draft) => draft.candidates)}
             onClearDraftModels={() => updateModelDraftSelection(group.id, () => [])}
-            onCancelDraftModels={() => setGroupModelDraft(group.id, null)}
+            onCancelDraftModels={() => {
+              setGroupModelDraft(group.id, null);
+              setGroupFetchResult(group.id, null);
+            }}
             onSaveDraftModels={() => void saveModelDraft(group)}
+            onToggleWebSearch={(enabled) => {
+              const providerNames = group.providers.map((provider) => provider.name);
+              if (providerNames.length === 0) return;
+              void apply(() => app.SetProviderWebSearch(providerNames, enabled));
+            }}
+            onUpgradeRecommended={(name) => {
+              cancelGroupFetch(group.id);
+              return apply(() => app.UpgradeDeepSeekProviderAccess(name)).then((upgraded) => {
+                if (upgraded) {
+                  setEditing(null);
+                  setGroupModelDraft(group.id, null);
+                }
+              });
+            }}
             onSaveEditorKey={(env, value) => group.builtIn ? saveProviderKey(group, env, value) : saveKeyEnvAndAutoRefresh(group, env, value)}
-            onClearEditorKey={clearProviderKey}
-            onDelete={(p) => apply(() => app.RemoveProviderAccess(p.name)).then(() => {
-              if (revealedProvider === p.name) {
-                setRevealedProvider(null);
-                setEditing(null);
-              }
-            })}
+            onClearEditorKey={(env) => clearProviderKey(group, env)}
+            onDelete={(providers) => {
+              cancelGroupFetch(group.id);
+              const providerNames = providers.map(({ name }) => name);
+              return apply(() => app.RemoveProviderAccesses(providerNames)).then(() => {
+                if (revealedProvider && providerNames.includes(revealedProvider)) {
+                  setRevealedProvider(null);
+                  setEditing(null);
+                }
+              });
+            }}
           />
         ))}
       </div>
@@ -4634,7 +5242,7 @@ function ProvidersSection({ s, busy, apply }: SectionProps) {
   );
 }
 
-type ProviderAccessGroup = {
+export type ProviderAccessGroup = {
   id: string;
   label: string;
   description: string;
@@ -4649,6 +5257,7 @@ type ProviderAccessGroup = {
   baseUrl: string;
   kind: string;
   models: string[];
+  recommendedUpgradeAvailable: boolean;
 };
 
 type ProviderFetchResult = {
@@ -4661,6 +5270,7 @@ type ProviderModelDraft = {
   candidates: string[];
   selected: string[];
   visionModels: string[];
+  visionCapability: ProviderVisionCapability;
 };
 
 type AddProviderMode = null | "official" | "custom";
@@ -4708,10 +5318,14 @@ function providerTemplateConflictProviderName(choice: ProviderTemplateChoice): s
 
 function providerPresetDescription(preset: ProviderPresetView, t: ReturnType<typeof useT>): string {
   switch (preset.id) {
+    case "deepseek-responses":
+      return t("settings.addProvider.preset.deepseekResponsesDesc");
     case "longcat-openai":
       return t("settings.addProvider.preset.longcatOpenAIDesc");
     case "longcat-anthropic":
       return t("settings.addProvider.preset.longcatAnthropicDesc");
+    case "token-rhythm":
+      return t("settings.addProvider.preset.tokenRhythmDesc");
     case "kimi-cn":
       return t("settings.addProvider.preset.kimiCnDesc");
     case "kimi-global":
@@ -4754,10 +5368,9 @@ function providerPresetDescription(preset: ProviderPresetView, t: ReturnType<typ
       return t("settings.addProvider.preset.zaiCodingPlanGlobalDesc");
     case "zai-coding-plan-global-anthropic":
       return t("settings.addProvider.preset.zaiCodingPlanGlobalAnthropicDesc");
-    case "opencode-go":
-      return t("settings.addProvider.preset.opencodeGoDesc");
-    case "opencode-go-anthropic":
-      return t("settings.addProvider.preset.opencodeGoAnthropicDesc");
+    case "opencode-go": case "opencode-go-anthropic":
+    case "opencode-go-deepseek-anthropic": case "opencode-go-deepseek-responses":
+      return t(opencodeGoPresetDescriptionKeys[preset.id]);
     case "opencode-zen-anthropic":
       return t("settings.addProvider.preset.opencodeZenAnthropicDesc");
     case "qwen-cn":
@@ -4776,6 +5389,12 @@ function providerPresetDescription(preset: ProviderPresetView, t: ReturnType<typ
       return t("settings.addProvider.preset.stepfunDesc");
     case "stepfun-anthropic":
       return t("settings.addProvider.preset.stepfunAnthropicDesc");
+    case "stepfun-responses":
+      return t("settings.addProvider.preset.stepfunResponsesDesc");
+    case "stepfun-api":
+      return t("settings.addProvider.preset.stepfunApiDesc");
+    case "stepfun-api-anthropic":
+      return t("settings.addProvider.preset.stepfunApiAnthropicDesc");
     case "novita":
       return t("settings.addProvider.preset.novitaDesc");
     case "gmi":
@@ -4790,14 +5409,40 @@ function providerPresetDescription(preset: ProviderPresetView, t: ReturnType<typ
       return t("settings.addProvider.preset.kilocodeDesc");
     case "ollama-cloud":
       return t("settings.addProvider.preset.ollamaCloudDesc");
+    case "scnet":
+      return t("settings.addProvider.preset.scnetDesc");
+    case "scnet-anthropic":
+      return t("settings.addProvider.preset.scnetAnthropicDesc");
     default:
       return preset.description;
   }
 }
 
-function AddProviderPanel({
+function providerPresetLabel(preset: ProviderPresetView, t: ReturnType<typeof useT>): string {
+  switch (preset.id) {
+    case "deepseek-responses":
+      return t("settings.addProvider.preset.deepseekResponsesLabel");
+    case "token-rhythm":
+      return t("settings.addProvider.preset.tokenRhythmLabel");
+    case "stepfun":
+      return t("settings.addProvider.preset.stepfunLabel");
+    case "stepfun-anthropic":
+      return t("settings.addProvider.preset.stepfunAnthropicLabel");
+    case "stepfun-responses":
+      return t("settings.addProvider.preset.stepfunResponsesLabel");
+    case "stepfun-api":
+      return t("settings.addProvider.preset.stepfunApiLabel");
+    case "stepfun-api-anthropic":
+      return t("settings.addProvider.preset.stepfunApiAnthropicLabel");
+    default:
+      return preset.label;
+  }
+}
+
+export function AddProviderPanel({
   mode,
   kinds,
+  officialProviders,
   providerPresets,
   busy,
   onMode,
@@ -4808,8 +5453,7 @@ function AddProviderPanel({
   onResetPreset,
   onAddCustom,
 }: {
-  mode: AddProviderMode;
-  kinds: string[];
+  mode: AddProviderMode; kinds: string[]; officialProviders: ProviderView[];
   providerPresets: ProviderPresetView[];
   busy: boolean;
   onMode: (mode: AddProviderMode) => void;
@@ -4822,21 +5466,21 @@ function AddProviderPanel({
 }) {
   const t = useT();
   const templateChoices = useMemo<ProviderTemplateChoice[]>(() => [
-    ...OFFICIAL_PROVIDER_CHOICES.map((choice) => ({
-      id: `official:${choice.kind}`,
-      source: "official" as const,
-      kind: choice.kind,
-      label: t(choice.labelKey),
-      description: t(choice.descKey),
-      keyEnv: choice.keyEnv,
-      added: false,
-      keySet: false,
-    })),
+    ...OFFICIAL_PROVIDER_CHOICES.map((choice) => {
+      const state = officialProviders.find((provider) => officialProviderKind(provider) === choice.kind);
+      return {
+        id: `official:${choice.kind}`,
+        source: "official" as const, kind: choice.kind,
+        label: t(choice.labelKey), description: t(choice.descKey),
+        keyEnv: state?.apiKeyEnv || choice.keyEnv,
+        added: Boolean(state?.added), keySet: Boolean(state?.keySet),
+      };
+    }),
     ...providerPresets.map((preset) => ({
       id: `preset:${preset.id}`,
       source: "preset" as const,
       presetID: preset.id,
-      label: preset.label,
+      label: providerPresetLabel(preset, t),
       description: providerPresetDescription(preset, t),
       keyEnv: preset.keyEnv,
       added: preset.added,
@@ -4844,7 +5488,7 @@ function AddProviderPanel({
       statusProviderNames: asArray(preset.statusProviderNames),
       keySet: preset.keySet,
     })),
-  ], [providerPresets, t]);
+  ], [officialProviders, providerPresets, t]);
   const [templateID, setTemplateID] = useState("official:deepseek");
   const [key, setKey] = useState("");
   const firstAvailableTemplateID = templateChoices.find(providerTemplateCanAdd)?.id ?? templateChoices[0]?.id ?? "";
@@ -5000,7 +5644,7 @@ function AddProviderPanel({
   return null;
 }
 
-function ProviderAccessCard({
+export function ProviderAccessCard({
   group,
   busy,
   fetching,
@@ -5019,6 +5663,8 @@ function ProviderAccessCard({
   onClearDraftModels,
   onCancelDraftModels,
   onSaveDraftModels,
+  onToggleWebSearch,
+  onUpgradeRecommended,
   onSaveEditorKey,
   onClearEditorKey,
   onDelete,
@@ -5034,22 +5680,27 @@ function ProviderAccessCard({
   onEdit: (name: string) => void;
   onCancelEdit: () => void;
   onSave: (p: ProviderView, key?: string) => void | Promise<void>;
-  onRefresh: () => void;
+  onRefresh: (p: ProviderView) => void;
   onToggleDraftModel: (model: string) => void;
   onToggleDraftVision: (model: string) => void;
   onSelectAllDraftModels: () => void;
   onClearDraftModels: () => void;
   onCancelDraftModels: () => void;
   onSaveDraftModels: () => void;
+  onToggleWebSearch: (enabled: boolean) => void;
+  onUpgradeRecommended: (name: string) => void | Promise<void>;
   onSaveEditorKey: (apiKeyEnv: string, value: string) => Promise<void>;
   onClearEditorKey?: (apiKeyEnv: string) => Promise<void>;
-  onDelete?: (p: ProviderView) => Promise<void>;
+  onDelete?: (providers: ProviderView[]) => Promise<void>;
 }) {
   const t = useT();
   const editableProvider = group.providers[0];
   const isDefault = group.providers.some((p) => p.name === defaultProvider);
   const editingProvider = group.providers.find((p) => editing === p.name);
+  const upgradeProvider = group.providers.find((p) => p.recommendedUpgradeAvailable);
   const primaryProviderExpanded = Boolean(editableProvider && editing === editableProvider.name);
+  const supportsServerWebSearch = group.providers.length > 0 && group.providers.every(providerSupportsServerWebSearchForView);
+  const webSearchEnabled = supportsServerWebSearch && group.providers.every((provider) => Boolean(provider.webSearch));
   const visibleModels = group.models.slice(0, 6);
   const hiddenModelCount = Math.max(0, group.models.length - visibleModels.length);
   return (
@@ -5065,7 +5716,6 @@ function ProviderAccessCard({
               {providerKeyStatusLabel(group, t)}
             </span>
           </div>
-          <div className="provider-access-card__desc">{group.description}</div>
         </div>
         <div className="provider-access-card__actions">
           {editableProvider && (
@@ -5078,64 +5728,66 @@ function ProviderAccessCard({
               {primaryProviderExpanded ? t("common.collapse") : t("settings.configureProvider")}
             </button>
           )}
-          <button
-            className="btn btn--small"
-            disabled={busy || fetching || !group.baseUrl || !group.configured}
-            onClick={onRefresh}
-          >
-            {fetching ? t("settings.fetchingModels") : t("settings.fetchModels")}
-          </button>
+          {editableProvider && group.providers.length === 1 && (
+            <button
+              className="btn btn--small"
+              disabled={busy || fetching || !editableProvider.baseUrl || !group.configured}
+              onClick={() => onRefresh(editableProvider)}
+            >
+              {fetching ? t("settings.fetchingModels") : t("settings.fetchModels")}
+            </button>
+          )}
           {editableProvider && onDelete && (
-            isDefault && !group.builtIn ? (
-              <Tooltip label={t("settings.cantDeleteDefault")}>
-                <button className="btn btn--small" disabled>{t("settings.removeProviderAccess")}</button>
-              </Tooltip>
-            ) : (
-              <InlineConfirmButton
-                label={t("settings.removeProviderAccess")}
-                confirmLabel={group.builtIn ? t("settings.confirmRemoveProviderAccess") : t("settings.confirmDeleteProvider")}
-                cancelLabel={t("common.cancel")}
-                disabled={busy}
-                danger={!group.builtIn}
-                onConfirm={() => onDelete(editableProvider)}
-              />
-            )
+            <ProviderAccessMoreMenu
+              busy={busy}
+              removeDisabled={isDefault && !group.builtIn}
+              builtIn={group.builtIn}
+              onRemove={() => onDelete(group.providers)}
+            />
           )}
         </div>
       </div>
+      {group.description && <div className="provider-access-card__desc">{group.description}</div>}
 
-      <div className="provider-access-meta">
-        <span>{group.kind}</span>
-        <span>{group.baseUrl}</span>
-        <span>{group.apiKeyEnv || t("common.none")}</span>
-        {group.keySource && <span title={group.keySourcePath || undefined}>{t("settings.keySource", { source: group.keySource })}</span>}
-      </div>
-
-      <div className="provider-card-block">
-        <div className="provider-card-block__label">{t(group.configured ? "settings.enabledModels" : "settings.modelList")}</div>
-        <div className="provider-model-chips" aria-label={t(group.configured ? "settings.enabledModels" : "settings.modelList")}>
-          {visibleModels.length > 0 ? visibleModels.map((model) => (
-            <span className="provider-model-chip" key={model}>
-              {model}
-            </span>
-          )) : <span className="provider-model-chip provider-model-chip--empty">{t("settings.noModelsConfigured")}</span>}
-          {hiddenModelCount > 0 && (
-            <span className="provider-model-chip provider-model-chip--more">
-              {t("settings.moreModels", { n: hiddenModelCount })}
-            </span>
-          )}
+      {upgradeProvider && (
+        <div className="provider-protocol-upgrade">
+          <div className="provider-protocol-upgrade__copy">
+            <div className="provider-protocol-upgrade__title">
+              {t("settings.providerProtocol")}: OpenAI Chat Completions
+            </div>
+            <div className="provider-protocol-upgrade__desc">{t("settings.addProvider.official.deepseekDesc")}</div>
+          </div>
+          <div className="provider-protocol-upgrade__actions">
+            <InlineConfirmButton
+              label={<>{t("settings.upgradeRecommendedProtocol")}<ArrowRight size={13} aria-hidden="true" /></>}
+              confirmLabel={t("common.confirm")}
+              cancelLabel={t("common.cancel")}
+              disabled={busy}
+              primary
+              onConfirm={() => onUpgradeRecommended(canonicalOfficialProviderName(upgradeProvider.name))}
+            />
+          </div>
         </div>
-        {!group.configured && group.requiresKey && (
-          <div className="provider-card-status provider-card-status--warn">
-            {t("settings.modelsRequireKey")}
-          </div>
-        )}
-        {fetchResult && (
-          <div className={`provider-card-status provider-card-status--${fetchResult.kind}`}>
-            {fetchResult.text}
-          </div>
-        )}
-      </div>
+      )}
+
+      {!supportsServerWebSearch && (
+        <ProviderModelSummary
+          configured={group.configured}
+          models={visibleModels}
+          hiddenModelCount={hiddenModelCount}
+        />
+      )}
+
+      {!group.configured && group.requiresKey && (
+        <div className="provider-card-status provider-card-status--warn">
+          {t("settings.modelsRequireKey")}
+        </div>
+      )}
+      {fetchResult && (
+        <div className={`provider-card-status provider-card-status--${fetchResult.kind}`}>
+          {fetchResult.text}
+        </div>
+      )}
 
       {modelDraft && (
         <ProviderModelDraftPicker
@@ -5151,6 +5803,21 @@ function ProviderAccessCard({
         />
       )}
 
+      {editableProvider && (
+        <ProviderServiceCapabilities
+          supported={supportsServerWebSearch}
+          configured={group.configured}
+          models={visibleModels}
+          hiddenModelCount={hiddenModelCount}
+          showModelSummary
+          enabled={webSearchEnabled}
+          disabled={busy}
+          onChange={onToggleWebSearch}
+        />
+      )}
+
+      <ProviderTechnicalDetails group={group} />
+
       {group.providers.length > 1 && (
         <div className="provider-profiles">
           {group.providers.map((p) => {
@@ -5160,7 +5827,14 @@ function ProviderAccessCard({
                 <span>{p.name}</span>
                 <span>{p.models.join(", ") || t("common.none")}</span>
                 <button
-                  className="btn btn--small"
+                  className="btn btn--small provider-profile-row__refresh"
+                  disabled={busy || fetching || !p.baseUrl || !providerIsConfigured(p)}
+                  onClick={() => onRefresh(p)}
+                >
+                  {fetching ? t("settings.fetchingModels") : t("settings.fetchModels")}
+                </button>
+                <button
+                  className="btn btn--small provider-profile-row__configure"
                   disabled={busy}
                   aria-expanded={profileExpanded}
                   onClick={() => profileExpanded ? onCancelEdit() : onEdit(p.name)}
@@ -5175,6 +5849,7 @@ function ProviderAccessCard({
 
       {editingProvider && (
         <ProviderEditor
+          key={editingProvider.name}
           initial={editingProvider}
           kinds={kinds}
           busy={busy}
@@ -5185,6 +5860,146 @@ function ProviderAccessCard({
         />
       )}
     </article>
+  );
+}
+
+function ProviderModelSummary({
+  configured,
+  models,
+  hiddenModelCount,
+  compact = false,
+}: {
+  configured: boolean;
+  models: string[];
+  hiddenModelCount: number;
+  compact?: boolean;
+}) {
+  const t = useT();
+  const label = t(configured ? "settings.enabledModels" : "settings.modelList");
+  return (
+    <div className={`provider-card-block${compact ? " provider-card-block--inline" : ""}`}>
+      <div className="provider-card-block__label">{label}</div>
+      <div className="provider-model-chips" aria-label={label}>
+        {models.length > 0 ? models.map((model) => (
+          <span className="provider-model-chip" key={model}>
+            {model}
+          </span>
+        )) : <span className="provider-model-chip provider-model-chip--empty">{t("settings.noModelsConfigured")}</span>}
+        {hiddenModelCount > 0 && (
+          <span className="provider-model-chip provider-model-chip--more">
+            {t("settings.moreModels", { n: hiddenModelCount })}
+          </span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ProviderTechnicalDetails({ group }: { group: ProviderAccessGroup }) {
+  const t = useT();
+  const imageInputUnsupported = group.providers.length > 0 && group.providers.every((provider) => providerVisionCapabilityForView(provider) === "unsupported");
+  return (
+    <details className="provider-technical-details">
+      <summary>{t("settings.providerAccess")}</summary>
+      <dl>
+        {group.providers.length === 1 ? (
+          <>
+            <div><dt>{t("settings.providerProtocol")}</dt><dd>{providerProtocolDisplayName(group.kind)}</dd></div>
+            <div><dt>{t("settings.providerBaseUrlLabel")}</dt><dd>{group.baseUrl || t("common.none")}</dd></div>
+          </>
+        ) : group.providers.map((provider) => (
+          <div key={provider.name}><dt>{provider.name}</dt><dd>{providerProtocolDisplayName(provider.kind)} · {provider.baseUrl || t("common.none")}</dd></div>
+        ))}
+        <div>
+          <dt>{t("settings.providerApiKeyEnv")}</dt>
+          <dd>{group.apiKeyEnv || t("common.none")}</dd>
+        </div>
+        {imageInputUnsupported && (
+          <div>
+            <dt>{t("settings.visionModel")}</dt>
+            <dd>{t("settings.imageInputUnsupported")}</dd>
+          </div>
+        )}
+        {group.keySource && (
+          <div>
+            <dt>{t("settings.providerKey")}</dt>
+            <dd title={group.keySourcePath || undefined}>{group.keySource}</dd>
+          </div>
+        )}
+      </dl>
+    </details>
+  );
+}
+
+function providerProtocolDisplayName(kind: string): string {
+  switch (kind.trim().toLowerCase()) {
+    case "anthropic":
+      return "Anthropic Messages";
+    case "responses":
+      return "Responses API";
+    case "openai":
+      return "OpenAI Chat Completions";
+    default:
+      return kind;
+  }
+}
+
+function ProviderAccessMoreMenu({
+  busy,
+  removeDisabled,
+  builtIn,
+  onRemove,
+}: {
+  busy: boolean;
+  removeDisabled: boolean;
+  builtIn: boolean;
+  onRemove: () => void | Promise<void>;
+}) {
+  const t = useT();
+  const [open, setOpen] = useState(false);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const disabled = busy || removeDisabled;
+  const tooltip = removeDisabled ? t("settings.cantDeleteDefault") : t("settings.themeGallery.moreActions");
+
+  return (
+    <div className="provider-access-more">
+      <Tooltip label={tooltip}>
+        <button
+          ref={triggerRef}
+          type="button"
+          className="btn btn--small provider-access-more__trigger"
+          aria-label={t("settings.themeGallery.moreActions")}
+          aria-haspopup="menu"
+          aria-expanded={open}
+          disabled={disabled}
+          onClick={() => setOpen((current) => !current)}
+        >
+          <MoreHorizontal size={16} aria-hidden="true" />
+        </button>
+      </Tooltip>
+      <AnchoredPopover
+        open={open && !disabled}
+        anchorRef={triggerRef}
+        onClose={() => setOpen(false)}
+        className="provider-access-more__menu"
+        align="end"
+        placement="bottom"
+      >
+        <div className="provider-access-more__items" role="menu" aria-label={t("settings.themeGallery.moreActions")}>
+          <InlineConfirmButton
+            label={<><Trash2 size={14} aria-hidden="true" />{t("settings.removeProviderAccess")}</>}
+            confirmLabel={builtIn ? t("settings.confirmRemoveProviderAccess") : t("settings.confirmDeleteProvider")}
+            cancelLabel={t("common.cancel")}
+            danger={!builtIn}
+            buttonRole="menuitem"
+            onConfirm={async () => {
+              setOpen(false);
+              await onRemove();
+            }}
+          />
+        </div>
+      </AnchoredPopover>
+    </div>
   );
 }
 
@@ -5220,9 +6035,11 @@ function ProviderModelDraftPicker({
   const selected = new Set(draft.selected);
   const vision = new Set(draft.visionModels);
   const q = debouncedQuery.trim().toLowerCase();
-  const visibleCandidates = q
-    ? draft.candidates.filter((model) => model.toLowerCase().includes(q))
-    : draft.candidates;
+  const visibleCandidates = useMemo(
+    () => (q ? draft.candidates.filter((model) => model.toLowerCase().includes(q)) : draft.candidates),
+    [draft.candidates, q],
+  );
+  const deferredCandidates = useDeferredValue(visibleCandidates);
   const disabled = busy || fetching;
 
   return (
@@ -5249,10 +6066,10 @@ function ProviderModelDraftPicker({
         onChange={(e) => setQuery(e.target.value)}
       />
       <div className="provider-model-draft__list" role="list" aria-label={t("settings.modelCandidates")}>
-        {visibleCandidates.length > 0 ? visibleCandidates.map((model) => {
+        {deferredCandidates.length > 0 ? deferredCandidates.map((model) => {
           const enabled = selected.has(model);
           return (
-            <div className="provider-model-draft__option" key={model}>
+            <div className="provider-model-draft__option" key={model} role="listitem" style={{ contentVisibility: "auto", containIntrinsicSize: "auto 48px" }}>
               <label className="provider-model-draft__model">
                 <input
                   type="checkbox"
@@ -5262,15 +6079,23 @@ function ProviderModelDraftPicker({
                 />
                 <span>{model}</span>
               </label>
-              <label className="provider-model-draft__vision">
-                <input
-                  type="checkbox"
-                  checked={enabled && vision.has(model)}
-                  disabled={disabled || !enabled}
-                  onChange={() => onToggleVision(model)}
-                />
-                <span>{t("settings.visionModel")}</span>
-              </label>
+              {draft.visionCapability === "configurable" ? (
+                <label className="provider-model-draft__vision">
+                  <input
+                    type="checkbox"
+                    checked={enabled && vision.has(model)}
+                    disabled={disabled || !enabled}
+                    aria-label={t("settings.visionModelAria", { model })}
+                    onChange={() => onToggleVision(model)}
+                  />
+                  <span>{t("settings.visionModel")}</span>
+                </label>
+              ) : (
+                <div className="provider-model-draft__capabilities" aria-label={t("settings.modelCapabilitiesAria", { model })}>
+                  <span>{t("settings.textInput")}</span>
+                  <span>{t("settings.imageInputUnsupported")}</span>
+                </div>
+              )}
             </div>
           );
         }) : (
@@ -5289,6 +6114,62 @@ function ProviderModelDraftPicker({
   );
 }
 
+function ProviderServiceCapabilities({
+  supported,
+  configured,
+  models,
+  hiddenModelCount,
+  showModelSummary = false,
+  enabled,
+  disabled,
+  onChange,
+}: {
+  supported: boolean;
+  configured?: boolean;
+  models: string[];
+  hiddenModelCount?: number;
+  showModelSummary?: boolean;
+  enabled: boolean;
+  disabled: boolean;
+  onChange: (enabled: boolean) => void;
+}) {
+  const t = useT();
+  const capabilityID = useId();
+  if (!supported) return null;
+  return (
+    <section className="provider-capabilities" aria-labelledby={capabilityID}>
+      <div className="provider-card-block__label" id={capabilityID}>
+        {t("settings.providerCapabilities")}
+      </div>
+      {showModelSummary && (
+        <ProviderModelSummary
+          configured={Boolean(configured)}
+          models={models}
+          hiddenModelCount={hiddenModelCount ?? 0}
+          compact
+        />
+      )}
+      <label className="provider-capability-row">
+        <span className="provider-capability-row__copy">
+          <span className="provider-capability-row__title">
+            {t("settings.serverWebSearch")}
+            <span className="badge badge--project">{t("settings.recommended")}</span>
+          </span>
+          <span>{t("settings.serverWebSearchHint")}</span>
+        </span>
+        <input
+          className="provider-capability-row__switch"
+          type="checkbox"
+          role="switch"
+          checked={enabled}
+          disabled={disabled}
+          onChange={(event) => onChange(event.target.checked)}
+        />
+      </label>
+    </section>
+  );
+}
+
 function providerAccessGroups(providers: ProviderView[], t: ReturnType<typeof useT>): ProviderAccessGroup[] {
   const groups = new Map<string, ProviderAccessGroup>();
   for (const p of providers) {
@@ -5300,6 +6181,10 @@ function providerAccessGroups(providers: ProviderView[], t: ReturnType<typeof us
       existing.keySet = existing.keySet || p.keySet;
       existing.requiresKey = existing.requiresKey && providerRequiresKey(p);
       existing.configured = existing.configured || providerIsConfigured(p);
+      existing.recommendedUpgradeAvailable = existing.recommendedUpgradeAvailable || Boolean(p.recommendedUpgradeAvailable);
+      if (existing.recommendedUpgradeAvailable && existing.id === "builtin:deepseek") {
+        existing.description = "";
+      }
       if (!existing.keySource && p.keySource) existing.keySource = p.keySource;
       if (!existing.keySourcePath && p.keySourcePath) existing.keySourcePath = p.keySourcePath;
       existing.models = uniqueStrings([...existing.models, ...p.models]);
@@ -5320,6 +6205,7 @@ function providerAccessGroups(providers: ProviderView[], t: ReturnType<typeof us
       baseUrl: p.baseUrl,
       kind: p.kind,
       models: uniqueStrings(p.models),
+      recommendedUpgradeAvailable: Boolean(p.recommendedUpgradeAvailable),
     });
   }
   return Array.from(groups.values());
@@ -5331,6 +6217,68 @@ function providerBaseHost(baseUrl: string): string {
   } catch {
     return "";
   }
+}
+
+type ProviderVisionCapability = "configurable" | "unsupported";
+
+function isDeepSeekOfficialEndpoint(baseUrl: string): boolean {
+  return providerBaseHost(baseUrl).endsWith(".deepseek.com");
+}
+
+export function providerSupportsServerWebSearch(kind: string, baseUrl: string): boolean {
+  try {
+    const endpoint = new URL(baseUrl.trim());
+    if (
+      endpoint.protocol !== "https:" ||
+      endpoint.hostname.toLowerCase() !== "api.deepseek.com" ||
+      endpoint.port ||
+      endpoint.username ||
+      endpoint.password ||
+      endpoint.search ||
+      endpoint.hash
+    ) return false;
+    const path = endpoint.pathname.replace(/\/+$/, "");
+    switch (kind.trim().toLowerCase()) {
+      case "responses":
+        return path === "";
+      case "anthropic":
+        return path === "/anthropic";
+      default:
+        return false;
+    }
+  } catch {
+    return false;
+  }
+}
+
+export function providerSupportsServerWebSearchForView(
+  provider: Pick<ProviderView, "kind" | "baseUrl" | "serverWebSearchCapability">,
+): boolean {
+  if (typeof provider.serverWebSearchCapability === "boolean") {
+    return provider.serverWebSearchCapability;
+  }
+  return providerSupportsServerWebSearch(provider.kind, provider.baseUrl);
+}
+
+function providerVisionCapability(kind: string, baseUrl: string): ProviderVisionCapability {
+  if (!isDeepSeekOfficialEndpoint(baseUrl)) return "configurable";
+  switch (kind.trim().toLowerCase()) {
+    case "openai":
+    case "responses":
+    case "anthropic":
+      return "unsupported";
+    default:
+      return "configurable";
+  }
+}
+
+export function providerVisionCapabilityForView(
+  provider: Pick<ProviderView, "kind" | "baseUrl" | "visionCapability">,
+): ProviderVisionCapability {
+  if (provider.visionCapability === "unsupported" || provider.visionCapability === "configurable") {
+    return provider.visionCapability;
+  }
+  return providerVisionCapability(provider.kind, provider.baseUrl);
 }
 
 function canonicalOfficialProviderName(name: string): string {
@@ -5365,8 +6313,10 @@ function providerGroupLabel(p: ProviderView, t?: ReturnType<typeof useT>): strin
 
 function providerGroupDescription(p: ProviderView, t: ReturnType<typeof useT>): string {
   const id = providerGroupID(p);
-  if (id === "builtin:deepseek") return t("settings.providerDesc.deepseek");
-  return p.baseUrl;
+  if (id === "builtin:deepseek") {
+    return p.recommendedUpgradeAvailable ? "" : t("settings.providerDesc.deepseek");
+  }
+  return "";
 }
 
 function uniqueStrings(values: string[]): string[] {
@@ -5402,6 +6352,10 @@ function botAllowlistTextValues(allowlist: BotAllowlistView): Record<BotAllowlis
     qqGroups: allowlist.qqGroups.join("\n"),
     feishuGroups: allowlist.feishuGroups.join("\n"),
     weixinGroups: allowlist.weixinGroups.join("\n"),
+    dingtalkUsers: allowlist.dingtalkUsers.join("\n"),
+    dingtalkApprovers: allowlist.dingtalkApprovers.join("\n"),
+    dingtalkAdmins: allowlist.dingtalkAdmins.join("\n"),
+    dingtalkGroups: allowlist.dingtalkGroups.join("\n"),
   };
 }
 
@@ -5410,6 +6364,7 @@ function botSelfUserTextValues(selfUserIds: BotSettingsView["selfUserIds"]): Rec
     qq: selfUserIds.qq.join("\n"),
     feishu: selfUserIds.feishu.join("\n"),
     weixin: selfUserIds.weixin.join("\n"),
+    dingtalk: selfUserIds.dingtalk.join("\n"),
   };
 }
 
@@ -5420,22 +6375,28 @@ function parseBotListInput(value: string): string[] {
     .filter(Boolean));
 }
 
-const ProviderEditorModelPicker = memo(function ProviderEditorModelPicker({
+export const ProviderEditorModelPicker = memo(function ProviderEditorModelPicker({
   candidates,
   selectedModels,
   visionModels,
+  visionCapability = "configurable",
+  contextWindows,
   disabled,
   onToggleModel,
   onToggleVision,
+  onContextWindowChange,
   onSelectAll,
   onClear,
 }: {
   candidates: string[];
   selectedModels: string[];
   visionModels: string[];
+  visionCapability?: ProviderVisionCapability;
+  contextWindows: Record<string, string>;
   disabled: boolean;
   onToggleModel: (model: string) => void;
   onToggleVision: (model: string) => void;
+  onContextWindowChange: (model: string, value: string) => void;
   onSelectAll: () => void;
   onClear: () => void;
 }) {
@@ -5446,13 +6407,14 @@ const ProviderEditorModelPicker = memo(function ProviderEditorModelPicker({
     const timer = setTimeout(() => setDebouncedQuery(query), 150);
     return () => clearTimeout(timer);
   }, [query]);
-  if (candidates.length === 0) return null;
-  const selected = new Set(selectedModels);
-  const vision = new Set(visionModels);
   const q = debouncedQuery.trim().toLowerCase();
   const visibleCandidates = q
     ? candidates.filter((model) => model.toLowerCase().includes(q))
     : candidates;
+  const deferredCandidates = useDeferredValue(visibleCandidates);
+  if (candidates.length === 0) return null;
+  const selected = new Set(selectedModels);
+  const vision = new Set(visionModels);
   return (
     <div className="provider-model-draft provider-model-draft--inline">
       <div className="provider-model-draft__head">
@@ -5469,6 +6431,7 @@ const ProviderEditorModelPicker = memo(function ProviderEditorModelPicker({
           </button>
         </div>
       </div>
+      <div className="provider-model-draft__context-guide">{t("settings.modelContextWindowGuide")}</div>
       {candidates.length > 8 && (
         <input
           className="mem-input provider-model-draft__search"
@@ -5479,10 +6442,10 @@ const ProviderEditorModelPicker = memo(function ProviderEditorModelPicker({
         />
       )}
       <div className="provider-model-draft__list" role="list" aria-label={t("settings.modelCandidates")}>
-        {visibleCandidates.length > 0 ? visibleCandidates.map((model) => {
+        {deferredCandidates.length > 0 ? deferredCandidates.map((model) => {
           const enabled = selected.has(model);
           return (
-            <div className="provider-model-draft__option" key={model}>
+            <div className="provider-model-draft__option" key={model} role="listitem" style={{ contentVisibility: "auto", containIntrinsicSize: "auto 48px" }}>
               <label className="provider-model-draft__model">
                 <input
                   type="checkbox"
@@ -5492,15 +6455,45 @@ const ProviderEditorModelPicker = memo(function ProviderEditorModelPicker({
                 />
                 <span>{model}</span>
               </label>
-              <label className="provider-model-draft__vision">
-                <input
-                  type="checkbox"
-                  checked={enabled && vision.has(model)}
-                  disabled={disabled || !enabled}
-                  onChange={() => onToggleVision(model)}
-                />
-                <span>{t("settings.visionModel")}</span>
-              </label>
+              {visionCapability === "configurable" ? (
+                <label className="provider-model-draft__vision">
+                  <input
+                    type="checkbox"
+                    checked={enabled && vision.has(model)}
+                    disabled={disabled || !enabled}
+                    aria-label={t("settings.visionModelAria", { model })}
+                    onChange={() => onToggleVision(model)}
+                  />
+                  <span>{t("settings.visionModel")}</span>
+                </label>
+              ) : (
+                <div className="provider-model-draft__capabilities" aria-label={t("settings.modelCapabilitiesAria", { model })}>
+                  <span>{t("settings.textInput")}</span>
+                  <span>{t("settings.imageInputUnsupported")}</span>
+                </div>
+              )}
+              <div className="provider-model-draft__context-field">
+                <label className="provider-model-draft__context">
+                  <span>{t("settings.modelContextWindow")}</span>
+                  <input
+                    className="mem-input provider-model-draft__context-input"
+                    type="number"
+                    inputMode="numeric"
+                    min={1}
+                    disabled={disabled || !enabled}
+                    placeholder={t("settings.modelContextWindowPlaceholder")}
+                    title={t("settings.modelContextWindowHint")}
+                    aria-label={t("settings.modelContextWindowAria", { model })}
+                    value={contextWindows[model] ?? ""}
+                    onChange={(event) => onContextWindowChange(model, event.target.value)}
+                  />
+                </label>
+                {enabled && providerModelContextWindowIsSmall(contextWindows[model]) && (
+                  <div className="provider-model-draft__context-warning" role="status">
+                    {t("settings.modelContextWindowSmallWarning")}
+                  </div>
+                )}
+              </div>
             </div>
           );
         }) : (
@@ -5511,7 +6504,7 @@ const ProviderEditorModelPicker = memo(function ProviderEditorModelPicker({
   );
 });
 
-function ProviderEditor({
+export function ProviderEditor({
   initial,
   kinds,
   busy,
@@ -5531,9 +6524,16 @@ function ProviderEditor({
   const t = useT();
   const [name, setName] = useState(initial?.name ?? "");
   const [kind, setKind] = useState(initial?.kind ?? "openai");
-  const [baseUrl, setBaseUrl] = useState(initial?.baseUrl ?? "");
-  const [chatUrl, setChatUrl] = useState(initial?.chatUrl ?? "");
-  const [fullChatUrl, setFullChatUrl] = useState(Boolean((initial?.chatUrl ?? "").trim()));
+  const [requestUrl, setRequestUrl] = useState(() => providerRequestURLFromConfig(
+    initial?.kind ?? "openai",
+    initial?.baseUrl ?? "",
+    initial?.requestUrl ?? "",
+    initial?.chatUrl ?? "",
+  ));
+  const providerNameInputId = useId();
+  const providerNameHelpId = useId();
+  const providerUrlInputId = useId();
+  const providerUrlHelpId = useId();
   const [models, setModels] = useState((initial?.models ?? []).join(", "));
   const [modelCandidates, setModelCandidates] = useState<string[]>(initial?.models ?? []);
   const [visionModels, setVisionModels] = useState((initial?.visionModels ?? []).join(", "));
@@ -5547,11 +6547,15 @@ function ProviderEditor({
   const [authHeader, setAuthHeader] = useState(Boolean(initial?.authHeader));
   const [keyDraft, setKeyDraft] = useState("");
   const [balanceUrl, setBalanceUrl] = useState(initial?.balanceUrl ?? "");
-  // Empty when unset so the placeholder (and its "0 = default" hint) reads instead
+  // Empty when unset so the placeholder (and its "0 = disabled" hint) reads instead
   // of a bare "0"; saved back as 0.
   const [ctx, setCtx] = useState(initial?.contextWindow ? String(initial.contextWindow) : "");
+  const [modelContextWindows, setModelContextWindows] = useState<Record<string, string>>(
+    () => providerModelContextWindowDrafts(initial?.modelOverrides),
+  );
   const [reasoningProtocol, setReasoningProtocol] = useState(normalizeReasoningProtocol(initial?.reasoningProtocol));
   const [thinking, setThinking] = useState(normalizeThinkingMode(initial?.thinking));
+  const [webSearch, setWebSearch] = useState(Boolean(initial?.webSearch));
   const [supportedEfforts] = useState<string[]>(initial?.supportedEfforts ?? []);
   const [defaultEffort] = useState(initial?.defaultEffort ?? "");
   const [fetchingModels, setFetchingModels] = useState(false);
@@ -5565,9 +6569,28 @@ function ProviderEditor({
     return choices.length > 0 ? choices : ["openai"];
   }, [kind, kinds]);
   const effectiveKind = providerEditorEffectiveKind(isNewCustomProvider, kind, providerKindChoices);
-  const effectiveBaseUrl = fullChatUrl ? providerBaseURLFromChatURL(chatUrl) : baseUrl.trim();
-  const effectiveChatUrl = fullChatUrl ? trimmedURL(chatUrl) : "";
+  const effectiveRequestUrl = requestUrl.trim();
+  const effectiveBaseUrl = providerBaseURLForSave(initial, effectiveKind, effectiveRequestUrl);
+  const effectiveLegacyChatUrl = effectiveKind.toLowerCase() === "openai" ? effectiveRequestUrl : initial?.chatUrl ?? "";
   const effectiveModelsUrl = modelsUrl.trim();
+  const initialEffectiveBaseUrl = initial ? trimmedBaseURL(initial.baseUrl) : "";
+  const retainedVisionCapability = initial &&
+    effectiveKind.trim().toLowerCase() === initial.kind.trim().toLowerCase() &&
+    trimmedBaseURL(effectiveBaseUrl) === initialEffectiveBaseUrl
+    ? initial.visionCapability
+    : undefined;
+  const effectiveVisionCapability = providerVisionCapabilityForView({
+    kind: effectiveKind,
+    baseUrl: effectiveBaseUrl,
+    visionCapability: retainedVisionCapability,
+  });
+  const retainedServerWebSearchCapability = initial &&
+    effectiveKind.trim().toLowerCase() === initial.kind.trim().toLowerCase() &&
+    trimmedBaseURL(effectiveBaseUrl) === initialEffectiveBaseUrl
+    ? initial.serverWebSearchCapability
+    : undefined;
+  const effectiveServerWebSearchCapability = retainedServerWebSearchCapability ??
+    providerSupportsServerWebSearch(effectiveKind, effectiveBaseUrl);
   const effectiveHeaders = parseProviderHeaders(headersDraft);
   const extraBodyParse = useMemo(() => {
     try {
@@ -5578,7 +6601,18 @@ function ProviderEditor({
   }, [extraBodyDraft, t]);
   const effectiveExtraBody = extraBodyParse.value;
   const extraBodyInvalid = Boolean(extraBodyDraft.trim() && extraBodyParse.error);
-  const previewChatUrl = providerChatURLPreview(baseUrl, chatUrl, fullChatUrl);
+  const modelNames = useMemo(
+    () => parseProviderListInput(models),
+    [models],
+  );
+  const modelCandidateNames = useMemo(
+    () => uniqueStrings([...modelCandidates, ...modelNames]),
+    [modelCandidates, modelNames],
+  );
+  const visionModelNames = useMemo(
+    () => parseProviderListInput(visionModels).filter((model) => modelNames.includes(model)),
+    [modelNames, visionModels],
+  );
 
   // Empty supportedEfforts means "use protocol defaults". The simplified
   // provider flow no longer edits these levels directly, but it preserves
@@ -5601,14 +6635,18 @@ function ProviderEditor({
     try {
       const effectiveApiKeyEnv = providerApiKeyEnvForSave(name, apiKeyEnv, keyDraft);
       if (!apiKeyEnv.trim()) setApiKeyEnv(effectiveApiKeyEnv);
-      if (keyDraft.trim()) await app.SaveProviderKey(effectiveApiKeyEnv, keyDraft.trim());
-      const fetched = await app.FetchProviderModels({
+      if (keyDraft.trim()) {
+        await app.SaveProviderKey(effectiveApiKeyEnv, keyDraft.trim());
+        invalidateProviderCacheByAPIKeyEnv(effectiveApiKeyEnv);
+      }
+      const fetched = await cachedFetchProviderModels((provider) => app.FetchProviderModels(provider), {
         name: name.trim() || t("settings.newProviderDraftName"),
         builtIn: initial?.builtIn ?? false,
         added: initial?.added ?? true,
         kind: effectiveKind,
         baseUrl: effectiveBaseUrl,
-        chatUrl: effectiveChatUrl,
+        chatUrl: effectiveLegacyChatUrl,
+        requestUrl: effectiveRequestUrl,
         modelsUrl: effectiveModelsUrl,
         models: [],
         visionModels: [],
@@ -5623,10 +6661,12 @@ function ProviderEditor({
         contextWindow: Number(ctx) || 0,
         reasoningProtocol,
         thinking,
+        webSearch: effectiveServerWebSearchCapability && webSearch,
+        serverWebSearchCapability: effectiveServerWebSearchCapability,
         supportedEfforts: cleanedSupportedEfforts,
         defaultEffort: cleanDefaultEffort,
-        modelOverrides: initial?.modelOverrides ?? [],
-      });
+        modelOverrides: mergeProviderModelContextWindows(initial?.modelOverrides, parseProviderListInput(models), modelContextWindows),
+      }, true);
       if (fetched.length === 0) {
         setFetchFallback(t("settings.fetchModelsManualFallbackEmpty"));
         return;
@@ -5652,7 +6692,9 @@ function ProviderEditor({
     setFetchStatus(null);
     setFetchFallback(null);
     const ms = parseProviderListInput(models);
-    const vms = parseProviderListInput(visionModels).filter((model) => ms.includes(model));
+    const vms = effectiveVisionCapability === "unsupported"
+      ? []
+      : parseProviderListInput(visionModels).filter((model) => ms.includes(model));
     const effectiveApiKeyEnv = providerApiKeyEnvForSave(name, apiKeyEnv, keyDraft);
     const provider: ProviderView = {
       name: name.trim(),
@@ -5660,7 +6702,8 @@ function ProviderEditor({
       added: initial?.added ?? true,
       kind: effectiveKind,
       baseUrl: effectiveBaseUrl,
-      chatUrl: effectiveChatUrl,
+      chatUrl: effectiveLegacyChatUrl,
+      requestUrl: effectiveRequestUrl,
       models: ms,
       visionModels: vms,
       visionModelsConfigured: visionModelsConfigured || vms.length > 0,
@@ -5675,11 +6718,13 @@ function ProviderEditor({
       contextWindow: Number(ctx) || 0,
       reasoningProtocol,
       thinking,
+      webSearch: effectiveServerWebSearchCapability && webSearch,
+      serverWebSearchCapability: effectiveServerWebSearchCapability,
       supportedEfforts: cleanedSupportedEfforts,
       // Clear the stored default if no levels are selected; the backend's
       // NormalizeEffort would otherwise silently ignore an unsupported value.
       defaultEffort: cleanedSupportedEfforts.length > 0 ? cleanDefaultEffort : "",
-      modelOverrides: initial?.modelOverrides ?? [],
+      modelOverrides: mergeProviderModelContextWindows(initial?.modelOverrides, ms, modelContextWindows),
     };
     try {
       await onSave(provider, keyDraft.trim() || undefined);
@@ -5722,18 +6767,6 @@ function ProviderEditor({
     );
   }
 
-  const modelNames = useMemo(
-    () => parseProviderListInput(models),
-    [models],
-  );
-  const modelCandidateNames = useMemo(
-    () => uniqueStrings([...modelCandidates, ...modelNames]),
-    [modelCandidates, modelNames],
-  );
-  const visionModelNames = useMemo(
-    () => parseProviderListInput(visionModels).filter((model) => modelNames.includes(model)),
-    [modelNames, visionModels],
-  );
   const canFetch = Boolean(name.trim() && effectiveBaseUrl);
 
   const setModelsFromList = (nextModels: string[]) => {
@@ -5767,6 +6800,10 @@ function ProviderEditor({
     else vision.add(model);
     setVisionModels(modelCandidateNames.filter((candidate) => vision.has(candidate)).join(", "));
     setVisionModelsConfigured(true);
+  };
+
+  const updateEditorModelContextWindow = (model: string, value: string) => {
+    setModelContextWindows((current) => ({ ...current, [model]: value }));
   };
 
   const selectAllEditorModels = () => {
@@ -5881,8 +6918,21 @@ function ProviderEditor({
 
   return (
     <div className={`provider-editor${isNewCustomProvider ? " provider-editor--wizard" : ""}`}>
-      <label className="set-label">{t("settings.customProviderName")}</label>
-      <input className="mem-input" placeholder={t("settings.customProviderNamePlaceholder")} value={name} onChange={(e) => setName(e.target.value)} disabled={!!initial} />
+      <label className="set-label" htmlFor={providerNameInputId}>{t("settings.customProviderName")}</label>
+      <input
+        id={providerNameInputId}
+        className="mem-input provider-name-input"
+        aria-describedby={initial ? providerNameHelpId : undefined}
+        placeholder={t("settings.customProviderNamePlaceholder")}
+        value={name}
+        onChange={(e) => setName(e.target.value)}
+        disabled={!!initial}
+      />
+      {initial && (
+        <div id={providerNameHelpId} className="mem-hint provider-name-readonly-hint">
+          {t("settings.customProviderNameReadonlyHint")}
+        </div>
+      )}
       <label className="set-label">{t("settings.providerProtocol")}</label>
       <select className="mem-select" value={kind} onChange={(e) => setKind(e.target.value)}>
         {providerKindChoices.map((choice) => (
@@ -5892,43 +6942,19 @@ function ProviderEditor({
         ))}
       </select>
       <div className="mem-hint">{providerKindHint(effectiveKind, t)}</div>
-      <div className="set-row">
-        <label className="set-label set-grow">
-          {t(fullChatUrl ? "settings.providerChatUrlLabel" : "settings.providerBaseUrlLabel")}
-        </label>
-        <label className="set-check">
-          <input
-            type="checkbox"
-            checked={fullChatUrl}
-            onChange={(e) => {
-              const checked = e.target.checked;
-              setFullChatUrl(checked);
-              if (checked && !chatUrl.trim()) {
-                setChatUrl(providerChatURLPreview(baseUrl, "", false));
-              } else if (!checked && !baseUrl.trim()) {
-                setBaseUrl(providerBaseURLFromChatURL(chatUrl));
-              }
-            }}
-          />
-          {t("settings.providerUseFullChatUrl")}
-        </label>
-      </div>
+      <label className="set-label" htmlFor={providerUrlInputId}>
+        {t("settings.providerBaseUrlLabel")}
+      </label>
       <input
-        className="mem-input"
-        placeholder={t(fullChatUrl ? "settings.providerChatUrlPlaceholder" : "settings.providerBaseUrl")}
-        value={fullChatUrl ? chatUrl : baseUrl}
-        onChange={(e) => {
-          const value = e.target.value;
-          if (fullChatUrl) {
-            setChatUrl(value);
-            setBaseUrl(providerBaseURLFromChatURL(value));
-          } else {
-            setBaseUrl(value);
-          }
-        }}
+        id={providerUrlInputId}
+        className="mem-input provider-url-input"
+        aria-describedby={providerUrlHelpId}
+        placeholder={t("settings.providerChatUrlPlaceholder")}
+        value={requestUrl}
+        onChange={(e) => setRequestUrl(e.target.value)}
       />
-      <div className="mem-hint">
-        {previewChatUrl ? t("settings.providerRequestPreview", { url: previewChatUrl }) : t("settings.providerRequestPreviewEmpty")}
+      <div id={providerUrlHelpId} className="mem-hint">
+        {t("settings.providerRequestUrlHint")}
       </div>
       {!initial && (
         <>
@@ -5978,11 +7004,21 @@ function ProviderEditor({
         candidates={modelCandidateNames}
         selectedModels={modelNames}
         visionModels={visionModelNames}
+        visionCapability={effectiveVisionCapability}
+        contextWindows={modelContextWindows}
         disabled={busy || fetchingModels}
         onToggleModel={toggleEditorModel}
         onToggleVision={toggleEditorVisionModel}
+        onContextWindowChange={updateEditorModelContextWindow}
         onSelectAll={selectAllEditorModels}
         onClear={clearEditorModels}
+      />
+      <ProviderServiceCapabilities
+        supported={effectiveServerWebSearchCapability}
+        models={modelNames}
+        enabled={webSearch}
+        disabled={busy || fetchingModels}
+        onChange={setWebSearch}
       />
       {advancedFields}
       <div className="prov-card__actions">
@@ -6060,8 +7096,8 @@ function PermissionsSection({ s, busy, apply }: SectionProps) {
             list={list}
             rules={s.permissions[list]}
             busy={busy}
-            onAdd={(rule) => apply(() => app.AddPermissionRule(list, rule))}
-            onRemove={(rule) => apply(() => app.RemovePermissionRule(list, rule))}
+            onAdd={async (rule) => { await apply(() => app.AddPermissionRule(list, rule)); }}
+            onRemove={async (rule) => { await apply(() => app.RemovePermissionRule(list, rule)); }}
           />
         ))}
       </div>
@@ -6102,7 +7138,7 @@ function RuleList({
         {rules.length === 0 && <span className="mem-empty">{t("common.none")}</span>}
         {rules.map((r) => (
           <span className="set-rule" key={r}>
-            {r}
+            <span className="set-rule__text" title={r}>{r}</span>
             <Tooltip label={t("common.delete")}>
               <button className="set-rule__x" disabled={busy} onClick={() => void onRemove(r)}>
                 ✕
@@ -6262,31 +7298,12 @@ function HooksSection({ onChanged }: { onChanged: (settings?: SettingsView | nul
       setBusy(false);
     }
   };
-  const trustProject = async () => {
-    const projectRoot = view?.projectRoot?.trim() ?? "";
-    if (!projectRoot) {
-      setErr(t("settings.hooksProjectRootUnavailable"));
-      return;
-    }
-    setBusy(true);
-    setErr(null);
-    try {
-      await app.TrustProjectHooksForRoot(projectRoot);
-      await load("project");
-      onChanged();
-    } catch (e) {
-      setErr(String((e as Error)?.message ?? e));
-    } finally {
-      setBusy(false);
-    }
-  };
-
   return (
     <>
       {err && <div className="banner banner--error">{err}</div>}
       <SettingsSection title={t("settings.hooksScopeSection")} description={t("settings.hooksScopeHint")}>
         <SettingsField label={t("settings.hooksScopeField")}>
-          <select className="mem-select set-grow" value={scope} disabled={busy} onChange={(e) => setScope(e.target.value === "project" ? "project" : "global")}>
+          <select name="hooks-scope" className="mem-select set-grow" value={scope} disabled={busy} onChange={(e) => setScope(e.target.value === "project" ? "project" : "global")}>
             <option value="global">{t("settings.hooksGlobal")}</option>
             <option value="project">{t("settings.hooksProject")}</option>
           </select>
@@ -6302,19 +7319,6 @@ function HooksSection({ onChanged }: { onChanged: (settings?: SettingsView | nul
             {pathMessage && <div className="hooks-path-display__message">{pathMessage}</div>}
           </div>
         </SettingsField>
-        {scope === "project" && (
-          <SettingsField label={t("settings.hooksTrust")} hint={t("settings.hooksTrustHint")}>
-            <div className="hooks-trust-stack">
-              <div className="hooks-trust-row">
-                <span className={`set-rule${view?.trusted ? "" : " set-rule--warn"}`}>{view?.trusted ? t("settings.hooksTrusted") : t("settings.hooksUntrusted")}</span>
-                <button className="btn btn--small" disabled={busy || view?.trusted || !view?.projectRoot} onClick={() => void trustProject()}>{t("settings.hooksTrustProject")}</button>
-              </div>
-              <code className={`hooks-trust-root${view?.projectRoot ? "" : " hooks-trust-root--empty"}`} title={view?.projectRoot || t("settings.hooksProjectRootUnavailable")}>
-                {view?.projectRoot || t("settings.hooksProjectRootUnavailable")}
-              </code>
-            </div>
-          </SettingsField>
-        )}
       </SettingsSection>
 
       <SettingsSection
@@ -6338,6 +7342,7 @@ function HooksSection({ onChanged }: { onChanged: (settings?: SettingsView | nul
               </div>
             </div>
             <textarea
+              name="hooks-json"
               className="mem-textarea hooks-json-panel__textarea"
               value={jsonText}
               disabled={busy}
@@ -6553,308 +7558,11 @@ function SandboxSection({ s, busy, apply, windows }: SectionProps & { windows: b
         list="allow_write"
         rules={sb.allowWrite}
         busy={busy}
-        onAdd={(d) => set({ allowWrite: [...sb.allowWrite, d] })}
-        onRemove={(d) => set({ allowWrite: sb.allowWrite.filter((x) => x !== d) })}
+        onAdd={async (d) => { await set({ allowWrite: [...sb.allowWrite, d] }); }}
+        onRemove={async (d) => { await set({ allowWrite: sb.allowWrite.filter((x) => x !== d) }); }}
       />
     </SettingsSection>
   );
-}
-
-// Visual-style metadata for the appearance theme cards. The two surface
-// swatches + accent are read from CSS variables at render time so they always
-// reflect the live token values for the currently-resolved light/dark mode.
-const THEME_STYLE_META: Record<ThemeStyle, { name: string; zh: DictKey; note: DictKey; desc: DictKey }> = {
-  graphite: { name: "Graphite", zh: "settings.style.graphite.zh", note: "settings.style.graphite.note", desc: "settings.style.graphite.desc" },
-  aurora: { name: "Aurora", zh: "settings.style.aurora.zh", note: "settings.style.aurora.note", desc: "settings.style.aurora.desc" },
-  slate: { name: "Slate", zh: "settings.style.slate.zh", note: "settings.style.slate.note", desc: "settings.style.slate.desc" },
-  carbon: { name: "Carbon", zh: "settings.style.carbon.zh", note: "settings.style.carbon.note", desc: "settings.style.carbon.desc" },
-  nocturne: { name: "Nocturne", zh: "settings.style.nocturne.zh", note: "settings.style.nocturne.note", desc: "settings.style.nocturne.desc" },
-  amber: { name: "Amber", zh: "settings.style.amber.zh", note: "settings.style.amber.note", desc: "settings.style.amber.desc" },
-};
-
-function AppearanceSection({
-  theme,
-  themeStyle,
-  textSize,
-  showDisplayZoom,
-  zoomPct,
-  fontFamily,
-  monoFontFamily,
-  customFontName,
-  customMonoFontName,
-  onTheme,
-  onThemeStyle,
-  onTextSize,
-  onRestartZoom,
-  onFontFamily,
-  onMonoFontFamily,
-  onCustomFontNameChange,
-  onCustomMonoFontNameChange,
-}: {
-  theme: Theme;
-  themeStyle: ThemeStyle;
-  textSize: TextSize;
-  showDisplayZoom: boolean;
-  zoomPct: number;
-  fontFamily: FontFamily;
-  monoFontFamily: MonoFontFamily;
-  customFontName: string;
-  customMonoFontName: string;
-  onTheme: (t: Theme) => void;
-  onThemeStyle: (style: ThemeStyle) => void;
-  onTextSize: (size: TextSize) => void;
-  onRestartZoom: (zoom: ZoomLevel) => Promise<void>;
-  onFontFamily: (font: FontFamily) => void;
-  onMonoFontFamily: (font: MonoFontFamily) => void;
-  onCustomFontNameChange: (name: string) => void;
-  onCustomMonoFontNameChange: (name: string) => void;
-}) {
-  const t = useT();
-  const themeOptions: Theme[] = ["auto", "light", "dark"];
-  const availableFontFamilies = useMemo(() => getAvailableFontFamilies(fontFamily), [fontFamily]);
-  const availableMonoFontFamilies = useMemo(() => getAvailableMonoFontFamilies(monoFontFamily), [monoFontFamily]);
-  const zoomMinPct = zoomToPercent(MIN_ZOOM);
-  const zoomMaxPct = zoomToPercent(MAX_ZOOM);
-  const zoomStepPct = Math.round(ZOOM_STEP * 100);
-  const zoomProgressPct = Math.min(100, Math.max(0, ((zoomPct - zoomMinPct) / (zoomMaxPct - zoomMinPct)) * 100));
-  const canDecreaseZoom = zoomPct > zoomMinPct;
-  const canIncreaseZoom = zoomPct < zoomMaxPct;
-  const setZoomPercent = (pct: number) => {
-    void onRestartZoom(pct / 100);
-  };
-  return (
-    <SettingsSection title={t("settings.appearance")}>
-      <SettingsField label={t("settings.theme")}>
-        <div className="set-seg">
-          {themeOptions.map((opt) => (
-            <button
-              key={opt}
-              className={`set-seg__btn${theme === opt ? " set-seg__btn--on" : ""}`}
-              onClick={() => onTheme(opt)}
-            >
-              {themeName(opt, t)}
-            </button>
-          ))}
-        </div>
-      </SettingsField>
-      <SettingsField label={t("settings.themeStyle")} stacked>
-        <div className="theme-card-grid">
-          {THEME_STYLES.map((opt) => {
-            const meta = THEME_STYLE_META[opt];
-            const selected = themeStyle === opt;
-            return (
-              <button
-                key={opt}
-                type="button"
-                role="radio"
-                aria-checked={selected}
-                className={`theme-card${selected ? " theme-card--on" : ""}`}
-                onClick={() => onThemeStyle(opt)}
-              >
-                <span className="theme-card__head">
-                  <span className="theme-card__name">
-                    {meta.name} <span className="theme-card__zh">{t(meta.zh)}</span>
-                  </span>
-                  <span className="theme-card__tag">{t(meta.note)}</span>
-                </span>
-                <span className="theme-card__swatches" data-theme-style-card={opt}>
-                  <span className="theme-card__swatch theme-card__swatch--bg" />
-                  <span className="theme-card__swatch theme-card__swatch--surface" />
-                  <span className="theme-card__swatch theme-card__swatch--accent" />
-                </span>
-                <span className="theme-card__desc">{t(meta.desc)}</span>
-                <span className="theme-card__check" aria-hidden="true">
-                  <Check size={13} strokeWidth={3} />
-                </span>
-              </button>
-            );
-          })}
-        </div>
-      </SettingsField>
-      <SettingsField label={t("settings.textSize")}>
-        <div className="set-seg">
-          {TEXT_SIZES.map((size) => (
-            <button
-              key={size}
-              className={`set-seg__btn${textSize === size ? " set-seg__btn--on" : ""}`}
-              onClick={() => onTextSize(size)}
-            >
-              {textSizeName(size, t)}
-            </button>
-          ))}
-        </div>
-      </SettingsField>
-      {showDisplayZoom && (
-        <SettingsField label={t("settings.displayZoom")}>
-          <div className="zoom-slider-wrap">
-            <div className="zoom-slider__head">
-              <div className="zoom-slider__value">{zoomPct}%</div>
-              <div className="zoom-stepper">
-                <button
-                  type="button"
-                  className="zoom-stepper__btn"
-                  aria-label={t("settings.displayZoomDecrease")}
-                  title={t("settings.displayZoomDecrease")}
-                  disabled={!canDecreaseZoom}
-                  onClick={() => setZoomPercent(zoomPct - zoomStepPct)}
-                >
-                  <Minus size={13} aria-hidden="true" />
-                </button>
-                <button
-                  type="button"
-                  className="zoom-stepper__reset"
-                  aria-label={t("settings.displayZoomReset")}
-                  title={t("settings.displayZoomReset")}
-                  disabled={zoomPct === zoomToPercent(DEFAULT_ZOOM)}
-                  onClick={() => { void onRestartZoom(DEFAULT_ZOOM); }}
-                >
-                  <RotateCcw size={12} aria-hidden="true" />
-                  <span>100%</span>
-                </button>
-                <button
-                  type="button"
-                  className="zoom-stepper__btn"
-                  aria-label={t("settings.displayZoomIncrease")}
-                  title={t("settings.displayZoomIncrease")}
-                  disabled={!canIncreaseZoom}
-                  onClick={() => setZoomPercent(zoomPct + zoomStepPct)}
-                >
-                  <Plus size={13} aria-hidden="true" />
-                </button>
-              </div>
-            </div>
-            <div className="zoom-slider-row">
-              <span className="zoom-slider__label">{zoomMinPct}%</span>
-              <div className="slider-track">
-                <div className="slider-track__bg" />
-                <div
-                  className="slider-track__fill"
-                  style={{ width: `calc(${zoomProgressPct}% + 15px)` }}
-                />
-                <div className="slider-thumb" style={{ left: `${zoomProgressPct}%` }} />
-                <input
-                  aria-label={t("settings.displayZoom")}
-                  type="range"
-                  min={zoomMinPct}
-                  max={zoomMaxPct}
-                  step={zoomStepPct}
-                  value={zoomPct}
-                  onChange={(e) => setZoomPercent(Number(e.target.value))}
-                />
-              </div>
-              <span className="zoom-slider__label">{zoomMaxPct}%</span>
-            </div>
-          </div>
-        </SettingsField>
-      )}
-      <SettingsField label={t("settings.fontFamily")}>
-        <div className="set-seg">
-          {availableFontFamilies.map((font) => (
-            <button
-              key={font}
-              className={`set-seg__btn${fontFamily === font ? " set-seg__btn--on" : ""}`}
-              onClick={() => onFontFamily(font)}
-            >
-              {fontFamilyName(font, t)}
-            </button>
-          ))}
-        </div>
-      </SettingsField>
-      {fontFamily === "custom" && (
-        <SettingsField label={t("settings.fontFamilyCustomName")}>
-          <textarea
-            className="mem-input"
-            style={{ width: "100%", resize: "vertical" }}
-            rows={2}
-            placeholder={t("settings.fontFamilyCustomPlaceholder")}
-            value={customFontName}
-            onChange={(e) => onCustomFontNameChange(e.target.value)}
-          />
-        </SettingsField>
-      )}
-      <SettingsField label={t("settings.monoFontFamily")}>
-        <div className="set-seg">
-          {availableMonoFontFamilies.map((font) => (
-            <button
-              key={font}
-              className={`set-seg__btn${monoFontFamily === font ? " set-seg__btn--on" : ""}`}
-              onClick={() => onMonoFontFamily(font)}
-            >
-              {monoFontFamilyName(font, t)}
-            </button>
-          ))}
-        </div>
-      </SettingsField>
-      {monoFontFamily === "custom" && (
-        <SettingsField label={t("settings.monoFontFamilyCustomName")}>
-          <textarea
-            className="mem-input"
-            style={{ width: "100%", resize: "vertical" }}
-            rows={2}
-            placeholder={t("settings.monoFontFamilyCustomPlaceholder")}
-            value={customMonoFontName}
-            onChange={(e) => onCustomMonoFontNameChange(e.target.value)}
-          />
-        </SettingsField>
-      )}
-    </SettingsSection>
-  );
-}
-
-function themeName(theme: Theme, t: ReturnType<typeof useT>): string {
-  switch (theme) {
-    case "auto":
-      return t("settings.themeAuto");
-    case "light":
-      return t("settings.themeLight");
-    case "dark":
-      return t("settings.themeDark");
-  }
-}
-
-function textSizeName(size: TextSize, t: ReturnType<typeof useT>): string {
-  switch (size) {
-    case "small":
-      return t("settings.textSizeSmall");
-    case "default":
-      return t("settings.textSizeDefault");
-    case "large":
-      return t("settings.textSizeLarge");
-    case "xlarge":
-      return t("settings.textSizeXLarge");
-    case "xxlarge":
-      return t("settings.textSizeXXLarge");
-  }
-}
-
-function fontFamilyName(font: FontFamily, t: ReturnType<typeof useT>): string {
-  switch (font) {
-    case "system":
-      return t("settings.fontFamilySystem");
-    case "yahei":
-      return t("settings.fontFamilyYaHei");
-    case "pingfang":
-      return t("settings.fontFamilyPingFang");
-    case "noto":
-      return t("settings.fontFamilyNoto");
-    case "custom":
-      return t("settings.fontFamilyCustom");
-  }
-}
-
-function monoFontFamilyName(font: MonoFontFamily, t: ReturnType<typeof useT>): string {
-  switch (font) {
-    case "system":
-      return t("settings.monoFontFamilySystem");
-    case "cascadia":
-      return t("settings.monoFontFamilyCascadia");
-    case "jetbrains":
-      return t("settings.monoFontFamilyJetBrains");
-    case "sfmono":
-      return t("settings.monoFontFamilySFMono");
-    case "custom":
-      return t("settings.monoFontFamilyCustom");
-  }
 }
 
 const MB = 1024 * 1024;
@@ -6862,10 +7570,11 @@ const mb = (n: number) => (n / MB).toFixed(1);
 
 // UpdatesSection is the manual side of the auto-updater: it shows the startup
 // check preference, running version, and a Check button, then the same state
-// machine the top banner uses (useUpdater) — available → download → install, with
-// progress and errors inline.
+// machine the top banner uses (useUpdater) — a single "update and restart"
+// action with inline progress and errors.
 function UpdatesSection({
   configPath,
+  shadowedByPath,
   checkUpdates,
   telemetry,
   metrics,
@@ -6873,101 +7582,278 @@ function UpdatesSection({
   applySettings,
 }: {
   configPath: string;
+  shadowedByPath?: string;
   checkUpdates: boolean;
   telemetry: boolean;
   metrics: boolean;
   settingsBusy: boolean;
-  applySettings: (fn: () => Promise<void>) => Promise<void>;
+  applySettings: (fn: () => Promise<void>) => Promise<boolean>;
 }) {
   const t = useT();
-  const { status, check, download: downloadUpdate, install: installUpdate } = useUpdater();
+  const { status, check, apply: applyUpdate, openDownload, abandonPending } = useUpdater();
   const [version, setVersion] = useState("");
   useEffect(() => {
     app.Version().then(setVersion).catch(() => {});
   }, []);
 
   const updaterBusy =
-    status.kind === "checking" || status.kind === "downloading" || status.kind === "verifying" || status.kind === "installing";
+    status.kind === "checking" ||
+    status.kind === "downloading" ||
+    status.kind === "verifying" ||
+    status.kind === "authorizing" ||
+    status.kind === "installing" ||
+    status.kind === "relaunching";
+  const updateStatus =
+    status.kind === "checking" ? t("updater.checking") :
+    status.kind === "upToDate" ? t("updater.upToDate") :
+    status.kind === "available" ? t("updater.available", { v: status.info.latest }) :
+    status.kind === "downloading" ? t("updater.downloading", {
+      done: mb(status.received),
+      total: mb(status.total),
+      pct: status.total > 0 ? Math.round((status.received / status.total) * 100) : 0,
+    }) :
+    status.kind === "verifying" ? t("updater.verifying") :
+    status.kind === "authorizing" ? t("updater.authorizing") :
+    status.kind === "installing" ? (
+      status.info?.requiresElevation || status.info?.installMode === "deb"
+        ? t("updater.installingPackage")
+        : t("updater.installing")
+    ) :
+    status.kind === "relaunching" || status.kind === "done" ? t("updater.done") :
+    status.kind === "error" ? "" :
+    "";
+  const updateStatusTone =
+    status.kind === "error" ? "error" :
+    status.kind === "available" ? "available" :
+    status.kind === "upToDate" || status.kind === "done" || status.kind === "relaunching" ? "success" :
+    status.kind === "checking" || updaterBusy ? "busy" :
+    "neutral";
+  const updateErrorTitle = status.kind === "error"
+    ? status.disposition === "recovery"
+      ? t("updater.recoveryBlocked")
+      : status.disposition === "manual"
+        ? t("updater.manualUpdateRequired")
+        : t("updater.failed", { msg: status.message })
+    : "";
+  const updateErrorHint = status.kind === "error"
+    ? status.disposition === "recovery"
+      ? t("updater.recoveryHint")
+      : status.disposition === "manual"
+        ? t("updater.manualFallbackHint")
+        : ""
+    : "";
+  const downloadIsPrimary = status.kind === "error" && status.disposition !== "retryable";
 
   return (
-    <SettingsSection title={t("updater.title")}>
+    <SettingsSection>
       <SettingsField
-        className="settings-field--wide-copy"
-        label={t("updater.autoCheckLabel")}
-        hint={t("updater.autoCheckHint")}
+        className="settings-field--wide-copy updates-control"
+        label={
+          <div className="updates-control__summary">
+            <div className="updates-control__version">
+              {t("updater.currentVersion", { v: version || "…" })}
+            </div>
+            <div className={`updates-control__status updates-control__status--${updateStatusTone}`} role="status" aria-live="polite">
+              {updateStatus && (
+                <>
+                  {updateStatusTone === "success" && <CheckCircle2 size={14} aria-hidden="true" />}
+                  {updateStatusTone === "busy" && <Loader2 className="updates-control__spinner" size={14} aria-hidden="true" />}
+                  <span>{updateStatus}</span>
+                </>
+              )}
+            </div>
+          </div>
+        }
       >
-        <ToggleSegment
-          value={checkUpdates}
-          disabled={settingsBusy}
-          onChange={(enabled) => void applySettings(() => app.SetDesktopCheckUpdates(enabled))}
-        />
-      </SettingsField>
-      <SettingsField
-        className="settings-field--wide-copy"
-        label={t("settings.telemetryLabel")}
-        hint={t("settings.telemetryHint")}
-      >
-        <ToggleSegment
-          value={telemetry}
-          disabled={settingsBusy}
-          onChange={(enabled) => void applySettings(() => app.SetDesktopTelemetry(enabled))}
-        />
-      </SettingsField>
-      <SettingsField
-        className="settings-field--wide-copy"
-        label={t("settings.metricsLabel")}
-        hint={t("settings.metricsHint")}
-      >
-        <ToggleSegment
-          value={metrics}
-          disabled={settingsBusy}
-          onChange={(enabled) => void applySettings(() => app.SetDesktopMetrics(enabled))}
-        />
-      </SettingsField>
-      <SettingsField label={t("updater.currentVersion", { v: version || "…" })}>
-        <button className="btn btn--small" disabled={updaterBusy} onClick={() => void check()}>
-          {status.kind === "checking" ? t("updater.checking") : t("updater.checkButton")}
-        </button>
-      </SettingsField>
-      {status.kind === "available" && (
-        <div className="mem-hint">{t("updater.channelLabel", { channel: status.info.channel || "stable" })}</div>
-      )}
-      {status.kind === "upToDate" && <div className="mem-hint">{t("updater.upToDate")}</div>}
-      {status.kind === "available" && (
-        <>
-          <SettingsField label={t("updater.available", { v: status.info.latest })}>
-            <button className="btn btn--primary btn--small" onClick={() => downloadUpdate(status.info)}>
-              {status.info.canSelfUpdate ? t("updater.downloadUpdate") : t("updater.goToDownload")}
+        <div className="updates-control__controls">
+          <Tooltip label={t("updater.checkButton")}>
+            <button
+              className="chip chip--icon"
+              type="button"
+              disabled={settingsBusy || updaterBusy}
+              aria-label={t("updater.checkButton")}
+              onClick={() => void check()}
+            >
+              <RefreshCw className={status.kind === "checking" ? "updates-control__spinner" : undefined} size={14} aria-hidden="true" />
             </button>
-          </SettingsField>
-          {!status.info.canSelfUpdate && <div className="mem-hint">{status.info.manualReason || t("updater.macHint")}</div>}
-        </>
-      )}
-      {status.kind === "downloading" && (
-        <div className="mem-hint">
-          {t("updater.downloading", {
-            done: mb(status.received),
-            total: mb(status.total),
-            pct: status.total > 0 ? Math.round((status.received / status.total) * 100) : 0,
-          })}
+          </Tooltip>
+        </div>
+      </SettingsField>
+      <div
+        className="updates-control__hint"
+        style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: "4px 8px" }}
+      >
+        <span>{t("updater.officialReleaseHint")}</span>
+        <button
+          className="btn btn--small"
+          type="button"
+          onClick={openDownload}
+          style={{
+            height: "auto",
+            minHeight: 0,
+            padding: 0,
+            borderColor: "transparent",
+            background: "transparent",
+            color: "var(--fg-dim)",
+            textDecoration: "underline",
+            textUnderlineOffset: 2,
+          }}
+        >
+          {t("updater.officialDownload")}
+          <ExternalLink size={13} aria-hidden="true" />
+        </button>
+      </div>
+      {status.kind === "available" && (
+        <div className="updates-control__action">
+          <div className="updates-control__action-copy">
+            {!status.info.canSelfUpdate && <div>{status.info.manualReason || t("updater.macHint")}</div>}
+          </div>
+          <button
+            className="btn btn--primary btn--small"
+            disabled={settingsBusy || updaterBusy}
+            onClick={() => applyUpdate(status.info)}
+          >
+            {status.info.canSelfUpdate ? t("updater.updateAndRestart") : t("updater.goToDownload")}
+          </button>
         </div>
       )}
-      {status.kind === "verifying" && <div className="mem-hint">{t("updater.verifying")}</div>}
-      {status.kind === "downloaded" && (
-        <SettingsField label={t("updater.downloaded", { v: status.info.latest })}>
-          <button className="btn btn--primary btn--small" onClick={installUpdate}>
-            {t("updater.restartInstall")}
+      {status.kind === "error" && (
+        <div
+          className="banner banner--update banner--error"
+          role="alert"
+          style={{ alignItems: "flex-start", flexWrap: "wrap", marginBottom: 12 }}
+        >
+          <div style={{ flex: "1 1 360px", minWidth: 0 }}>
+            <div>{updateErrorTitle}</div>
+            {updateErrorHint && <div className="banner__hint">{updateErrorHint}</div>}
+            {status.disposition !== "retryable" && (
+              <div className="banner__hint" style={{ overflowWrap: "anywhere" }}>
+                {t("updater.errorDetails", { msg: status.message })}
+              </div>
+            )}
+          </div>
+          <span className="banner__spacer" />
+          {status.disposition === "recovery" && (
+            <button
+              className="btn btn--small"
+              type="button"
+              disabled={settingsBusy || updaterBusy}
+              onClick={() => void abandonPending()}
+            >
+              {t("updater.discardPrevious")}
+            </button>
+          )}
+          {downloadIsPrimary && (
+            <button className="btn btn--primary btn--small" type="button" onClick={openDownload}>
+              {t("updater.officialDownload")}
+              <ExternalLink size={14} aria-hidden="true" />
+            </button>
+          )}
+          <button
+            className={`btn btn--small${downloadIsPrimary ? "" : " btn--primary"}`}
+            type="button"
+            disabled={settingsBusy || updaterBusy}
+            onClick={() => status.info ? applyUpdate(status.info) : void check()}
+          >
+            {t("updater.retry")}
           </button>
-        </SettingsField>
+        </div>
       )}
-      {status.kind === "installing" && <div className="mem-hint">{t("updater.installing")}</div>}
-      {status.kind === "done" && <div className="mem-hint">{t("updater.done")}</div>}
-      {status.kind === "error" && <div className="banner banner--error">{t("updater.failed", { msg: status.message })}</div>}
-      {configPath && (
-        <Tooltip label={configPath} fill block className="mem-hint settings-config-path">
-          {t("settings.config", { path: configPath })}
-        </Tooltip>
-      )}
+      <SettingsField
+        className="settings-field--wide-copy"
+        label={t("changelog.title")}
+        hint={t("changelog.subtitle")}
+      >
+        <button className="btn btn--small" onClick={() => void openExternal("https://reasonix.io/changelog/")}>
+          {t("changelog.openWeb")}
+          <ExternalLink size={14} aria-hidden="true" />
+        </button>
+      </SettingsField>
+      <SettingsField
+        className="settings-field--wide-copy"
+        label={t("feedback.title")}
+        hint={t("feedback.subtitle")}
+      >
+        <div className="settings-inline-controls">
+          <button
+            className="btn btn--small"
+            onClick={() => void openExternal("https://github.com/esengine/DeepSeek-Reasonix/issues/new/choose")}
+          >
+            {t("feedback.submitIssue")}
+            <ExternalLink size={14} aria-hidden="true" />
+          </button>
+          <button
+            className="btn btn--small"
+            onClick={() => void openExternal("https://github.com/esengine/DeepSeek-Reasonix/issues")}
+          >
+            {t("feedback.viewIssues")}
+            <ExternalLink size={14} aria-hidden="true" />
+          </button>
+        </div>
+      </SettingsField>
+      <details
+        className="provider-editor-advanced"
+        style={{
+          marginTop: 0,
+          borderRight: 0,
+          borderBottom: 0,
+          borderLeft: 0,
+          borderRadius: 0,
+          background: "transparent",
+        }}
+      >
+        <summary style={{ padding: "0 2px" }}>
+          <span className="provider-editor-advanced__title">
+            <ChevronDown className="provider-editor-advanced__icon" size={16} aria-hidden="true" />
+            {t("updater.privacyAndUpdatePreferences")}
+          </span>
+        </summary>
+        <div className="provider-editor-advanced__body">
+          <SettingsField
+            className="settings-field--wide-copy"
+            label={t("updater.autoCheckLabel")}
+            hint={t("updater.autoCheckHint")}
+          >
+            <ToggleSegment
+              value={checkUpdates}
+              disabled={settingsBusy}
+              onChange={(enabled) => void applySettings(() => app.SetDesktopCheckUpdates(enabled))}
+            />
+          </SettingsField>
+          <SettingsField
+            className="settings-field--wide-copy"
+            label={t("settings.telemetryLabel")}
+            hint={t("settings.telemetryHint")}
+          >
+            <ToggleSegment
+              value={telemetry}
+              disabled={settingsBusy}
+              onChange={(enabled) => void applySettings(() => app.SetDesktopTelemetry(enabled))}
+            />
+          </SettingsField>
+          <SettingsField
+            className="settings-field--wide-copy"
+            label={t("settings.metricsLabel")}
+            hint={t("settings.metricsHint")}
+          >
+            <ToggleSegment
+              value={metrics}
+              disabled={settingsBusy}
+              onChange={(enabled) => void applySettings(() => app.SetDesktopMetrics(enabled))}
+            />
+          </SettingsField>
+          {configPath && (
+            <Tooltip label={configPath} fill block className="mem-hint settings-config-path">
+              {t("settings.config", { path: configPath })}
+            </Tooltip>
+          )}
+          {shadowedByPath && (
+            <Tooltip label={shadowedByPath} fill block className="mem-hint settings-config-path settings-config-path--shadowed">
+              {t("settings.configShadowed", { path: shadowedByPath })}
+            </Tooltip>
+          )}
+        </div>
+      </details>
     </SettingsSection>
   );
 }

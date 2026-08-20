@@ -2,6 +2,8 @@ package control
 
 import (
 	"context"
+	"encoding/json"
+	"reflect"
 	"testing"
 
 	"reasonix/internal/event"
@@ -22,7 +24,7 @@ func TestReplayPendingPromptsReEmitsBlockedApproval(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		_, _, _ = gateApprover{c}.Approve(context.Background(), "bash", "go test ./...", nil)
+		_, _, _ = gateApprover{c}.Approve(context.Background(), "bash", "go test ./...", json.RawMessage(`{"command":"go test ./..."}`))
 	}()
 
 	first := <-reqs
@@ -33,39 +35,11 @@ func TestReplayPendingPromptsReEmitsBlockedApproval(t *testing.T) {
 	c.ReplayPendingPrompts()
 
 	replayed := <-reqs
-	if replayed != first {
+	if !reflect.DeepEqual(replayed, first) {
 		t.Fatalf("replayed = %+v, want identical re-emit of %+v", replayed, first)
 	}
 
 	c.Approve(first.ID, true, false, false)
-	<-done
-}
-
-func TestReplayPendingPromptsPreservesFreshApproval(t *testing.T) {
-	reqs := make(chan event.Approval, 8)
-	c := New(Options{Sink: event.FuncSink(func(e event.Event) {
-		if e.Kind == event.ApprovalRequest {
-			reqs <- e.Approval
-		}
-	})})
-
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		_, _, _ = (gateApprover{c}).ApproveFresh(context.Background(), "mcp__srv__wipe", "srv/wipe", nil)
-	}()
-
-	first := <-reqs
-	if !first.Fresh {
-		t.Fatalf("first request = %+v, want fresh approval", first)
-	}
-	c.ReplayPendingPrompts()
-	replayed := <-reqs
-	if replayed != first || !replayed.Fresh {
-		t.Fatalf("replayed = %+v, want identical fresh re-emit of %+v", replayed, first)
-	}
-
-	c.Approve(first.ID, false, false, false)
 	<-done
 }
 

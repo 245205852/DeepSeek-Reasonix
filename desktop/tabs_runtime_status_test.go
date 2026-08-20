@@ -6,7 +6,6 @@ import (
 	"io"
 	"os"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -224,10 +223,17 @@ func TestProjectTreeShowsBackgroundJobStatus(t *testing.T) {
 func TestBackgroundJobNoticeForcesProjectTreeRefresh(t *testing.T) {
 	isolateDesktopUserDirs(t)
 
-	var refreshes int32
 	app := NewApp()
-	app.projectTreeChangedHook = func() {
-		atomic.AddInt32(&refreshes, 1)
+	app.ctx = context.Background()
+	legacyInvalidations := 0
+	app.projectTreeChangedHook = func() { legacyInvalidations++ }
+	events := make(chan ProjectTreeRuntimeSnapshot, 1)
+	app.runtimeEvents.emit = func(_ context.Context, name string, payload ...any) {
+		if name == "project-tree:runtime-changed" && len(payload) == 1 {
+			if snapshot, ok := payload[0].(ProjectTreeRuntimeSnapshot); ok {
+				events <- snapshot
+			}
+		}
 	}
 	app.tabs["job"] = &WorkspaceTab{
 		ID:          "job",
@@ -239,8 +245,16 @@ func TestBackgroundJobNoticeForcesProjectTreeRefresh(t *testing.T) {
 	sink := &tabEventSink{tabID: "job", app: app}
 
 	sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: "background bash finished: bash-1"})
-	if got := atomic.LoadInt32(&refreshes); got != 1 {
-		t.Fatalf("project-tree refreshes = %d, want 1 for background job finish notice", got)
+	if legacyInvalidations != 0 {
+		t.Fatalf("catalog/legacy invalidations = %d, want 0 for runtime-only status", legacyInvalidations)
+	}
+	select {
+	case snapshot := <-events:
+		if snapshot.Revision == 0 || snapshot.Topics == nil {
+			t.Fatalf("runtime snapshot = %+v, want versioned non-nil projection", snapshot)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("background job finish notice emitted no project-tree runtime snapshot")
 	}
 }
 
@@ -255,19 +269,42 @@ func waitNoJobs(t *testing.T, ctrl control.SessionAPI) {
 	}
 }
 
-func TestTopicActivityStatusPresentsReadinessAsPaused(t *testing.T) {
+func TestTopicActivityStatusPresentsReadinessSeparatelyFromPause(t *testing.T) {
 	readiness := event.Event{
 		Kind:    event.TurnDone,
 		Err:     &agent.FinalReadinessError{Attempts: 3, Reason: "missing verification"},
 		Outcome: event.TurnOutcomeFinalReadiness,
 	}
-	if status, ok := topicActivityStatusFromEvent(readiness); !ok || status != topicStatusPaused {
-		t.Fatalf("readiness turn end = (%q, %v), want (%q, true)", status, ok, topicStatusPaused)
+	if status, ok := topicActivityStatusFromEvent(readiness); !ok || status != topicStatusAwaitingDelivery {
+		t.Fatalf("readiness turn end = (%q, %v), want (%q, true)", status, ok, topicStatusAwaitingDelivery)
+	}
+	recoveryPause := event.Event{
+		Kind:    event.TurnDone,
+		Err:     &agent.RecoveryPauseError{Message: "automatic recovery paused"},
+		Outcome: event.TurnOutcomeRecoveryPaused,
+	}
+	if status, ok := topicActivityStatusFromEvent(recoveryPause); !ok || status != topicStatusPaused {
+		t.Fatalf("recovery pause turn end = (%q, %v), want (%q, true)", status, ok, topicStatusPaused)
 	}
 	if status, ok := topicActivityStatusFromEvent(event.Event{Kind: event.TurnDone, Err: io.EOF}); !ok || status != topicStatusError {
 		t.Fatalf("ordinary turn error = (%q, %v), want (%q, true)", status, ok, topicStatusError)
 	}
 	if status, ok := topicActivityStatusFromEvent(event.Event{Kind: event.TurnDone}); !ok || status != "" {
 		t.Fatalf("clean turn end = (%q, %v), want cleared status", status, ok)
+	}
+}
+
+func TestCatalogRuntimeStatusPreservesDeliveryCheckWhenIdle(t *testing.T) {
+	got := catalogRuntimeStatus(topicStatusAwaitingDelivery, control.RuntimeStatus{})
+	if got != topicStatusAwaitingDelivery {
+		t.Fatalf("idle delivery check = %q, want %q", got, topicStatusAwaitingDelivery)
+	}
+	got = catalogRuntimeStatus(topicStatusAwaitingDelivery, control.RuntimeStatus{Running: true})
+	if got != topicStatusThinking {
+		t.Fatalf("running delivery check = %q, want %q", got, topicStatusThinking)
+	}
+	got = catalogRuntimeStatus(topicStatusPaused, control.RuntimeStatus{})
+	if got != topicStatusPaused {
+		t.Fatalf("idle recovery pause = %q, want %q", got, topicStatusPaused)
 	}
 }

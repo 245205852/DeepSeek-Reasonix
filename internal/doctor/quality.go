@@ -7,9 +7,39 @@ import (
 	"strings"
 
 	"reasonix/internal/agent"
-	"reasonix/internal/memorycompiler"
 	"reasonix/internal/provider"
 )
+
+// verificationCommandMarkers identify shell commands whose exit status verifies
+// the turn's work (tests, vet, typecheck, lint, build). Matched as lowercase
+// substrings of the bash tool's raw argument JSON. Inlined from the removed
+// Memory v5 compiler so the quality report keeps its counting behavior.
+var verificationCommandMarkers = []string{
+	"go test", "go vet", "go build", "gofmt -l", "golangci-lint",
+	"npm test", "npm run test", "pnpm test", "pnpm run test", "yarn test",
+	"vitest", "jest", "npx tsc", "tsc ", "typecheck", "type-check", "check:css",
+	"eslint", "pytest", "ruff check", "cargo test", "cargo check", "cargo build",
+	"mvn test", "gradle test", "make test", "ctest", "phpunit", "rspec",
+}
+
+// isVerificationToolCall reports whether a persisted tool call is a shell
+// command whose exit status provides implementation evidence. It intentionally
+// returns only a boolean so diagnostic callers never need to expose arguments.
+func isVerificationToolCall(name, args string) bool {
+	if !strings.EqualFold(strings.TrimSpace(name), "bash") {
+		return false
+	}
+	args = strings.ToLower(args)
+	if args == "" {
+		return false
+	}
+	for _, marker := range verificationCommandMarkers {
+		if strings.Contains(args, marker) {
+			return true
+		}
+	}
+	return false
+}
 
 const qualityReportSchemaVersion = 1
 
@@ -59,6 +89,7 @@ type QualityUsage struct {
 	ReasoningTokens  int  `json:"reasoning_tokens"`
 	CacheHitTokens   int  `json:"cache_hit_tokens"`
 	CacheMissTokens  int  `json:"cache_miss_tokens"`
+	Estimated        bool `json:"estimated,omitempty"`
 	CacheHitPercent  *int `json:"cache_hit_percent,omitempty"`
 }
 
@@ -79,6 +110,7 @@ type qualityTelemetry struct {
 		ReasoningTokens  int                           `json:"reasoningTokens"`
 		CacheHitTokens   int                           `json:"cacheHitTokens"`
 		CacheMissTokens  int                           `json:"cacheMissTokens"`
+		Estimated        bool                          `json:"estimated,omitempty"`
 		RequestCount     int                           `json:"requestCount"`
 		Sources          map[string]qualitySourceUsage `json:"sources"`
 	} `json:"usage"`
@@ -152,7 +184,7 @@ func summarizeQualityTranscript(messages []provider.Message) QualityTranscript {
 				if qualityWriterTool(call.Name) {
 					out.WriterCalls++
 				}
-				if memorycompiler.IsVerificationToolCall(call.Name, call.Arguments) {
+				if isVerificationToolCall(call.Name, call.Arguments) {
 					out.VerificationCalls++
 				}
 			}
@@ -193,6 +225,7 @@ func summarizeQualityUsage(telemetry qualityTelemetry) QualityUsage {
 		ReasoningTokens:  telemetry.Usage.ReasoningTokens,
 		CacheHitTokens:   telemetry.Usage.CacheHitTokens,
 		CacheMissTokens:  telemetry.Usage.CacheMissTokens,
+		Estimated:        telemetry.Usage.Estimated,
 	}
 	if total := usage.CacheHitTokens + usage.CacheMissTokens; total > 0 {
 		percent := usage.CacheHitTokens * 100 / total

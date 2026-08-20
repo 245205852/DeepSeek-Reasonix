@@ -179,14 +179,12 @@ func TestSessionLeaseConcurrentReclaimSingleWinner(t *testing.T) {
 	leases := make(chan *SessionLease, attempts)
 	start := make(chan struct{})
 	for range attempts {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			<-start
 			if lease, err := TryReclaimCurrentProcessSessionLease(userPath); err == nil && lease != nil {
 				leases <- lease
 			}
-		}()
+		})
 	}
 	close(start)
 	wg.Wait()
@@ -348,6 +346,59 @@ func TestSessionLeaseHeldByOtherRuntime(t *testing.T) {
 			t.Fatalf("corrupt lease info should be removed, stat err = %v", err)
 		}
 	})
+}
+
+func TestSessionLeaseHeldByCurrentRuntime(t *testing.T) {
+	userPath, _ := leaseTestPath(t)
+	if SessionLeaseHeldByCurrentRuntime(userPath) {
+		t.Fatal("unheld session reported as owned by the current runtime")
+	}
+	lease, err := TryAcquireSessionLease(userPath)
+	if err != nil {
+		t.Fatalf("TryAcquireSessionLease: %v", err)
+	}
+	if !SessionLeaseHeldByCurrentRuntime(userPath) {
+		lease.Release()
+		t.Fatal("held session was not reported as owned by the current runtime")
+	}
+	lease.Release()
+	if SessionLeaseHeldByCurrentRuntime(userPath) {
+		t.Fatal("released session remained owned by the current runtime")
+	}
+}
+
+func TestSessionLeaseHeldByCurrentRuntimeRejectsPendingReservation(t *testing.T) {
+	userPath, key := leaseTestPath(t)
+	ownerID := sessionLeaseSeq.Add(1)
+	sessionLeaseOwners.Store(key, ownerID)
+	t.Cleanup(func() {
+		sessionLeaseOwners.CompareAndDelete(key, ownerID)
+		sessionLeaseActiveOwners.CompareAndDelete(key, ownerID)
+	})
+
+	if SessionLeaseHeldByCurrentRuntime(userPath) {
+		t.Fatal("pending acquisition reservation authorized ownership-sensitive repair")
+	}
+}
+
+func TestSessionLeaseReleaseRevokesRepairAuthorizationBeforeUnlock(t *testing.T) {
+	userPath, _ := leaseTestPath(t)
+	lease, err := TryAcquireSessionLease(userPath)
+	if err != nil {
+		t.Fatalf("TryAcquireSessionLease: %v", err)
+	}
+	checked := false
+	lease.beforeReleaseLock = func() {
+		checked = true
+		if SessionLeaseHeldByCurrentRuntime(userPath) {
+			t.Error("release kept repair authorization active while unlocking the OS lease")
+		}
+	}
+
+	lease.Release()
+	if !checked {
+		t.Fatal("release did not invoke the controlled unlock")
+	}
 }
 
 func TestSessionLeaseReleaseRetiresLockSidecars(t *testing.T) {

@@ -18,10 +18,11 @@ import (
 // as a stdio MCP server via TestHelperProcess.
 func mockSpec() plugin.Spec {
 	return plugin.Spec{
-		Name:    "mock",
-		Command: os.Args[0],
-		Args:    []string{"-test.run=TestHelperProcess", "--"},
-		Env:     map[string]string{"GO_WANT_HELPER_PROCESS": "1"},
+		Name:       "mock",
+		Command:    os.Args[0],
+		Args:       []string{"-test.run=TestHelperProcess", "--"},
+		Env:        map[string]string{"GO_WANT_HELPER_PROCESS": "1"},
+		Authorized: true, // install/boot sets this; proxy never invents trust
 	}
 }
 
@@ -32,8 +33,7 @@ func mockSpec() plugin.Spec {
 func TestUseCapabilityFirstDiscoveryConnectListCall(t *testing.T) {
 	host := plugin.NewHost()
 	defer host.Close()
-	lifeCtx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	lifeCtx := t.Context()
 	ledger := capability.NewLedger()
 	audit := &capability.Audit{}
 	proxy := agent.NewUseCapabilityTool(lifeCtx, host, []plugin.Spec{mockSpec()}, tool.NewRegistry(), ledger, audit, nil)
@@ -109,8 +109,7 @@ func TestUseCapabilityFirstDiscoveryConnectListCall(t *testing.T) {
 func TestUseCapabilitySharedHostSnapshot(t *testing.T) {
 	host := plugin.NewHost()
 	defer host.Close()
-	lifeCtx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	lifeCtx := t.Context()
 	callCtx, cancelCall := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancelCall()
 	// "Tab A" connects directly (not through any proxy).
