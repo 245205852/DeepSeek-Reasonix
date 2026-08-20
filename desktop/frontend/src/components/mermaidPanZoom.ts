@@ -42,7 +42,14 @@ function ensureViewport(svg: SVGSVGElement): SVGGElement {
   if (existing) return existing;
   const viewport = document.createElementNS(SVG_NS, "g");
   viewport.setAttribute(VIEWPORT_ATTR, "");
-  while (svg.firstChild) viewport.appendChild(svg.firstChild);
+  // Keep definitions in the SVG coordinate system. Mermaid commonly puts
+  // markers, clip paths, and gradients in <defs>; moving them under the
+  // transformed viewport changes their user coordinate system and can distort
+  // arrowheads or clipped/filled shapes.
+  for (const child of Array.from(svg.childNodes)) {
+    if (child.nodeType === 3 || (child.nodeType === 1 && (child as Element).tagName.toLowerCase() === "defs")) continue;
+    viewport.appendChild(child);
+  }
   svg.appendChild(viewport);
   return viewport;
 }

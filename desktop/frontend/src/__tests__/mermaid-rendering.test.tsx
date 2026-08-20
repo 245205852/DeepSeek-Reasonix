@@ -140,6 +140,11 @@ function installDom() {
   const dom = installDom();
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
   svg.setAttribute("viewBox", "0 0 160 80");
+  const defs = document.createElementNS("http://www.w3.org/2000/svg", "defs");
+  const marker = document.createElementNS("http://www.w3.org/2000/svg", "marker");
+  marker.setAttribute("id", "arrow");
+  defs.appendChild(marker);
+  svg.appendChild(defs);
   const content = document.createElementNS("http://www.w3.org/2000/svg", "g");
   content.setAttribute("id", "drawing");
   svg.appendChild(content);
@@ -153,6 +158,9 @@ function installDom() {
   const panZoom = createMermaidPanZoom(svg, { minZoom: 0.3, maxZoom: 8, zoomScaleSensitivity: 0.3 });
   const viewport = () => svg.querySelector("g[data-mermaid-pan-zoom-viewport]");
   ok(svg.querySelector("g[data-mermaid-pan-zoom-viewport] g#drawing"), "inline pan/zoom wraps the drawing in one viewport group");
+  ok(defs.parentNode === svg, "SVG definitions stay outside the transformed viewport");
+  ok(!viewport()?.querySelector("defs"), "the viewport does not transform SVG definitions");
+  ok(svg.querySelector("defs marker#arrow") === marker, "definition children remain available by ID");
 
   panZoom.fit();
   eq(viewport()?.getAttribute("transform"), "translate(0 0) scale(1)", "fit keeps the browser meet mapping at unit scale");
