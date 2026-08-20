@@ -147,25 +147,6 @@ func directorySignature(dir string) (string, error) {
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
-func (c *Catalog) directoryScanCanSkip(ctx context.Context, path, signature string) (bool, error) {
-	var previous, state string
-	err := c.db.QueryRowContext(ctx, `SELECT signature,state FROM catalog_directories WHERE path=?`, path).Scan(&previous, &state)
-	if errors.Is(err, sql.ErrNoRows) {
-		return false, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	if previous != signature || state != "ready" {
-		return false, nil
-	}
-	var missing int
-	if err := c.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM catalog_sessions WHERE directory=? AND missing_since>0`, path).Scan(&missing); err != nil {
-		return false, err
-	}
-	return missing == 0, nil
-}
-
 func (c *Catalog) directoryLock(path string) *sync.Mutex {
 	c.directoryLocksMu.Lock()
 	defer c.directoryLocksMu.Unlock()
