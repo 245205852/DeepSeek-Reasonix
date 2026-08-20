@@ -52,7 +52,7 @@ import { useCreationTranscriptScrollbar } from "../lib/useCreationTranscriptScro
 import { useTranscriptScrollInteractions } from "../lib/useTranscriptScrollInteractions";
 import { hasTranscriptScrollableRange, TRANSCRIPT_AT_BOTTOM_THRESHOLD_PX, useTranscriptScrollArbiter } from "../lib/useTranscriptScrollArbiter";
 import { useTranscriptLayoutIntegrity } from "../lib/useTranscriptLayoutIntegrity";
-import { TranscriptLayoutIntentProvider } from "./TranscriptLayoutIntentContext";
+import { TranscriptLayoutIntentProvider, TranscriptScrollWriteProvider } from "./TranscriptLayoutIntentContext";
 import { MarkdownImageTabContext } from "./MarkdownImageContext";
 import { recordTranscriptScrollDiagnostic } from "../lib/transcriptScrollProbe";
 import { useTranscriptQuestionJump, useTranscriptQuestions } from "../lib/useTranscriptQuestionNavigation";
@@ -964,6 +964,7 @@ export function Transcript({
     <InvocationMetadataContext.Provider value={invocationMetadata}>
     <MarkdownImageTabContext.Provider value={tabId ?? ""}>
     <TranscriptLayoutIntentProvider value={beginUserResize}>
+    <TranscriptScrollWriteProvider value={writeOffset}>
     <div className="transcript-shell">
       {empty ? (
         <div
@@ -1063,6 +1064,7 @@ export function Transcript({
       )}
       {ScrollDiagnosticPanel && <Suspense fallback={null}><ScrollDiagnosticPanel scrollElement={scrollElement} totalRows={virtualRows.length} /></Suspense>}
     </div>
+    </TranscriptScrollWriteProvider>
     </TranscriptLayoutIntentProvider>
     </MarkdownImageTabContext.Provider>
     </InvocationMetadataContext.Provider>

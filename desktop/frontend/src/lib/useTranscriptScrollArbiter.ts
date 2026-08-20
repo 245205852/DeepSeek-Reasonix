@@ -41,7 +41,7 @@ import {
 import { hasTranscriptScrollableRange, nativeTranscriptBottomTop, nativeTranscriptDistanceFromBottom, pinTranscriptTailAfterViewportShrink, TRANSCRIPT_AT_BOTTOM_THRESHOLD_PX, type TranscriptFollowGeometry } from "./transcriptScrollGeometry";
 import type { TranscriptRow } from "./transcriptRows";
 import { captureTranscriptVirtuosoState } from "./transcriptStateSnapshot";
-import { captureTranscriptLayoutAnchor, type TranscriptLayoutAnchor } from "./transcriptVirtuosoRecovery";
+import { captureTranscriptLayoutAnchor, captureVisibleTranscriptLayoutAnchor, type TranscriptLayoutAnchor } from "./transcriptVirtuosoRecovery";
 import { useTranscriptReaderExtentStability } from "./useTranscriptReaderExtentStability";
 export type {
   TranscriptRecoveryRequestSpec,
@@ -83,6 +83,7 @@ export function useTranscriptScrollArbiter({
   const touchStartYRef = useRef<number | null>(null);
   const nativeScrollbarDragRef = useRef(false);
   const middlePointerScrollRef = useRef(false);
+  const deliverScrollRef = useRef<((element?: HTMLDivElement) => void) | null>(null);
   const generationRef = useRef(0);
   const followFrameRef = useRef<number | null>(null);
   const tailSettleFrameRef = useRef<number | null>(null);
@@ -103,6 +104,20 @@ export function useTranscriptScrollArbiter({
   // every user-takeover, and sampled on user scroll intent. The blank
   // watchdog restores from it instead of a nearest-mounted-row guess (#8657).
   const lastGoodAnchorRef = useRef<TranscriptLayoutAnchor | null>(null);
+  // Steady-state manual-mode anchor: re-sampled from live geometry on every
+  // delivered scroll while the user owns the viewport. An above-viewport
+  // height change (fold auto-collapse, history patch) is then measurable as
+  // anchor drift and compensated through the arbiter's offset channel
+  // (#8438/#8488/#8897).
+  const manualAnchorRef = useRef<Extract<TranscriptLayoutAnchor, { mode: "manual" }> | null>(null);
+  // At most one anchor-compensation loop at a time; bounded like a recovery
+  // (2 stable frames or the shared wall-clock budget).
+  const anchorCompensationRef = useRef<{
+    anchor: Extract<TranscriptLayoutAnchor, { mode: "manual" }>;
+    frame: number | null;
+    stableFrames: number;
+    deadline: number;
+  } | null>(null);
   const onRecoveryTerminalRef = useRef(onRecoveryTerminal);
   onRecoveryTerminalRef.current = onRecoveryTerminal;
   const onItemMeasuredRef = useRef(onItemMeasured);
@@ -158,6 +173,14 @@ export function useTranscriptScrollArbiter({
     if (layoutTransientIdleTimerRef.current !== null) window.clearTimeout(layoutTransientIdleTimerRef.current);
     layoutTransientIdleTimerRef.current = null;
     layoutTransientRef.current = false;
+  }, []);
+
+  const cancelAnchorCompensation = useCallback(() => {
+    const compensation = anchorCompensationRef.current;
+    anchorCompensationRef.current = null;
+    if (compensation?.frame !== null && compensation?.frame !== undefined) {
+      cancelAnimationFrame(compensation.frame);
+    }
   }, []);
 
   const armLayoutTransientIdle = useCallback(() => {
@@ -250,8 +273,10 @@ export function useTranscriptScrollArbiter({
     followFrameRef.current = null;
     resizeSettleFrameRef.current = null;
     cancelTailSettle();
+    cancelAnchorCompensation();
+    manualAnchorRef.current = null;
     readerExtent.cancel();
-  }, [cancelTailSettle, readerExtent]);
+  }, [cancelAnchorCompensation, cancelTailSettle, readerExtent]);
 
   // Executes the reducer's CANCEL_RECOVERY command. The cancelling event
   // already cleared recoveryId in the published state, so no RECOVERY_END
@@ -327,7 +352,27 @@ export function useTranscriptScrollArbiter({
       cancelTailSettle();
     }
     if (transcriptScrollEventCancelsReaderExtentGuard(event.type)) readerExtent.cancel();
-    if (event.type === "RESET") lastGoodAnchorRef.current = null;
+    // Ownership-changing events end an in-flight anchor compensation. The
+    // steady-state offset owners (anchor-compensation, block-window-prepend)
+    // are the loop's own writes and must not cancel it.
+    if (
+      event.type === "RESET"
+      || event.type === "USER_SCROLL_INTENT"
+      || event.type === "MANUAL_READING"
+      || event.type === "USER_RESIZE_BEGIN"
+      || event.type === "SELECTION_BEGIN"
+      || event.type === "PROGRAMMATIC_BEGIN"
+      || event.type === "JUMP_TO_BOTTOM"
+      || event.type === "JUMP_TO_INDEX"
+      || event.type === "RECOVERY_BEGIN"
+      || (event.type === "SCROLL_TO_OFFSET" && event.owner !== "anchor-compensation" && event.owner !== "block-window-prepend")
+    ) {
+      cancelAnchorCompensation();
+    }
+    if (event.type === "RESET") {
+      lastGoodAnchorRef.current = null;
+      manualAnchorRef.current = null;
+    }
     if (event.type === "USER_SCROLL_INTENT") {
       const element = scrollRef.current;
       const anchor = element ? captureTranscriptLayoutAnchor(element, false) : undefined;
@@ -339,7 +384,75 @@ export function useTranscriptScrollArbiter({
     publishState(result.state);
     for (const command of result.commands) runCommand(command, source);
     return result;
-  }, [cancelTailSettle, publishState, readerExtent, runCommand]);
+  }, [cancelAnchorCompensation, cancelTailSettle, publishState, readerExtent, runCommand]);
+
+  // Steady-state viewport anchoring for manual reading: when content ABOVE
+  // the viewport changes height (fold auto-collapse, history patch), the
+  // anchor row's measured drift is compensated through the arbiter's offset
+  // channel instead of pushing the viewport (#8438/#8488/#8897). Changes
+  // below the viewport (streaming footer growth) leave the anchor row put,
+  // so they measure zero drift and earn no write. Bounded like a recovery:
+  // two stable frames or the shared wall-clock budget, whichever comes first.
+  const scheduleAnchorCompensation = useCallback(() => {
+    if (anchorCompensationRef.current !== null) return;
+    const element = scrollRef.current;
+    if (!element) return;
+    if (modeRef.current !== "manual") return;
+    // Never fight an active gesture, an in-flight recovery, or an armed
+    // reader-extent guard: the reader's own scrolling continuously re-samples
+    // the anchor, and the recovery/guard already owns viewport corrections.
+    if (stateRef.current.readerIntent || stateRef.current.recoveryId !== null || readerExtent.isActive()) return;
+    const anchor = manualAnchorRef.current;
+    if (!anchor) return;
+    const generation = generationRef.current;
+    const compensation = {
+      anchor,
+      frame: null as number | null,
+      stableFrames: 0,
+      deadline: Date.now() + ANCHOR_RESTORE_BUDGET_MS,
+    };
+    const tick = () => {
+      compensation.frame = null;
+      if (anchorCompensationRef.current !== compensation) return;
+      if (
+        generationRef.current !== generation
+        || modeRef.current !== "manual"
+        || stateRef.current.readerIntent
+        || stateRef.current.recoveryId !== null
+        || readerExtent.isActive()
+      ) {
+        anchorCompensationRef.current = null;
+        return;
+      }
+      const current = scrollRef.current;
+      if (!current) {
+        anchorCompensationRef.current = null;
+        return;
+      }
+      const row = Array.from(current.querySelectorAll<HTMLElement>(".transcript__row[data-row-key]"))
+        .find((candidate) => candidate.dataset.rowKey === compensation.anchor.rowKey);
+      if (!row) {
+        // The anchor row is unmounted: without a measurement there is no
+        // trustworthy correction, so the compensation simply stops.
+        anchorCompensationRef.current = null;
+        return;
+      }
+      const correction = row.getBoundingClientRect().top - current.getBoundingClientRect().top - compensation.anchor.offset;
+      if (Math.abs(correction) > RECOVERY_CORRECTION_TOLERANCE_PX) {
+        compensation.stableFrames = 0;
+        dispatch({ type: "SCROLL_TO_OFFSET", owner: "anchor-compensation", top: current.scrollTop + correction, behavior: "auto" });
+      } else {
+        compensation.stableFrames += 1;
+      }
+      if (compensation.stableFrames >= RECOVERY_STABLE_FRAMES || Date.now() >= compensation.deadline) {
+        anchorCompensationRef.current = null;
+        return;
+      }
+      compensation.frame = requestAnimationFrame(tick);
+    };
+    anchorCompensationRef.current = compensation;
+    compensation.frame = requestAnimationFrame(tick);
+  }, [dispatch, readerExtent]);
 
   const endReaderIntent = useCallback(() => {
     if (readerIntentTimerRef.current !== null) window.clearTimeout(readerIntentTimerRef.current);
@@ -351,6 +464,11 @@ export function useTranscriptScrollArbiter({
     if (readerIntentTimerRef.current !== null) window.clearTimeout(readerIntentTimerRef.current);
     readerIntentTimerRef.current = window.setTimeout(() => {
       readerIntentTimerRef.current = null;
+      // A large wheel/touch gesture can clamp the browser to the physical
+      // bottom without emitting a second scroll event. Re-sample once before
+      // closing the intent window so the bottom-hold policy can complete on
+      // real WebView2/native scrolling as well as on synthetic deliveries.
+      deliverScrollRef.current?.(scrollRef.current ?? undefined);
       dispatch({ type: "READER_INTENT_ENDED" });
     }, READER_INTENT_IDLE_MS);
   }, [dispatch]);
@@ -366,7 +484,14 @@ export function useTranscriptScrollArbiter({
       substantial: isSubstantialTranscriptDisplacement(distance),
     });
     if (stateRef.current.readerIntent) armReaderIntentIdle();
+    // Keep the steady-state manual anchor fresh from live geometry. Sampling
+    // is skipped while a compensation loop owns the reference so its own
+    // writes cannot move the goalposts mid-flight.
+    if (stateRef.current.mode === "manual" && anchorCompensationRef.current === null) {
+      manualAnchorRef.current = captureVisibleTranscriptLayoutAnchor(element) ?? null;
+    }
   }, [armReaderIntentIdle, dispatch, readerExtent]);
+  deliverScrollRef.current = deliverScroll;
 
   const scrollToBottom = useCallback((behavior: ScrollBehavior = "auto") => {
     if (isTranscriptSelectionMode(modeRef.current)) return;
@@ -561,8 +686,10 @@ export function useTranscriptScrollArbiter({
     if (layoutTransientIdleTimerRef.current !== null) window.clearTimeout(layoutTransientIdleTimerRef.current);
     if (jumpTailTimerRef.current !== null) window.clearTimeout(jumpTailTimerRef.current);
     if (recoveryRef.current?.frame != null) cancelAnimationFrame(recoveryRef.current.frame);
+    if (anchorCompensationRef.current?.frame != null) cancelAnimationFrame(anchorCompensationRef.current.frame);
     generationRef.current += 1;
     recoveryRef.current = null;
+    anchorCompensationRef.current = null;
     layoutTransientRef.current = false;
     jumpTailTimerRef.current = null;
   }, []);
@@ -633,12 +760,14 @@ export function useTranscriptScrollArbiter({
         followGeometryRef.current.contentExtent = scrollHeight;
         if (previous != null && isTranscriptContentShrink(scrollHeight - previous)) {
           dispatch({ type: "CONTENT_SHRANK" });
+          scheduleAnchorCompensation();
           return;
         }
       }
       dispatch({ type: "LAYOUT_HEIGHT_CHANGED" });
+      scheduleAnchorCompensation();
     });
-  }, [armLayoutTransientIdle, dispatch, readerExtent]);
+  }, [armLayoutTransientIdle, dispatch, readerExtent, scheduleAnchorCompensation]);
 
   const beginUserResize = useCallback(() => {
     dispatch({ type: "USER_RESIZE_BEGIN" });
@@ -654,14 +783,23 @@ export function useTranscriptScrollArbiter({
         resizeSettleFrameRef.current = null;
         if (generationRef.current !== generation || scrollRef.current !== scrollElement) return;
         dispatch({ type: "USER_RESIZE_END" });
+        // A user-initiated in-row resize (fold toggle) may have pushed the
+        // viewport; once ownership settles back to manual, anchor it again.
+        scheduleAnchorCompensation();
       });
     });
-  }, [dispatch]);
+  }, [dispatch, scheduleAnchorCompensation]);
 
   const atBottomStateChange = useCallback((_atBottom: boolean) => deliverScroll(), [deliverScroll]);
 
   const writeOffset = useCallback((owner: TranscriptScrollOwner, top: number, behavior: ScrollBehavior = "auto") => {
-    if (isTranscriptSelectionMode(modeRef.current) && owner !== "selection-edge-scroll") return false;
+    // Selection mode only accepts writes that keep the selection stable: its
+    // own edge scrolls and the in-row block-window prepend compensation.
+    if (
+      isTranscriptSelectionMode(modeRef.current)
+      && owner !== "selection-edge-scroll"
+      && owner !== "block-window-prepend"
+    ) return false;
     if (!scrollRef.current) return false;
     dispatch({ type: "SCROLL_TO_OFFSET", owner, top, behavior });
     return true;
