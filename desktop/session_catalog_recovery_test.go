@@ -54,7 +54,7 @@ func TestProjectNodeFromCatalogTopicFiltersIdleRecoveryCopies(t *testing.T) {
 	}
 }
 
-func TestProjectNodeFromCatalogTopicHidesRecoveryOnlyIdleTopic(t *testing.T) {
+func TestProjectNodeFromCatalogTopicShowsNonEmptyRecoveryOnlyTopic(t *testing.T) {
 	app := &App{tabs: map[string]*WorkspaceTab{}, detachedSessions: map[string]*WorkspaceTab{}}
 	topic := sessioncatalog.TopicRecord{
 		Scope: "global", TopicID: "only-copy", Title: "Copy", RecoveryState: "recovery_only",
@@ -62,8 +62,12 @@ func TestProjectNodeFromCatalogTopicHidesRecoveryOnlyIdleTopic(t *testing.T) {
 			{Path: "/s/only.jsonl", Recovered: true, RecoveryCopy: true, Turns: 2, TurnsState: sessioncatalog.TurnsValid, Health: sessioncatalog.HealthOK},
 		},
 	}
-	if _, ok := app.projectNodeFromCatalogTopic(topic, map[string]catalogRuntimeOverlay{}, map[string]catalogRuntimeOverlay{}, nil); ok {
-		t.Fatal("idle recovery-only topic must be hidden from the ordinary tree")
+	node, ok := app.projectNodeFromCatalogTopic(topic, map[string]catalogRuntimeOverlay{}, map[string]catalogRuntimeOverlay{}, nil)
+	if !ok {
+		t.Fatal("non-empty recovery-only topic must remain discoverable")
+	}
+	if !node.Recovered || node.RecoveryState != "recovery_only" || node.SessionPath != "/s/only.jsonl" {
+		t.Fatalf("recovery-only node = %+v, want a recoverable logical row", node)
 	}
 }
 
