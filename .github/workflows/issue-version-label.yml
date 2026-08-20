@@ -2,7 +2,7 @@ name: Label issue version
 
 # Issue forms can't let a reporter set a label directly (that needs triage rights),
 # so the bug/feature forms carry a "Version line" dropdown and this workflow reads
-# the submitted value and applies the matching v1/v2/v3 label on their behalf.
+# the submitted value and applies the matching v2/v3 label on their behalf.
 on:
   issues:
     types: [opened, edited]
@@ -26,7 +26,7 @@ jobs:
               body.split(/^###\s+/m).find((s) => new RegExp(`^${name}`, 'i').test(s)) || '';
 
             const lines = ['v1', 'v2', 'v3'];
-            const m = sectionOf('Version line').match(/\bv([123])\b/i);
+            const m = sectionOf('Version line').match(/\bv([23])\b/i);
             if (!m) {
               core.info('No version line found; nothing to label.');
               return;
@@ -34,15 +34,16 @@ jobs:
             let choice = 'v' + m[1];
 
             // The dropdown is a choice, and v2 sits first, so it gets picked by
-            // reporters who are actually on another line. `Exact version` is
+            // reporters who are actually on the other line. `Exact version` is
             // pasted from `reasonix --version`, so when it parses it is the
-            // better evidence: 0.x TypeScript (v1), 1.x Go rewrite (v2), 2.x
-            // Studio (v3, studio branch). Anything that does not parse (a
-            // commit sha, "main-v2", "studio") leaves the dropdown to decide.
+            // better evidence: 1.x Go rewrite (v2), 2.x Studio (v3, studio
+            // branch). 0.x is no longer a filing line. Anything that does not
+            // parse (a commit sha, "main-v2", "studio") leaves the dropdown
+            // to decide.
             const exact = sectionOf('Exact version').match(/\b(\d+)\.(\d+)\.(\d+)/);
             if (exact) {
               const major = Number(exact[1]);
-              const fromVersion = major === 0 ? 'v1' : major === 1 ? 'v2' : major === 2 ? 'v3' : null;
+              const fromVersion = major === 1 ? 'v2' : major === 2 ? 'v3' : null;
               if (fromVersion && fromVersion !== choice) {
                 core.info(`Version line says ${choice} but ${exact[0]} says ${fromVersion}; trusting the version.`);
                 choice = fromVersion;
