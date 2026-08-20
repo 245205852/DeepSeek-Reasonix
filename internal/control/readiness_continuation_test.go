@@ -184,7 +184,7 @@ func TestStandardTaskContinuationRejectsTextOnlyProgress(t *testing.T) {
 
 func TestStandardTaskContinuationStopsAtHardCapDespiteProgress(t *testing.T) {
 	turns := [][]provider.Chunk{textTurn("implementation remains")}
-	for i := 0; i < readinessTaskProgressTurns; i++ {
+	for i := range readinessTaskProgressTurns {
 		turns = append(turns,
 			[]provider.Chunk{toolCallChunk(fmt.Sprintf("read-%d", i), "read_file", fmt.Sprintf(`{"path":"file-%d.go"}`, i)), {Type: provider.ChunkDone}},
 			textTurn("implementation remains after another read"),
