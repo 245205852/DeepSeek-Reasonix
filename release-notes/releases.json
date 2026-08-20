@@ -70,6 +70,20 @@
           ]
         },
         {
+          "kind": "improved",
+          "title": {
+            "en": "Long drafts expand resized composers",
+            "zh": "长草稿可扩展已调整大小的输入框"
+          },
+          "body": {
+            "en": "A manually resized composer now treats its saved height as a minimum, grows to reveal longer drafts, returns to that baseline when content shrinks, and scrolls internally only at the viewport-aware limit.",
+            "zh": "手动调整过的输入框现在将已保存高度作为最小值；长草稿会继续展开，内容缩短后回到该基线，并仅在达到视口上限时启用内部滚动。"
+          },
+          "refs": [
+            9142
+          ]
+        },
+        {
           "kind": "fixed",
           "title": {
             "en": "Fixed incomplete sidebar session indexing",
@@ -156,6 +170,19 @@
           },
           {
             "title": {
+              "en": "Resized composer content growth",
+              "zh": "已调整大小的输入框随内容增长"
+            },
+            "body": {
+              "en": "Manually resized composers grow beyond their saved minimum for longer drafts, shrink back with shorter content, and preserve the existing viewport-aware maximum.",
+              "zh": "手动调整过的输入框会在长草稿下超过已保存的最小高度，内容缩短后回落，并继续遵守现有的视口高度上限。"
+            },
+            "refs": [
+              9142
+            ]
+          },
+          {
+            "title": {
               "en": "Pinned section header",
               "zh": "置顶区域标题"
             },
@@ -201,7 +228,8 @@
       "risks": [],
       "contributors": [
         "SivanCola",
-        "ttmouse"
+        "ttmouse",
+        "wqshan-cn"
       ],
       "links": {
         "github": "https://github.com/esengine/DeepSeek-Reasonix/releases/tag/desktop-v1.31.0",
