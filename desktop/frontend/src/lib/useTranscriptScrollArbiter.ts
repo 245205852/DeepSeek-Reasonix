@@ -83,6 +83,7 @@ export function useTranscriptScrollArbiter({
   const touchStartYRef = useRef<number | null>(null);
   const nativeScrollbarDragRef = useRef(false);
   const middlePointerScrollRef = useRef(false);
+  const deliverScrollRef = useRef<((element?: HTMLDivElement) => void) | null>(null);
   const generationRef = useRef(0);
   const followFrameRef = useRef<number | null>(null);
   const tailSettleFrameRef = useRef<number | null>(null);
@@ -463,6 +464,11 @@ export function useTranscriptScrollArbiter({
     if (readerIntentTimerRef.current !== null) window.clearTimeout(readerIntentTimerRef.current);
     readerIntentTimerRef.current = window.setTimeout(() => {
       readerIntentTimerRef.current = null;
+      // A large wheel/touch gesture can clamp the browser to the physical
+      // bottom without emitting a second scroll event. Re-sample once before
+      // closing the intent window so the bottom-hold policy can complete on
+      // real WebView2/native scrolling as well as on synthetic deliveries.
+      deliverScrollRef.current?.(scrollRef.current ?? undefined);
       dispatch({ type: "READER_INTENT_ENDED" });
     }, READER_INTENT_IDLE_MS);
   }, [dispatch]);
@@ -485,6 +491,7 @@ export function useTranscriptScrollArbiter({
       manualAnchorRef.current = captureVisibleTranscriptLayoutAnchor(element) ?? null;
     }
   }, [armReaderIntentIdle, dispatch, readerExtent]);
+  deliverScrollRef.current = deliverScroll;
 
   const scrollToBottom = useCallback((behavior: ScrollBehavior = "auto") => {
     if (isTranscriptSelectionMode(modeRef.current)) return;
