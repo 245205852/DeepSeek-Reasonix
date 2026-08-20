@@ -143,6 +143,35 @@ export function projectTreeWithoutTopics(tree: ProjectNode[], topicIds: Readonly
   return changed ? next : tree;
 }
 
+// After a successful rename, paint the new label immediately instead of
+// waiting for the catalog event round-trip.
+export function projectTreeWithTopicTitle(tree: ProjectNode[], topicId: string, title: string): ProjectNode[] {
+  const id = topicId.trim();
+  if (!id) return tree;
+  let changed = false;
+  const next: ProjectNode[] = [];
+  for (const node of tree) {
+    if (node.topicId === id && (isTopicNode(node) || isRuntimeSessionNode(node))) {
+      if (node.label !== title) {
+        changed = true;
+        next.push({ ...node, label: title });
+      } else {
+        next.push(node);
+      }
+      continue;
+    }
+    const children = asArray(node.children);
+    const renamedChildren = projectTreeWithTopicTitle(children, id, title);
+    if (renamedChildren !== children) {
+      changed = true;
+      next.push({ ...node, children: renamedChildren });
+    } else {
+      next.push(node);
+    }
+  }
+  return changed ? next : tree;
+}
+
 export function projectTreeFolderKeyForTopic(tree: ProjectNode[], topicId: string): string {
   const id = topicId.trim();
   if (!id) return "";
