@@ -10,8 +10,8 @@
         "zh": "自动化工作区、可靠调度与工作区优化"
       },
       "summary": {
-        "en": "This release introduces a dedicated Automation workspace with hardened scheduled-task execution, refines workspace panel sizing and state management, fixes incomplete sidebar session indexing, and updates issue reporting channels.",
-        "zh": "此版本引入了专用的自动化工作区并强化了计划任务执行，优化了工作区面板尺寸与状态管理，修复了侧栏会话索引不完整的问题，并更新了问题报告渠道。"
+        "en": "This release introduces a dedicated Automation workspace with hardened scheduled-task execution, refines workspace panel sizing and state management, fixes incomplete sidebar session indexing and a transient jump-bottom flash when the composer wraps, and updates issue reporting channels.",
+        "zh": "此版本引入了专用的自动化工作区并强化了计划任务执行，优化了工作区面板尺寸与状态管理，修复了侧栏会话索引不完整和输入框折行时短暂闪现“回到底部”的问题，并更新了问题报告渠道。"
       },
       "surfaces": [
         "desktop"
@@ -26,7 +26,7 @@
             "en": "For details on supported version lines and reporting methods, see the migration guide.",
             "zh": "有关支持的版本线和报告方式的详细信息，请参阅迁移指南。"
           },
-          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/ec4b3f61e8fe18bc6ca0b4fbd974b24a26e282e6/docs/MIGRATING.md"
+          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/02708f7d852114fd9d2e15843f11425dc0bf2bd0/docs/MIGRATING.md"
         },
         {
           "title": {
@@ -37,7 +37,7 @@
             "en": "For details on supported version lines and reporting methods, see the migration guide.",
             "zh": "有关支持的版本线和报告方式的详细信息，请参阅迁移指南。"
           },
-          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/ec4b3f61e8fe18bc6ca0b4fbd974b24a26e282e6/docs/MIGRATING.zh-CN.md"
+          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/02708f7d852114fd9d2e15843f11425dc0bf2bd0/docs/MIGRATING.zh-CN.md"
         }
       ],
       "highlights": [
@@ -95,6 +95,20 @@
           },
           "refs": [
             9164
+          ]
+        },
+        {
+          "kind": "fixed",
+          "title": {
+            "en": "Composer wrapping no longer flashes jump-bottom",
+            "zh": "输入框折行时不再闪现“回到底部”"
+          },
+          "body": {
+            "en": "When a growing composer wraps and shrinks the transcript viewport, tail-follow now pins the native transcript tail synchronously so jump-bottom no longer flashes for a frame. Manual-reading and content-collapse behavior remain unchanged.",
+            "zh": "当输入框内容增长并折行、导致对话视口缩小时，尾部跟随会同步固定原生对话尾部，避免“回到底部”按钮闪现一帧，同时保持手动阅读和内容收缩时的原有行为。"
+          },
+          "refs": [
+            9179
           ]
         },
         {
@@ -209,6 +223,19 @@
           }
         ],
         "fixed": [
+          {
+            "title": {
+              "en": "Jump-bottom flash while the composer wraps",
+              "zh": "输入框折行时闪现“回到底部”"
+            },
+            "body": {
+              "en": "Pins the transcript tail synchronously while tail-follow owns the viewport, preventing a one-frame jump-bottom flash when a growing composer wraps and reduces the visible transcript height.",
+              "zh": "当尾部跟随仍控制视口时同步固定对话尾部，避免输入框内容增长并折行、压缩可见对话高度时短暂闪现“回到底部”按钮。"
+            },
+            "refs": [
+              9179
+            ]
+          },
           {
             "title": {
               "en": "Incomplete sidebar session indexing",
