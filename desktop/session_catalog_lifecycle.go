@@ -109,7 +109,6 @@ func (a *App) runSessionCatalogRefreshLoop(ctx context.Context, catalog *session
 					}
 				}
 				catalog.RequestReconcile(target)
-				a.sweepExcessRecoveryCopies(catalog, target)
 			}
 		case <-ctx.Done():
 			return
