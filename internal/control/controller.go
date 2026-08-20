@@ -5540,11 +5540,17 @@ func (c *Controller) CancelJob(id string) bool {
 	return c.jobs.KillForSession(c.parentSessionID(), id)
 }
 
-// WorkspaceLeaseState reports only whether this controller owns or is waiting
-// for the Delivery workspace writer lease. It never exposes filesystem or
-// process identity.
+// WorkspaceLeaseState reports the process-local held and waiting lease scope.
+// Canonical keys are used only for matching another local controller and are
+// never copied into user-facing payloads.
 func (c *Controller) WorkspaceLeaseState() workspacelease.State {
 	return c.workspaceLease.State()
+}
+
+// WorkspaceLeaseHeldKeys is the lock-domain identity this controller currently
+// holds. Empty when no write lease is held.
+func (c *Controller) WorkspaceLeaseHeldKeys() []string {
+	return c.workspaceLease.HeldKeys()
 }
 
 // SetToolApprovalMode changes the runtime approval posture for permission-gated

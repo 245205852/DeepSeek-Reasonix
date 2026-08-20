@@ -5011,7 +5011,7 @@ export default function App() {
                 title={t("runtime.workspaceConflictTitle")}
                 badge={t("runtime.workspaceConflictBadge")}
                 meta={workspaceConflict.state === "local"
-                  ? t("runtime.workspaceConflictLocal", { title: workspaceConflict.ownerTitle || t("runtime.unknownTask") })
+                  ? t("runtime.workspaceConflictLocal", { title: workspaceConflict.ownerTitle || t("runtime.unknownTask"), label: workspaceConflict.ownerLabel || t("workspace.title") })
                   : t("runtime.workspaceConflictExternal")}
                 note={t("runtime.workspaceConflictNote")}
                 onCancel={() => {

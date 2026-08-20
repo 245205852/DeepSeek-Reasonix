@@ -728,11 +728,14 @@ registry to that claim before the child runs:
 - after the run, the host compares the mutations it recorded against the claim
   and reports any outside path to the parent in the sub-agent's host receipts.
 
-Omitting `write_paths` is not an unscoped writer: the run claims the whole
-workspace and therefore serialises against every other writer claim. That claim
-is a scheduling boundary only — inside the workspace nothing is refused, because
-no concurrent writer can hold an overlapping claim at the same time. Writes that
-leave the workspace are still reported as claim violations.
+Omitting `write_paths` is not an unscoped writer: the run starts by claiming
+the whole workspace, so it cannot start beside another writer. After it has
+only performed path-bound writes, the scheduler reservation shrinks to those
+files and a parent (or sibling) may write elsewhere. A `bash` or MCP workspace
+mutation makes the claim whole-workspace again. Directory claims may start
+together; they serialize only when they realize the same file. Enforcement
+still uses the declared bound — sandbox/`AllowsPath` do not shrink. Writes
+that leave the workspace are still reported as claim violations.
 
 Declaring paths is what buys parallelism; it costs `bash` on hosts where the OS
 sandbox cannot enforce write roots.
