@@ -2075,6 +2075,7 @@ export const zhTW: Record<DictKey, string> = {
   "notice.deliveryRequirementSignoff": "步驟簽收",
   "notice.deliveryRequirementAction": "可觀察的實際工作",
   "notice.deliveryRequirementMutation": "使用者要求的變更",
+  "notice.deliveryRequirementTask": "剩餘實作工作",
   "notice.deliveryRequirementCapability": "必要能力檢查",
   "notice.emptyFinal": "沒有產生可見回覆，已要求助手重新作答。",
   "notice.executorHandoff": "助手尚未執行必要操作，已要求它使用相應工具。",

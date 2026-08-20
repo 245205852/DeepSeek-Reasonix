@@ -2978,6 +2978,7 @@ export const zh: Record<DictKey, string> = {
   "notice.deliveryRequirementSignoff": "步骤签收",
   "notice.deliveryRequirementAction": "可观察的实际工作",
   "notice.deliveryRequirementMutation": "用户要求的变更",
+  "notice.deliveryRequirementTask": "剩余实施工作",
   "notice.deliveryRequirementCapability": "必需能力检查",
   "notice.emptyFinal": "没有生成可见回复，已要求助手重新作答。",
   "notice.executorHandoff": "助手尚未执行必要操作，已要求它使用相应工具。",

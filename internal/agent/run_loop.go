@@ -536,7 +536,7 @@ func (a *Agent) handleFinalResponse(ctx context.Context, state *turnRuntime, tex
 		}
 	}
 	readiness := a.finalReadinessCheckFor()
-	controlReadiness := a.finalReadinessControlProjection(readiness)
+	controlReadiness := a.finalReadinessControlProjection(readiness, text)
 	if state.graceRound && (controlReadiness.reason != "" || !hasVisibleFinalAnswer(text)) {
 		a.contextManager().ObserveUsage(usage)
 		return false, a.gracePause(state)

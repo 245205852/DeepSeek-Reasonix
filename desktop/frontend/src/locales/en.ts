@@ -2975,6 +2975,7 @@ export const en = {
   "notice.deliveryRequirementSignoff": "step sign-off",
   "notice.deliveryRequirementAction": "host-observable work",
   "notice.deliveryRequirementMutation": "the requested change",
+  "notice.deliveryRequirementTask": "remaining implementation work",
   "notice.deliveryRequirementCapability": "required capability checks",
   "notice.emptyFinal": "No visible answer was produced; asking the assistant to respond again.",
   "notice.executorHandoff": "The assistant answered before taking action; asking it to use the required tools.",

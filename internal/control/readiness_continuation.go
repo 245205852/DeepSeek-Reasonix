@@ -16,7 +16,8 @@ import (
 const (
 	readinessGenericTurns        = 1
 	readinessHighConfidenceTurns = 2
-	readinessTaskProgressTurns   = 2
+	readinessTaskProgressTurns   = 12
+	readinessTaskProgressStalls  = 2
 )
 
 func readinessContinuationBudget(class agent.ReadinessContinuationClass) int {
@@ -107,6 +108,7 @@ func (o *turnOrchestrator) continueUntilReady(ctx context.Context, turnErr error
 	initialAttempts := max(initial.Attempts, 1)
 	automaticTurns := 0
 	previousProgress := initial.ProgressKey
+	stalledTaskTurns := 0
 	for automaticTurns < budget {
 		var readinessErr *agent.FinalReadinessError
 		if !errors.As(turnErr, &readinessErr) || readinessErr == nil {
@@ -124,8 +126,20 @@ func (o *turnOrchestrator) continueUntilReady(ctx context.Context, turnErr error
 		if readinessContinuationBudget(readinessErr.ContinuationClass) == 0 {
 			return finalReadinessWithAttempts(turnErr, initialAttempts+automaticTurns)
 		}
-		if automaticTurns > 0 && !readinessMadeProgress(previousProgress, readinessErr.ProgressKey) {
-			return finalReadinessWithAttempts(turnErr, initialAttempts+automaticTurns)
+		if automaticTurns > 0 {
+			madeProgress := readinessMadeProgress(previousProgress, readinessErr.ProgressKey)
+			if initial.ContinuationClass == agent.ReadinessContinuationTaskProgress {
+				if madeProgress {
+					stalledTaskTurns = 0
+				} else {
+					stalledTaskTurns++
+				}
+				if stalledTaskTurns >= readinessTaskProgressStalls {
+					return finalReadinessWithAttempts(turnErr, initialAttempts+automaticTurns)
+				}
+			} else if !madeProgress {
+				return finalReadinessWithAttempts(turnErr, initialAttempts+automaticTurns)
+			}
 		}
 		todos := o.c.goalTodos()
 		if readinessErr.ContinuationClass == agent.ReadinessContinuationTaskProgress && o.c.executor != nil {
@@ -195,6 +209,9 @@ func readinessContinuationPrompt(todos []evidence.TodoItem, missing []string, re
 		}
 		b.WriteString("\n  Reconcile work already completed with todo_write; otherwise continue the remaining items.")
 		parts = append(parts, b.String())
+	}
+	if slices.Contains(missing, "task") {
+		parts = append(parts, "the last response explicitly deferred remaining implementation work; continue it now using tools instead of ending with another promise to act. If no work remains, verify that with tools and state the host-observed basis")
 	}
 	if reason = strings.TrimSpace(reason); reason != "" {
 		parts = append(parts, reason)

@@ -94,6 +94,56 @@ func TestStandardCurrentTaskTodoRequiresCompletionAfterMutation(t *testing.T) {
 	}
 }
 
+func TestStandardExplicitlyDeferredActionRequiresContinuationAfterMutation(t *testing.T) {
+	reg := tool.NewRegistry()
+	reg.Add(fakeTool{name: "write_file"})
+	prov := &scriptedProvider{name: "p", turns: [][]provider.Chunk{
+		{toolCallChunk("write", "write_file", `{"path":"main.go","content":"updated"}`), {Type: provider.ChunkDone}},
+		standardTaskTextTurn("main.go is updated. Next I will update functions.php."),
+	}}
+	a := New(prov, reg, NewSession(""), Options{}, event.Discard)
+
+	err := a.Run(standardTaskProgressContext(true), "update main.go")
+	var readinessErr *FinalReadinessError
+	if !errors.As(err, &readinessErr) {
+		t.Fatalf("Run error = %v, want FinalReadinessError", err)
+	}
+	if readinessErr.ContinuationClass != ReadinessContinuationTaskProgress {
+		t.Fatalf("ContinuationClass = %q, want task progress", readinessErr.ContinuationClass)
+	}
+	if !slices.Equal(readinessErr.Missing, []string{"task"}) {
+		t.Fatalf("Missing = %v, want deferred task only", readinessErr.Missing)
+	}
+}
+
+func TestStandardCompletedMutationMayEndWithoutTodo(t *testing.T) {
+	reg := tool.NewRegistry()
+	reg.Add(fakeTool{name: "write_file"})
+	prov := &scriptedProvider{name: "p", turns: [][]provider.Chunk{
+		{toolCallChunk("write", "write_file", `{"path":"main.go","content":"package main"}`), {Type: provider.ChunkDone}},
+		standardTaskTextTurn("Implemented the requested change."),
+	}}
+	a := New(prov, reg, NewSession(""), Options{}, event.Discard)
+
+	if err := a.Run(standardTaskProgressContext(true), "update main.go"); err != nil {
+		t.Fatalf("completed mutation returned %v", err)
+	}
+}
+
+func TestDirectAgentCallDoesNotInferDeferredTaskControl(t *testing.T) {
+	reg := tool.NewRegistry()
+	reg.Add(fakeTool{name: "write_file"})
+	prov := &scriptedProvider{name: "p", turns: [][]provider.Chunk{
+		{toolCallChunk("write", "write_file", `{"path":"login.php","content":"updated"}`), {Type: provider.ChunkDone}},
+		standardTaskTextTurn("Next I will update functions.php."),
+	}}
+	a := New(prov, reg, NewSession(""), Options{}, event.Discard)
+
+	if err := a.Run(context.Background(), "update login.php and functions.php"); err != nil {
+		t.Fatalf("direct Agent call opted into task continuation: %v", err)
+	}
+}
+
 func TestStandardCompletedOrClearedCurrentTodoMayEnd(t *testing.T) {
 	todoWrite, ok := tool.LookupBuiltin("todo_write")
 	if !ok {
