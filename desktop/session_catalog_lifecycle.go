@@ -71,7 +71,6 @@ func (a *App) runSessionCatalog(ctx context.Context, rebuild bool) {
 		if ctx.Err() != nil || a.shuttingDown.Load() {
 			return
 		}
-		target := target
 		reconcileGroup.Go(func() error {
 			if !rebuild {
 				if migrated := migrateLegacySessionsIntoGlobalTopics(target.Path); len(migrated) > 0 {
