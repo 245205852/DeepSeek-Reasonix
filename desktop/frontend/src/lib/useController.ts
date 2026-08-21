@@ -2305,6 +2305,7 @@ const deliveryRequirementKeys: Record<string, DictKey> = {
   signoff: "notice.deliveryRequirementSignoff",
   action: "notice.deliveryRequirementAction",
   mutation: "notice.deliveryRequirementMutation",
+  task: "notice.deliveryRequirementTask",
   capability: "notice.deliveryRequirementCapability",
 };
 
