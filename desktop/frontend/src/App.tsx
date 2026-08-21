@@ -168,6 +168,7 @@ import {
 } from "./store/layout";
 import { useOverlayStore } from "./store/overlays";
 import { hydrateDisplayMode } from "./lib/displayMode";
+import { recordFrontendDiagnostic } from "./lib/frontendDiagnosticBridge";
 import { DEFAULT_STATUS_BAR_ITEMS, normalizeStatusBarItems, type StatusBarItemId } from "./lib/statusBarItems";
 import { paletteSessionDisplayTitle, paletteSessionHint, paletteSessionKeywords, sessionActivityTime } from "./lib/session";
 import { enqueueNavigationRequest, type PendingNavigationRequest } from "./lib/openTopicCoalescing";
@@ -1118,9 +1119,11 @@ export default function App() {
   const [tabOrderIds, setTabOrderIds] = useState<string[]>([]);
   const [navigationSurfaceIntent, setNavigationSurfaceIntent] = useState<number | null>(null);
   const beginNavigationSurface = useCallback((intent: number) => {
+    recordFrontendDiagnostic("navigation", "navigation.begin", { phase: "begin" });
     flushSync(() => setNavigationSurfaceIntent(intent));
   }, []);
   const settleNavigationSurface = useCallback((intent: number) => {
+    recordFrontendDiagnostic("navigation", "navigation.settle", { phase: "settle" });
     setNavigationSurfaceIntent((current) => settleNavigationSurfaceIntent(current, intent));
   }, []);
   const [tabRevealSignal, setTabRevealSignal] = useState(0);
@@ -1204,6 +1207,10 @@ export default function App() {
   useEffect(() => {
     startTerminalEventBridge();
     const unsub = onEvent((e) => {
+      recordFrontendDiagnostic("runtime", "runtime.event", {
+        action: e.kind,
+        status: e.err ? "error" : "ok",
+      });
       if (e.kind === "turn_done") {
         setDockRefreshKey((v) => v + 1);
       }
@@ -1219,6 +1226,7 @@ export default function App() {
     // the first prompt after a rebuild. agent:ready fires when a (re)build
     // completes; clear that tab's keys (or all, for tab-less ready events).
     const unsubReady = onReady((readyTabId) => {
+      recordFrontendDiagnostic("runtime", "runtime.ready", { ready: true, hasActiveTab: Boolean(readyTabId) });
       clearAttentionChimeKeys(attentionChimeEvents.current, readyTabId);
       if (!readyTabId || readyTabId === workspaceScopeActiveTabRef.current) {
         setWorkspaceControllerEpoch((value) => value + 1);
@@ -1228,6 +1236,7 @@ export default function App() {
     // controller WITHOUT an agent:ready — they signal runtime:rebuilt instead
     // (a ready here would trigger a full session reload the UI already did).
     const unsubRebuilt = onRuntimeRebuilt((rebuiltTabId) => {
+      recordFrontendDiagnostic("runtime", "runtime.rebuilt", { ready: true, hasActiveTab: Boolean(rebuiltTabId) });
       clearAttentionChimeKeys(attentionChimeEvents.current, rebuiltTabId);
       if (!rebuiltTabId || rebuiltTabId === workspaceScopeActiveTabRef.current) {
         setWorkspaceControllerEpoch((value) => value + 1);
@@ -1239,6 +1248,13 @@ export default function App() {
       unsubRebuilt();
     };
   }, []);
+
+  useEffect(() => {
+    recordFrontendDiagnostic("app", "app.surface", {
+      hasActiveTab: Boolean(activeTabId),
+      tabCount: tabMetas.length,
+    });
+  }, [activeTabId, tabMetas.length]);
 
   const [workspacePanelResizing, setWorkspacePanelResizing] = useState(false);
   const [liveWorkspacePanelRenderWidth, setLiveWorkspacePanelRenderWidth] = useState<number | null>(null);
@@ -1654,6 +1670,18 @@ export default function App() {
   const composerSessionKey = useMemo(() => {
     return composerDraftKeyForTab(activeTab, activeTabId);
   }, [activeTab, activeTabId]);
+  const transcriptGeometrySessionKey = useMemo(() => {
+    const sessionPath = (activeTab?.sessionPath ?? state.meta?.sessionPath ?? "").trim();
+    const sessionGeneration = activeTab?.sessionGeneration ?? state.meta?.sessionGeneration ?? state.sessionGen;
+    if (sessionPath) return ["session", sessionPath, String(sessionGeneration ?? 0)].join("\u0000");
+    return [
+      "topic",
+      activeTab?.scope ?? "",
+      activeTab?.workspaceRoot ?? state.meta?.cwd ?? "",
+      activeTab?.topicId ?? "",
+      activeTabId ?? "",
+    ].join("\u0000");
+  }, [activeTab, activeTabId, state.meta?.cwd, state.meta?.sessionGeneration, state.meta?.sessionPath, state.sessionGen]);
   const workspaceScopeKey = [
     activeTabId ?? "",
     activeTab?.sessionPath ?? "",
@@ -1732,6 +1760,16 @@ export default function App() {
     !state.meta.startupErr &&
     !state.backendActivationPending &&
     !runtimeTransitioning;
+
+  useEffect(() => {
+    recordFrontendDiagnostic("app", "app.runtime-state", {
+      ready: controllerReady,
+      running: state.running,
+      hydrating: state.hydrating,
+      runtimeTransitioning,
+      contentRevision: state.historyLayoutRevision,
+    });
+  }, [controllerReady, runtimeTransitioning, state.hydrating, state.historyLayoutRevision, state.running]);
   // Single footer decision surface. Composer stays mounted underneath and is
   // only visually/a11y-hidden so per-session draft caches survive.
   const decisionSurface = useMemo((): DecisionSurfaceKind | null => {
@@ -3835,6 +3873,7 @@ export default function App() {
   [enqueueNavigation]);
 
   useEffect(() => onSessionRecovered(() => {
+    recordFrontendDiagnostic("runtime", "session.recovered", { status: "ok" });
     setProjectRevision((value) => value + 1);
     void refreshTabMetas(undefined, { afterMutation: true });
   }), [refreshTabMetas]);
@@ -4820,6 +4859,7 @@ export default function App() {
                   live={runtimeTransitioning ? undefined : state.live}
                   liveStore={liveStore}
                   tabId={activeTabId}
+                  geometrySessionKey={transcriptGeometrySessionKey}
                   footerHeight={footerHeight}
                   onPrompt={handleTranscriptPrompt}
                   onDeliveryContinue={() => void handleDeliveryContinue()}

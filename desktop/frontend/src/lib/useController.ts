@@ -19,6 +19,7 @@ import { foregroundRunningFromRuntimeMeta, type RuntimeMetaSnapshot } from "./ru
 import { aliasActivationRequest, noteActivationRequested, noteActivationSettled, noteActivationStarted } from "./sessionDiagnostics";
 import { applyLiveSegments, coalesceStreamDeltas, completeLiveReasoning, type StreamDeltaEntry, type StreamSegment } from "./streamDeltaBatch";
 import { getTranscriptStore } from "./transcriptStore";
+import { recordFrontendDiagnostic } from "./frontendDiagnosticBridge";
 import { uiPerfTracker } from "./uiPerf";
 import { getLocale, t, type DictKey } from "./i18n";
 import { applyHydrateErrorState, hydratePlaceholderItems as resolveHydratePlaceholders } from "./hydrateErrorState";
@@ -2818,6 +2819,13 @@ export function useController() {
     const unsubscribe = getTranscriptStore().subscribe(tabId, (change) => {
       if (!statesRef.current.has(tabId)) return;
       dispatchTo(tabId, { type: "history_items_patch", patches: change.patches });
+      const patchCount = Object.keys(change.patches).length;
+      if (patchCount > 0) {
+        recordFrontendDiagnostic("history", "history.items-patch", {
+          patchCount,
+          contentRevision: statesRef.current.get(tabId)?.historyLayoutRevision,
+        });
+      }
     });
     transcriptSubscriptions.current.set(tabId, unsubscribe);
   }, [dispatchTo]);

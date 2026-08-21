@@ -14,6 +14,7 @@ import { Markdown } from "./Markdown";
 import { ReasoningSummary } from "./ReasoningSummary";
 import { useReasoningDisplayMode } from "../lib/reasoningDisplayPreference";
 import { useTranscriptUserResizeIntent } from "./TranscriptLayoutIntentContext";
+import { resolveToolCardDefaultOpen } from "../lib/transcriptRowGeometry";
 
 type ToolItem = Extract<Item, { kind: "tool" }>;
 
@@ -216,8 +217,7 @@ export const ToolCard = memo(function ToolCard({ item, subcalls, tabId, displayN
   // also opens while streaming and closes on finish.
   const subagentReasoningRunning = sp?.phase === "reasoning";
   const liveFollow = reasoningDisplayMode === "auto" || reasoningDisplayMode === "expanded";
-  const keepSubagentReasoningExpanded = reasoningDisplayMode === "expanded" && Boolean(sp?.reasoning);
-  const defaultOpen = (hasNested && item.status === "running") || (liveFollow && subagentReasoningRunning) || keepSubagentReasoningExpanded;
+  const defaultOpen = resolveToolCardDefaultOpen(item, nested.length, reasoningDisplayMode);
   const [userOpen, setUserOpen] = useState<boolean | null>(null);
   const open = userOpen ?? defaultOpen;
   const openRef = useRef(open);
@@ -331,7 +331,12 @@ export const ToolCard = memo(function ToolCard({ item, subcalls, tabId, displayN
   useCollapseAnimation(toolBodyRef, open);
 
   return (
-    <div className={`tool${quiet ? " tool--quiet" : ""}${isSubagent ? " tool--subagent" : ""}${open && hasBody ? " tool--open" : ""}`} data-entrance={item.id} data-shell={isShellCard ? execution?.shell || "bash" : undefined}>
+    <div
+      className={`tool${quiet ? " tool--quiet" : ""}${isSubagent ? " tool--subagent" : ""}${open && hasBody ? " tool--open" : ""}`}
+      data-entrance={item.id}
+      data-shell={isShellCard ? execution?.shell || "bash" : undefined}
+      data-transcript-layout-variant={open && hasBody ? "tool-expanded" : "tool-collapsed"}
+    >
       <button
         type="button"
         className="tool__head"
