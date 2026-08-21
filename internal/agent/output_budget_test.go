@@ -21,6 +21,52 @@ type sharedWindowTestProvider struct {
 	finish string
 }
 
+type outputLimitRetryProvider struct {
+	calls []provider.Request
+}
+
+func (*outputLimitRetryProvider) Name() string { return "output-limit-retry" }
+
+func (p *outputLimitRetryProvider) Stream(_ context.Context, req provider.Request) (<-chan provider.Chunk, error) {
+	p.calls = append(p.calls, req)
+	if len(p.calls) == 1 {
+		return nil, &provider.OutputLimitError{
+			APIError:        &provider.APIError{Status: 400, Body: "max_tokens is too large"},
+			RequestedTokens: req.MaxTokens,
+			MaxOutputTokens: 131_072,
+		}
+	}
+	ch := make(chan provider.Chunk, 2)
+	ch <- provider.Chunk{Type: provider.ChunkText, Text: "ok"}
+	ch <- provider.Chunk{Type: provider.ChunkDone}
+	close(ch)
+	return ch, nil
+}
+
+func TestStreamProviderRequestRetriesOutputLimitBeforeAnyOutput(t *testing.T) {
+	prov := &outputLimitRetryProvider{}
+	a := &Agent{svc: agentServices{prov: prov}, sess: sessionRuntime{}}
+	ch, err := a.streamProviderRequest(context.Background(), provider.Request{MaxTokens: 384_000})
+	if err != nil {
+		t.Fatalf("streamProviderRequest: %v", err)
+	}
+	var text string
+	for chunk := range ch {
+		if chunk.Type == provider.ChunkText {
+			text += chunk.Text
+		}
+		if chunk.Type == provider.ChunkError {
+			t.Fatalf("retry stream emitted error: %v", chunk.Err)
+		}
+	}
+	if text != "ok" || len(prov.calls) != 2 || prov.calls[1].MaxTokens != 131_072 {
+		t.Fatalf("retry calls = %+v, text=%q", prov.calls, text)
+	}
+	if got := a.learnedCompletionBudget(); got != 131_072 {
+		t.Fatalf("learned completion budget = %d, want 131072", got)
+	}
+}
+
 func (*sharedWindowTestProvider) Name() string { return "shared-window-test" }
 
 func (p *sharedWindowTestProvider) Stream(_ context.Context, req provider.Request) (<-chan provider.Chunk, error) {

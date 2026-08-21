@@ -120,8 +120,11 @@ for (const path of localeChunks) {
   // Recovery-copy and catalog-only sidebar labels can move the simplified
   // Chinese chunk across the rounded 55.9 KiB boundary on CI's Node/zlib;
   // retain a narrow 0.1 KiB headroom rather than making gzip output a
-  // platform-dependent gate.
-  const budget = name.startsWith("zh-TW-") ? 56.6 * 1024 : 56.0 * 1024;
+  // platform-dependent gate. The OpenCode one-key setup adds product-level
+  // connection, fallback, and legacy-state copy while removing protocol
+  // choices from the primary UI; keep that complete guidance with a bounded
+  // 0.4–0.5 KiB locale-only ratchet.
+  const budget = name.startsWith("zh-TW-") ? 57.1 * 1024 : 56.4 * 1024;
   assertBudget(`${name} gzip`, gzipBytes(path), budget);
 }
 

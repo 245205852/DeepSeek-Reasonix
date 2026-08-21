@@ -141,6 +141,21 @@ func contextBudgetPolicyOf(p provider.Provider) provider.ContextBudgetPolicy {
 	return provider.ResolveContextBudgetPolicy(p)
 }
 
+func (a *Agent) learnOutputBudget(limit int) {
+	if a == nil || limit <= 0 {
+		return
+	}
+	current := a.sess.output.learned.Load()
+	if current != nil && current.completionBudget > 0 && current.completionBudget <= limit {
+		return
+	}
+	learned := &learnedContextBudget{completionBudget: limit}
+	if current != nil {
+		learned.windowTokens = current.windowTokens
+	}
+	a.sess.output.learned.Store(learned)
+}
+
 func sharedWindowInputPolicyOf(p provider.Provider) provider.SharedWindowInputPolicy {
 	if nilutil.IsNil(p) {
 		return provider.SharedWindowInputPolicy{}
@@ -407,6 +422,14 @@ func (a *Agent) admitOutputBudget(req provider.Request) (contextAdmission, error
 	}
 	if policy.AutoOutputTokens <= 0 && a.learnedCompletionBudget() > 0 {
 		policy.AutoOutputTokens = a.learnedCompletionBudget()
+	}
+	if learned := a.learnedCompletionBudget(); learned > 0 {
+		if policy.AutoOutputTokens <= 0 || learned < policy.AutoOutputTokens {
+			policy.AutoOutputTokens = learned
+		}
+		if policy.MaxOutputTokens <= 0 || learned < policy.MaxOutputTokens {
+			policy.MaxOutputTokens = learned
+		}
 	}
 	adm.WindowMode = policy.WindowMode.String()
 	adm.LimitMode = policy.LimitMode.String()
