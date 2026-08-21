@@ -51,13 +51,17 @@ globalThis.requestAnimationFrame = dom.window.requestAnimationFrame.bind(dom.win
 globalThis.cancelAnimationFrame = dom.window.cancelAnimationFrame.bind(dom.window);
 window.scrollTo = () => {};
 
-function renderPicker(candidates: string[], visionCapability: "configurable" | "unsupported" = "configurable") {
+function renderPicker(
+  candidates: string[],
+  visionCapability: "configurable" | "unsupported" = "configurable",
+  visionModels: string[] = [],
+) {
   return (
     <LocaleProvider>
       <ProviderEditorModelPicker
         candidates={candidates}
         selectedModels={[]}
-        visionModels={[]}
+        visionModels={visionModels}
         visionCapability={visionCapability}
         contextWindows={{}}
         disabled={false}
@@ -101,6 +105,12 @@ await act(async () => {
 });
 ok(rootEl.textContent?.includes("No image input") === true, "known text-only DeepSeek models show a read-only image capability");
 ok(rootEl.querySelectorAll('input[type="checkbox"]').length === 1, "text-only model card does not render a second image checkbox");
+await act(async () => {
+  root.render(renderPicker(["deepseek-v4-flash-vision-exp"], "unsupported", ["deepseek-v4-flash-vision-exp"]));
+  await flushPromises();
+});
+ok(rootEl.textContent?.includes("No image input") !== true, "pinned DeepSeek vision SKU does not show the text-only image label");
+ok(rootEl.querySelectorAll('input[type="checkbox"]').length === 1, "pinned DeepSeek vision SKU does not render a configurable image checkbox");
 ok(providerSupportsServerWebSearch("responses", "https://api.deepseek.com"), "DeepSeek Responses exposes server-side web search");
 ok(providerSupportsServerWebSearch("anthropic", "https://api.deepseek.com/anthropic"), "DeepSeek Anthropic exposes server-side web search");
 ok(!providerSupportsServerWebSearch("openai", "https://api.deepseek.com"), "DeepSeek Chat Completions does not expose server-side web search");

@@ -28,6 +28,7 @@ import (
 	"reasonix/internal/config"
 	"reasonix/internal/control"
 	"reasonix/internal/provider"
+	"reasonix/internal/provider/openai"
 	"reasonix/internal/sandbox"
 )
 
@@ -649,7 +650,9 @@ func providerViewFromEntryForRootWithResolverAndCredentials(p config.ProviderEnt
 	models := p.ChatModelList()
 	visionModels := p.VisionModels
 	visionModelsSet := p.Vision || p.VisionModels != nil
-	if p.Vision {
+	if openai.IsDeepSeek(p.BaseURL) {
+		visionModels, visionModelsSet = config.OfficialDeepSeekPinnedVisionModels(models), true
+	} else if p.Vision {
 		visionModels = models
 	}
 	if resolver == nil {
@@ -2488,7 +2491,9 @@ func saveProviderConfig(c *config.Config, p ProviderView) error {
 		e.Model = models[0] // also satisfies validateProvider's model requirement
 		e.Models = models
 		e.ModelOverrides = providerModelOverridesForSave(p.ModelOverrides, models)
-		if p.VisionModelsSet || len(p.VisionModels) > 0 {
+		if openai.IsDeepSeek(e.BaseURL) {
+			e.Vision, e.VisionModels = false, config.OfficialDeepSeekPinnedVisionModels(models)
+		} else if p.VisionModelsSet || len(p.VisionModels) > 0 {
 			e.Vision = false
 			e.VisionModels = providerVisionModels(models, p.VisionModels)
 		}
@@ -2597,7 +2602,9 @@ func applyProviderModelCatalogUpdate(c *config.Config, update ProviderModelCatal
 		next.Default = providerDefaultForModels(update.Default, models)
 	}
 	next.Vision = false
-	if visionConfigured {
+	if openai.IsDeepSeek(next.BaseURL) {
+		next.VisionModels = config.OfficialDeepSeekPinnedVisionModels(models)
+	} else if visionConfigured {
 		next.VisionModels = providerVisionModels(models, update.VisionModels)
 	} else {
 		next.VisionModels = nil

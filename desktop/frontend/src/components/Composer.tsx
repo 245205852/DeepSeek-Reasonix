@@ -2023,9 +2023,13 @@ export function Composer({
   const planModeOn = collaborationMode === "plan";
   const activeGoal = (goal ?? "").trim();
   const goalModeOn = collaborationMode === "goal";
-  const warnImageInputFallback = useCallback((message = t("composer.imageInputUnsupported")) => {
-    showToast(message, "warn");
-  }, [showToast, t]);
+  const warnImageInputFallback = useCallback((message?: string) => {
+    const text = message
+      ?? (modelLabel.toLowerCase().includes("deepseek")
+        ? t("composer.imageInputUnsupportedDeepSeek")
+        : t("composer.imageInputUnsupported"));
+    showToast(text, "warn");
+  }, [modelLabel, showToast, t]);
 
   const submit = async () => {
     if (disabled || (!running && submitDisabled) || readOnly) return;

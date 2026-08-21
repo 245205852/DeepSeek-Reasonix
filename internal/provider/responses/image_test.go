@@ -9,6 +9,64 @@ import (
 	"reasonix/internal/provider"
 )
 
+func TestOfficialDeepSeekVisionSKUEmbedsUserImages(t *testing.T) {
+	c := New(Config{
+		Name: "deepseek", BaseURL: "https://api.deepseek.com", Model: "deepseek-v4-flash-vision-exp",
+	}).(*client)
+	if !c.vision {
+		t.Fatal("pinned official DeepSeek vision SKU must enable user image serialization")
+	}
+	body, _, _ := c.buildRequestBody(provider.Request{Messages: []provider.Message{{
+		Role: provider.RoleUser, Content: "what is this",
+		Images: []string{"data:image/png;base64,AAAA"},
+	}}})
+	items := body["input"].([]map[string]any)
+	parts, ok := items[0]["content"].([]map[string]string)
+	if !ok || len(parts) != 2 || parts[0]["type"] != "input_text" || parts[1]["type"] != "input_image" {
+		t.Fatalf("vision SKU content = %#v, want input_text + input_image", items[0]["content"])
+	}
+	textOnly, _, _ := c.buildRequestBody(provider.Request{Messages: []provider.Message{{
+		Role: provider.RoleUser, Content: "hello",
+	}}})
+	if got, ok := textOnly["input"].([]map[string]any)[0]["content"].(string); !ok || got != "hello" {
+		t.Fatalf("vision SKU text-only content = %#v, want a string", textOnly["input"].([]map[string]any)[0]["content"])
+	}
+}
+
+func TestOfficialDeepSeekVisionSKUOmitsToolImages(t *testing.T) {
+	c := New(Config{
+		Name: "deepseek", BaseURL: "https://api.deepseek.com", Model: "deepseek-v4-flash-vision-exp",
+		Extra: map[string]any{"vision": true},
+	}).(*client)
+	plain := []provider.Message{
+		{Role: provider.RoleUser, Content: "inspect"},
+		{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{{ID: "c1", Name: "shot", Arguments: "{}"}}},
+		{Role: provider.RoleTool, ToolCallID: "c1", Name: "shot", Content: "vision result"},
+	}
+	withToolImage := append([]provider.Message(nil), plain...)
+	withToolImage[2].Images = []string{"data:image/png;base64,VE9PTA=="}
+	plainBody, err := json.Marshal(mustRequest(t, c, plain))
+	if err != nil {
+		t.Fatalf("marshal plain: %v", err)
+	}
+	imageBody, err := json.Marshal(mustRequest(t, c, withToolImage))
+	if err != nil {
+		t.Fatalf("marshal image: %v", err)
+	}
+	if strings.Contains(string(imageBody), "VE9PTA") {
+		t.Fatalf("official DeepSeek vision SKU leaked tool image payload: %s", imageBody)
+	}
+	if !bytes.Equal(imageBody, plainBody) {
+		t.Fatalf("tool images changed official DeepSeek vision SKU bytes:\nplain: %s\nimage: %s", plainBody, imageBody)
+	}
+}
+
+func mustRequest(t *testing.T, c *client, messages []provider.Message) map[string]any {
+	t.Helper()
+	body, _, _ := c.buildRequestBody(provider.Request{Messages: messages})
+	return body
+}
+
 func TestOfficialDeepSeekResponsesImageMetadataMatchesTextOnlyWireBytes(t *testing.T) {
 	c := New(Config{
 		Name: "deepseek", BaseURL: "https://api.deepseek.com", Model: "deepseek-v4-flash",

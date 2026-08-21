@@ -810,6 +810,7 @@ export const en = {
   "composer.attachDropFailed": "Dropped file attach failed",
   "composer.pasteImageFailed": "Could not read clipboard image",
   "composer.imageInputUnsupported": "Current model will not receive images directly. Use an image-capable model or an OCR/vision MCP tool to inspect the attached path.",
+  "composer.imageInputUnsupportedDeepSeek": "Current model will not receive images directly. Switch to deepseek-v4-flash-vision-exp, or use an OCR/vision MCP tool to inspect the attached path.",
   "composer.contextItems": "Context items",
   "composer.selectedText": "Chat selection",
   "composer.selectedCode": "Code selection",

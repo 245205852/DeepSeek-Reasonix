@@ -162,6 +162,75 @@ func TestOfficialDeepSeekDoesNotInjectToolResultImages(t *testing.T) {
 	}
 }
 
+func TestOfficialDeepSeekVisionSKUEmbedsUserImages(t *testing.T) {
+	p, err := New(provider.Config{
+		Name:    "deepseek",
+		BaseURL: "https://api.deepseek.com",
+		Model:   OfficialDeepSeekVisionModel,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	c := p.(*client)
+	if !c.vision {
+		t.Fatal("pinned official DeepSeek vision SKU must enable user image serialization")
+	}
+	req := c.buildRequest(provider.Request{Messages: []provider.Message{{
+		Role: provider.RoleUser, Content: "describe",
+		Images: []string{"data:image/png;base64,AAAA"},
+	}}})
+	parts, ok := req.Messages[0].Content.([]chatContentPart)
+	if !ok || len(parts) != 2 || parts[0].Type != "text" || parts[1].Type != "image_url" {
+		t.Fatalf("vision SKU user content = %#v, want [text, image_url]", req.Messages[0].Content)
+	}
+	if parts[1].ImageURL == nil || parts[1].ImageURL.URL != "data:image/png;base64,AAAA" {
+		t.Fatalf("image_url = %+v", parts[1].ImageURL)
+	}
+
+	textOnly := c.buildRequest(provider.Request{Messages: []provider.Message{{
+		Role: provider.RoleUser, Content: "hello",
+	}}})
+	if s, ok := textOnly.Messages[0].Content.(string); !ok || s != "hello" {
+		t.Fatalf("vision SKU text-only content = %#v, want a string", textOnly.Messages[0].Content)
+	}
+}
+
+func TestOfficialDeepSeekVisionSKUOmitsToolImages(t *testing.T) {
+	p, err := New(provider.Config{
+		Name:    "deepseek",
+		BaseURL: "https://api.deepseek.com",
+		Model:   OfficialDeepSeekVisionModel,
+		Extra:   map[string]any{"vision": true},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	plain := []provider.Message{
+		{Role: provider.RoleUser, Content: "take a screenshot"},
+		{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{{
+			ID: "c1", Name: "shot", Arguments: "{}",
+		}}},
+		{Role: provider.RoleTool, ToolCallID: "c1", Name: "shot", Content: "[image: image/png]"},
+	}
+	withToolImage := append([]provider.Message(nil), plain...)
+	withToolImage[2].Images = []string{"data:image/png;base64,AAAA"}
+	c := p.(*client)
+	body, err := json.Marshal(c.buildRequest(provider.Request{Messages: withToolImage}))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(body), "base64,AAAA") {
+		t.Fatalf("official DeepSeek vision SKU leaked tool image payload: %s", body)
+	}
+	plainBody, err := json.Marshal(c.buildRequest(provider.Request{Messages: plain}))
+	if err != nil {
+		t.Fatalf("marshal plain: %v", err)
+	}
+	if !bytes.Equal(body, plainBody) {
+		t.Fatalf("tool images changed official DeepSeek vision SKU bytes:\nplain: %s\nimage: %s", plainBody, body)
+	}
+}
+
 func TestCustomDeepSeekProtocolGatewayPreservesExplicitVision(t *testing.T) {
 	p, err := New(provider.Config{
 		Name:    "deepseek-gateway",

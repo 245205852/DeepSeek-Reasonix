@@ -811,6 +811,7 @@ export const zh: Record<DictKey, string> = {
   "composer.attachDropFailed": "拖放文件附加失败",
   "composer.pasteImageFailed": "未能读取剪贴板图片",
   "composer.imageInputUnsupported": "当前模型不会直接接收图片。可切换到支持图片的模型，或让 OCR/识图 MCP 工具读取附件路径。",
+  "composer.imageInputUnsupportedDeepSeek": "当前模型不会直接接收图片。请切换到 deepseek-v4-flash-vision-exp，或让 OCR/识图 MCP 工具读取附件路径。",
   "composer.contextItems": "上下文项目",
   "composer.selectedText": "聊天选区",
   "composer.selectedCode": "代码选区",

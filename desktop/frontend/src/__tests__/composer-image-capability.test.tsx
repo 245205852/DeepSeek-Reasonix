@@ -271,7 +271,7 @@ console.log("\ncomposer image capability");
   });
 
   eq(sent.length, 1, "switching to a text-only model still sends the image ref for tool use");
-  ok(toastText().includes("will not receive images directly"), "text-only send warns about direct image input without blocking");
+  ok(toastText().includes("deepseek-v4-flash-vision-exp"), "text-only DeepSeek send names the official vision SKU");
   eq(document.querySelector(".composer__prompt") === null, true, "image-input warning does not render inside the composer layout");
   ok(sent[0]?.submit?.includes("@.reasonix/attachments/mock.png") === true, "submitted text retains the local image attachment ref");
 

@@ -4957,7 +4957,7 @@ function ProvidersSection({ s, busy, apply }: SectionProps) {
     const selected = mergedFetchedProviderModels(p.models, fetched, { preserveCurated: true });
     const visionCapability = providerVisionCapabilityForView(p);
     const visionSource = visionCapability === "unsupported"
-      ? []
+      ? p.visionModels
       : (p.visionModelsConfigured ? p.visionModels : inferredVisionModels(candidates));
     return {
       providerName: p.name,
@@ -5116,7 +5116,7 @@ function ProvidersSection({ s, busy, apply }: SectionProps) {
       await app.SaveProvider({
         ...provider,
         models,
-        visionModels: draft.visionCapability === "unsupported" ? [] : visionModels,
+        visionModels,
         visionModelsConfigured: true,
         default: providerDefaultModel(provider.default, models),
       });
@@ -6101,7 +6101,7 @@ function ProviderModelDraftPicker({
               ) : (
                 <div className="provider-model-draft__capabilities" aria-label={t("settings.modelCapabilitiesAria", { model })}>
                   <span>{t("settings.textInput")}</span>
-                  <span>{t("settings.imageInputUnsupported")}</span>
+                  <span>{vision.has(model) ? t("settings.visionModel") : t("settings.imageInputUnsupported")}</span>
                 </div>
               )}
             </div>
@@ -6477,7 +6477,7 @@ export const ProviderEditorModelPicker = memo(function ProviderEditorModelPicker
               ) : (
                 <div className="provider-model-draft__capabilities" aria-label={t("settings.modelCapabilitiesAria", { model })}>
                   <span>{t("settings.textInput")}</span>
-                  <span>{t("settings.imageInputUnsupported")}</span>
+                  <span>{vision.has(model) ? t("settings.visionModel") : t("settings.imageInputUnsupported")}</span>
                 </div>
               )}
               <div className="provider-model-draft__context-field">

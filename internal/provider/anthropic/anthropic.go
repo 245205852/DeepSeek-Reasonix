@@ -110,10 +110,11 @@ func New(cfg provider.Config) (provider.Provider, error) {
 	effort, _ := cfg.Extra["effort"].(string)
 	effort = strings.ToLower(strings.TrimSpace(effort))
 	vision, _ := cfg.Extra["vision"].(bool)
-	// DeepSeek's official Anthropic-compatible endpoint is text-only. Enforce
-	// that wire constraint here as defense in depth, independent of config or
-	// extension capability metadata.
-	vision = vision && !officialDeepSeek
+	// Official DeepSeek image input is pinned to one SKU. Ignore Extra["vision"]
+	// so stale config cannot send image blocks to Flash/Pro.
+	if officialDeepSeek {
+		vision = openai.IsOfficialDeepSeekVisionModel(cfg.Model)
+	}
 	webSearch, _ := cfg.Extra["web_search"].(bool)
 	headers, _ := cfg.Extra["headers"].(map[string]string)
 	authHeader, _ := cfg.Extra["auth_header"].(bool)
@@ -371,7 +372,7 @@ func (c *client) buildRequest(ctx context.Context, req provider.Request) anthReq
 				content = "(no output)" // tool_result content must be non-empty
 			}
 			block := contentBlock{Type: "tool_result", ToolUseID: m.ToolCallID, Content: content}
-			if c.vision {
+			if c.vision && !c.deepseek {
 				if blocks := toolResultBlocks(content, m.Images); blocks != nil {
 					block.Content = blocks
 				}
