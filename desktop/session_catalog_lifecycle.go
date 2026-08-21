@@ -63,8 +63,8 @@ func (a *App) runSessionCatalog(ctx context.Context, rebuild bool) {
 	targets = a.sessionCatalogTargets()
 	history.RegisterCatalogRoots(historyCatalogRoots(targets))
 	a.indexRestoredSessionPaths(ctx, catalog)
-	// Directory scans are independent and internally resumable. Keep startup
-	// bounded so a project with many roots cannot monopolize the catalog worker.
+	// Directory scans are independent and internally batched/resumable; keep
+	// startup work bounded so a large project set cannot starve the UI.
 	var reconcileGroup errgroup.Group
 	reconcileGroup.SetLimit(4)
 	for _, target := range targets {
@@ -109,6 +109,9 @@ func (a *App) runSessionCatalogRefreshLoop(ctx context.Context, catalog *session
 					}
 				}
 				catalog.RequestReconcile(target)
+				// Count sweep rides the periodic reconcile tick; it only moves
+				// provably redundant copies into the recoverable trash.
+				a.sweepExcessRecoveryCopies(catalog, target)
 			}
 		case <-ctx.Done():
 			return

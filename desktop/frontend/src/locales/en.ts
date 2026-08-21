@@ -1291,6 +1291,7 @@ export const en = {
   "projectTree.removeFromGroup": "Remove from group",
   "projectTree.pinTopic": "Pin conversation",
   "projectTree.unpinTopic": "Unpin conversation",
+  "projectTree.recoveryCopies": "Recovery copies ×{count}",
   "projectTree.archiveTopic": "Archive to trash",
   "projectTree.archiveConversation": "Archive conversation",
   "projectTree.renameProject": "Rename display name",

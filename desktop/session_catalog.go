@@ -49,19 +49,14 @@ func (observer desktopSessionCatalogPersistObserver) EnqueueSessionPersist(event
 }
 
 type SessionCatalogStatus struct {
-	State                string `json:"state"`
-	Mode                 string `json:"mode"`
-	Revision             uint64 `json:"revision"`
-	Indexed              int64  `json:"indexed"`
-	Total                int64  `json:"total"`
-	RepairPending        int64  `json:"repairPending"`
-	RepairReason         string `json:"repairReason,omitempty"`
-	SourceCount          int64  `json:"sourceCount"`
-	UnindexedTargetCount int64  `json:"unindexedTargetCount"`
-	LastRepairAt         int64  `json:"lastRepairAt,omitempty"`
-	CanRebuild           bool   `json:"canRebuild"`
-	LastError            string `json:"lastError,omitempty"`
-	QuarantinedPath      string `json:"quarantinedPath,omitempty"`
+	State           string `json:"state"`
+	Mode            string `json:"mode"`
+	Revision        uint64 `json:"revision"`
+	Indexed         int64  `json:"indexed"`
+	Total           int64  `json:"total"`
+	RepairPending   int64  `json:"repairPending"`
+	LastError       string `json:"lastError,omitempty"`
+	QuarantinedPath string `json:"quarantinedPath,omitempty"`
 }
 
 type ProjectTreeSnapshot struct {
@@ -147,10 +142,6 @@ func sessionCatalogStatus(status sessioncatalog.Status) SessionCatalogStatus {
 		Indexed:         status.Indexed,
 		Total:           status.Total,
 		RepairPending:   status.RepairPending,
-		RepairReason:    status.RepairReason,
-		SourceCount:     status.SourceCount,
-		LastRepairAt:    status.LastRepairAt,
-		CanRebuild:      true,
 		LastError:       status.LastError,
 		QuarantinedPath: status.QuarantinedPath,
 	}
@@ -161,20 +152,12 @@ func (a *App) currentSessionCatalogStatus() SessionCatalogStatus {
 		return SessionCatalogStatus{State: string(sessioncatalog.StateDegraded), Mode: string(sessioncatalog.ModeMemory)}
 	}
 	if a.catalogRebuilding.Load() {
-		return SessionCatalogStatus{State: string(sessioncatalog.StateRebuilding), CanRebuild: false}
+		return SessionCatalogStatus{State: string(sessioncatalog.StateRebuilding)}
 	}
 	if catalog := a.sessionCatalog.Load(); catalog != nil {
-		out := sessionCatalogStatus(catalog.Status())
-		ctx, cancel := context.WithTimeout(a.bootContext(), 2*time.Second)
-		defer cancel()
-		for _, target := range a.sessionCatalogTargets() {
-			if !catalog.DirectoryScanReady(ctx, target.Path) {
-				out.UnindexedTargetCount++
-			}
-		}
-		return out
+		return sessionCatalogStatus(catalog.Status())
 	}
-	return SessionCatalogStatus{State: string(sessioncatalog.StateOpening), CanRebuild: true}
+	return SessionCatalogStatus{State: string(sessioncatalog.StateOpening)}
 }
 
 func (a *App) startSessionCatalog(rebuild bool) {
@@ -464,6 +447,9 @@ func (a *App) runSessionCatalogReconcile(key string, done chan struct{}) {
 		if err := catalog.ReconcileDirectory(a.bootContext(), target); err != nil && !errors.Is(err, context.Canceled) {
 			slog.Debug("desktop: reconcile session catalog", "path", target.Path, "err", err)
 		}
+		// The count sweep rides the reconcile worker; every move re-proves
+		// coverage from disk, so a stale projection after a failed scan is safe.
+		a.sweepExcessRecoveryCopies(catalog, target)
 
 		a.catalogReconcileMu.Lock()
 		job = a.catalogReconcileJobs[key]

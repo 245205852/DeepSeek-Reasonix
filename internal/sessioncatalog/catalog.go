@@ -425,6 +425,10 @@ func (c *Catalog) upsertSessionsWithNotification(ctx context.Context, records []
 		if record.TopicID != "" {
 			affected[TopicKey{Scope: record.Scope, WorkspaceRoot: record.WorkspaceRoot, TopicID: record.TopicID}] = struct{}{}
 		}
+		if err := updateFoldedTopicTombstones(ctx, tx, previous, record, c.opts.Now().UnixMilli()); err != nil {
+			_ = tx.Rollback()
+			return err
+		}
 		roots[record.WorkspaceRoot] = struct{}{}
 	}
 	for key := range affected {

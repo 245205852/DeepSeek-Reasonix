@@ -163,7 +163,7 @@
       "file-size": 265
     },
     "desktop/frontend/src/lib/types.ts": {
-      "file-size": 1603
+      "file-size": 1604
     },
     "desktop/frontend/src/lib/useController.ts": {
       "file-size": 4035
@@ -232,7 +232,9 @@
       "essay": 1
     },
     "desktop/session_catalog_runtime.go": {
-      "essay": 2
+      "complexity": 1,
+      "essay": 2,
+      "file-size": 2
     },
     "desktop/session_key_test.go": {
       "essay": 3
