@@ -5311,7 +5311,7 @@ type ProviderTemplateChoice =
 function providerTemplateCanAdd(choice: ProviderTemplateChoice | undefined): boolean {
   if (!choice) return false;
   if (choice.source === "official") return !choice.added;
-  return choice.status !== "installed" && choice.status !== "installed_modified" && choice.status !== "name_conflict";
+  return choice.status === "installed_modified" ? choice.missingProviderNames.length > 0 : choice.status !== "installed" && choice.status !== "name_conflict";
 }
 
 function providerTemplateStatusBadge(choice: ProviderTemplateChoice, t: ReturnType<typeof useT>): string {
@@ -5327,7 +5327,7 @@ function providerTemplateStatusBadge(choice: ProviderTemplateChoice, t: ReturnTy
 function providerTemplateActionLabel(choice: ProviderTemplateChoice | undefined, t: ReturnType<typeof useT>): string {
   if (!choice) return t("settings.addProvider.confirm");
   if (choice.source === "preset" && choice.status === "name_conflict") return t("settings.addProvider.nameConflictAction");
-  if (choice.source === "preset" && choice.status === "partial") return t("settings.addProvider.completeBundleAction");
+  if (choice.source === "preset" && (choice.status === "partial" || (choice.status === "installed_modified" && choice.missingProviderNames.length > 0))) return t("settings.addProvider.completeBundleAction");
   if (!providerTemplateCanAdd(choice)) return t("settings.addProvider.alreadyAddedAction");
   return t("settings.addProvider.confirm");
 }
@@ -5573,7 +5573,7 @@ export function AddProviderPanel({
     const badge = providerTemplateStatusBadge(choice, t);
     const recommendationBadge = choice.source === "preset" && choice.recommended ? t("settings.recommended") : "";
     const conflictProviderName = providerTemplateConflictProviderName(choice);
-    if (choice.source === "preset" && (choice.status === "name_conflict" || choice.status === "installed_modified")) {
+    if (choice.source === "preset" && (choice.status === "name_conflict" || (choice.status === "installed_modified" && choice.missingProviderNames.length === 0))) {
       return (
         <div
           key={choice.id}

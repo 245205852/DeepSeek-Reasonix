@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"reasonix/internal/event"
 	"reasonix/internal/provider"
@@ -23,6 +24,14 @@ type sharedWindowTestProvider struct {
 
 type outputLimitRetryProvider struct {
 	calls []provider.Request
+}
+
+type namedOutputBudgetProvider struct{ name string }
+
+func (p *namedOutputBudgetProvider) Name() string { return p.name }
+
+func (*namedOutputBudgetProvider) Stream(context.Context, provider.Request) (<-chan provider.Chunk, error) {
+	return nil, errors.New("unused")
 }
 
 func (*outputLimitRetryProvider) Name() string { return "output-limit-retry" }
@@ -50,20 +59,72 @@ func TestStreamProviderRequestRetriesOutputLimitBeforeAnyOutput(t *testing.T) {
 	if err != nil {
 		t.Fatalf("streamProviderRequest: %v", err)
 	}
-	var text string
+	var text strings.Builder
 	for chunk := range ch {
 		if chunk.Type == provider.ChunkText {
-			text += chunk.Text
+			text.WriteString(chunk.Text)
 		}
 		if chunk.Type == provider.ChunkError {
 			t.Fatalf("retry stream emitted error: %v", chunk.Err)
 		}
 	}
-	if text != "ok" || len(prov.calls) != 2 || prov.calls[1].MaxTokens != 131_072 {
-		t.Fatalf("retry calls = %+v, text=%q", prov.calls, text)
+	if text.String() != "ok" || len(prov.calls) != 2 || prov.calls[1].MaxTokens != 131_072 {
+		t.Fatalf("retry calls = %+v, text=%q", prov.calls, text.String())
 	}
 	if got := a.learnedCompletionBudget(); got != 131_072 {
 		t.Fatalf("learned completion budget = %d, want 131072", got)
+	}
+}
+
+func TestLearnedOutputBudgetCacheIsScopedToProviderRouteAndModel(t *testing.T) {
+	providerName := "output-budget-cache-provider-unique"
+	modelRef := "opencode-go/deepseek-v4-flash-cache-unique"
+	first := &Agent{
+		agentConfig: agentConfig{modelRef: modelRef},
+		svc:         agentServices{prov: &namedOutputBudgetProvider{name: providerName}},
+		sess:        sessionRuntime{},
+	}
+	first.learnOutputBudget(131_072)
+
+	sameModel := &Agent{
+		agentConfig: agentConfig{modelRef: modelRef},
+		svc:         agentServices{prov: &namedOutputBudgetProvider{name: providerName}},
+		sess:        sessionRuntime{},
+	}
+	if got := sameModel.learnedCompletionBudget(); got != 131_072 {
+		t.Fatalf("same provider/route/model budget = %d, want 131072", got)
+	}
+
+	differentRoute := &Agent{
+		agentConfig: agentConfig{modelRef: modelRef},
+		svc:         agentServices{prov: &namedOutputBudgetProvider{name: providerName + "-responses"}},
+		sess:        sessionRuntime{},
+	}
+	if got := differentRoute.learnedCompletionBudget(); got != 0 {
+		t.Fatalf("different route inherited budget %d", got)
+	}
+
+	differentModel := &Agent{
+		agentConfig: agentConfig{modelRef: modelRef + "-other"},
+		svc:         agentServices{prov: &namedOutputBudgetProvider{name: providerName}},
+		sess:        sessionRuntime{},
+	}
+	if got := differentModel.learnedCompletionBudget(); got != 0 {
+		t.Fatalf("different model inherited budget %d", got)
+	}
+
+	key := outputBudgetCacheKey(first)
+	learnedOutputBudgetCache.Lock()
+	entry := learnedOutputBudgetCache.entries[key]
+	entry.expiresAt = time.Now().Add(-time.Minute)
+	learnedOutputBudgetCache.entries[key] = entry
+	learnedOutputBudgetCache.Unlock()
+	if got := (&Agent{
+		agentConfig: agentConfig{modelRef: modelRef},
+		svc:         agentServices{prov: &namedOutputBudgetProvider{name: providerName}},
+		sess:        sessionRuntime{},
+	}).learnedCompletionBudget(); got != 0 {
+		t.Fatalf("expired budget = %d, want 0", got)
 	}
 }
 

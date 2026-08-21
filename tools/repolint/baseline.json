@@ -1536,7 +1536,7 @@
       "file-size": 76
     },
     "internal/config/provider_presets_test.go": {
-      "test-file-size": 300
+      "test-file-size": 174
     },
     "internal/botruntime/runtime.go": {
       "file-size": 38

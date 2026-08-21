@@ -2836,13 +2836,6 @@ func (a *App) AddProviderPresetAccess(id, key string) (string, error) {
 		}
 	}
 	keyWarning := ""
-	if strings.TrimSpace(key) != "" && keyEnv != "" {
-		var err error
-		keyWarning, err = a.saveProviderCredential(keyEnv, key)
-		if err != nil {
-			return "", err
-		}
-	}
 	rebuildWarning, err := a.applyConfigChangeWithWarning("provider access", func(c *config.Config) error {
 		missing, _, conflicts := providerPresetInstallPlan(c, preset)
 		if len(conflicts) > 0 {
@@ -2850,6 +2843,13 @@ func (a *App) AddProviderPresetAccess(id, key string) (string, error) {
 		}
 		if len(missing) == 0 {
 			return nil
+		}
+		if strings.TrimSpace(key) != "" && keyEnv != "" {
+			var err error
+			keyWarning, err = a.saveProviderCredential(keyEnv, key)
+			if err != nil {
+				return err
+			}
 		}
 		names := make([]string, 0, len(missing))
 		for _, e := range missing {
