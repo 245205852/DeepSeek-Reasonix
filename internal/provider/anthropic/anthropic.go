@@ -799,37 +799,6 @@ type imageSource struct {
 	FileID    string `json:"file_id,omitempty"`
 }
 
-func imageSourceFromRef(ref string) *imageSource {
-	switch provider.ClassifyImage(ref) {
-	case provider.ImageDataURL:
-		mt, data, ok := provider.ParseImageDataURL(ref)
-		if !ok {
-			return nil
-		}
-		return &imageSource{Type: "base64", MediaType: mt, Data: data}
-	case provider.ImageHTTPURL:
-		return &imageSource{Type: "url", URL: ref}
-	case provider.ImageFileID:
-		return &imageSource{Type: "file", FileID: ref}
-	default:
-		return nil
-	}
-}
-
-func visionRequestUsesFileID(req provider.Request) bool {
-	for _, m := range req.Messages {
-		if m.Role != provider.RoleUser && m.Role != provider.RoleTool {
-			continue
-		}
-		for _, ref := range m.Images {
-			if provider.ClassifyImage(ref) == provider.ImageFileID {
-				return true
-			}
-		}
-	}
-	return false
-}
-
 // toolResultBlocks builds array content for a tool_result whose message carries
 // images: the text first, then one image block per parseable data URL. It
 // returns nil when nothing parses, so text-only results keep plain string

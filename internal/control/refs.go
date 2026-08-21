@@ -22,7 +22,6 @@ import (
 	"reasonix/internal/fileref"
 	"reasonix/internal/instruction"
 	"reasonix/internal/proc"
-	"reasonix/internal/provider"
 	"reasonix/internal/secrets"
 )
 
@@ -577,49 +576,6 @@ func (c *Controller) resolveInputImageCandidates(line string) []string {
 	return urls
 }
 
-func classifyVisionToken(tok string) (ref, bool) {
-	tok = strings.TrimSpace(tok)
-	if provider.IsImageHTTPURL(tok) {
-		return ref{kind: refRemoteImage, path: tok, raw: tok}, true
-	}
-	if provider.IsImageFileID(tok) {
-		return ref{kind: refFileID, path: tok, raw: tok}, true
-	}
-	return ref{}, false
-}
-
-func bareVisionRefs(line string) []ref {
-	var refs []ref
-	seen := map[string]bool{}
-	for _, tok := range strings.Fields(line) {
-		tok = strings.Trim(tok, `<>"'`)
-		tok = strings.TrimRight(tok, ".,;!?)]}")
-		if seen[tok] {
-			continue
-		}
-		r, ok := classifyVisionToken(tok)
-		if !ok {
-			continue
-		}
-		seen[tok] = true
-		refs = append(refs, r)
-	}
-	return refs
-}
-
-func (c *Controller) visionRefImageValue(r ref, baseDir string) (string, error) {
-	switch r.kind {
-	case refRemoteImage, refFileID:
-		return r.path, nil
-	case refImage:
-		return c.visionLocalImageValue(r.path, baseDir)
-	case refFile:
-		return c.visionLocalImageValue(r.path, baseDir)
-	default:
-		return "", fmt.Errorf("reference is not an image")
-	}
-}
-
 func visionFileImageDataURL(path, baseDir string) (string, error) {
 	absPath, absBase, ok := resolveAbsRef(path, baseDir)
 	if !ok {
@@ -1156,23 +1112,6 @@ func readFileRefUnscoped(path string, vision bool) (content string, isDir bool, 
 		return string(data[:maxFileRefBytes]) + fmt.Sprintf("\n…[truncated; file is %d bytes]…", info.Size()), false, nil
 	}
 	return string(data), false, nil
-}
-
-func imageAttachmentNote(path string, vision bool) string {
-	if vision {
-		return "[The image at @" + path + " is attached as visual input. Look at the image directly; do not OCR or read the file unless the user asks.]"
-	}
-	return "[image attachment available at @" + path + "; sent as direct model image input only when the selected model supports vision. Text-only models can still use an available OCR/image/vision tool with this local path; image bytes are not inlined into prompt text.]"
-}
-
-func imageFileRefNote(displayPath, mime string, size int64, attached, vision bool) string {
-	if attached && vision {
-		return fmt.Sprintf("[image file %s, mime=%s, %d bytes — attached as visual input. Look at the image directly; do not OCR or read the file unless the user asks.]", displayPath, mime, size)
-	}
-	if attached {
-		return fmt.Sprintf("[image file %s, mime=%s, %d bytes — sent as direct model image input only when the selected model supports vision. Text-only models can still use an available OCR/image/vision tool with this local path; image bytes are not inlined into prompt text.]", displayPath, mime, size)
-	}
-	return fmt.Sprintf("[image file %s, mime=%s, %d bytes — not sent as direct model image input because no workspace root is available. Use a workspace-scoped file reference, image attachment, or an available OCR/image/vision tool with a readable local path.]", displayPath, mime, size)
 }
 
 // walkRootDir walks a directory under a sandboxed *os.Root and writes each
