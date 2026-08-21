@@ -58,6 +58,44 @@ func TestOfficialDeepSeekVisionSKUEmbedsURLAndFileID(t *testing.T) {
 	}
 }
 
+func TestStatefulContinuationDoesNotDropUserImages(t *testing.T) {
+	c := New(Config{
+		Name: "deepseek", BaseURL: "https://api.deepseek.com", Model: "deepseek-v4-flash-vision-exp", Mode: "stateful",
+	}).(*client)
+	prefix := []provider.Message{
+		{Role: provider.RoleSystem, Content: "You inspect images."},
+		{Role: provider.RoleUser, Content: "first"},
+		{Role: provider.RoleAssistant, Content: "answer"},
+	}
+	c.lastResponseID = "resp_1"
+	c.expectedPrefixDigest = c.conversationDigest(prefix)
+	body, usedPrevious, _ := c.buildRequestBody(provider.Request{Messages: append(prefix, provider.Message{
+		Role: provider.RoleUser, Content: "second", Images: []string{"data:image/png;base64,AAAA"},
+	})})
+	if usedPrevious {
+		t.Fatal("stateful continuation must not use text-only previous_response_id fast path for image turns")
+	}
+	items, ok := body["input"].([]map[string]any)
+	if !ok {
+		t.Fatalf("input = %#v, want multimodal item list", body["input"])
+	}
+	found := false
+	for _, item := range items {
+		parts, ok := item["content"].([]map[string]string)
+		if !ok {
+			continue
+		}
+		for _, part := range parts {
+			if part["type"] == "input_image" && part["image_url"] == "data:image/png;base64,AAAA" {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("stateful continuation input = %#v, missing user image", items)
+	}
+}
+
 func TestOfficialDeepSeekVisionSKUOmitsToolImages(t *testing.T) {
 	c := New(Config{
 		Name: "deepseek", BaseURL: "https://api.deepseek.com", Model: "deepseek-v4-flash-vision-exp",

@@ -120,11 +120,13 @@ for (const path of localeChunks) {
   // Recovery-copy and catalog-only sidebar labels can move the simplified
   // Chinese chunk across the rounded 55.9 KiB boundary on CI's Node/zlib;
   // retain a narrow 0.1 KiB headroom rather than making gzip output a
-  // platform-dependent gate. Official DeepSeek vision toast copy names the
-  // pinned SKU in zh-TW (~0.1 KiB gzip) and lands on the 56.6 KiB equality
-  // boundary on CI zlib; keep 0.2 KiB (0.35%) headroom instead of shortening
-  // the recovery instruction.
-  const budget = name.startsWith("zh-TW-") ? 56.8 * 1024 : 56.0 * 1024;
+  // platform-dependent gate. The OpenCode one-key setup adds product-level
+  // connection, fallback, and legacy-state copy while removing protocol
+  // choices from the primary UI; keep that complete guidance with a bounded
+  // 0.4–0.5 KiB locale-only ratchet. Official DeepSeek vision toast copy names
+  // the pinned SKU in zh-TW; retain the latest-base allowance rather than
+  // shortening either recovery or setup guidance.
+  const budget = name.startsWith("zh-TW-") ? 57.1 * 1024 : 56.4 * 1024;
   assertBudget(`${name} gzip`, gzipBytes(path), budget);
 }
 

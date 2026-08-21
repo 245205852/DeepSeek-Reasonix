@@ -150,6 +150,54 @@ func TestOpenCodeGoContextWindowPresetsMatchModelsDev(t *testing.T) {
 	}
 }
 
+func TestOpenCodePresetPresentationMetadata(t *testing.T) {
+	want := map[string]struct {
+		group    string
+		section  string
+		tier     string
+		route    string
+		optional bool
+	}{
+		"opencode-go-recommended":        {group: "opencode", section: "go", tier: "primary", route: "bundle"},
+		"opencode-go":                    {group: "opencode", section: "go", tier: "compatibility", route: "chat"},
+		"opencode-go-anthropic":          {group: "opencode", section: "go", tier: "advanced", route: "anthropic"},
+		"opencode-go-responses":          {group: "opencode", section: "go", tier: "advanced", route: "responses"},
+		"opencode-go-deepseek-anthropic": {group: "opencode", section: "go", tier: "advanced", route: "search-anthropic", optional: true},
+		"opencode-go-deepseek-responses": {group: "opencode", section: "go", tier: "advanced", route: "search-responses", optional: true},
+		"opencode-zen-anthropic":         {group: "opencode", section: "zen", tier: "primary", route: "zen-anthropic"},
+	}
+	for id, expected := range want {
+		preset, ok := CuratedProviderPreset(id)
+		if !ok {
+			t.Fatalf("missing preset %q", id)
+		}
+		if preset.DisplayGroup != expected.group || preset.DisplaySection != expected.section || preset.DisplayTier != expected.tier || preset.RouteKind != expected.route || preset.Optional != expected.optional {
+			t.Fatalf("preset %q metadata = group:%q section:%q tier:%q route:%q optional:%t", id, preset.DisplayGroup, preset.DisplaySection, preset.DisplayTier, preset.RouteKind, preset.Optional)
+		}
+	}
+}
+
+func TestOpenCodeGoPresetOutputBudgetsAreConservative(t *testing.T) {
+	for _, id := range []string{
+		"opencode-go-recommended",
+		"opencode-go",
+		"opencode-go-anthropic",
+		"opencode-go-responses",
+		"opencode-go-deepseek-anthropic",
+		"opencode-go-deepseek-responses",
+	} {
+		preset, ok := CuratedProviderPreset(id)
+		if !ok {
+			t.Fatalf("missing preset %q", id)
+		}
+		for _, entry := range preset.Entries {
+			if entry.MaxOutputTokens != 32_768 {
+				t.Fatalf("preset %q entry %q max output = %d, want 32768", id, entry.Name, entry.MaxOutputTokens)
+			}
+		}
+	}
+}
+
 func TestOpenCodeGoDeepSeekAlternativeProtocolPresets(t *testing.T) {
 	responsesPreset, ok := CuratedProviderPreset("opencode-go-deepseek-responses")
 	if !ok || len(responsesPreset.Entries) != 1 {

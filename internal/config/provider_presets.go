@@ -22,6 +22,15 @@ type ProviderPreset struct {
 	// subscription-equivalent plan rather than a token price estimate.
 	BillingMode string
 	Entries     []ProviderEntry
+
+	// Display metadata is presentation-only. It deliberately does not change
+	// provider routing or the persisted provider schema.
+	DisplayGroup   string
+	DisplaySection string
+	DisplayTier    string
+	RouteKind      string
+	Optional       bool
+	DisplayOrder   int
 }
 
 const (
@@ -679,21 +688,27 @@ var curatedProviderPresets = []ProviderPreset{
 		}},
 	},
 	{
-		ID:          "opencode-go",
-		Label:       "OpenCode Go",
-		Description: "OpenCode Go relay with per-model capability overrides.",
-		KeyEnv:      "OPENCODE_GO_API_KEY",
-		BillingMode: "subscription_equivalent",
+		ID:             "opencode-go",
+		Label:          "OpenCode Go",
+		Description:    "OpenCode Go relay with per-model capability overrides.",
+		KeyEnv:         "OPENCODE_GO_API_KEY",
+		BillingMode:    "subscription_equivalent",
+		DisplayGroup:   "opencode",
+		DisplaySection: "go",
+		DisplayTier:    "compatibility",
+		RouteKind:      "chat",
+		DisplayOrder:   90,
 		Entries: []ProviderEntry{{
-			Name:          "opencode-go",
-			Kind:          "openai",
-			BaseURL:       "https://opencode.ai/zen/go/v1",
-			Models:        opencodeGoModels,
-			VisionModels:  opencodeGoVisionModels,
-			Default:       "glm-5.2",
-			APIKeyEnv:     "OPENCODE_GO_API_KEY",
-			ContextWindow: 128000,
-			BillingMode:   "subscription_equivalent",
+			Name:            "opencode-go",
+			Kind:            "openai",
+			BaseURL:         "https://opencode.ai/zen/go/v1",
+			Models:          opencodeGoModels,
+			VisionModels:    opencodeGoVisionModels,
+			Default:         "glm-5.2",
+			APIKeyEnv:       "OPENCODE_GO_API_KEY",
+			ContextWindow:   128000,
+			MaxOutputTokens: 32_768,
+			BillingMode:     "subscription_equivalent",
 			ModelOverrides: withOpenCodeGoChatContextOverrides(map[string]ProviderModelOverride{
 				"glm-5.3": {
 					ReasoningProtocol: ReasoningProtocolOpenAI,
@@ -744,10 +759,15 @@ var curatedProviderPresets = []ProviderPreset{
 	opencodeGoDeepSeekResponsesPreset,
 	opencodeGoRecommendedPreset,
 	{
-		ID:          "opencode-zen-anthropic",
-		Label:       "OpenCode Zen Anthropic",
-		Description: "OpenCode Zen Anthropic-compatible route for Claude and Qwen models.",
-		KeyEnv:      "OPENCODE_API_KEY",
+		ID:             "opencode-zen-anthropic",
+		Label:          "OpenCode Zen Anthropic",
+		Description:    "OpenCode Zen Anthropic-compatible route for Claude and Qwen models.",
+		KeyEnv:         "OPENCODE_API_KEY",
+		DisplayGroup:   "opencode",
+		DisplaySection: "zen",
+		DisplayTier:    "primary",
+		RouteKind:      "zen-anthropic",
+		DisplayOrder:   100,
 		Entries: []ProviderEntry{{
 			Name:          "opencode-zen-anthropic",
 			Kind:          "anthropic",

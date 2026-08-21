@@ -324,9 +324,7 @@ func (c *client) buildRequestBody(req provider.Request) (map[string]any, bool, [
 	c.mu.Lock()
 	previousID, expectedDigest := c.lastResponseID, c.expectedPrefixDigest
 	c.mu.Unlock()
-	if c.mode == "stateful" && previousID != "" && len(messages) > 0 &&
-		messages[len(messages)-1].Role == provider.RoleUser &&
-		c.conversationDigest(messages[:len(messages)-1]) == expectedDigest {
+	if c.canUseStatefulContinuation(messages, previousID, expectedDigest) {
 		body["input"] = messages[len(messages)-1].Content
 		body["previous_response_id"] = previousID
 		return body, true, messages
