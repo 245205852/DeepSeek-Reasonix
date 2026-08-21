@@ -1,6 +1,7 @@
 package control
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"path/filepath"
@@ -9,6 +10,7 @@ import (
 
 	"reasonix/internal/agent"
 	"reasonix/internal/config"
+	"reasonix/internal/provider"
 )
 
 func writeVisionTestConfig(t *testing.T, root string) {
@@ -221,5 +223,62 @@ func TestControllerImageInputEnabledDoesNotFallbackFromUnknownRef(t *testing.T) 
 	c := &Controller{workspaceRoot: workspace, modelRef: "deleted/model"}
 	if c.imageInputEnabled() {
 		t.Fatal("unknown ref should not inherit image input from the default fallback model")
+	}
+}
+
+func TestControllerInputImagesPassesHTTPURLAndFileID(t *testing.T) {
+	workspace := t.TempDir()
+	writeVisionTestConfig(t, workspace)
+	c := &Controller{workspaceRoot: workspace, modelRef: "custom/vision-pro"}
+	urls := c.inputImages("see @https://cdn.example.com/cat.png and @file-api-0a1b2c3d4e5f6071")
+	if len(urls) != 2 || urls[0] != "https://cdn.example.com/cat.png" || urls[1] != "file-api-0a1b2c3d4e5f6071" {
+		t.Fatalf("inputImages = %v, want URL then file_id", urls)
+	}
+	bare := c.inputImages("这是什么？ https://cdn.example.com/dog.webp")
+	if len(bare) != 1 || bare[0] != "https://cdn.example.com/dog.webp" {
+		t.Fatalf("bare URL inputImages = %v", bare)
+	}
+}
+
+func TestControllerUploadsLargeOfficialDeepSeekImageViaFilesAPI(t *testing.T) {
+	workspace := t.TempDir()
+	t.Chdir(workspace)
+	cfg := config.Default()
+	cfg.DefaultModel = "deepseek/deepseek-v4-flash-vision-exp"
+	cfg.Providers = []config.ProviderEntry{{
+		Name:         "deepseek",
+		Kind:         "openai",
+		BaseURL:      "https://api.deepseek.com",
+		Models:       []string{"deepseek-v4-flash-vision-exp"},
+		VisionModels: []string{"deepseek-v4-flash-vision-exp"},
+		APIKeyEnv:    "DEEPSEEK_API_KEY",
+	}}
+	if err := cfg.SaveTo(filepath.Join(workspace, "reasonix.toml")); err != nil {
+		t.Fatal(err)
+	}
+	prevLimit := inlineImageLimit
+	inlineImageLimit = 4
+	t.Cleanup(func() { inlineImageLimit = prevLimit })
+	prevUpload := uploadVisionFile
+	uploadVisionFile = func(_ context.Context, u provider.FileUpload) (string, error) {
+		if u.Protocol != "openai" || len(u.Data) <= 4 {
+			t.Fatalf("upload = %+v", u)
+		}
+		return "file-api-uploaded0001", nil
+	}
+	t.Cleanup(func() { uploadVisionFile = prevUpload })
+
+	path := filepath.Join(workspace, ".reasonix", "attachments", "big.png")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	raw := append([]byte("\x89PNG\r\n\x1a\n"), bytes.Repeat([]byte("x"), 8)...)
+	if err := os.WriteFile(path, raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c := &Controller{workspaceRoot: workspace, modelRef: "deepseek/deepseek-v4-flash-vision-exp"}
+	got := c.inputImages("look at @.reasonix/attachments/big.png")
+	if len(got) != 1 || got[0] != "file-api-uploaded0001" {
+		t.Fatalf("inputImages = %v, want uploaded file_id", got)
 	}
 }

@@ -250,6 +250,34 @@ func TestResolveRefsAttachmentKinds(t *testing.T) {
 	}
 }
 
+func TestResolveRefsVisionCapableImageDoesNotAskForOCR(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	writeVisionTestConfig(t, dir)
+	path := filepath.Join(".reasonix", "attachments", "shot.png")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("\x89PNG\r\n\x1a\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	c := &Controller{workspaceRoot: dir, modelRef: "custom/vision-pro"}
+	block, errs := c.ResolveRefs(context.Background(), "这是什么？ @"+path)
+	if len(errs) != 0 {
+		t.Fatalf("ResolveRefs errors = %v", errs)
+	}
+	if !strings.Contains(block, `<image path="`+path+`">`) || !strings.Contains(block, "attached as visual input") {
+		t.Fatalf("vision-capable attachment should mark visual input:\n%s", block)
+	}
+	if strings.Contains(block, "OCR/image/vision tool") || strings.Contains(block, "image bytes are not inlined") {
+		t.Fatalf("vision-capable attachment must not tell the model to OCR the file:\n%s", block)
+	}
+	if urls := c.inputImages("这是什么？ @" + path); len(urls) != 1 || !strings.HasPrefix(urls[0], "data:image/png;base64,") {
+		t.Fatalf("vision-capable inputImages = %v, want one png data URL", urls)
+	}
+}
+
 func TestReadFileRef(t *testing.T) {
 	dir := t.TempDir()
 
@@ -874,8 +902,8 @@ func TestWorkspaceImageRefsAlsoAttachAsModelImages(t *testing.T) {
 	if len(errs) != 0 {
 		t.Fatalf("ResolveRefs errors = %v", errs)
 	}
-	if !strings.Contains(block, `<file path="docs/diagram.png">`) || !strings.Contains(block, "sent as direct model image input only when the selected model supports vision") || !strings.Contains(block, "OCR/image/vision tool") {
-		t.Fatalf("workspace png should resolve as direct-vision-or-tool image metadata:\n%s", block)
+	if !strings.Contains(block, `<file path="docs/diagram.png">`) || !strings.Contains(block, "attached as visual input") || strings.Contains(block, "OCR/image/vision tool") {
+		t.Fatalf("workspace png on a vision model should ask the model to look at the image, not OCR it:\n%s", block)
 	}
 	if urls := c.inputImages("see @" + diagram); len(urls) != 1 || !strings.HasPrefix(urls[0], "data:image/png;base64,") {
 		t.Fatalf("workspace png inputImages = %v, want one png data URL", urls)

@@ -352,8 +352,12 @@ Gateway、HuggingFace Router、NVIDIA NIM、KiloCode 和 Ollama Cloud。Plan 表
 中国区端点直连、MiniMax `reasoning_split`、GLM/MiniMax thinking heuristic、
 Anthropic-compatible 网关需要的 Bearer 认证、Ollama Cloud max-effort 支持，
 以及 OpenCode Go 的每模型 reasoning 覆盖。官方 DeepSeek 的 Anthropic、Responses 与
-Chat Completions 目录还会带上 `deepseek-v4-flash-vision-exp`。选中这一枚 SKU 才会把
-composer/`@` 用户图片发给模型；Flash/Pro 仍是纯文本，工具截图也不会作为图片块转发。
+Chat Completions 目录还会带上 `deepseek-v4-flash-vision-exp`。在设置里和其他供应商
+一样勾选该模型的「图片输入」，再选中这一枚 SKU。composer/`@` 用户图片会按官方文档的三种方式发出：本地小图走内联 base64 `data:` URL；
+`http(s)` 图片链接原样作为 URL 传入；`file-api-` 引用走 Files API（官方 DeepSeek 上
+超过 32 MiB 的本地图会自动上传）。Chat Completions 用 `image_url` 或 `file`，Anthropic
+用 `image`+`source.base64|url|file`，Responses 用 `input_image`。Flash/Pro 即使勾了
+「图片输入」线上仍是纯文本，工具截图也不会作为图片块转发。
 视觉 SKU 使用 Flash 价卡。专用的 OpenCode Go DeepSeek Anthropic 与
 DeepSeek Responses 预设接入已验证的 Flash 线路，并默认启用 provider 侧 `web_search`；
 Responses 变体使用无状态上下文回放。原有混合 OpenCode Go Anthropic 预设仍只包含 Qwen

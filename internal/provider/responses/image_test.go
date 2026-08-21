@@ -33,6 +33,31 @@ func TestOfficialDeepSeekVisionSKUEmbedsUserImages(t *testing.T) {
 	}
 }
 
+func TestOfficialDeepSeekVisionSKUEmbedsURLAndFileID(t *testing.T) {
+	c := New(Config{
+		Name: "deepseek", BaseURL: "https://api.deepseek.com", Model: "deepseek-v4-flash-vision-exp",
+	}).(*client)
+	body, _, _ := c.buildRequestBody(provider.Request{Messages: []provider.Message{{
+		Role:    provider.RoleUser,
+		Content: "what is this",
+		Images: []string{
+			"https://cdn.example.com/cat.png",
+			"file-api-0a1b2c3d4e5f6071",
+		},
+	}}})
+	items := body["input"].([]map[string]any)
+	parts, ok := items[0]["content"].([]map[string]string)
+	if !ok || len(parts) != 3 {
+		t.Fatalf("content = %#v", items[0]["content"])
+	}
+	if parts[1]["type"] != "input_image" || parts[1]["image_url"] != "https://cdn.example.com/cat.png" {
+		t.Fatalf("url part = %#v", parts[1])
+	}
+	if parts[2]["type"] != "input_image" || parts[2]["file_id"] != "file-api-0a1b2c3d4e5f6071" {
+		t.Fatalf("file part = %#v", parts[2])
+	}
+}
+
 func TestOfficialDeepSeekVisionSKUOmitsToolImages(t *testing.T) {
 	c := New(Config{
 		Name: "deepseek", BaseURL: "https://api.deepseek.com", Model: "deepseek-v4-flash-vision-exp",

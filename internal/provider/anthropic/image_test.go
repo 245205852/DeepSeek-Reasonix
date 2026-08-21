@@ -68,6 +68,36 @@ func TestOfficialDeepSeekVisionSKUEmbedsUserImages(t *testing.T) {
 	}
 }
 
+func TestOfficialDeepSeekVisionSKUEmbedsURLAndFileID(t *testing.T) {
+	p, err := New(provider.Config{
+		Name:    "deepseek-anthropic",
+		BaseURL: "https://api.deepseek.com/anthropic",
+		Model:   openai.OfficialDeepSeekVisionModel,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	c := p.(*client)
+	req := c.buildRequest(context.Background(), provider.Request{Messages: []provider.Message{{
+		Role:    provider.RoleUser,
+		Content: "describe",
+		Images: []string{
+			"https://cdn.example.com/cat.png",
+			"file-api-0a1b2c3d4e5f6071",
+		},
+	}}})
+	blocks := req.Messages[0].Content
+	if len(blocks) != 3 || blocks[1].Type != "image" || blocks[2].Type != "image" {
+		t.Fatalf("blocks = %+v", blocks)
+	}
+	if blocks[1].Source == nil || blocks[1].Source.Type != "url" || blocks[1].Source.URL != "https://cdn.example.com/cat.png" {
+		t.Fatalf("url source = %+v", blocks[1].Source)
+	}
+	if blocks[2].Source == nil || blocks[2].Source.Type != "file" || blocks[2].Source.FileID != "file-api-0a1b2c3d4e5f6071" {
+		t.Fatalf("file source = %+v", blocks[2].Source)
+	}
+}
+
 func TestOfficialDeepSeekVisionSKUOmitsToolImages(t *testing.T) {
 	p, err := New(provider.Config{
 		Name:    "deepseek-anthropic",

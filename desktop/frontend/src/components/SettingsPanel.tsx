@@ -6229,10 +6229,6 @@ function providerBaseHost(baseUrl: string): string {
 
 type ProviderVisionCapability = "configurable" | "unsupported";
 
-function isDeepSeekOfficialEndpoint(baseUrl: string): boolean {
-  return providerBaseHost(baseUrl).endsWith(".deepseek.com");
-}
-
 export function providerSupportsServerWebSearch(kind: string, baseUrl: string): boolean {
   try {
     const endpoint = new URL(baseUrl.trim());
@@ -6268,25 +6264,13 @@ export function providerSupportsServerWebSearchForView(
   return providerSupportsServerWebSearch(provider.kind, provider.baseUrl);
 }
 
-function providerVisionCapability(kind: string, baseUrl: string): ProviderVisionCapability {
-  if (!isDeepSeekOfficialEndpoint(baseUrl)) return "configurable";
-  switch (kind.trim().toLowerCase()) {
-    case "openai":
-    case "responses":
-    case "anthropic":
-      return "unsupported";
-    default:
-      return "configurable";
-  }
-}
-
 export function providerVisionCapabilityForView(
   provider: Pick<ProviderView, "kind" | "baseUrl" | "visionCapability">,
 ): ProviderVisionCapability {
-  if (provider.visionCapability === "unsupported" || provider.visionCapability === "configurable") {
-    return provider.visionCapability;
+  if (provider.visionCapability === "unsupported") {
+    return "unsupported";
   }
-  return providerVisionCapability(provider.kind, provider.baseUrl);
+  return "configurable";
 }
 
 function canonicalOfficialProviderName(name: string): string {

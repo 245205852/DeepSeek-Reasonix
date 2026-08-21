@@ -54,7 +54,7 @@ type Message struct {
 	// ProviderContent is a transitional field written by early Context Engine v2
 	// builds. Loaders migrate it into Content/RawContent before normal use.
 	ProviderContent  string   `json:"provider_content,omitempty"`
-	Images           []string `json:"images,omitempty"`            // data URLs (data:<mime>;base64,…) on user (attachments) and tool (MCP image results) messages; embedded only for vision-capable models
+	Images           []string `json:"images,omitempty"`            // vision refs: data URLs, http(s) image URLs, or Files API file-api- ids; embedded only for vision-capable models
 	ReasoningContent string   `json:"reasoning_content,omitempty"` // assistant: thinking-mode chain-of-thought, round-tripped on multi-turn
 	// ReasoningID is the provider-issued reasoning-item id (OpenAI Responses:
 	// Reasoning.id is required on input items), captured from the streamed

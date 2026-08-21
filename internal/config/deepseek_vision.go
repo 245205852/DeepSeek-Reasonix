@@ -9,7 +9,8 @@ import (
 )
 
 // OfficialDeepSeekPinnedVisionModels returns the official vision SKU when it is
-// in the enabled model list. Flash and Pro never appear here.
+// in the enabled model list. Settings can still mark other models for image
+// input; this helper is only the stock default.
 func OfficialDeepSeekPinnedVisionModels(models []string) []string {
 	if !slices.ContainsFunc(models, openai.IsOfficialDeepSeekVisionModel) {
 		return nil
@@ -48,7 +49,7 @@ func backfillOfficialDeepSeekVisionModel(p *ProviderEntry) {
 		p.Default = firstKnownModel(p.Default, p.Models, "deepseek-v4-flash")
 	}
 	if p.VisionModels == nil {
-		p.VisionModels = mergeModelLists(nil, []string{sku})
+		p.VisionModels = OfficialDeepSeekPinnedVisionModels(p.ModelList())
 	}
 	backfillOfficialDeepSeekVisionPrice(p)
 }

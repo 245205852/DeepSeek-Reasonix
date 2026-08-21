@@ -336,6 +336,17 @@ func (c *client) buildRequestBody(req provider.Request) (map[string]any, bool, [
 	return body, false, messages
 }
 
+func inputImagePart(ref string) map[string]string {
+	switch provider.ClassifyImage(ref) {
+	case provider.ImageFileID:
+		return map[string]string{"type": "input_image", "file_id": ref}
+	case provider.ImageDataURL, provider.ImageHTTPURL:
+		return map[string]string{"type": "input_image", "image_url": ref}
+	default:
+		return nil
+	}
+}
+
 func splitInstructions(messages []provider.Message) (string, []provider.Message) {
 	if len(messages) == 0 || messages[0].Role != provider.RoleSystem {
 		return "", messages
@@ -359,10 +370,16 @@ func messagesToInput(messages []provider.Message, vision, replayWebSearchItems, 
 				if message.Content != "" {
 					parts = append(parts, map[string]string{"type": "input_text", "text": message.Content})
 				}
-				for _, url := range message.Images {
-					parts = append(parts, map[string]string{"type": "input_image", "image_url": url})
+				for _, ref := range message.Images {
+					if part := inputImagePart(ref); part != nil {
+						parts = append(parts, part)
+					}
 				}
-				input = append(input, map[string]any{"role": "user", "content": parts})
+				if len(parts) == 0 || (len(parts) == 1 && parts[0]["type"] == "input_text") {
+					input = append(input, map[string]any{"role": "user", "content": message.Content})
+				} else {
+					input = append(input, map[string]any{"role": "user", "content": parts})
+				}
 			} else {
 				input = append(input, map[string]any{"role": string(message.Role), "content": message.Content})
 			}

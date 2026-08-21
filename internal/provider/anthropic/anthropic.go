@@ -267,7 +267,7 @@ func cleanCustomHeaders(in map[string]string) map[string]string {
 
 func reservedCustomHeader(name string) bool {
 	switch strings.ToLower(strings.TrimSpace(name)) {
-	case "content-type", "accept", "x-api-key", "authorization", "anthropic-version":
+	case "content-type", "accept", "x-api-key", "authorization", "anthropic-version", "anthropic-beta":
 		return true
 	default:
 		return false
@@ -311,6 +311,9 @@ func (c *client) Stream(ctx context.Context, req provider.Request) (<-chan provi
 			httpReq.Header.Set("x-api-key", c.apiKey)
 		}
 		httpReq.Header.Set("anthropic-version", anthropicVersion)
+		if visionRequestUsesFileID(req) {
+			httpReq.Header.Set("anthropic-beta", "files-api-2025-04-14")
+		}
 		applyCustomHeaders(httpReq.Header, c.headers)
 		return httpReq, nil
 	}
@@ -360,9 +363,9 @@ func (c *client) buildRequest(ctx context.Context, req provider.Request) anthReq
 				appendBlocks("user", contentBlock{Type: "text", Text: m.Content})
 			}
 			if c.vision {
-				for _, url := range m.Images {
-					if mt, data, ok := provider.ParseImageDataURL(url); ok {
-						appendBlocks("user", contentBlock{Type: "image", Source: &imageSource{Type: "base64", MediaType: mt, Data: data}})
+				for _, ref := range m.Images {
+					if src := imageSourceFromRef(ref); src != nil {
+						appendBlocks("user", contentBlock{Type: "image", Source: src})
 					}
 				}
 			}
@@ -789,9 +792,42 @@ type contentBlock struct {
 }
 
 type imageSource struct {
-	Type      string `json:"type"` // "base64"
-	MediaType string `json:"media_type"`
-	Data      string `json:"data"`
+	Type      string `json:"type"` // base64 | url | file
+	MediaType string `json:"media_type,omitempty"`
+	Data      string `json:"data,omitempty"`
+	URL       string `json:"url,omitempty"`
+	FileID    string `json:"file_id,omitempty"`
+}
+
+func imageSourceFromRef(ref string) *imageSource {
+	switch provider.ClassifyImage(ref) {
+	case provider.ImageDataURL:
+		mt, data, ok := provider.ParseImageDataURL(ref)
+		if !ok {
+			return nil
+		}
+		return &imageSource{Type: "base64", MediaType: mt, Data: data}
+	case provider.ImageHTTPURL:
+		return &imageSource{Type: "url", URL: ref}
+	case provider.ImageFileID:
+		return &imageSource{Type: "file", FileID: ref}
+	default:
+		return nil
+	}
+}
+
+func visionRequestUsesFileID(req provider.Request) bool {
+	for _, m := range req.Messages {
+		if m.Role != provider.RoleUser && m.Role != provider.RoleTool {
+			continue
+		}
+		for _, ref := range m.Images {
+			if provider.ClassifyImage(ref) == provider.ImageFileID {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // toolResultBlocks builds array content for a tool_result whose message carries

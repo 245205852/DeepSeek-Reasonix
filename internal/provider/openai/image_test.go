@@ -32,6 +32,30 @@ func TestBuildRequestEmbedsImagesForVisionModel(t *testing.T) {
 	}
 }
 
+func TestBuildRequestEmbedsOfficialDeepSeekImageURLAndFileID(t *testing.T) {
+	c := &client{model: OfficialDeepSeekVisionModel, vision: true, deepseek: true}
+	req := c.buildRequest(provider.Request{
+		Messages: []provider.Message{{
+			Role:    provider.RoleUser,
+			Content: "what is this",
+			Images: []string{
+				"https://cdn.example.com/cat.png",
+				"file-api-0a1b2c3d4e5f6071",
+			},
+		}},
+	})
+	parts, ok := req.Messages[0].Content.([]chatContentPart)
+	if !ok || len(parts) != 3 {
+		t.Fatalf("parts = %#v", req.Messages[0].Content)
+	}
+	if parts[1].Type != "image_url" || parts[1].ImageURL == nil || parts[1].ImageURL.URL != "https://cdn.example.com/cat.png" {
+		t.Fatalf("url part = %+v", parts[1])
+	}
+	if parts[2].Type != "file" || parts[2].FileID != "file-api-0a1b2c3d4e5f6071" {
+		t.Fatalf("file part = %+v", parts[2])
+	}
+}
+
 func TestBuildRequestSkipsImagesWithoutVision(t *testing.T) {
 	c := &client{model: "deepseek-v4"} // vision unset
 	req := c.buildRequest(provider.Request{

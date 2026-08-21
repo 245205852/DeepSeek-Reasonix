@@ -399,7 +399,8 @@ base_url       = "https://api.deepseek.com/anthropic"
 # request_url  = "https://proxy.example.com/anthropic/v1/messages" # 可选：完整请求地址
 models         = ["deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v4-flash-vision-exp"]
 default        = "deepseek-v4-flash"
-# vision_models = ["deepseek-v4-flash-vision-exp"]  # 官方 DeepSeek 只让这一枚 SKU 接收图片
+# vision_models = ["deepseek-v4-flash-vision-exp"]  # 设置里的「图片输入」勾选；线上仍只有这一枚 SKU 会发图
+# 官方 DeepSeek 视觉支持内联 base64、http(s) 图片 URL、以及 Files API file_id。
 api_key_env    = "DEEPSEEK_API_KEY"
 web_search     = true
 context_window = 1000000

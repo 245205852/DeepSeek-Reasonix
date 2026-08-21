@@ -59,28 +59,27 @@ func modelTokenSeparator(r rune) bool {
 	return r == '-' || r == '_' || r == '.' || r == '/' || r == ':'
 }
 
-// CanConfigureVision reports whether user-supplied vision metadata may enable
-// image input for this endpoint. Official DeepSeek image input is pinned to
-// one SKU at the wire layer, so Settings must not treat persisted Vision,
-// vision_models, or model overrides as a user toggle for Flash/Pro. Custom
-// DeepSeek-compatible gateways remain configurable because they may implement
-// their own multimodal translation layer.
+// CanConfigureVision reports whether Settings may expose per-model image-input
+// checkboxes. Official DeepSeek uses the same editor as other providers; the
+// wire layer still refuses Flash/Pro image payloads.
 func CanConfigureVision(e *ProviderEntry) bool {
-	return e != nil && !openai.IsDeepSeek(e.BaseURL)
+	return e != nil
 }
 
 // EffectiveVision resolves whether the selected model accepts image input.
-// Official DeepSeek ignores persisted vision flags and enables images only for
-// the pinned vision SKU. Explicit provider vision still wins for custom
-// vision-capable gateways; the MiMo endpoint heuristic is deliberately limited
-// to known MiMo endpoints so arbitrary OpenAI-compatible proxies do not get
-// image payloads unexpectedly.
+// Official DeepSeek Settings can mark any enabled model for image input, but
+// only the pinned vision SKU actually receives image parts. An unconfigured
+// catalog (VisionModels == nil) still enables that SKU so CLI/model-switch
+// users keep image input without a Settings round-trip. Explicit provider
+// vision still wins for custom gateways; the MiMo endpoint heuristic is
+// deliberately limited to known MiMo endpoints so arbitrary OpenAI-compatible
+// proxies do not get image payloads unexpectedly.
 func EffectiveVision(e *ProviderEntry) bool {
 	if e == nil {
 		return false
 	}
 	if openai.IsDeepSeek(e.BaseURL) {
-		return openai.IsOfficialDeepSeekVisionModel(e.Model)
+		return officialDeepSeekEffectiveVision(e)
 	}
 	if enabled, explicit := explicitModelVision(e); explicit {
 		return enabled
@@ -100,10 +99,23 @@ func ExplicitModelVision(e *ProviderEntry) bool {
 		return false
 	}
 	if openai.IsDeepSeek(e.BaseURL) {
-		return openai.IsOfficialDeepSeekVisionModel(e.Model)
+		return officialDeepSeekEffectiveVision(e)
 	}
 	enabled, explicit := explicitModelVision(e)
 	return explicit && enabled
+}
+
+func officialDeepSeekEffectiveVision(e *ProviderEntry) bool {
+	if e == nil || !openai.IsOfficialDeepSeekVisionModel(e.Model) {
+		return false
+	}
+	if enabled, explicit := explicitModelVision(e); explicit {
+		return enabled
+	}
+	if e.Vision {
+		return true
+	}
+	return e.VisionModels == nil
 }
 
 func explicitModelVision(e *ProviderEntry) (enabled, explicit bool) {

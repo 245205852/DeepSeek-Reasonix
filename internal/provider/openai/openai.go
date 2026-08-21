@@ -1249,6 +1249,7 @@ type chatContentPart struct {
 	Type     string        `json:"type"`
 	Text     string        `json:"text,omitempty"`
 	ImageURL *chatImageURL `json:"image_url,omitempty"`
+	FileID   string        `json:"file_id,omitempty"`
 }
 
 type chatImageURL struct {
@@ -1261,8 +1262,13 @@ func imageContentParts(text string, images []string, detail string) []chatConten
 	if text != "" {
 		parts = append(parts, chatContentPart{Type: "text", Text: text})
 	}
-	for _, url := range images {
-		parts = append(parts, chatContentPart{Type: "image_url", ImageURL: &chatImageURL{URL: url, Detail: detail}})
+	for _, ref := range images {
+		switch provider.ClassifyImage(ref) {
+		case provider.ImageFileID:
+			parts = append(parts, chatContentPart{Type: "file", FileID: ref})
+		case provider.ImageDataURL, provider.ImageHTTPURL:
+			parts = append(parts, chatContentPart{Type: "image_url", ImageURL: &chatImageURL{URL: ref, Detail: detail}})
+		}
 	}
 	return parts
 }

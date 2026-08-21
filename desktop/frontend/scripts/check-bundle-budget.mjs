@@ -120,8 +120,11 @@ for (const path of localeChunks) {
   // Recovery-copy and catalog-only sidebar labels can move the simplified
   // Chinese chunk across the rounded 55.9 KiB boundary on CI's Node/zlib;
   // retain a narrow 0.1 KiB headroom rather than making gzip output a
-  // platform-dependent gate.
-  const budget = name.startsWith("zh-TW-") ? 56.6 * 1024 : 56.0 * 1024;
+  // platform-dependent gate. Official DeepSeek vision toast copy names the
+  // pinned SKU in zh-TW (~0.1 KiB gzip) and lands on the 56.6 KiB equality
+  // boundary on CI zlib; keep 0.2 KiB (0.35%) headroom instead of shortening
+  // the recovery instruction.
+  const budget = name.startsWith("zh-TW-") ? 56.8 * 1024 : 56.0 * 1024;
   assertBudget(`${name} gzip`, gzipBytes(path), budget);
 }
 

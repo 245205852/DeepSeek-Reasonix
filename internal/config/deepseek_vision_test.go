@@ -13,11 +13,40 @@ func TestEffectiveVisionEnablesPinnedOfficialDeepSeekVisionSKU(t *testing.T) {
 		BaseURL: "https://api.deepseek.com",
 		Model:   openai.OfficialDeepSeekVisionModel,
 	}
-	if CanConfigureVision(sku) {
-		t.Fatal("official DeepSeek must not expose a user-configurable vision toggle")
+	if !CanConfigureVision(sku) {
+		t.Fatal("official DeepSeek Settings must expose per-model image-input checkboxes")
 	}
 	if !EffectiveVision(sku) || !ExplicitModelVision(sku) {
 		t.Fatal("selecting the pinned official DeepSeek vision SKU must enable image input")
+	}
+}
+
+func TestEffectiveVisionHonorsOfficialDeepSeekVisionModels(t *testing.T) {
+	sku := &ProviderEntry{
+		Name:         "deepseek",
+		Kind:         "openai",
+		BaseURL:      "https://api.deepseek.com",
+		Model:        openai.OfficialDeepSeekVisionModel,
+		VisionModels: []string{openai.OfficialDeepSeekVisionModel},
+	}
+	if !EffectiveVision(sku) || !ExplicitModelVision(sku) {
+		t.Fatal("checking image input on the official vision SKU must enable image input")
+	}
+
+	sku.VisionModels = []string{}
+	if EffectiveVision(sku) || ExplicitModelVision(sku) {
+		t.Fatal("unchecking image input must disable image input on the official vision SKU")
+	}
+
+	flash := &ProviderEntry{
+		Name:         "deepseek",
+		Kind:         "openai",
+		BaseURL:      "https://api.deepseek.com",
+		Model:        "deepseek-v4-flash",
+		VisionModels: []string{"deepseek-v4-flash", openai.OfficialDeepSeekVisionModel},
+	}
+	if EffectiveVision(flash) || ExplicitModelVision(flash) {
+		t.Fatal("checking image input on Flash must not enable official DeepSeek image payloads")
 	}
 }
 
