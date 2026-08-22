@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -186,10 +187,8 @@ func (c *Controller) prepareVisionTurn(ctx context.Context, input string, images
 	currentProvider, _, currentHasModel := strings.Cut(strings.TrimSpace(c.modelRef), "/")
 	targetProvider, _, targetHasModel := strings.Cut(modelRef, "/")
 	if currentHasModel && targetHasModel && currentProvider != targetProvider {
-		for _, image := range images {
-			if provider.IsImageFileID(image) {
-				return input, ctx, fmt.Errorf("图片理解失败，来源服务商的 file id 不能跨服务商复用，请重新上传图片或选择同服务商模型")
-			}
+		if slices.ContainsFunc(images, provider.IsImageFileID) {
+			return input, ctx, fmt.Errorf("图片理解失败，来源服务商的 file id 不能跨服务商复用，请重新上传图片或选择同服务商模型")
 		}
 	}
 	digests := make([]string, len(images))
