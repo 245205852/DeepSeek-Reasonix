@@ -4467,19 +4467,16 @@ function ModelsSection({ s, busy, apply, backgroundApply, initialFocus }: Models
             </SettingsField>
 
             <SettingsField label={t("settings.imageUnderstandingModel")} hint={t("settings.visionModelsHint")}>
-              <select
-                className="mem-select set-grow"
+              <ModelPicker
+                s={s}
+                refs={visionRefs}
                 value={visionRef}
                 disabled={busy}
-                onChange={(e) => void apply(() => app.SetVisionModel(e.target.value))}
-              >
-                <option value="">{t("common.none")}</option>
-                <option value="auto">{t("common.auto")}</option>
-                {visionRefs.map((ref) => {
-                  const [provider, ...parts] = ref.split("/");
-                  return <option key={ref} value={ref}>{provider}/{parts.join("/")}</option>;
-                })}
-              </select>
+                ariaLabel={t("settings.imageUnderstandingModel")}
+                emptyOptionLabel={t("common.none")}
+                autoOptionLabel={t("common.auto")}
+                onPick={(ref) => void apply(() => app.SetVisionModel(ref))}
+              />
             </SettingsField>
 
             <SettingsField label={t("settings.subagentModel")}>
@@ -4691,6 +4688,8 @@ export function ModelPicker({
   ariaLabel,
   emptyOptionLabel,
   emptyOptionHint,
+  autoOptionLabel,
+  autoOptionHint,
   onPick,
 }: {
   s: SettingsView;
@@ -4701,6 +4700,8 @@ export function ModelPicker({
   ariaLabel?: string;
   emptyOptionLabel?: string;
   emptyOptionHint?: string;
+  autoOptionLabel?: string;
+  autoOptionHint?: string;
   onPick: (ref: string) => void;
 }) {
   const t = useT();
@@ -4717,16 +4718,23 @@ export function ModelPicker({
   const emptyLabel = includeSameDefault ? t("settings.plannerNone") : emptyOptionLabel;
   const emptyHint = includeSameDefault ? t("settings.plannerNoneHint") : emptyOptionHint;
   const emptyMeta = includeSameDefault ? t("settings.plannerNoneHintShort") : emptyOptionHint;
+  const autoLabel = autoOptionLabel;
+  const autoHint = autoOptionHint;
   const selected = refs.includes(value) ? modelOptionFromRef(value, s) : null;
-  const selectedLabel = value === "" && emptyLabel
+  const selectedLabel = value === "auto" && autoLabel
+    ? autoLabel
+    : value === "" && emptyLabel
     ? emptyLabel
     : selected?.model || value || t("common.none");
-  const selectedMeta = value === "" && emptyLabel
+  const selectedMeta = value === "auto" && autoLabel
+    ? autoHint || ""
+    : value === "" && emptyLabel
     ? emptyMeta || ""
     : selected
     ? modelOptionMeta(selected, t)
     : t("settings.noModelsConfigured");
   const emptyOptionVisible = Boolean(emptyLabel) && (!q || `${emptyLabel} ${emptyHint || ""}`.toLowerCase().includes(q));
+  const autoOptionVisible = Boolean(autoLabel) && (!q || `${autoLabel} ${autoHint || ""}`.toLowerCase().includes(q));
 
   const groups = useMemo(() => {
     const providerOrder: string[] = [];
@@ -4823,6 +4831,21 @@ export function ModelPicker({
               {value === "" && <Check size={14} />}
             </button>
           )}
+          {autoOptionVisible && (
+            <button
+              type="button"
+              role="option"
+              aria-selected={value === "auto"}
+              className={`settings-model-picker__option settings-model-picker__option--pinned${value === "auto" ? " settings-model-picker__option--selected" : ""}`}
+              onClick={() => pick("auto")}
+            >
+              <span>
+                <strong>{autoLabel}</strong>
+                {autoHint && <small>{autoHint}</small>}
+              </span>
+              {value === "auto" && <Check size={14} />}
+            </button>
+          )}
           {groups.map((group) => (
             <div className="settings-model-picker__group" key={group.groupID}>
               <div className="settings-model-picker__group-title">
@@ -4847,7 +4870,7 @@ export function ModelPicker({
               ))}
             </div>
           ))}
-          {!emptyOptionVisible && groups.length === 0 && <div className="settings-model-picker__empty">{t("settings.noMatchingModels")}</div>}
+          {!emptyOptionVisible && !autoOptionVisible && groups.length === 0 && <div className="settings-model-picker__empty">{t("settings.noMatchingModels")}</div>}
         </div>
       </AnchoredPopover>
     </div>
