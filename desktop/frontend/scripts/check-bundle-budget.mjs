@@ -90,7 +90,9 @@ console.log("\nbundle budgets");
 // The retained-transcript surface adds a small, bounded navigation owner to
 // the startup path (overlay state + stale-completion guard). Keep the increase
 // explicit and narrow; the measured build is 431.1 KiB gzip.
-const initialJSBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 431.3 : 431.3;
+// The web-search tool card now resolves the same display projection lazily so
+// its filtered count matches the assistant Sources panel.
+const initialJSBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 431.5 : 431.5;
 assertBudget("initial JavaScript gzip", initialJSGzip, initialJSBudgetKiB * 1024);
 assertBudget("largest initial JavaScript chunk gzip", largestInitialJS, 280 * 1024);
 // Render-blocking CSS is intentionally absent: styles.css loads deferred via
@@ -105,7 +107,9 @@ if (initialCSS.length > 0) {
 // application stylesheet loaded before React mounts. Keep their combined
 // allowance bounded even though the file is no longer render-blocking.
 // Navigation overlay styles add a bounded 0.1 KiB to the deferred shell.
-assertBudget("deferred app-shell CSS gzip", appShellCSSGzip, 114.2 * 1024);
+// The cleaned source panel adds 0.1 KiB gzip to the deferred shell on top of
+// the retained-transcript navigation allowance; keep the ratchet explicit.
+assertBudget("deferred app-shell CSS gzip", appShellCSSGzip, 114.3 * 1024);
 if (localeChunks.length !== 2) {
   throw new Error(`expected 2 on-demand Chinese locale chunks, found ${localeChunks.length}`);
 }
@@ -132,7 +136,7 @@ for (const path of localeChunks) {
   // connection, fallback, and legacy-state copy while removing protocol
   // choices from the primary UI; keep that complete guidance with a bounded
   // 0.4–0.5 KiB locale-only ratchet.
-  const budget = name.startsWith("zh-TW-") ? 57.1 * 1024 : 56.4 * 1024;
+  const budget = name.startsWith("zh-TW-") ? 57.2 * 1024 : 56.5 * 1024;
   assertBudget(`${name} gzip`, gzipBytes(path), budget);
 }
 
