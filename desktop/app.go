@@ -6611,23 +6611,6 @@ func (a *App) Meta() Meta {
 	return a.MetaForTab("")
 }
 
-// imageInputEnabledForRootModel reports whether the resolved model supports
-// image input. EXPENSIVE: it loads the workspace config and resolves the model
-// catalog. Never call it on a bound-method request path — MetaForTab serves
-// the cached tabMetaExtras instead, and only refreshTabMetaExtras (background)
-// calls this.
-func (a *App) imageInputEnabledForRootModel(root, ref string) bool {
-	cfg, err := a.loadConfigForVision(root)
-	if err == nil && ref == "" {
-		ref = cfg.DefaultModel
-	}
-	if err != nil || ref == "" {
-		return false
-	}
-	entry, ok := cfg.ResolveModel(ref)
-	return ok && config.EffectiveVision(entry)
-}
-
 func (a *App) loadConfigForVision(root string) (*config.Config, error) {
 	if hook := a.configLoadForRootHook; hook != nil {
 		hook(root)
