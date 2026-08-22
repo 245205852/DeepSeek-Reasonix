@@ -4238,6 +4238,7 @@ function ModelsSection({ s, busy, apply, backgroundApply, initialFocus }: Models
   const defaultRef = toRef(s.defaultModel, s);
   const plannerRef = toRef(s.plannerModel, s);
   const subagentRef = toRef(s.subagentModel, s);
+  const visionRef = s.visionModel === "auto" ? "auto" : toRef(s.visionModel, s);
   const plannerSelectRef = plannerRef === defaultRef ? "" : plannerRef;
   const [defaultProvider] = defaultRef.split("/");
   const defaultProviderView = s.providers.find((p) => p.name === defaultProvider);
@@ -4280,6 +4281,20 @@ function ModelsSection({ s, busy, apply, backgroundApply, initialFocus }: Models
   const parallelWriters = Number.isFinite(agent.maxParallelWriters) && agent.maxParallelWriters > 0
     ? Math.max(1, Math.min(subagentConcurrency, Math.floor(agent.maxParallelWriters)))
     : Math.min(3, subagentConcurrency);
+  const visionRefs = useMemo(() => {
+    const defaultProviderName = defaultRef.split("/")[0];
+    const candidates = refs.filter((ref) => {
+      const [provider, ...parts] = ref.split("/");
+      const model = parts.join("/");
+      const view = s.providers.find((item) => item.name === provider);
+      return Boolean(view?.visionModels?.includes(model));
+    });
+    return candidates.sort((a, b) => {
+      const aSame = a.startsWith(`${defaultProviderName}/`);
+      const bSame = b.startsWith(`${defaultProviderName}/`);
+      return aSame === bSame ? a.localeCompare(b) : aSame ? -1 : 1;
+    });
+  }, [defaultRef, refs, s.providers]);
 
   useEffect(() => {
     setCompactRatioDraft(String(compactRatioPercent));
@@ -4449,6 +4464,22 @@ function ModelsSection({ s, busy, apply, backgroundApply, initialFocus }: Models
                 includeSameDefault
                 onPick={(ref) => void apply(() => app.SetPlannerModel(ref))}
               />
+            </SettingsField>
+
+            <SettingsField label={t("settings.imageUnderstandingModel")} hint={t("settings.visionModelsHint")}>
+              <select
+                className="mem-select set-grow"
+                value={visionRef}
+                disabled={busy}
+                onChange={(e) => void apply(() => app.SetVisionModel(e.target.value))}
+              >
+                <option value="">{t("common.none")}</option>
+                <option value="auto">{t("common.auto")}</option>
+                {visionRefs.map((ref) => {
+                  const [provider, ...parts] = ref.split("/");
+                  return <option key={ref} value={ref}>{provider}/{parts.join("/")}</option>;
+                })}
+              </select>
             </SettingsField>
 
             <SettingsField label={t("settings.subagentModel")}>

@@ -1785,6 +1785,7 @@ export const en = {
   "settings.defaultModel": "Default model",
   "settings.defaultModelHint": "Used for new sessions; existing sessions keep their saved model.",
   "settings.plannerModel": "Dedicated planner model",
+  "settings.imageUnderstandingModel": "Image understanding model",
   "settings.plannerNone": "Use current model (single model)",
   "settings.subagentDefaults": "Subagent defaults",
   "settings.subagentModel": "Subagent model",

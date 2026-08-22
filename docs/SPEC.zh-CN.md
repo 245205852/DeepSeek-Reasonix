@@ -121,6 +121,11 @@ type Tool interface {
 
 当 `agent.planner_model` 与 executor 不同时，planner 与 executor 使用独立 session：
 
+图片理解兜底由 `agent.vision_model` 控制：空值保持现有行为，`auto` 只在当前执行器
+服务商内选择视觉模型，显式 `provider/model` 可跨服务商选择。视觉执行器先生成版本化的
+图片描述/OCR 摘要，摘要作为隐藏的当前用户回合内容持久化；当前模型本身支持图片时
+直接发送图片，不额外执行摘要请求。
+
 - 宿主使用原始用户文本和可信回合元数据做确定性路由，默认 executor-only；不调用
   classifier 模型，不从措辞、文件数量或关键词推断复杂度，也不从 controller 注入的
   prompt block 猜测宿主状态。独立 Planner 只响应显式先规划 / 规划再执行、显式等待批准、

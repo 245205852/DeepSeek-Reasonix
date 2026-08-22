@@ -1787,6 +1787,7 @@ export const zh: Record<DictKey, string> = {
   "settings.defaultModel": "默认模型",
   "settings.defaultModelHint": "用于新建会话；已有会话会继续使用各自保存的模型。",
   "settings.plannerModel": "独立规划模型",
+  "settings.imageUnderstandingModel": "图片理解",
   "settings.plannerNone": "使用当前模型（单模型）",
   "settings.subagentDefaults": "子代理默认值",
   "settings.subagentModel": "子代理模型",
