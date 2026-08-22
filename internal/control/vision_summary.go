@@ -120,6 +120,10 @@ func (c *Controller) summarizeImages(ctx context.Context, modelRef string, image
 		Messages:    []provider.Message{{Role: provider.RoleUser, Content: visionSummaryPrompt, Images: append([]string(nil), images...)}},
 		Temperature: provider.TemperaturePtr(0),
 		MaxTokens:   visionSummaryMaxTokens,
+		// Keep the bounded summary budget available for visible OCR and layout
+		// text. Providers that do not expose a low-effort vocabulary ignore this
+		// per-request hint and retain their configured default.
+		EffortOverride: "low",
 	})
 	if err != nil {
 		return nil, err
