@@ -1389,11 +1389,23 @@ func (a *App) applyConfigChangeWithWarning(setting string, mutate func(*config.C
 	}
 	if err := a.rebuildSetting(setting); err != nil {
 		if warning, ok := a.deferredRebuildWarning(setting, err); ok {
+			a.refreshActiveTabMetaExtras()
 			return warning, nil
 		}
 		return "", err
 	}
+	a.refreshActiveTabMetaExtras()
 	return "", nil
+}
+
+// refreshActiveTabMetaExtras invalidates the cached model capability snapshot
+// after a settings rebuild. In particular, changing Agent.VisionModel should
+// immediately suppress the text-only image warning in the composer instead of
+// waiting for the normal metadata cache TTL.
+func (a *App) refreshActiveTabMetaExtras() {
+	if tab := a.activeTab(); tab != nil {
+		a.scheduleTabMetaExtrasRefresh(tab.ID)
+	}
 }
 
 // applyGlobalProviderConfigChange persists a provider-wide setting and refreshes
