@@ -87,7 +87,10 @@ console.log("\nbundle budgets");
 // main-v2 merge adds another 0.3 KiB of deterministic shared startup code.
 // Keep the increase explicit and bounded instead of hiding it in a broad
 // percentage ratchet.
-const initialJSBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 430.9 : 430.9;
+// The retained-transcript surface adds a small, bounded navigation owner to
+// the startup path (overlay state + stale-completion guard). Keep the increase
+// explicit and narrow; the measured build is 431.1 KiB gzip.
+const initialJSBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 431.3 : 431.3;
 assertBudget("initial JavaScript gzip", initialJSGzip, initialJSBudgetKiB * 1024);
 assertBudget("largest initial JavaScript chunk gzip", largestInitialJS, 280 * 1024);
 // Render-blocking CSS is intentionally absent: styles.css loads deferred via
@@ -101,7 +104,8 @@ if (initialCSS.length > 0) {
 // Extension surfaces, Task Monitor, and compact decision receipts share the
 // application stylesheet loaded before React mounts. Keep their combined
 // allowance bounded even though the file is no longer render-blocking.
-assertBudget("deferred app-shell CSS gzip", appShellCSSGzip, 114 * 1024);
+// Navigation overlay styles add a bounded 0.1 KiB to the deferred shell.
+assertBudget("deferred app-shell CSS gzip", appShellCSSGzip, 114.2 * 1024);
 if (localeChunks.length !== 2) {
   throw new Error(`expected 2 on-demand Chinese locale chunks, found ${localeChunks.length}`);
 }

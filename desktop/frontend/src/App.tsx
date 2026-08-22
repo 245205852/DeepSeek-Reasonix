@@ -1118,13 +1118,32 @@ export default function App() {
   const [tabMetas, setTabMetas] = useState<TabMeta[]>([]);
   const [tabOrderIds, setTabOrderIds] = useState<string[]>([]);
   const [navigationSurfaceIntent, setNavigationSurfaceIntent] = useState<number | null>(null);
+  type PreservedTranscriptSurface = {
+    tabId?: string;
+    items: Item[];
+    geometrySessionKey?: string;
+  };
+  const [preservedTranscriptSurface, setPreservedTranscriptSurface] = useState<PreservedTranscriptSurface | null>(null);
+  const renderedTranscriptSurfaceRef = useRef<PreservedTranscriptSurface | null>(null);
   const beginNavigationSurface = useCallback((intent: number) => {
     recordFrontendDiagnostic("navigation", "navigation.begin", { phase: "begin" });
-    flushSync(() => setNavigationSurfaceIntent(intent));
+    const rendered = renderedTranscriptSurfaceRef.current;
+    flushSync(() => {
+      if (rendered && rendered.items.length > 0) {
+        setPreservedTranscriptSurface(rendered);
+      } else {
+        setPreservedTranscriptSurface(null);
+      }
+      setNavigationSurfaceIntent(intent);
+    });
   }, []);
   const settleNavigationSurface = useCallback((intent: number) => {
     recordFrontendDiagnostic("navigation", "navigation.settle", { phase: "settle" });
-    setNavigationSurfaceIntent((current) => settleNavigationSurfaceIntent(current, intent));
+    setNavigationSurfaceIntent((current) => {
+      const next = settleNavigationSurfaceIntent(current, intent);
+      if (next === null) setPreservedTranscriptSurface(null);
+      return next;
+    });
   }, []);
   const [tabRevealSignal, setTabRevealSignal] = useState(0);
   const [transcriptRevealSignal, setTranscriptRevealSignal] = useState(0);
@@ -3473,6 +3492,23 @@ export default function App() {
   // Display items: backend history is authoritative after immediate commit.
   // rewindState only drives the undo banner, not optimistic truncation.
   const displayItems = transcriptItems;
+  // Keep a render-level snapshot of the last stable transcript. Navigation
+  // starts before the controller swaps activeTabId, so this ref gives the
+  // transition layer a synchronous, immutable surface to retain as its
+  // background instead of rendering the target tab's empty state.
+  if (!runtimeTransitioning) {
+    renderedTranscriptSurfaceRef.current = {
+      tabId: activeTabId,
+      items: displayItems,
+      geometrySessionKey: transcriptGeometrySessionKey,
+    };
+  }
+  const visibleTranscriptSurface = runtimeTransitioning && preservedTranscriptSurface
+    ? preservedTranscriptSurface
+    : null;
+  const visibleTranscriptItems = visibleTranscriptSurface?.items ?? displayItems;
+  const visibleTranscriptTabId = visibleTranscriptSurface?.tabId ?? activeTabId;
+  const visibleTranscriptGeometryKey = visibleTranscriptSurface?.geometrySessionKey ?? transcriptGeometrySessionKey;
   const latestGuidanceConsumed = useMemo(() => {
     for (let i = state.items.length - 1; i >= 0; i--) {
       const item = state.items[i];
@@ -4854,40 +4890,57 @@ export default function App() {
               <NoticePreviewPanel />
             ) : (
               <>
-                <Transcript
-                  items={runtimeTransitioning ? [] : displayItems}
-                  live={runtimeTransitioning ? undefined : state.live}
-                  liveStore={liveStore}
-                  tabId={activeTabId}
-                  geometrySessionKey={transcriptGeometrySessionKey}
-                  footerHeight={footerHeight}
-                  onPrompt={handleTranscriptPrompt}
-                  onDeliveryContinue={() => void handleDeliveryContinue()}
-                  onAcceptDelivery={() => void app.AcceptDeliveryToTab(activeTabIdRef.current ?? "")}
-                  onOpenChanges={() => openRightDockMode("changed")}
-                  onOpenVerification={openTurnVerification}
-                  onEditPrompt={handleEditPrompt}
-                  onRewind={handleMessageAction}
-                  checkpoints={state.checkpoints}
-                  actionPending={state.messageAction != null}
-                  rewindDisabled={Boolean(activeTab?.readOnly) || !controllerReady || hydratePlaceholderActive || rewindState != null || rewindCommitting || state.running || state.messageAction != null || state.approval != null || state.ask != null || clearContextPending}
-                  running={state.running || rewindCommitting}
-                  turnStartAt={state.turnStartAt}
-                  contentRevision={state.historyLayoutRevision}
-                  welcomeVariant={sidebarCreation ? "creation" : "default"}
-                  creationMode={sidebarCreation}
-                  actionHoverMenus={sidebarCreation && !hydratePlaceholderActive && !runtimeTransitioning}
-                  rewindSignal={rewindSignal}
-                  revealSignal={transcriptRevealSignal}
-                  hydrating={runtimeTransitioning || transcriptHydrating}
-                  hasOlderHistory={!runtimeTransitioning && state.historyHasOlder && !rewindState}
-                  historyStartTurn={state.historyStartTurn}
-                  historyTotalTurns={state.historyTotalTurns}
-                  loadingOlderHistory={state.historyOlderLoading}
-                  olderHistoryError={state.historyOlderError}
-                  onLoadOlderHistory={handleLoadOlderHistory}
-                  invocationMetadata={activeTabId ? invocationMetadataByTab[activeTabId] : undefined}
-                />
+                <div className="transcript-navigation-surface" aria-busy={runtimeTransitioning}>
+                  <div
+                    className="transcript-navigation-content"
+                    aria-hidden={runtimeTransitioning || undefined}
+                    ref={(node) => {
+                      if (!node) return;
+                      (node as HTMLElement & { inert?: boolean }).inert = runtimeTransitioning;
+                    }}
+                  >
+                    <Transcript
+                      items={visibleTranscriptItems}
+                      live={runtimeTransitioning ? undefined : state.live}
+                      liveStore={liveStore}
+                      tabId={visibleTranscriptTabId}
+                      geometrySessionKey={visibleTranscriptGeometryKey}
+                      footerHeight={footerHeight}
+                      onPrompt={handleTranscriptPrompt}
+                      onDeliveryContinue={() => void handleDeliveryContinue()}
+                      onAcceptDelivery={() => void app.AcceptDeliveryToTab(activeTabIdRef.current ?? "")}
+                      onOpenChanges={() => openRightDockMode("changed")}
+                      onOpenVerification={openTurnVerification}
+                      onEditPrompt={handleEditPrompt}
+                      onRewind={handleMessageAction}
+                      checkpoints={state.checkpoints}
+                      actionPending={state.messageAction != null}
+                      rewindDisabled={Boolean(activeTab?.readOnly) || !controllerReady || hydratePlaceholderActive || rewindState != null || rewindCommitting || state.running || state.messageAction != null || state.approval != null || state.ask != null || clearContextPending || runtimeTransitioning}
+                      running={state.running || rewindCommitting}
+                      turnStartAt={state.turnStartAt}
+                      contentRevision={state.historyLayoutRevision}
+                      welcomeVariant={sidebarCreation ? "creation" : "default"}
+                      creationMode={sidebarCreation}
+                      actionHoverMenus={sidebarCreation && !hydratePlaceholderActive && !runtimeTransitioning}
+                      rewindSignal={rewindSignal}
+                      revealSignal={transcriptRevealSignal}
+                      hydrating={runtimeTransitioning || transcriptHydrating}
+                      hasOlderHistory={!runtimeTransitioning && state.historyHasOlder && !rewindState}
+                      historyStartTurn={state.historyStartTurn}
+                      historyTotalTurns={state.historyTotalTurns}
+                      loadingOlderHistory={state.historyOlderLoading}
+                      olderHistoryError={state.historyOlderError}
+                      onLoadOlderHistory={handleLoadOlderHistory}
+                      invocationMetadata={visibleTranscriptTabId ? invocationMetadataByTab[visibleTranscriptTabId] : undefined}
+                    />
+                  </div>
+                  {runtimeTransitioning ? (
+                    <div className="transcript-navigation-overlay" role="status" aria-live="polite">
+                      <span className="transcript-navigation-overlay__spinner" aria-hidden="true" />
+                      <span>{t("common.loading")}</span>
+                    </div>
+                  ) : null}
+                </div>
                 {!runtimeTransitioning && state.hydrateError ? <div className="history-load-error" role="alert"><span>{state.hydrateError}</span><button type="button" className="btn btn--small" onClick={() => void retrySessionHistory(activeTabId)}>{t("common.retry")}</button></div> : null}
               </>
             )}

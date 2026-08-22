@@ -307,9 +307,9 @@ export function Transcript({
 
   // Row measurement and footer resize share the same coalesced height path.
   useEffect(() => {
-    if (!virtuosoReadyRef.current || !stick.current) return;
+    if (hydrating || !virtuosoReadyRef.current || !stick.current) return;
     followGrowingTail();
-  }, [footerHeight, followGrowingTail, stick]);
+  }, [footerHeight, followGrowingTail, hydrating, stick]);
 
   const refreshGeometryEnvironment = useCallback((element: HTMLElement) => {
     const next = readTranscriptGeometryEnvironment(element);
@@ -340,12 +340,12 @@ export function Transcript({
       }
       if (height !== lastHeight) {
         lastHeight = height;
-        followGrowingTail();
+        if (!hydrating) followGrowingTail();
       }
     });
     observer.observe(element);
     return () => observer.disconnect();
-  }, [scrollElement, followGrowingTail, refreshGeometryEnvironment]);
+  }, [hydrating, scrollElement, followGrowingTail, refreshGeometryEnvironment]);
 
   // Typography settings update CSS variables synchronously. Re-read the
   // geometry signature without remounting Virtuoso; old exact samples then
@@ -634,6 +634,7 @@ export function Transcript({
     loadingOlderHistory,
     olderHistoryError,
     running,
+    suppressAutoComplete: hydrating,
     onLoadOlderHistory,
     clearTranscriptSelection,
     invalidateAnchors,
@@ -876,8 +877,9 @@ export function Transcript({
 
   const handleTotalListHeightChanged = useCallback((height: number) => {
     if (SHOW_SCROLL_DIAGNOSTICS) recordTranscriptScrollDiagnostic("list-height", { listHeight: height });
+    if (hydrating) return;
     followGrowingTail();
-  }, [followGrowingTail]);
+  }, [followGrowingTail, hydrating]);
 
   const virtuosoContext = useMemo<TranscriptVirtuosoContext>(() => ({
     tabId,

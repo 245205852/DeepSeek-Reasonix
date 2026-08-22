@@ -91,6 +91,9 @@ export function useTranscriptScrollArbiter({
   const deliverScrollRef = useRef<((element?: HTMLDivElement) => void) | null>(null);
   const generationRef = useRef(0);
   const followFrameRef = useRef<number | null>(null);
+  // Virtuoso reuses physical row elements. A known size from the previous
+  // logical row must not be treated as the current row's geometry contract.
+  const measuredRowKeyRef = useRef(new WeakMap<HTMLElement, string>());
   const layoutTransientRef = useRef(false);
   const resizeSettleFrameRef = useRef<number | null>(null);
   const readerIntentTimerRef = useRef<number | null>(null);
@@ -508,6 +511,15 @@ export function useTranscriptScrollArbiter({
       element.style.removeProperty("height");
       delete element.dataset.transcriptGeometryFrozen;
     }
+    if (field === "offsetHeight") {
+      const currentRowKey = element.dataset.rowKey;
+      if (currentRowKey) {
+        const previousRowKey = measuredRowKeyRef.current.get(element);
+        if (previousRowKey !== undefined && previousRowKey !== currentRowKey) element.dataset.transcriptRecycled = "true";
+        else delete element.dataset.transcriptRecycled;
+        measuredRowKeyRef.current.set(element, currentRowKey);
+      }
+    }
     if (CAPTURE_TRANSCRIPT_SCROLL_DIAGNOSTICS) noteTranscriptRowMeasurement(element, field, measured);
     if (!frozen && !pendingGeometry && field === "offsetHeight") {
       const rowKey = element.dataset.rowKey;
@@ -522,16 +534,19 @@ export function useTranscriptScrollArbiter({
       const staticEstimate = Number.parseFloat(element.dataset.staticEstimate ?? "");
       const staticEstimateMatchesState = rawVariant === element.dataset.transcriptLayoutVariant;
       if (rowKey && kind && isTranscriptRowLayoutVariant(rawVariant) && measured > 0 && width > 0) {
-        onItemMeasuredRef.current?.(
-          rowKey,
-          kind,
-          rawVariant,
-          measured,
-          width,
-          element.dataset.layoutVersion,
-          estimateSource,
-          staticEstimateMatchesState && Number.isFinite(staticEstimate) ? staticEstimate : undefined,
-        );
+        const recycled = element.dataset.transcriptRecycled === "true";
+        if (!recycled) {
+          onItemMeasuredRef.current?.(
+            rowKey,
+            kind,
+            rawVariant,
+            measured,
+            width,
+            element.dataset.layoutVersion,
+            estimateSource,
+            staticEstimateMatchesState && Number.isFinite(staticEstimate) ? staticEstimate : undefined,
+          );
+        }
       }
     }
     return measured;

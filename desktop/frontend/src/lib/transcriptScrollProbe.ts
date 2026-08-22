@@ -103,7 +103,12 @@ function rowFoldState(element: HTMLElement): { foldState: "none" | "open" | "clo
 /** Records only geometry and fixed row classifications; text and row keys never leave the DOM. */
 export function noteTranscriptRowMeasurement(element: HTMLElement, field: "offsetHeight" | "offsetWidth", measuredSize: number): void {
   if (field !== "offsetHeight") return;
-  const previousSize = finiteDatasetNumber(element.dataset.knownSize);
+  // A physical Virtuoso row can be rebound to a different logical row before
+  // its known size is refreshed. Treat that size as recycled-node metadata,
+  // not as the current row's geometry contract.
+  const previousSize = element.dataset.transcriptRecycled === "true"
+    ? undefined
+    : finiteDatasetNumber(element.dataset.knownSize);
   const estimatedSize = finiteDatasetNumber(element.dataset.estimatedSize);
   const comparisonSize = previousSize ?? estimatedSize;
   if (comparisonSize !== undefined && Math.abs(measuredSize - comparisonSize) <= 0.5) return;
