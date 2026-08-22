@@ -927,6 +927,7 @@ export interface Meta {
   workspacePath?: string;
   gitBranch?: string;
   imageInputEnabled?: boolean;
+  visionFallbackEnabled?: boolean;
   autoApproveTools?: boolean;
   bypass?: boolean; // legacy JSON key for YOLO/full-access tool auto-approval
   collaborationMode?: CollaborationMode;
@@ -2252,6 +2253,7 @@ export interface BotConnectionDiagnostic {
 export interface SettingsView {
   defaultModel: string;
   plannerModel: string;
+  visionModel: string;
   subagentModel: string;
   subagentEffort: string;
   autoPlan: string;

@@ -91,8 +91,10 @@ console.log("\nbundle budgets");
 // the startup path (overlay state + stale-completion guard). Keep the increase
 // explicit and narrow; the measured build is 431.1 KiB gzip.
 // The web-search tool card now resolves the same display projection lazily so
-// its filtered count matches the assistant Sources panel.
-const initialJSBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 431.5 : 431.5;
+// its filtered count matches the assistant Sources panel. The measured build
+// is 431.509 KiB gzip; keep 0.1 KiB of explicit headroom for hash/toolchain
+// drift instead of relying on a rounded equality.
+const initialJSBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 431.6 : 431.6;
 assertBudget("initial JavaScript gzip", initialJSGzip, initialJSBudgetKiB * 1024);
 assertBudget("largest initial JavaScript chunk gzip", largestInitialJS, 280 * 1024);
 // Render-blocking CSS is intentionally absent: styles.css loads deferred via
