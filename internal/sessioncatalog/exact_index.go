@@ -16,6 +16,13 @@ func (c *Catalog) prepareExactPathProjection(ctx context.Context, raw SessionRec
 	if sameSessionIndexInput(existing, record) {
 		return record, true
 	}
+	// A sidecar can be observed in an older, transient state while the
+	// transcript itself has not changed. Never let an exact-path refresh move a
+	// known conversation backwards in the activity-sorted sidebar.
+	if existing.ContentFingerprint == record.ContentFingerprint &&
+		existing.LastActivityAt > record.LastActivityAt {
+		record.LastActivityAt = existing.LastActivityAt
+	}
 	if existing.TurnsState != TurnsUnknown && record.TurnsState == TurnsUnknown &&
 		existing.ContentFingerprint == record.ContentFingerprint {
 		record.Preview = existing.Preview

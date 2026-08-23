@@ -117,3 +117,49 @@ func TestExactIndexDoesNotDowngradeKnownCounts(t *testing.T) {
 		t.Fatalf("exact index lost known counts or recovery metadata: %+v", got)
 	}
 }
+
+func TestExactIndexDoesNotRegressKnownActivity(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "chat.jsonl")
+	if err := os.WriteFile(path, []byte(`{"role":"user","content":"hi"}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	created := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	current := created.Add(15 * 24 * time.Hour)
+	if err := agent.SaveBranchMetaPreserveUpdated(path, agent.BranchMeta{
+		CreatedAt: created, UpdatedAt: current, Scope: "global", TopicID: "topic",
+		TopicTitle: "Chat", SchemaVersion: agent.BranchMetaCountsVersion, Turns: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	catalog, err := Open(ctx, Options{InMemory: true, DisableRepair: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = catalog.Close(ctx) })
+	target := DirectoryTarget{Path: dir, Scope: "global"}
+	if err := catalog.ReconcileDirectory(ctx, target); err != nil {
+		t.Fatal(err)
+	}
+	// A transient sidecar read can expose an older timestamp while the
+	// authoritative transcript is unchanged. Exact indexing must not move the
+	// conversation backwards in the sidebar.
+	if err := agent.SaveBranchMetaPreserveUpdated(path, agent.BranchMeta{
+		CreatedAt: created, UpdatedAt: created.Add(30 * time.Hour), Scope: "global", TopicID: "topic",
+		TopicTitle: "Chat", SchemaVersion: agent.BranchMetaCountsVersion, Turns: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := catalog.IndexSessionPath(ctx, target, path); err != nil {
+		t.Fatal(err)
+	}
+	record, ok, err := catalog.GetSession(ctx, path)
+	if err != nil || !ok {
+		t.Fatalf("GetSession: ok=%v err=%v", ok, err)
+	}
+	if record.LastActivityAt != current.UnixMilli() {
+		t.Fatalf("lastActivityAt = %d, want preserved %d", record.LastActivityAt, current.UnixMilli())
+	}
+}
