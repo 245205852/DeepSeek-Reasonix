@@ -230,6 +230,9 @@ func (a *App) stopRemoteRuntime() {
 // emitRemoteEvent bridges a kernel callback to the frontend through the async
 // emitter so a slow webview never blocks the kernel.
 func (a *App) emitRemoteEvent(name string, payload any) {
+	if a.remoteEventHook != nil {
+		a.remoteEventHook(name, payload)
+	}
 	ctx := a.bootContext()
 	if ctx == nil {
 		return
@@ -240,6 +243,9 @@ func (a *App) emitRemoteEvent(name string, payload any) {
 // remoteEventSink implementation on *App.
 func (a *App) onStatus(s RemoteConnectionStatusView) {
 	a.emitRemoteEvent("remote:status", s)
+	// Open remote tabs follow the SSH lifecycle: suspend on transient
+	// drops, re-attach on reconnect, park in error on terminal failure.
+	a.remoteTabsHostStatus(s.HostID, s.State, s.Error)
 	// A terminal SSH failure (auth, host key, exhausted retries) kills the
 	// tunnel: close the host's web window so the user is not left staring at a
 	// dead Serve page. The frontend already shows the failure reason through
@@ -1653,26 +1659,6 @@ func (m *desktopRemoteManager) ServerLogs(ctx context.Context, hostID, workspace
 	return sb.String(), nil
 }
 
-// CheckPlatform rejects unsupported remote operating systems right after
-// connect, applying the same ParseUname gate EnsureServe uses, so the wizard
-// fails early instead of deep in serve bootstrap.
-func (m *desktopRemoteManager) CheckPlatform(ctx context.Context, hostID string) error {
-	mh := m.managed(hostID)
-	if mh == nil || mh.client == nil {
-		return fmt.Errorf("host %q is not connected", hostID)
-	}
-	opCtx, cancel := managedOperationContext(ctx, mh)
-	defer cancel()
-	res, err := mh.client.Exec(opCtx, "uname -sm")
-	if err != nil || strings.TrimSpace(string(res.Stdout)) == "" {
-		return fmt.Errorf("remote host platform check failed: cannot detect OS (supported: Linux, macOS)")
-	}
-	if _, _, perr := bootstrap.ParseUname(string(res.Stdout)); perr != nil {
-		return fmt.Errorf("remote host platform check failed: %w", perr)
-	}
-	return nil
-}
-
 // credentialProxySetup prepares local-proxy credential mode for one
 // workspace: starts the desktop key holder, registers the workspace's virtual
 // token against the model its tabs run, and opens the reverse tunnel the
@@ -1878,6 +1864,26 @@ func portOfAddr(addr string) (int, bool) {
 		return 0, false
 	}
 	return port, true
+}
+
+// CheckPlatform rejects unsupported remote operating systems right after
+// connect, applying the same ParseUname gate EnsureServe uses, so the wizard
+// fails early instead of deep in serve bootstrap.
+func (m *desktopRemoteManager) CheckPlatform(ctx context.Context, hostID string) error {
+	mh := m.managed(hostID)
+	if mh == nil || mh.client == nil {
+		return fmt.Errorf("host %q is not connected", hostID)
+	}
+	opCtx, cancel := managedOperationContext(ctx, mh)
+	defer cancel()
+	res, err := mh.client.Exec(opCtx, "uname -sm")
+	if err != nil || strings.TrimSpace(string(res.Stdout)) == "" {
+		return fmt.Errorf("remote host platform check failed: cannot detect OS (supported: Linux, macOS)")
+	}
+	if _, _, perr := bootstrap.ParseUname(string(res.Stdout)); perr != nil {
+		return fmt.Errorf("remote host platform check failed: %w", perr)
+	}
+	return nil
 }
 
 func (m *desktopRemoteManager) Close() error {
