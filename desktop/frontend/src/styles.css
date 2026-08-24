@@ -5327,8 +5327,10 @@ button.reasoning-summary:focus-visible {
    borders merge into a single tall vertical bar. Fill the frame to its
    containing row with -webkit-fill-available instead, which preserves the
    span's inline-block baseline alignment (its vertical position) while giving
-   it the full content width. */
+   it the full content width. Keep a standards-compatible fallback for
+   browsers that do not implement the WebKit value. */
 .md .katex .fbox {
+  width: 100%;
   width: -webkit-fill-available;
 }
 .md--stream-tail {
