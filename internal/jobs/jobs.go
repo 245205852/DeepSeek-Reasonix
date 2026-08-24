@@ -829,16 +829,12 @@ func (m *Manager) recordStalled(parentSession, id, kind, label string) {
 	m.completed = append(m.completed, completion{sessionID: parentSession, text: text})
 	active := m.active
 	shouldEmit := active == "" || parentSession == "" || active == parentSession
-	noticeText := fmt.Sprintf("background %s still running after %s with no visible output: %s", kind, quietFor, id)
-	noticeDetail := "A quiet long-running job can look like this, so this is a heads-up, not an error. If it should have finished, inspect with wait or bash_output, or stop it with kill_shell. Set tools.background_jobs.stalled_warning_seconds to 0 in your config to disable this notice."
+	notice := event.Event{Kind: event.Notice, Level: event.LevelWarn,
+		Text:   fmt.Sprintf("background %s still running after %s with no visible output: %s", kind, quietFor, id),
+		Detail: "A quiet long-running job can look like this, so this is a heads-up, not an error. If it should have finished, inspect with wait or bash_output, or stop it with kill_shell. Set tools.background_jobs.stalled_warning_seconds to 0 in your config to disable this notice."}
 	m.mu.Unlock()
 	if shouldEmit {
-		m.sink.Emit(event.Event{
-			Kind:   event.Notice,
-			Level:  event.LevelWarn,
-			Text:   noticeText,
-			Detail: noticeDetail,
-		})
+		m.sink.Emit(notice)
 	}
 }
 
