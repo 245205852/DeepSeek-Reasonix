@@ -3,6 +3,7 @@
   "private": true,
   "version": "0.0.0",
   "type": "module",
+  "packageManager": "pnpm@10.34.5",
   "scripts": {
     "dev": "vite",
     "build": "pnpm lint:hooks && pnpm check:waapi && pnpm check:scroll-writer && node scripts/check-css-syntax.mjs src/styles.css && node scripts/check-z-index-tokens.mjs src/styles.css && tsc --noEmit && vite build && node scripts/check-bundle-budget.mjs",
