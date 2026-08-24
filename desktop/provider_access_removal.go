@@ -48,10 +48,8 @@ func (a *App) RemoveProviderAccesses(rawNames []string) error {
 	if err != nil {
 		return err
 	}
-	if len(names) > 1 {
-		if targets, ok := atomicCustomProviderGroupTargets(cfg, names); ok {
-			return a.deleteProvidersAndRetargetTabs(targets)
-		}
+	if len(names) > 1 && isAtomicCustomProviderGroup(cfg, names) {
+		return a.deleteProvidersAndRetargetTabs(names)
 	}
 	officialKind := ""
 	for _, name := range names {
@@ -74,40 +72,28 @@ func (a *App) RemoveProviderAccesses(rawNames []string) error {
 	return a.removeBuiltInProviderAccessAndRetargetTabs(names)
 }
 
-// atomicCustomProviderGroupTargets identifies custom provider families that
-// are represented by one settings card but persisted as multiple routes. It
-// expands a request to every installed route in that family so the deletion
-// matches the card-level product identity even if a caller has a stale view.
+// isAtomicCustomProviderGroup identifies custom provider families that are
+// represented by one settings card but persisted as multiple routes.
 // Keep this allowlist narrow: RemoveProviderAccesses intentionally rejects
 // arbitrary custom-provider batches so callers cannot accidentally delete
 // unrelated endpoints in one operation.
-func atomicCustomProviderGroupTargets(c *config.Config, names []string) ([]string, bool) {
+func isAtomicCustomProviderGroup(c *config.Config, names []string) bool {
 	if c == nil || len(names) < 2 {
-		return nil, false
+		return false
 	}
 	group := ""
 	for _, name := range names {
 		current := customProviderGroupKey(name)
 		if current == "" || (group != "" && current != group) {
-			return nil, false
+			return false
 		}
 		p, ok := c.Provider(name)
 		if !ok || isOfficialBuiltInProvider(*p) {
-			return nil, false
+			return false
 		}
 		group = current
 	}
-	if group == "" {
-		return nil, false
-	}
-	targets := make([]string, 0, len(names))
-	for i := range c.Providers {
-		p := &c.Providers[i]
-		if customProviderGroupKey(p.Name) == group && !isOfficialBuiltInProvider(*p) {
-			targets = append(targets, p.Name)
-		}
-	}
-	return uniqueNonEmptyStrings(targets), len(targets) > 1
+	return group != ""
 }
 
 func customProviderGroupKey(name string) string {
@@ -172,11 +158,23 @@ func providerRemovalStateFingerprint(c *config.Config, credentialsRevision strin
 		_, _ = fmt.Fprintf(h, "%d:", len(value))
 		_, _ = h.Write([]byte(value))
 	}
-	write("provider-removal-state-v2")
+	write("provider-removal-state-v3")
 	write(credentialsRevision)
 	write(c.DefaultModel)
 	write(c.Agent.PlannerModel)
+	write(c.Agent.VisionModel)
+	write(c.Agent.GuardianModel)
+	write(c.Agent.RecoveryModel)
 	write(c.Agent.SubagentModel)
+	write(c.Bot.Model)
+	write(c.Bot.QQ.Model)
+	write(c.Bot.Dingtalk.Model)
+	for i := range c.Bot.Routes {
+		write(c.Bot.Routes[i].Model)
+	}
+	for i := range c.Bot.Connections {
+		write(c.Bot.Connections[i].Model)
+	}
 	for _, name := range c.Desktop.ProviderAccess {
 		write(name)
 	}
@@ -252,6 +250,15 @@ func retargetProviderReferences(c *config.Config, names []string, fallbackRef st
 	if providerRefMatchesAny(c, c.Agent.PlannerModel, names) {
 		c.Agent.PlannerModel = fallbackRef
 	}
+	if providerRefMatchesAny(c, c.Agent.VisionModel, names) {
+		c.Agent.VisionModel = ""
+	}
+	if providerRefMatchesAny(c, c.Agent.GuardianModel, names) {
+		c.Agent.GuardianModel = fallbackRef
+	}
+	if providerRefMatchesAny(c, c.Agent.RecoveryModel, names) {
+		c.Agent.RecoveryModel = fallbackRef
+	}
 	if providerRefMatchesAny(c, c.Agent.SubagentModel, names) {
 		c.Agent.SubagentModel = fallbackRef
 	}
@@ -262,6 +269,25 @@ func retargetProviderReferences(c *config.Config, names []string, fallbackRef st
 			} else {
 				c.Agent.SubagentModels[skill] = fallbackRef
 			}
+		}
+	}
+	if providerRefMatchesAny(c, c.Bot.Model, names) {
+		c.Bot.Model = fallbackRef
+	}
+	if providerRefMatchesAny(c, c.Bot.QQ.Model, names) {
+		c.Bot.QQ.Model = fallbackRef
+	}
+	if providerRefMatchesAny(c, c.Bot.Dingtalk.Model, names) {
+		c.Bot.Dingtalk.Model = fallbackRef
+	}
+	for i := range c.Bot.Routes {
+		if providerRefMatchesAny(c, c.Bot.Routes[i].Model, names) {
+			c.Bot.Routes[i].Model = fallbackRef
+		}
+	}
+	for i := range c.Bot.Connections {
+		if providerRefMatchesAny(c, c.Bot.Connections[i].Model, names) {
+			c.Bot.Connections[i].Model = fallbackRef
 		}
 	}
 }
@@ -313,11 +339,8 @@ func (a *App) planProviderRemoval(names []string, official bool) (providerRemova
 			return providerRemovalPlan{}, err
 		}
 	} else {
-		if len(names) > 1 {
-			targets, ok := atomicCustomProviderGroupTargets(cfg, names)
-			if !ok || len(targets) != len(names) {
-				return providerRemovalPlan{}, fmt.Errorf("remove provider: custom provider group is not supported")
-			}
+		if len(names) > 1 && !isAtomicCustomProviderGroup(cfg, names) {
+			return providerRemovalPlan{}, fmt.Errorf("remove provider: custom provider group is not supported")
 		}
 		for _, name := range names {
 			p, ok := cfg.Provider(name)
