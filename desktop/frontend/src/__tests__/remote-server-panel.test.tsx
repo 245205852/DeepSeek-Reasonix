@@ -73,15 +73,6 @@ window.go = { main: { App: {
     stopCalls.push({ hostId, workspace });
   },
 } as Partial<AppBindings> as AppBindings } };
-||||||| /tmp/m3work/o
-  async StopRemoteServer() {},
-} } };
-=======
-  async StopRemoteServer(hostId: string, workspace: string) {
-    stopCalls.push({ hostId, workspace });
-  },
-} as Partial<AppBindings> as AppBindings } };
->>>>>>> /tmp/m3work/b
 
 const host = { id: "box", label: "box", host: "box.test", port: 22, user: "dev", identityFile: "", proxyJump: "", defaultWorkspace: "/srv/app", serveInstall: "auto", credentialMode: "remote", useSSHConfig: false };
 useRemoteStore.getState().setHosts([host]);
