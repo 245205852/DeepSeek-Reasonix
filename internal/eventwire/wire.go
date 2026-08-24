@@ -185,6 +185,10 @@ func ToWire(e event.Event) Event {
 		if e.RetryScope != "" {
 			w.RetryScope = string(e.RetryScope)
 		}
+	case event.ProviderUnreachable:
+		// Text rides the generic field; attempt counters mirror Retrying.
+		w.RetryAttempt = e.RetryAttempt
+		w.RetryMax = e.RetryMax
 	case event.StreamAttempt:
 		w.StreamAttempt = &StreamAttempt{
 			ID:      e.StreamAttempt.ID,
@@ -578,6 +582,7 @@ var kindNames = map[event.Kind]string{
 	event.TurnPhase:               "turn_phase",
 	event.CompletionSummary:       "completion_summary",
 	event.ToolResultPreview:       "tool_result_preview",
+	event.ProviderUnreachable:     "provider_unreachable",
 }
 
 // ContextMaintenance is the JSON form of event.ContextMaintenance.

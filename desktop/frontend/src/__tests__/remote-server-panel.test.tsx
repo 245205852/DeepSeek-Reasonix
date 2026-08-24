@@ -4,8 +4,10 @@
 // "Open Remote Web" entry, Serve progress states, the workspace home-directory
 // fallback, and the fixed remote-provider hint.
 
-import { JSDOM } from "jsdom";
 import React from "react";
+import { JSDOM } from "jsdom";
+
+import type { AppBindings } from "../lib/bridge";
 
 let passed = 0;
 let failed = 0;
@@ -67,12 +69,22 @@ window.go = { main: { App: {
   async OpenRemoteWorkspace(hostId: string, workspace: string) {
     openCalls.push({ hostId, workspace });
   },
+<<<<<<< /tmp/m3work/a
   async StopRemoteServer(hostId: string, workspace: string) {
     stopCalls.push({ hostId, workspace });
   },
 } } };
+||||||| /tmp/m3work/o
+  async StopRemoteServer() {},
+} } };
+=======
+  async StopRemoteServer(hostId: string, workspace: string) {
+    stopCalls.push({ hostId, workspace });
+  },
+} as Partial<AppBindings> as AppBindings } };
+>>>>>>> /tmp/m3work/b
 
-const host = { id: "box", label: "box", host: "box.test", port: 22, user: "dev", identityFile: "", proxyJump: "", defaultWorkspace: "/srv/app", serveInstall: "auto", useSSHConfig: false };
+const host = { id: "box", label: "box", host: "box.test", port: 22, user: "dev", identityFile: "", proxyJump: "", defaultWorkspace: "/srv/app", serveInstall: "auto", credentialMode: "remote", useSSHConfig: false };
 useRemoteStore.getState().setHosts([host]);
 useRemoteStore.getState().openExplorer("box");
 useRemoteStore.getState().setExplorerTab("server");
@@ -132,7 +144,7 @@ await act(async () => {
   useRemoteStore.getState().setExplorerTab("server");
   useRemoteStore.getState().setHosts([
     host,
-    { id: "bare", label: "bare", host: "bare.test", port: 22, user: "dev", identityFile: "", proxyJump: "", defaultWorkspace: "", serveInstall: "auto", useSSHConfig: false },
+    { id: "bare", label: "bare", host: "bare.test", port: 22, user: "dev", identityFile: "", proxyJump: "", defaultWorkspace: "", serveInstall: "auto", credentialMode: "remote", useSSHConfig: false },
   ]);
   useRemoteStore.getState().applyStatus({ hostId: "bare", state: "connected" });
   await Promise.resolve();

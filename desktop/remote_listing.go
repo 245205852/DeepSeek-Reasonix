@@ -37,6 +37,28 @@ type RemoteSessionView struct {
 	Pinned         bool   `json:"pinned,omitempty"`
 }
 
+// serveURL joins a serve base URL and an API path.
+func serveURL(base, path string) string {
+	return strings.TrimRight(base, "/") + path
+}
+
+// servePost posts a JSON body and discards the response payload.
+func servePost(ctx context.Context, client *http.Client, url string, body []byte) error {
+	if body == nil {
+		body = []byte("{}")
+	}
+	resp, err := serveDo(ctx, client, http.MethodPost, url, body)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return nil
+	}
+	return fmt.Errorf("%s: status %d", url, resp.StatusCode)
+}
+
 // serveDo issues a JSON request; the csrf guard rejects non-JSON POSTs.
 func serveDo(ctx context.Context, client *http.Client, method, url string, body []byte) (*http.Response, error) {
 	req, err := http.NewRequestWithContext(ctx, method, url, bytes.NewReader(body))

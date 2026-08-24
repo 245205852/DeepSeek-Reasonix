@@ -37,21 +37,33 @@ func shellQuote(s string) string {
 // cannot read serve output; serve is launched with `--port-file`, which
 // suppresses its token share line, so the token never reaches the log.
 // It echoes the shell's $! so the caller can record the pid immediately.
-func LaunchCommand(bin, workspace string, p StatePaths) string {
+//
+// Credential-proxy mode (cred != nil): the virtual token rides the serve's
+// environment (root-readable /proc only — never argv, never a file) and the
+// provider flag selects the tunnel-backed provider entry.
+func LaunchCommand(bin, workspace string, p StatePaths, cred *CredentialProxyOptions) string {
+	envPrefix := ""
+	modelFlag := ""
+	if cred != nil {
+		envPrefix = TokenEnvName + "=" + shellQuote(cred.Token) + " "
+		modelFlag = " --model " + shellQuote(cred.Provider)
+	}
 	return fmt.Sprintf(
 		"mkdir -p %s && cd %s && rm -f %s %s && umask 077 && : >>%s && chmod 600 %s && "+
 			"SX=; command -v setsid >/dev/null 2>&1 && SX=setsid; "+
-			"$SX nohup %s serve --addr 127.0.0.1:0 --auth token --token-file %s --port-file %s --pid-file %s </dev/null >>%s 2>&1 & echo $!",
+			"%s$SX nohup %s serve --addr 127.0.0.1:0 --auth token --token-file %s --port-file %s --pid-file %s%s </dev/null >>%s 2>&1 & echo $!",
 		shellQuote(p.Dir),
 		shellQuote(workspace),
 		shellQuote(p.PortFile),
 		shellQuote(p.PidFile),
 		shellQuote(p.LogFile),
 		shellQuote(p.LogFile),
+		envPrefix,
 		shellQuote(bin),
 		shellQuote(p.TokenFile),
 		shellQuote(p.PortFile),
 		shellQuote(p.PidFile),
+		modelFlag,
 		shellQuote(p.LogFile),
 	)
 }
@@ -74,13 +86,23 @@ func StopCommand(pid int, p StatePaths) string {
 // ServeAliveCommand prints "1" only when pid is running AND its command line
 // looks like a reasonix serve process. Checking the args (not just `kill -0`)
 // prevents a recycled PID — now owned by an unrelated process — from being
-// mistaken for the serve and later signalled by StopCommand.
-func ServeAliveCommand(pid int, p StatePaths) string {
+// mistaken for the serve and later signalled by StopCommand. Each requireArgs
+// fragment must additionally appear in the args, in order after the token and
+// port files: local-proxy mode requires "--model <proxy provider>" so a serve
+// launched under different settings (e.g. before the host switched credential
+// modes) is not treated as reusable.
+func ServeAliveCommand(pid int, p StatePaths, requireArgs ...string) string {
+	decls := fmt.Sprintf("T=%s; P=%s; ", shellQuote(p.TokenFile), shellQuote(p.PortFile))
+	pattern := "*reasonix*serve*\"$T\"*\"$P\"*"
+	for i, arg := range requireArgs {
+		decls += fmt.Sprintf("R%d=%s; ", i, shellQuote(arg))
+		pattern += fmt.Sprintf("\"$R%d\"*", i)
+	}
 	return fmt.Sprintf(
-		"T=%s; P=%s; kill -0 %d 2>/dev/null || { echo 0; exit 0; }; "+
+		"%skill -0 %d 2>/dev/null || { echo 0; exit 0; }; "+
 			"A=$(ps -p %d -o args= 2>/dev/null || ps -p %d -o command= 2>/dev/null); "+
-			"case \"$A\" in *reasonix*serve*\"$T\"*\"$P\"*) echo 1;; *) echo 0;; esac",
-		shellQuote(p.TokenFile), shellQuote(p.PortFile), pid, pid, pid,
+			"case \"$A\" in %s) echo 1;; *) echo 0;; esac",
+		decls, pid, pid, pid, pattern,
 	)
 }
 

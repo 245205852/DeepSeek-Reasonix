@@ -45,6 +45,11 @@ type remoteTab struct {
 	state      string
 	err        string
 	newSession bool
+	// model is the desktop-owned current model ref for this remote tab.
+	// It rides the tab (not the serve) so a model switch mid-session does not
+	// rebuild it; modelSeq orders concurrent writes so the latest wins.
+	model    string
+	modelSeq uint64
 }
 
 // ── Registry CRUD (user config, same lock discipline as remote hosts) ──

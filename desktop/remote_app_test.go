@@ -21,6 +21,7 @@ type fakeRemoteKernel struct {
 	ensureView        RemoteServerView
 	ensureToken       string
 	ensureErr         error
+	ensureCalls       int
 	platformErr       error
 	platformChecks    []string
 	stoppedWorkspaces []string
@@ -105,6 +106,7 @@ func (f *fakeRemoteKernel) AddForward(string, RemoteForwardInput) (RemoteForward
 }
 func (f *fakeRemoteKernel) RemoveForward(string, string) error { return nil }
 func (f *fakeRemoteKernel) EnsureServer(context.Context, string, string) (RemoteServerView, string, error) {
+	f.ensureCalls++
 	return f.ensureView, f.ensureToken, f.ensureErr
 }
 func (f *fakeRemoteKernel) StopServer(_ string, workspace string) error {

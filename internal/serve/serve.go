@@ -500,6 +500,9 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("POST /fork", s.fork)
 	mux.HandleFunc("POST /summarize", s.summarize)
 	mux.HandleFunc("POST /tool-approval-mode", s.toolApprovalMode)
+	mux.HandleFunc("POST /model", s.switchModelHTTP)
+	mux.HandleFunc("POST /providers/reload", s.providersReload)
+	mux.HandleFunc("POST /effort", s.switchEffortHTTP)
 	mux.HandleFunc("POST /auto-approve-tools", s.autoApproveTools)
 	mux.HandleFunc("POST /bypass", s.bypass)
 	mux.HandleFunc("POST /goal", s.goal)
@@ -823,6 +826,10 @@ func (s *Server) newSession(w http.ResponseWriter, _ *http.Request) {
 	s.bindMu.Lock()
 	defer s.bindMu.Unlock()
 	if err := s.ctl().NewSession(); err != nil {
+		if control.IsSessionRotationBusy(err) {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -1001,6 +1008,10 @@ func (s *Server) fork(w http.ResponseWriter, r *http.Request) {
 	defer s.bindMu.Unlock()
 	path, err := s.ctl().ForkNamed(body.Turn, body.Name)
 	if err != nil {
+		if control.IsSessionRotationBusy(err) {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -1051,6 +1062,54 @@ func (s *Server) autoApproveTools(w http.ResponseWriter, r *http.Request) {
 	}
 	s.ctl().SetAutoApproveTools(body.On)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// switchModelHTTP switches the active model over HTTP. The desktop remote
+// tab and the web shell model picker share this route; the switch itself is
+// the same switchModel the provider-setup save path drives.
+func (s *Server) switchModelHTTP(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Ref string `json:"ref"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.Ref) == "" {
+		http.Error(w, "invalid model ref", http.StatusBadRequest)
+		return
+	}
+	if err := s.switchModel(r.Context(), req.Ref); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, map[string]string{"model": req.Ref})
+}
+
+// providersReload rebuilds the controller with the CURRENT model so provider
+// construction re-reads the on-disk config. The desktop calls this after a
+// reverse credential-tunnel rebind (the loopback port changes on every SSH
+// reconnect): a running serve otherwise keeps the base_url it was built with.
+// Busy serves answer 409 — the desktop retries on its next ensure round.
+func (s *Server) providersReload(w http.ResponseWriter, r *http.Request) {
+	ref := s.ctl().ModelRef()
+	if err := s.switchModel(r.Context(), ref); err != nil {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
+	writeJSON(w, map[string]string{"model": ref})
+}
+
+// switchEffortHTTP adjusts the active provider's reasoning-effort level.
+func (s *Server) switchEffortHTTP(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Level string `json:"level"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.Level) == "" {
+		http.Error(w, "invalid effort level", http.StatusBadRequest)
+		return
+	}
+	if err := s.switchEffort(r.Context(), req.Level); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, map[string]string{"effort": req.Level})
 }
 
 // toolApprovalMode selects ask, auto, or yolo approval behavior for interactive
@@ -1369,6 +1428,14 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 		"cacheHit":         hit,
 		"cacheMiss":        miss,
 	}
+	// Runtime reconciliation fields for desktop running-state watchdogs: the
+	// remote tab surface polls /status and maps these onto the same
+	// reconciliation the local tabs get from ListTabs.
+	rs := s.ctl().RuntimeStatus()
+	sess["pendingPrompt"] = rs.PendingPrompt
+	sess["backgroundJobs"] = rs.BackgroundJobs
+	sess["cancelRequested"] = rs.CancelRequested
+	sess["cancellable"] = rs.Cancellable
 	if u := s.ctl().LastUsage(); u != nil {
 		sess["lastUsage"] = u
 	}
@@ -1466,11 +1533,12 @@ func (s *Server) sessions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	type sessionEntry struct {
-		Name    string `json:"name"`
-		Path    string `json:"path"`
-		Title   string `json:"title,omitempty"`
-		Turns   int    `json:"turns,omitempty"`
-		Current bool   `json:"current,omitempty"`
+		Name       string `json:"name"`
+		Path       string `json:"path"`
+		Title      string `json:"title,omitempty"`
+		Turns      int    `json:"turns,omitempty"`
+		Current    bool   `json:"current,omitempty"`
+		MtimeMilli int64  `json:"mtimeMilli"`
 	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -1488,7 +1556,7 @@ func (s *Server) sessions(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		name := strings.TrimSuffix(e.Name(), ".jsonl")
-		entry := sessionEntry{Name: name, Path: path, Current: filepath.Clean(path) == current}
+		entry := sessionEntry{Name: name, Path: path, Current: filepath.Clean(path) == current, MtimeMilli: agent.SessionContentModTime(path).UnixMilli()}
 		// Event-log aware: reading the .jsonl checkpoint directly would freeze
 		// turn counts and titles at the last checkpoint write.
 		if first, turns := agent.SessionPreview(path); turns > 0 {

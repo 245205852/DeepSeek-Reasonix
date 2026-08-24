@@ -341,6 +341,10 @@ type App struct {
 	remoteTabMu        sync.Mutex
 	remoteTabs         map[string]*remoteTab
 	remoteWindowOpener func(remoteWindowLaunch) error // test-only injection
+	// Local-proxy credential mode: the desktop-side key holder for remote
+	// serves whose model calls tunnel back here. Lazily started, app-wide.
+	credProxyMu sync.Mutex
+	credProxy   *credentialProxy
 	// remoteWindowTicket/remoteWindowHostKey are set from argv before Wails
 	// starts in a child process. They gate the blank-shell middleware and the
 	// startup branches so the child never initializes local runtimes.
@@ -712,7 +716,6 @@ func (a *App) restoreOrBuildTabs() {
 	if cfgErr != nil || singleSurfaceLayoutStyle(startupCfg.DesktopLayoutStyle()) {
 		f = singleSurfaceTabsFile(f)
 	}
-
 	if len(f.Tabs) > 0 {
 		toBuild := make([]*WorkspaceTab, 0, len(f.Tabs))
 		for _, entry := range f.Tabs {
