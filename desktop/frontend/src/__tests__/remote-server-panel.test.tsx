@@ -69,11 +69,10 @@ window.go = { main: { App: {
   async OpenRemoteWorkspace(hostId: string, workspace: string) {
     openCalls.push({ hostId, workspace });
   },
-<<<<<<< /tmp/m3work/a
   async StopRemoteServer(hostId: string, workspace: string) {
     stopCalls.push({ hostId, workspace });
   },
-} } };
+} as Partial<AppBindings> as AppBindings } };
 ||||||| /tmp/m3work/o
   async StopRemoteServer() {},
 } } };
