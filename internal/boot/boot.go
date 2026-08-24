@@ -2080,6 +2080,25 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 // applyUnifiedProviderToolSurface restricts Schemas/ContractEntries to the
 // shared core + host-control tools. use_capability can still Get every
 // registered tool, including those hidden from the provider schema.
+func applyUnifiedProviderToolSurface(reg *tool.Registry) {
+	if reg == nil {
+		return
+	}
+	allow := make([]string, 0, 16)
+	for _, name := range UnifiedProviderToolNames() {
+		if _, ok := reg.Get(name); ok {
+			allow = append(allow, name)
+		}
+	}
+	// Always keep use_capability if somehow only that remains.
+	if len(allow) == 0 {
+		if _, ok := reg.Get("use_capability"); ok {
+			allow = []string{"use_capability"}
+		}
+	}
+	reg.SetProviderVisibleTools(allow)
+}
+
 // mergeHostSessionCapabilitySpecs builds the inventory the capability runtime
 // dispatches against: the config servers, plus the host-session servers an ACP
 // client supplied through session/new.mcpServers.
@@ -2125,25 +2144,6 @@ func mergeHostSessionCapabilitySpecs(configEntries []config.PluginEntry, configS
 		entries = append(entries, entry)
 	}
 	return entries, specs
-}
-
-func applyUnifiedProviderToolSurface(reg *tool.Registry) {
-	if reg == nil {
-		return
-	}
-	allow := make([]string, 0, 16)
-	for _, name := range UnifiedProviderToolNames() {
-		if _, ok := reg.Get(name); ok {
-			allow = append(allow, name)
-		}
-	}
-	// Always keep use_capability if somehow only that remains.
-	if len(allow) == 0 {
-		if _, ok := reg.Get("use_capability"); ok {
-			allow = []string{"use_capability"}
-		}
-	}
-	reg.SetProviderVisibleTools(allow)
 }
 
 // effectivePlannerModel centralizes planner precedence. Every role setting
