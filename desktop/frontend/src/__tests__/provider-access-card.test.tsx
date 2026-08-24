@@ -501,6 +501,37 @@ ok(
   "installed OpenCode Go exposes route controls only through an advanced disclosure",
 );
 
+let removedOpenCodeProviders: string[] = [];
+await act(async () => {
+  root.render(renderCard(openCodeGroups[0], {
+    onDelete: async (providers) => {
+      removedOpenCodeProviders = providers.map((provider) => provider.name);
+    },
+  }));
+  await flushPromises();
+});
+const openCodeMoreButton = rootEl.querySelector<HTMLButtonElement>('button[aria-haspopup="menu"]');
+await act(async () => {
+  openCodeMoreButton?.click();
+  await flushPromises();
+});
+let removeOpenCodeButton = Array.from(document.querySelectorAll("button"))
+  .find((button) => button.textContent?.trim() === "Remove access") as HTMLButtonElement | undefined;
+await act(async () => {
+  removeOpenCodeButton?.click();
+  await flushPromises();
+});
+removeOpenCodeButton = Array.from(document.querySelectorAll("button"))
+  .find((button) => button.textContent?.trim() === "Confirm delete provider") as HTMLButtonElement | undefined;
+await act(async () => {
+  removeOpenCodeButton?.click();
+  await flushPromises();
+});
+ok(
+  removedOpenCodeProviders.join(",") === "opencode-go,opencode-go-anthropic,opencode-go-responses",
+  "OpenCode Go group removal submits every installed route atomically",
+);
+
 await act(async () => {
   root.unmount();
 });
