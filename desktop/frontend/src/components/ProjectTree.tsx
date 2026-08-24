@@ -5,9 +5,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { CSSProperties, DragEvent as ReactDragEvent, KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent } from "react";
-import { Archive, ArrowDown, Pencil, Plus, Folder, FolderPlus, Search, BriefcaseBusiness, Copy, FolderOpen, XCircle, Check, ListCollapse, ListRestart, MessageSquare, Clock, Pin, MoreHorizontal, Minimize2, Maximize2, GitBranch, Sparkles, Server, Cloud, Square } from "lucide-react";
-
-
+import { Archive, ArrowDown, Pencil, Plus, Folder, FolderPlus, Search, BriefcaseBusiness, Copy, FolderOpen, XCircle, Check, ListCollapse, ListRestart, MessageSquare, Clock, Pin, MoreHorizontal, Minimize2, Maximize2, GitBranch, Sparkles, Server, Cloud } from "lucide-react";
 import { asArray } from "../lib/array";
 import { useToast } from "../lib/toast";
 import { app } from "../lib/bridge";
@@ -16,10 +14,9 @@ import { isRuntimeSessionNode, isTopicNode, loadWorkbenchOrganizeMode, loadWorkb
 export * from "../lib/projectTreeTopic";
 import { arrangeClassicProjectTree, arrangeWorkbenchTree, classicTopicWindow, CLASSIC_TOPIC_PREVIEW_LIMIT, splitPinnedProjectTree, type PinnedTreeSections } from "../lib/projectTreePresentation";
 export * from "../lib/projectTreePresentation";
-import type { ProjectNode, RemoteSessionView, RemoteTabRefView, SessionCatalogStatus } from "../lib/types";
-
-
+import type { ProjectNode, RemoteServerView, RemoteSessionView, RemoteTabRefView, SessionCatalogStatus } from "../lib/types";
 import { useRemoteStore } from "../store/remote";
+import { onRemoteTabOpened } from "../lib/bridge";
 import { topicActivityTime } from "../lib/session";
 import { useT, type Translator } from "../lib/i18n";
 import { PROJECT_COLOR_OPTIONS, projectColorValue } from "../lib/projectColors";
@@ -67,6 +64,23 @@ type ProjectTreeImTopicSource = {
 
 function projectNodeKey(node: ProjectNode, depth: number): string {
   return node.key || `${node.kind}-${node.root ?? ""}-${node.topicId ?? ""}-${depth}`;
+}
+
+// The group dot reports the workspace's OWN serve: green only when that
+// serve is actually ready, amber while it boots/installs, red on error, grey
+// when it has never been woken. Host connectivity stays on the hosts surface.
+function remoteServeBadgeState(view?: RemoteServerView): string {
+  switch (view?.state) {
+    case "ready":
+      return "serve-ready";
+    case "error":
+      return "serve-error";
+    case "stopped":
+    case undefined:
+      return "serve-idle";
+    default:
+      return "serve-busy"; // starting + install/launch progress states
+  }
 }
 
 type WorkbenchHeaderMenu = "more" | "add" | null;
@@ -471,19 +485,23 @@ export function ProjectTree({
   // the connection + Serve + tab exist. The Set only guards in-flight double
   // clicks; repeat opens after settle are deduped by the backend reuse path.
   const openingRemoteRef = useRef(new Set<string>());
-  const openRemoteProject = useCallback(async (ref: RemoteTabRefView, opts?: { newSession?: boolean; sessionName?: string }) => {
+  // Assigned below the session-cache block; a new-session open refreshes
+  // the listing once it lands.
+  const bumpRemoteSessionsRef = useRef<() => void>(() => {});
+  const openRemoteProject = useCallback(async (ref: RemoteTabRefView, opts?: { newSession?: boolean; sessionName?: string; focus?: boolean }) => {
     const dedupeKey = `${ref.hostId}\u0000${ref.workspace}`;
     if (openingRemoteRef.current.has(dedupeKey)) return;
     openingRemoteRef.current.add(dedupeKey);
     try {
-      await app.OpenRemoteProjectTab(ref.hostId, ref.workspace, opts?.sessionName ? { sessionName: opts.sessionName } : { newSession: true });
-      // A new session changes the listing; drop the cache so the effect refetches.
-      if (!opts?.sessionName) setRemoteSessions((current) => {
-        if (!(dedupeKey in current)) return current;
-        const next = { ...current };
-        delete next[dedupeKey];
-        return next;
-      });
+      if (opts?.focus) {
+        // Activate the existing tab for this workspace; no session change.
+        await app.OpenRemoteProjectTab(ref.hostId, ref.workspace, {});
+      } else if (opts?.sessionName) {
+        await app.OpenRemoteProjectTab(ref.hostId, ref.workspace, { sessionName: opts.sessionName });
+      } else {
+        await app.OpenRemoteProjectTab(ref.hostId, ref.workspace, { newSession: true });
+        bumpRemoteSessionsRef.current();
+      }
     } catch (e) {
       showToast(e instanceof Error ? e.message : String(e), "error");
     } finally {
@@ -491,9 +509,29 @@ export function ProjectTree({
     }
   }, [showToast]);
 
-  // Remote groups list their serve sessions while the host is connected.
-  const remoteStatuses = useRemoteStore((s) => s.statuses);
+  // Remote group badges follow the workspace's own serve state; the registry
+  // hydrates once per group set and live updates arrive through remote:server
+  // events (wired in App).
+  const remoteServers = useRemoteStore((s) => s.servers);
+  const remoteStatusesSeededRef = useRef(false);
+  useEffect(() => {
+    if (remoteStatusesSeededRef.current) return;
+    remoteStatusesSeededRef.current = true;
+    void app.RemoteConnectionStatuses()
+      .then((list) => useRemoteStore.getState().hydrateStatuses(asArray(list)))
+      .catch(() => {});
+  }, []);
+  // Remote groups list their serve sessions while the host is connected. The
+  // rows render through the LOCAL topic renderer: each session becomes a
+  // synthetic topic node whose actions route to the remote bindings.
   const [remoteSessions, setRemoteSessions] = useState<Record<string, RemoteSessionView[]>>({});
+  const [remoteSessionsRevision, setRemoteSessionsRevision] = useState(0);
+  const bumpRemoteSessions = useCallback(() => setRemoteSessionsRevision((n) => n + 1), []);
+  bumpRemoteSessionsRef.current = bumpRemoteSessions;
+  // Event-driven listing refresh, mirroring how local title writes push
+  // project-tree:changed: every remote tab meta update (AI title adoption,
+  // session materialization, resume) re-pulls the group's sessions.
+  useEffect(() => onRemoteTabOpened(() => bumpRemoteSessions()), [bumpRemoteSessions]);
   const remoteGroupKeys = useMemo(() => {
     const keys: string[] = [];
     for (const node of tree) {
@@ -501,20 +539,58 @@ export function ProjectTree({
     }
     return keys;
   }, [tree]);
+  // Serve-state hydration is a local registry read (never wakes anything);
+  // it seeds the dots before any remote:server event fires this session.
   useEffect(() => {
     for (const groupKey of remoteGroupKeys) {
-      if (groupKey in remoteSessions) continue;
       const [hostId, workspace] = groupKey.split("\u0000");
-      const state = remoteStatuses[hostId]?.state;
-      if (state !== "connected" && state !== "degraded") continue;
-      void app.RemoteProjectSessions(hostId, workspace)
-        .then((rows) => setRemoteSessions((current) => ({ ...current, [groupKey]: rows })))
-        .catch(() => setRemoteSessions((current) => ({ ...current, [groupKey]: [] })));
+      void app.RemoteServerStatus(hostId, workspace)
+        .then((view) => useRemoteStore.getState().setServer(view))
+        .catch(() => {});
     }
-  }, [remoteGroupKeys, remoteStatuses, remoteSessions]);
+  }, [remoteGroupKeys]);
+  // Layer-2 on-demand listing: a group's sessions are fetched only while the
+  // group is expanded (or the tree search is active) and re-pulled on the
+  // refresh signals above — never speculatively for every pinned group. The
+  // backend resolves read-only, so an unvisited group costs nothing.
+  const remoteGroupNodeKeys = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const node of tree) {
+      if (node.remote) map.set(`${node.remote.hostId}\u0000${node.remote.workspace}`, projectNodeKey(node, 0));
+    }
+    return map;
+  }, [tree]);
+  const remoteSearchActive = query.trim() !== "";
+  useEffect(() => {
+    let cancelled = false;
+    for (const groupKey of remoteGroupKeys) {
+      const nodeKey = remoteGroupNodeKeys.get(groupKey);
+      if (!nodeKey) continue;
+      if (!expanded.has(nodeKey) && !remoteSearchActive) continue;
+      const [hostId, workspace] = groupKey.split("\u0000");
+      void app.RemoteProjectSessions(hostId, workspace)
+        .then((rows) => {
+          if (!cancelled) setRemoteSessions((current) => ({ ...current, [groupKey]: rows }));
+        })
+        .catch(() => {});
+    }
+    return () => { cancelled = true; };
+  }, [remoteGroupKeys, remoteGroupNodeKeys, expanded, remoteSearchActive, remoteSessionsRevision]);
+
+  // topicId → remote session identity for the synthesized rows; rebuilt
+  // during render so the topic-branch action functions can route remotely.
+  const remoteTopicIndexRef = useRef(new Map<string, { hostId: string; workspace: string; name: string }>());
+  const remoteTopicIndex = remoteTopicIndexRef.current;
+  remoteTopicIndex.clear();
+  for (const [groupKey, rows] of Object.entries(remoteSessions)) {
+    const [hostId, workspace] = groupKey.split("\u0000");
+    for (const row of rows) {
+      remoteTopicIndex.set(`${hostId}\u0000${workspace}\u0000${row.name}`, { hostId, workspace, name: row.name });
+    }
+  }
+  const remoteFromTopicId = (topicId: string) => remoteTopicIndex.get(topicId);
 
   const { addingProject, handleAddProject, openBlankProjectFlow, blankProjectFlow, openRemoteConnectFlow, remoteConnectFlow } = useProjectCreation({
-
     onAddProject,
     onRefresh: refresh,
     showToast,
@@ -769,6 +845,7 @@ export function ProjectTree({
     setWorkbenchHeaderMenu((value) => (value === menu ? null : menu));
   };
 
+
   const handleCreateTopic = async (scope: string, workspaceRoot: string, key: string) => {
     if (creatingRef.current) return;
     creatingRef.current = true;
@@ -818,6 +895,23 @@ export function ProjectTree({
     }
   };
 
+  // Remote session rows archive through the serve delete endpoint; the
+  // local trash controller only knows local sessions.
+  const trashTopicAny = async (topicId: string) => {
+    const remote = remoteFromTopicId(topicId);
+    if (remote) {
+      if (!remote.name) return;
+      try {
+        await app.DeleteRemoteProjectSession(remote.hostId, remote.workspace, remote.name);
+        bumpRemoteSessions();
+      } catch (err) {
+        showToast(err instanceof Error ? err.message : String(err), "error");
+      }
+      return;
+    }
+    await trashTopic(topicId);
+  };
+
   const startRenameTopic = (node: ProjectNode, label: string) => {
     setMenuTopic(null);
     setMenuProject(null);
@@ -841,6 +935,13 @@ export function ProjectTree({
     setEditingTopic(null);
     if (!title) return;
     try {
+      const remote = remoteFromTopicId(topicId);
+      if (remote) {
+        if (!remote.name) return;
+        await app.RenameRemoteProjectSession(remote.hostId, remote.workspace, remote.name, title);
+        bumpRemoteSessions();
+        return;
+      }
       if (onRenameTopic) await onRenameTopic(topicId, title);
       else await app.RenameTopic(topicId, title);
       // Paint the new label immediately; the catalog event round-trip can lag.
@@ -871,7 +972,15 @@ export function ProjectTree({
     setEditingProject(null);
     if (!title) return;
     try {
-      await app.RenameProject(root, title);
+      if (root.startsWith("remote-project:")) {
+        const rest = root.slice("remote-project:".length);
+        const split = rest.indexOf(":");
+        const hostId = rest.slice(0, split);
+        const workspace = rest.slice(split + 1);
+        await app.SetRemoteProjectTitle(hostId, workspace, title);
+      } else {
+        await app.RenameProject(root, title);
+      }
       await refresh();
     } catch (err) {
       showToast(err instanceof Error ? err.message : String(err), "error");
@@ -880,13 +989,21 @@ export function ProjectTree({
 
   const setTopicPinned = async (topicId: string, pinned: boolean) => {
     try {
+      const remote = remoteFromTopicId(topicId);
+      if (remote) {
+        if (!remote.name) return;
+        await app.SetRemoteSessionPinned(remote.hostId, remote.workspace, remote.name, pinned);
+        bumpRemoteSessions();
+        return;
+      }
       await app.SetTopicPinned(topicId, pinned);
-      setMenuTopic(null);
-      setMenuPoint(null);
       await refresh();
       await onTopicsChanged?.();
     } catch (err) {
       showToast(err instanceof Error ? err.message : String(err), "error");
+    } finally {
+      setMenuTopic(null);
+      setMenuPoint(null);
     }
   };
 
@@ -937,6 +1054,35 @@ export function ProjectTree({
     }
   };
 
+  // Remote sessions join the TREE DATA (not the renderer): each remote
+  // group's children gain the serve session rows plus the pending blank row,
+  // so filtering, workbench arrangement, AND the pinned section treat them
+  // exactly like local topic nodes.
+  const treeWithRemoteSessions = useMemo(() => {
+    return tree.map((node) => {
+      if (!node.remote) return node;
+      const groupKey = `${node.remote.hostId}\u0000${node.remote.workspace}`;
+      const rows = remoteSessions[groupKey] ?? [];
+      return {
+        ...node,
+        children: [
+          ...rows.map((row) => ({
+            key: `remote-session-${node.remote!.hostId}-${row.name}`,
+            kind: "topic" as const,
+            label: row.title || row.name,
+            topicId: `${node.remote!.hostId}\u0000${node.remote!.workspace}\u0000${row.name}`,
+            turns: row.turns,
+            lastActivityAt: row.lastActivityAt,
+            pinned: row.pinned,
+            children: [] as ProjectNode[],
+            remoteSession: { hostId: node.remote!.hostId, workspace: node.remote!.workspace, name: row.name },
+          })),
+          ...asArray(node.children),
+        ],
+      };
+    });
+  }, [remoteSessions, tree]);
+
   const visibleTree = useMemo(() => {
     const q = query.trim().toLowerCase();
     // Time filter: compute cutoff timestamp.
@@ -986,13 +1132,13 @@ export function ProjectTree({
       if (q && !matchesQuery(node)) return null;
       return node;
     };
-    const filtered = tree
+    const filtered = treeWithRemoteSessions
       .map(filterNode)
       .filter((node): node is ProjectNode => node !== null);
     if (compactTopics) return arrangeWorkbenchTree(filtered, workbenchOrganizeMode, workbenchSortMode);
     if (creationTopics) return arrangeWorkbenchTree(filtered, "project", "updated");
     return arrangeClassicProjectTree(filtered, workbenchSortMode);
-  }, [compactTopics, creationTopics, query, tree, timeFilter, workbenchOrganizeMode, workbenchSortMode]);
+  }, [compactTopics, creationTopics, query, timeFilter, treeWithRemoteSessions, workbenchOrganizeMode, workbenchSortMode]);
 
   const pinnedTreeSections = useMemo<PinnedTreeSections>(() => {
     if (creationTopics) return { pinned: [], projects: visibleTree };
@@ -1150,10 +1296,8 @@ export function ProjectTree({
     if (!node) return null;
     const key = projectNodeKey(node, depth);
     const children = asArray(node.children);
-    const remoteGroupKey = node.remote ? `${node.remote.hostId}\u0000${node.remote.workspace}` : null;
-    const remoteRows = remoteGroupKey != null ? remoteSessions[remoteGroupKey] ?? [] : [];
     const isExpanded = query.trim() ? true : expanded.has(key);
-    const hasChildren = children.length > 0 || remoteRows.length > 0;
+    const hasChildren = children.length > 0;
     // Snapshot rows are shells with no children until the first page is loaded,
     // so every project folder must remain expandable while indexing.
     const folderDisclosure = projectTreeFolderDisclosure(hasChildren, isExpanded, true);
@@ -1235,7 +1379,7 @@ export function ProjectTree({
           key: "aiRename",
           icon: <Sparkles size={13} />,
           label: aiRenamingTopic === topicId ? t("projectTree.aiRenamingTopic") : t("projectTree.aiRenameTopic"),
-          disabled: aiRenamingTopic !== null,
+          disabled: aiRenamingTopic !== null || Boolean(node.remoteSession),
           onSelect: () => void aiRenameSession(topicId),
         },
         {
@@ -1245,7 +1389,7 @@ export function ProjectTree({
           disabled: archiveBlocked || topicTrashing,
           danger: true,
           onSelect: () => {
-            if (confirmAction?.topicId === topicId && confirmAction.action === "trash") void trashTopic(topicId);
+            if (confirmAction?.topicId === topicId && confirmAction.action === "trash") void trashTopicAny(topicId);
             else setConfirmAction({ topicId, action: "trash" });
           },
         },
@@ -1312,7 +1456,13 @@ export function ProjectTree({
               const timer = setTimeout(() => {
                 if (clickTimerRef.current?.timer === timer) clickTimerRef.current = null;
                 markNodeRead(node);
-                onOpenTopic(openRequest.scope, openRequest.workspaceRoot, openRequest.topicId, openRequest.sessionPath);
+                const remote = node.remoteSession ?? (openRequest ? remoteFromTopicId(openRequest.topicId) : undefined);
+                if (remote && remote.name) {
+                  void openRemoteProject({ hostId: remote.hostId, workspace: remote.workspace }, { sessionName: remote.name });
+                } else if (remote) {
+                  void openRemoteProject({ hostId: remote.hostId, workspace: remote.workspace }, { focus: true });
+                }
+                else onOpenTopic(openRequest!.scope, openRequest!.workspaceRoot, openRequest!.topicId, openRequest!.sessionPath);
               }, 200);
               clickTimerRef.current = { ...nextClick, timer };
             }}
@@ -1395,7 +1545,7 @@ export function ProjectTree({
             )}
           </button>
           {unread && <span className="project-tree__topic-unread-dot" aria-hidden="true" />}
-          {projectTreeShouldRenderTopicActions(isSessionNode, variant, unread) && (
+          {projectTreeShouldRenderTopicActions(isSessionNode, variant, unread) && !(node.remoteSession && !node.remoteSession.name) && (
             <span
               className="project-tree__topic-actions"
               aria-label={t("projectTree.topicActions")}
@@ -1426,7 +1576,7 @@ export function ProjectTree({
                   onClick={(event) => {
                     event.preventDefault();
                     event.stopPropagation();
-                    void trashTopic(topicId);
+                    void trashTopicAny(topicId);
                   }}
                 >
                   <Archive className={topicTrashing ? "project-tree__archive-spinner" : undefined} size={15} aria-hidden="true" />
@@ -1547,54 +1697,113 @@ export function ProjectTree({
           onSelect: () => { void handleCreateIsolatedWorktree(projectRoot); },
         }]
       : [];
-    const remoteProjectMenuItems: ContextMenuItem[] = node.remote ? [
+    const remoteProjectRoot = node.remote ? `remote-project:${node.remote.hostId}:${node.remote.workspace}` : "";
+    const remoteCurrentSession = node.remote
+      ? (remoteSessions[`${node.remote.hostId}\u0000${node.remote.workspace}`] ?? []).find((row) => row.current)
+      : undefined;
+    const remoteCurrentKey = remoteCurrentSession && node.remote
+      ? `${node.remote.hostId}\u0000${node.remote.workspace}\u0000${remoteCurrentSession.name}`
+      : "";
+    const remoteMenuItems: ContextMenuItem[] = node.remote ? [
       {
-        key: "remote-new-session",
+        key: "new-session",
         icon: <Plus size={13} />,
-        label: t("projectTree.remoteNewSession"),
+        label: t("projectTree.newTopic"),
         onSelect: () => {
           closeMenu();
           void openRemoteProject(node.remote!, { newSession: true });
         },
       },
       {
-        key: "remote-open-window",
-        icon: <Server size={13} />,
-        label: t("projectTree.remoteOpenWindow"),
+        key: "rename",
+        icon: <Pencil size={13} />,
+        label: t("projectTree.renameProject"),
+        onSelect: () => startRenameProject(key, remoteProjectRoot, projectLabel),
+      },
+      { type: "separator" as const, key: "path-separator" },
+      {
+        key: "reveal",
+        icon: <FolderOpen size={13} />,
+        label: t("projectTree.revealRemoteWorkspace"),
         onSelect: () => {
-          closeMenu();
           void app.OpenRemoteWorkspace(node.remote!.hostId, node.remote!.workspace).catch((e) => {
             showToast(e instanceof Error ? e.message : String(e), "error");
           });
+          closeMenu();
         },
       },
       {
-        key: "remote-stop-server",
-        icon: <Square size={13} />,
-        label: t("projectTree.remoteStopServer"),
+        key: "copy-path",
+        icon: <Copy size={13} />,
+        label: t("projectTree.copyPath"),
         onSelect: () => {
+          void copyProjectPath(node.remote!.workspace);
           closeMenu();
-          void app.StopRemoteServer(node.remote!.hostId, node.remote!.workspace).catch((e) => {
+        },
+      },
+      { type: "separator" as const, key: "remove-separator" },
+      {
+        key: "remove",
+        icon: <XCircle size={13} />,
+        label: confirmRemoveProject === key ? t("projectTree.confirmRemoveProject") : t("projectTree.unpinRemoteProject"),
+        danger: true,
+        onSelect: () => {
+          if (confirmRemoveProject === key) {
+            void app.RemoveRemoteProject(node.remote!.hostId, node.remote!.workspace)
+              .then(() => refresh())
+              .catch((e) => showToast(e instanceof Error ? e.message : String(e), "error"));
+          } else {
+            setConfirmRemoveProject(key);
+          }
+        },
+      },
+    ] : [];
+    const remoteWorkbenchMenuItems: ContextMenuItem[] = node.remote ? [
+      {
+        key: "reveal",
+        icon: <FolderOpen size={13} />,
+        label: t("projectTree.revealRemoteWorkspace"),
+        onSelect: () => {
+          void app.OpenRemoteWorkspace(node.remote!.hostId, node.remote!.workspace).catch((e) => {
             showToast(e instanceof Error ? e.message : String(e), "error");
           });
+          closeMenu();
         },
       },
       {
-        key: "remote-unpin",
-        icon: <XCircle size={13} />,
-        label: t("projectTree.remoteUnpin"),
+        key: "rename",
+        icon: <Pencil size={13} />,
+        label: t("projectTree.renameProjectWorkbench"),
+        onSelect: () => startRenameProject(key, remoteProjectRoot, projectLabel),
+      },
+      {
+        key: "archive-active-topic",
+        icon: <Archive size={13} />,
+        label: remoteCurrentKey && confirmAction?.topicId === remoteCurrentKey && confirmAction.action === "trash"
+          ? t("history.confirmMoveToTrash")
+          : t("projectTree.archiveConversation"),
+        disabled: !remoteCurrentKey,
+        danger: true,
         onSelect: () => {
-          closeMenu();
-          void app.RemoveRemoteProject(node.remote!.hostId, node.remote!.workspace)
-            .then(() => {
-              setRemoteSessions((current) => {
-                const next = { ...current };
-                delete next[`${node.remote!.hostId}\u0000${node.remote!.workspace}`];
-                return next;
-              });
-              void refresh();
-            })
-            .catch((e) => showToast(e instanceof Error ? e.message : String(e), "error"));
+          if (!remoteCurrentKey) return;
+          if (confirmAction?.topicId === remoteCurrentKey && confirmAction.action === "trash") void trashTopicAny(remoteCurrentKey);
+          else setConfirmAction({ topicId: remoteCurrentKey, action: "trash" });
+        },
+      },
+      { type: "separator" as const, key: "remove-separator" },
+      {
+        key: "remove",
+        icon: <XCircle size={13} />,
+        label: confirmRemoveProject === key ? t("projectTree.confirmRemoveProjectShort") : t("projectTree.unpinRemoteProjectShort"),
+        danger: true,
+        onSelect: () => {
+          if (confirmRemoveProject === key) {
+            void app.RemoveRemoteProject(node.remote!.hostId, node.remote!.workspace)
+              .then(() => refresh())
+              .catch((e) => showToast(e instanceof Error ? e.message : String(e), "error"));
+          } else {
+            setConfirmRemoveProject(key);
+          }
         },
       },
     ] : [];
@@ -1765,21 +1974,6 @@ export function ProjectTree({
       return (
         <div className={`project-tree__children${isExpanded ? " project-tree__children--expanded" : ""}`}>
           <div className="project-tree__children-inner">
-            {remoteGroupKey != null ? remoteRows.map((row) => (
-              <button
-                key={`remote-session:${row.name}`}
-                type="button"
-                className="project-tree__topic project-tree__topic--project"
-                style={{ paddingLeft: 14 + (depth + 1) * 16 }}
-                onClick={() => {
-                  if (!node.remote) return;
-                  void openRemoteProject(node.remote, { sessionName: row.name });
-                }}
-              >
-                <span className="project-tree__topic-label">{row.title || row.name}</span>
-                {row.turns > 0 ? <span className="project-tree__topic-time">{row.turns}</span> : null}
-              </button>
-            )) : null}
             <ProjectTreeGroupRows folder={node} children={windowedChildren} depth={depth + 1} section={section} visible={isVisible && isExpanded} organization={organization} renderNode={renderNode} t={t} />
             {windowToggleVisible && (
               <button
@@ -1878,7 +2072,7 @@ export function ProjectTree({
             <span className={`project-tree__folder-label${!hasChildren ? " project-tree__folder-label--empty" : ""}`}>
               {projectLabel}
               {node.isolatedWorktree && <WorktreeBadge size={11} />}
-              {node.remote ? <span className={`project-tree__remote-badge project-tree__remote-badge--${remoteStatuses[node.remote.hostId]?.state ?? "disconnected"}`} aria-hidden="true" /> : null}
+              {node.remote ? <span className={`project-tree__remote-badge project-tree__remote-badge--${remoteServeBadgeState(remoteServers[node.remote.hostId]?.[node.remote.workspace])}`} aria-hidden="true" /> : null}
             </span>
             <ProjectTreeFolderActivity folder={node} />
           </button>
@@ -1921,7 +2115,7 @@ export function ProjectTree({
           <ContextMenu
             open={projectMenuOpen}
             point={menuPoint}
-            items={node.remote ? remoteProjectMenuItems : compactTopics ? workbenchProjectMenuItems : projectMenuItems}
+            items={node.remote ? (compactTopics ? remoteWorkbenchMenuItems : remoteMenuItems) : compactTopics ? workbenchProjectMenuItems : projectMenuItems}
             minWidth={compactTopics ? 206 : 212}
             ariaLabel={t("projectTree.projectActions")}
             onClose={closeMenu}

@@ -33,7 +33,8 @@ export type EventKind =
   | "context_maintenance"
   | "workspace_changed"
   | "turn_phase"
-  | "completion_summary";
+  | "completion_summary"
+  | "provider_unreachable";
 export type StreamAttemptAction = "begin" | "discard" | "commit";
 export interface WireStreamAttempt {
   id: string;
@@ -439,6 +440,9 @@ export interface TabMeta {
   isolatedWorktree?: boolean;
   /** Present ⇒ remote tab (RemoteTabBridge); absent ⇒ local tab. */
   remote?: RemoteTabRefView;
+  /** Remote tab connection state from the meta — seeds the surface before
+   *  any state event arrives this run (restored disconnected shells). */
+  remoteState?: RemoteTabStateValue;
   topicId: string;
   topicTitle: string;
   sessionPath?: string;
@@ -528,9 +532,12 @@ export interface ProjectNode {
   recoveryCleanupEligibleCount?: number;
   recoveryCopyCount?: number; // folded recovery copies behind this row (badge only)
   isolatedWorktree?: boolean;
-  runtimeOnly?: boolean;
   /** Present ⇒ remote project group; drives the cloud badge on the folder row. */
   remote?: RemoteTabRefView;
+  /** Present ⇒ a remote serve session synthesized as a topic row; actions
+   *  route to the remote bindings instead of the local topic machinery. */
+  remoteSession?: { hostId: string; workspace: string; name: string };
+  runtimeOnly?: boolean;
   children?: ProjectNode[];
 }
 
@@ -944,6 +951,8 @@ export interface Meta {
   goalStatus?: GoalStatus;
   goalRuntime?: GoalRuntime;
   canonicalTodos?: Todo[]; dismissedTodoBatches?: string[];
+  /** Set for remote session tabs: readiness flows through remote-tab state events instead. */
+  remote?: RemoteTabRefView;
 }
 
 export type CollaborationMode = "normal" | "plan" | "goal";
@@ -1549,6 +1558,8 @@ export interface RemoteProjectView {
   workspace: string;
   title?: string;
   color?: string;
+  /** Set when an overlapping pin existed: workspace is the canonical group's path. */
+  merged?: boolean;
 }
 
 export interface RemoteSessionView {
@@ -1556,9 +1567,12 @@ export interface RemoteSessionView {
   title: string;
   turns: number;
   current?: boolean;
+  /** Unix ms, same unit as ProjectNode.lastActivityAt. */
+  lastActivityAt?: number;
+  pinned?: boolean;
 }
 
-export type RemoteTabStateValue = "connecting" | "ready" | "reconnecting" | "serve_down" | "error";
+export type RemoteTabStateValue = "connecting" | "ready" | "reconnecting" | "serve_down" | "error" | "disconnected";
 
 export interface RemoteTabState {
   state: RemoteTabStateValue;
@@ -1570,8 +1584,8 @@ export interface RemoteTabOpenOptions {
   sessionName?: string;
 }
 
-// First-cut shape; finalize against what the surface actually consumes in Task 5.5
-// (spec open item: avoid over-fetching).
+// First-cut shape; finalize against what the remote tab surface actually
+// consumes (avoid over-fetching).
 export interface RemoteTabSnapshot {
   history: unknown[];
   context?: unknown;
