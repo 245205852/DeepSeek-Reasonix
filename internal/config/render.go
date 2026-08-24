@@ -253,6 +253,11 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 	} else {
 		b.WriteString("# planner_model = \"deepseek-pro\"   # optional: enable two-model collaboration\n")
 	}
+	if c.Agent.VisionModel != "" {
+		fmt.Fprintf(&b, "vision_model = %q   # image understanding fallback: auto or provider/model\n", c.Agent.VisionModel)
+	} else {
+		b.WriteString("# vision_model = \"auto\"   # optional: summarize images for text-only models\n")
+	}
 	if c.Agent.SubagentModel != "" {
 		fmt.Fprintf(&b, "subagent_model = %q   # default model for runAs=subagent skills\n", c.Agent.SubagentModel)
 	} else {
@@ -555,6 +560,7 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 		fmt.Fprintf(&b, "qq = %s\n", renderStringArray(c.Bot.SelfUserIDs.QQ))
 		fmt.Fprintf(&b, "feishu = %s\n", renderStringArray(c.Bot.SelfUserIDs.Feishu))
 		fmt.Fprintf(&b, "weixin = %s\n", renderStringArray(c.Bot.SelfUserIDs.Weixin))
+		fmt.Fprintf(&b, "dingtalk = %s\n", renderStringArray(c.Bot.SelfUserIDs.Dingtalk))
 		b.WriteString("\n[bot.control]\n")
 		fmt.Fprintf(&b, "enabled = %v   # local loopback HTTP API for status/send; requires Bearer token\n", c.Bot.Control.Enabled)
 		if strings.TrimSpace(c.Bot.Control.Addr) != "" {
@@ -597,15 +603,19 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 		fmt.Fprintf(&b, "qq_users = %s\n", renderStringArray(c.Bot.Allowlist.QQUsers))
 		fmt.Fprintf(&b, "feishu_users = %s\n", renderStringArray(c.Bot.Allowlist.FeishuUsers))
 		fmt.Fprintf(&b, "weixin_users = %s\n", renderStringArray(c.Bot.Allowlist.WeixinUsers))
+		fmt.Fprintf(&b, "dingtalk_users = %s\n", renderStringArray(c.Bot.Allowlist.DingtalkUsers))
 		fmt.Fprintf(&b, "qq_approvers = %s\n", renderStringArray(c.Bot.Allowlist.QQApprovers))
 		fmt.Fprintf(&b, "feishu_approvers = %s\n", renderStringArray(c.Bot.Allowlist.FeishuApprovers))
 		fmt.Fprintf(&b, "weixin_approvers = %s\n", renderStringArray(c.Bot.Allowlist.WeixinApprovers))
+		fmt.Fprintf(&b, "dingtalk_approvers = %s\n", renderStringArray(c.Bot.Allowlist.DingtalkApprovers))
 		fmt.Fprintf(&b, "qq_admins = %s\n", renderStringArray(c.Bot.Allowlist.QQAdmins))
 		fmt.Fprintf(&b, "feishu_admins = %s\n", renderStringArray(c.Bot.Allowlist.FeishuAdmins))
 		fmt.Fprintf(&b, "weixin_admins = %s\n", renderStringArray(c.Bot.Allowlist.WeixinAdmins))
+		fmt.Fprintf(&b, "dingtalk_admins = %s\n", renderStringArray(c.Bot.Allowlist.DingtalkAdmins))
 		fmt.Fprintf(&b, "qq_groups = %s\n", renderStringArray(c.Bot.Allowlist.QQGroups))
 		fmt.Fprintf(&b, "feishu_groups = %s\n", renderStringArray(c.Bot.Allowlist.FeishuGroups))
 		fmt.Fprintf(&b, "weixin_groups = %s\n", renderStringArray(c.Bot.Allowlist.WeixinGroups))
+		fmt.Fprintf(&b, "dingtalk_groups = %s\n", renderStringArray(c.Bot.Allowlist.DingtalkGroups))
 		b.WriteString("\n[bot.qq]\n")
 		fmt.Fprintf(&b, "enabled = %v\n", c.Bot.QQ.Enabled)
 		fmt.Fprintf(&b, "app_id = %q\n", c.Bot.QQ.AppID)
@@ -640,6 +650,29 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 		fmt.Fprintf(&b, "account_id = %q\n", c.Bot.Weixin.AccountID)
 		fmt.Fprintf(&b, "token_env = %q\n", c.Bot.Weixin.TokenEnv)
 		fmt.Fprintf(&b, "api_base = %q\n", c.Bot.Weixin.APIBase)
+		b.WriteString("\n[bot.dingtalk]\n")
+		fmt.Fprintf(&b, "enabled = %v\n", c.Bot.Dingtalk.Enabled)
+		fmt.Fprintf(&b, "client_id = %q\n", c.Bot.Dingtalk.ClientID)
+		fmt.Fprintf(&b, "client_secret = %q\n", c.Bot.Dingtalk.ClientSecret)
+		fmt.Fprintf(&b, "client_id_env = %q\n", c.Bot.Dingtalk.ClientIDEnv)
+		fmt.Fprintf(&b, "secret_env = %q\n", c.Bot.Dingtalk.SecretEnv)
+		fmt.Fprintf(&b, "bot_name = %q\n", c.Bot.Dingtalk.BotName)
+		fmt.Fprintf(&b, "require_mention = %v\n", c.Bot.Dingtalk.RequireMention)
+		if strings.TrimSpace(c.Bot.Dingtalk.Model) != "" {
+			fmt.Fprintf(&b, "model = %q\n", strings.TrimSpace(c.Bot.Dingtalk.Model))
+		}
+		if strings.TrimSpace(c.Bot.Dingtalk.ToolApprovalMode) != "" {
+			fmt.Fprintf(&b, "tool_approval_mode = %q\n", strings.TrimSpace(c.Bot.Dingtalk.ToolApprovalMode))
+		}
+		if strings.TrimSpace(c.Bot.Dingtalk.WorkspaceRoot) != "" {
+			fmt.Fprintf(&b, "workspace_root = %q\n", strings.TrimSpace(c.Bot.Dingtalk.WorkspaceRoot))
+		}
+		if parts := renderBotAccess(c.Bot.Dingtalk.Access); parts != "" {
+			fmt.Fprintf(&b, "access = %s\n", parts)
+		}
+		if len(c.Bot.Dingtalk.SessionMappings) > 0 {
+			fmt.Fprintf(&b, "session_mappings = %s\n", renderBotSessionMappings(c.Bot.Dingtalk.SessionMappings))
+		}
 		for _, conn := range c.Bot.Connections {
 			b.WriteString("\n[[bot.connections]]\n")
 			fmt.Fprintf(&b, "id = %q\n", conn.ID)
@@ -958,6 +991,10 @@ func RenderTOMLProjectDelta(c *Config) string {
 	}
 	if c.Agent.PlannerModel != "" && c.Agent.PlannerModel != d.Agent.PlannerModel {
 		fmt.Fprintf(&agentBuf, "planner_model = %q\n", c.Agent.PlannerModel)
+		anyAgent = true
+	}
+	if c.Agent.VisionModel != d.Agent.VisionModel {
+		fmt.Fprintf(&agentBuf, "vision_model = %q\n", c.Agent.VisionModel)
 		anyAgent = true
 	}
 	if c.Agent.SubagentModel != "" && c.Agent.SubagentModel != d.Agent.SubagentModel {

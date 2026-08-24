@@ -8,9 +8,12 @@ import (
 )
 
 func TestClassifyWriteScopeTempIsScratch(t *testing.T) {
-	cases := []string{"/tmp/btc_klines.py"}
-	if runtime.GOOS == "darwin" {
-		cases = append(cases, "/private/tmp/btc_klines.py")
+	cases := []string{filepath.Join(os.TempDir(), "btc_klines.py")}
+	if runtime.GOOS != "windows" {
+		cases = append(cases, "/tmp/btc_klines.py")
+		if runtime.GOOS == "darwin" {
+			cases = append(cases, "/private/tmp/btc_klines.py")
+		}
 	}
 	for _, path := range cases {
 		if got := ClassifyWriteScope(path, "/home/dev/project", nil); got != WriteScopeScratch {
@@ -31,8 +34,10 @@ func TestClassifyWriteScopeWorkspaceAndOutside(t *testing.T) {
 	if got := ClassifyWriteScope("parser.go", "", nil); got != WriteScopeWorkspace {
 		t.Fatalf("relative without root = %s, want workspace", got)
 	}
-	if got := ClassifyWriteScope("/home/dev/Notes/idea.md", root, nil); got != WriteScopeOutside {
-		t.Fatalf("home file = %s, want outside", got)
+	volumeRoot := filepath.VolumeName(os.TempDir()) + string(filepath.Separator)
+	outside := filepath.Join(volumeRoot, "reasonix-outside-home", "Notes", "idea.md")
+	if got := ClassifyWriteScope(outside, root, nil); got != WriteScopeOutside {
+		t.Fatalf("outside file = %s, want outside", got)
 	}
 }
 

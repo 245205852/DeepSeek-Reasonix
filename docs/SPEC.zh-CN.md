@@ -121,6 +121,11 @@ type Tool interface {
 
 当 `agent.planner_model` 与 executor 不同时，planner 与 executor 使用独立 session：
 
+图片理解兜底由 `agent.vision_model` 控制：空值保持现有行为，`auto` 只在当前执行器
+服务商内选择视觉模型，显式 `provider/model` 可跨服务商选择。视觉执行器先生成版本化的
+图片描述/OCR 摘要，摘要作为隐藏的当前用户回合内容持久化；当前模型本身支持图片时
+直接发送图片，不额外执行摘要请求。
+
 - 宿主使用原始用户文本和可信回合元数据做确定性路由，默认 executor-only；不调用
   classifier 模型，不从措辞、文件数量或关键词推断复杂度，也不从 controller 注入的
   prompt block 猜测宿主状态。独立 Planner 只响应显式先规划 / 规划再执行、显式等待批准、
@@ -267,7 +272,7 @@ Profile 描述的是 worker，不是一次运行。委派由五个彼此独立�
 - host 无法路径化约束的写工具（自定义、未知）被丢弃；
 - 运行结束后，host 用自己记录的变更与声明比对，任何越界路径都会写进该子智能体的 host receipts 交还给父智能体。
 
-省略 `write_paths` 并不等于不受约束：该次运行会声明整个 workspace，因而与其他所有写入声明串行。那是纯调度边界——workspace 内部不拒绝任何写入，因为同一时刻不可能有另一个持有重叠声明的并发写入者。但离开 workspace 的写入仍会被记为越界。
+省略 `write_paths` 并不等于不受约束：该次运行开工时声明整个 workspace，因此不能和其他 writer 同时开工。若整段只有路径型写入，调度预留会收窄到已写文件，父代理或兄弟任务可以写其他文件。`bash` / MCP 一旦产生 workspace 变更，预留重新变为整区。目录声明可以同时开工，只有落盘到同一文件时才互斥。能力上界（sandbox / `AllowsPath`）仍是声明本身，不会随预留收窄。离开 workspace 的写入仍会被记为越界。
 
 声明路径换来的是并行能力；代价是在 OS sandbox 无法强制写根的宿主上失去 `bash`。
 
@@ -397,8 +402,10 @@ name           = "deepseek"
 kind           = "anthropic"
 base_url       = "https://api.deepseek.com/anthropic"
 # request_url  = "https://proxy.example.com/anthropic/v1/messages" # 可选：完整请求地址
-models         = ["deepseek-v4-flash", "deepseek-v4-pro"]
+models         = ["deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v4-flash-vision-exp"]
 default        = "deepseek-v4-flash"
+# vision_models = ["deepseek-v4-flash-vision-exp"]  # 设置里的「图片输入」勾选；线上仍只有这一枚 SKU 会发图
+# 官方 DeepSeek 视觉支持内联 base64、http(s) 图片 URL、以及 Files API file_id。
 api_key_env    = "DEEPSEEK_API_KEY"
 web_search     = true
 context_window = 1000000

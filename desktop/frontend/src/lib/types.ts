@@ -524,6 +524,7 @@ export interface ProjectNode {
   recoveryBranchCount?: number;
   recoveryUnresolvedCount?: number;
   recoveryCleanupEligibleCount?: number;
+  recoveryCopyCount?: number; // folded recovery copies behind this row (badge only)
   isolatedWorktree?: boolean;
   runtimeOnly?: boolean;
   children?: ProjectNode[];
@@ -926,6 +927,7 @@ export interface Meta {
   workspacePath?: string;
   gitBranch?: string;
   imageInputEnabled?: boolean;
+  visionFallbackEnabled?: boolean;
   autoApproveTools?: boolean;
   bypass?: boolean; // legacy JSON key for YOLO/full-access tool auto-approval
   collaborationMode?: CollaborationMode;
@@ -1827,11 +1829,20 @@ export interface ProviderPresetView {
   label: string;
   description: string;
   keyEnv: string;
+  recommended?: boolean;
+  billingMode?: string;
+  displayGroup?: string;
+  displaySection?: string;
+  displayTier?: "primary" | "advanced" | "compatibility" | string;
+  routeKind?: string;
+  optional?: boolean;
+  displayOrder?: number;
   providerNames: string[];
   models: string[];
   added: boolean;
-  status?: "available" | "installed" | "installed_modified" | "name_conflict" | "similar_existing";
+  status?: "available" | "installed" | "installed_modified" | "partial" | "name_conflict" | "similar_existing";
   statusProviderNames?: string[];
+  missingProviderNames?: string[];
   keySet: boolean;
   requiresKey?: boolean;
   configured?: boolean;
@@ -1957,8 +1968,8 @@ export interface BackgroundRuntimeView {
 
 export interface WorkspaceConflictView {
   state: "none" | "local" | "external";
-  ownerTabId?: string;
-  ownerTitle?: string;
+  ownerTabId?: string; ownerTitle?: string;
+  ownerScope?: string; ownerLabel?: string;
   ownerWork: ActiveWorkView;
   canReveal: boolean;
   canCreateWorktree: boolean;
@@ -2026,6 +2037,10 @@ export interface BotAllowlistView {
   qqGroups: string[];
   feishuGroups: string[];
   weixinGroups: string[];
+  dingtalkUsers: string[];
+  dingtalkApprovers: string[];
+  dingtalkAdmins: string[];
+  dingtalkGroups: string[];
 }
 
 export interface BotAccessView {
@@ -2042,6 +2057,7 @@ export interface BotSelfUserIDsView {
   qq: string[];
   feishu: string[];
   weixin: string[];
+  dingtalk: string[];
 }
 
 export interface BotPairingView {
@@ -2100,6 +2116,19 @@ export interface WeixinBotView {
   apiBase: string;
 }
 
+export interface DingtalkBotView {
+  enabled: boolean;
+  clientId: string;
+  clientSecretEnv: string;
+  secretSet: boolean;
+  botName: string;
+  requireMention: boolean;
+  model: string;
+  toolApprovalMode: string;
+  workspaceRoot: string;
+  access: BotAccessView;
+}
+
 export interface BotConnectionCredentialView {
   appId: string;
   appSecretEnv: string;
@@ -2156,6 +2185,7 @@ export interface BotSettingsView {
   qq: QQBotView;
   feishu: FeishuBotView;
   weixin: WeixinBotView;
+  dingtalk: DingtalkBotView;
   connections: BotConnectionView[];
 }
 
@@ -2165,6 +2195,7 @@ export interface BotRuntimeStatusView {
   message: string;
   connections: number;
   startedAt: string;
+  platforms: Record<string, string>;
 }
 
 export interface BotInstallStartResult {
@@ -2222,6 +2253,7 @@ export interface BotConnectionDiagnostic {
 export interface SettingsView {
   defaultModel: string;
   plannerModel: string;
+  visionModel: string;
   subagentModel: string;
   subagentEffort: string;
   autoPlan: string;

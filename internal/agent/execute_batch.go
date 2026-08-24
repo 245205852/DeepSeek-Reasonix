@@ -247,7 +247,7 @@ func (a *Agent) executeBatch(ctx context.Context, turn *turnRuntime, calls []pro
 		mutationBatchStop = true
 	}
 
-	for _, batch := range partitionToolCalls(a.svc.tools, calls) {
+	for _, batch := range a.toolCallBatches(calls) {
 		if ctx.Err() != nil {
 			markCancelled(batch.start)
 			break
@@ -474,6 +474,20 @@ type toolCallBatch struct {
 	start    int
 	end      int
 	parallel bool
+}
+
+// toolCallBatches preserves read-only fan-out unless a tool hook can mutate the
+// workspace. Such hooks are covered by a whole-workspace claim, so their calls
+// must run in provider order instead of racing that claim against each other.
+func (a *Agent) toolCallBatches(calls []provider.ToolCall) []toolCallBatch {
+	batches := partitionToolCalls(a.svc.tools, calls)
+	if !toolHooksMayMutateWorkspace(a.svc.hooks) {
+		return batches
+	}
+	for i := range batches {
+		batches[i].parallel = false
+	}
+	return batches
 }
 
 // partitionToolCalls keeps provider order while letting contiguous known

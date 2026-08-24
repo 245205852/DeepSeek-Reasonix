@@ -1240,8 +1240,8 @@ func (a *Agent) Run(ctx context.Context, input string) (runErr error) {
 	runMaxSteps := a.maxSteps
 	runMaxStepsKey := a.maxStepsKey
 	a.recovery.runSeq.Add(1)
-	// All role settings participate in the workspace lease for the run; the
-	// exclusive write lock is still acquired lazily on the first real writer.
+	// All role settings participate in the workspace lease for the run; write
+	// locks are acquired per mutating tool and released when that tool ends.
 	if a.svc.workspaceLease != nil {
 		a.svc.workspaceLease.BeginRun()
 		defer a.svc.workspaceLease.EndRun()
@@ -1306,8 +1306,9 @@ func (a *Agent) Run(ctx context.Context, input string) (runErr error) {
 }
 
 // ReadinessResult is the host-consumable outcome of the Delivery final-answer
-// readiness check. The Controller reads it after each goal turn; plain turns
-// receive the same outcome as a FinalReadinessError.
+// readiness check. The Controller reads it after each Goal/approved-Plan turn;
+// plain Standard turns end after the visible answer and do not enter the Goal
+// continuation path.
 type ReadinessResult struct {
 	// Ready is true when no missing requirement remains.
 	Ready bool
