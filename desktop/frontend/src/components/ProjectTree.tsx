@@ -5,7 +5,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { CSSProperties, DragEvent as ReactDragEvent, KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent } from "react";
-import { Archive, ArrowDown, Pencil, Plus, Folder, FolderPlus, Search, BriefcaseBusiness, Copy, FolderOpen, XCircle, Check, ListCollapse, ListRestart, MessageSquare, Clock, Pin, MoreHorizontal, Minimize2, Maximize2, GitBranch, Sparkles } from "lucide-react";
+import { Archive, ArrowDown, Pencil, Plus, Folder, FolderPlus, Search, BriefcaseBusiness, Copy, FolderOpen, XCircle, Check, ListCollapse, ListRestart, MessageSquare, Clock, Pin, MoreHorizontal, Minimize2, Maximize2, GitBranch, Sparkles, Server } from "lucide-react";
 import { asArray } from "../lib/array";
 import { useToast } from "../lib/toast";
 import { app } from "../lib/bridge";
@@ -463,7 +463,7 @@ export function ProjectTree({
   }, [applyRuntimeProjection]);
   refreshRef.current = refresh;
 
-  const { addingProject, handleAddProject, openBlankProjectFlow, blankProjectFlow } = useProjectCreation({
+  const { addingProject, handleAddProject, openBlankProjectFlow, blankProjectFlow, openRemoteConnectFlow, remoteConnectFlow } = useProjectCreation({
     onAddProject,
     onRefresh: refresh,
     showToast,
@@ -1876,6 +1876,28 @@ export function ProjectTree({
     },
   ];
 
+  const classicHeaderAddItems: ContextMenuItem[] = [
+    {
+      key: "open-local-folder",
+      icon: <FolderPlus size={13} />,
+      label: t("projectTree.addProjectTooltip"),
+      disabled: addingProject,
+      onSelect: () => {
+        closeMenu();
+        void handleAddProject();
+      },
+    },
+    {
+      key: "remote-connection",
+      icon: <Server size={13} />,
+      label: t("projectTree.remoteConnection"),
+      onSelect: () => {
+        closeMenu();
+        openRemoteConnectFlow();
+      },
+    },
+  ];
+
   const workbenchHeaderAddItems: ContextMenuItem[] = [
     {
       key: "blank-project",
@@ -1892,6 +1914,15 @@ export function ProjectTree({
       onSelect: () => {
         closeMenu();
         void handleAddProject();
+      },
+    },
+    {
+      key: "remote-connection",
+      icon: <Server size={13} />,
+      label: t("projectTree.remoteConnection"),
+      onSelect: () => {
+        closeMenu();
+        openRemoteConnectFlow();
       },
     },
   ];
@@ -2115,17 +2146,31 @@ export function ProjectTree({
                 {canRestoreCollapsedView ? <ListRestart size={14} /> : <ListCollapse size={14} />}
               </button>
             </Tooltip>
-            <Tooltip label={t("projectTree.addProjectTooltip")} className="project-tree__action-slot project-tree__header-action-slot project-tree__action-slot--add">
-              <button
-                type="button"
-                className="project-tree__add-project"
-                aria-label={t("projectTree.addProjectTooltip")}
-                disabled={addingProject}
-                onClick={() => void handleAddProject()}
-              >
-                <FolderPlus size={14} />
-              </button>
-            </Tooltip>
+            <span className="project-tree__header-menu-wrap">
+              <Tooltip label={t("projectTree.addProjectTooltip")} className="project-tree__action-slot project-tree__header-action-slot project-tree__action-slot--add">
+                <button
+                  type="button"
+                  className={`project-tree__add-project${workbenchHeaderMenu === "add" ? " project-tree__header-icon-btn--active" : ""}`}
+                  aria-label={t("projectTree.addProjectTooltip")}
+                  aria-haspopup="menu"
+                  aria-expanded={workbenchHeaderMenu === "add"}
+                  disabled={addingProject}
+                  onClick={(event) => {
+                    openWorkbenchHeaderMenu(event, "add");
+                  }}
+                >
+                  <FolderPlus size={14} />
+                </button>
+              </Tooltip>
+              <ContextMenu
+                open={workbenchHeaderMenu === "add"}
+                point={menuPoint}
+                items={classicHeaderAddItems}
+                minWidth={206}
+                ariaLabel={t("projectTree.addProjectTooltip")}
+                onClose={closeMenu}
+              />
+            </span>
           </>
         )}
       </span>
@@ -2158,6 +2203,15 @@ export function ProjectTree({
         >
           <FolderPlus size={14} />
           <span>{t("projectTree.addProjectTooltip")}</span>
+        </button>
+        <button
+          type="button"
+          className="project-tree__empty-secondary"
+          onClick={openRemoteConnectFlow}
+          disabled={addingProject}
+        >
+          <Server size={14} />
+          <span>{t("projectTree.remoteConnection")}</span>
         </button>
       </div>
     );
@@ -2269,6 +2323,7 @@ export function ProjectTree({
         document.body,
       )}
       {blankProjectFlow}
+      {remoteConnectFlow}
     </div>
   );
 }
