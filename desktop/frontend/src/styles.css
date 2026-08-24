@@ -3413,6 +3413,10 @@ a[href] {
      inset on the scroller; rows own --transcript-inline-pad. */
   --transcript-inline-pad: 32px;
   position: relative;
+  /* Virtuoso owns the logical anchor. Browser scroll anchoring reacts to
+     asynchronous Markdown boxes before Virtuoso receives their size and can
+     move the scroller in the opposite direction during an upward gesture. */
+  overflow-anchor: none;
   height: 100%;
   overflow-y: auto;
   overflow-y: overlay;
@@ -3427,6 +3431,48 @@ a[href] {
   flex: 1 1 auto;
   min-height: 0;
   height: 100%;
+}
+.transcript-navigation-surface {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+.transcript-navigation-content {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  height: 100%;
+}
+.transcript-navigation-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: var(--z-inline-sticky);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  color: var(--fg);
+  background: color-mix(in srgb, var(--chat-bg, var(--bg)) 88%, transparent);
+  pointer-events: auto;
+  user-select: none;
+  cursor: progress;
+}
+.transcript-navigation-overlay__spinner {
+  width: 16px;
+  height: 16px;
+  border: 2px solid color-mix(in srgb, var(--fg) 24%, transparent);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: transcript-navigation-spin 0.8s linear infinite;
+}
+@keyframes transcript-navigation-spin {
+  to { transform: rotate(360deg); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .transcript-navigation-overlay__spinner { animation: none; }
 }
 /* The active turn streams as the virtual list's in-flow Footer: inside the
    scroller, right after the last history row, but outside Virtuoso's
@@ -3548,6 +3594,14 @@ a[href] {
 }
 .history-preview__body .transcript__row > * {
   max-width: none;
+}
+/* Keep the lazy Markdown source readable while Virtuoso waits for the real
+   parser result. The row itself remains free to measure once the marker is
+   removed; no manual-scroll path writes a forced row height. */
+.transcript__row .msg--assistant .msg__body > .md[data-transcript-geometry-pending] {
+  box-sizing: border-box;
+  height: max(0px, calc(var(--transcript-row-estimate) - 32px));
+  overflow: hidden;
 }
 /* Offscreen rows are unmounted by the virtualizer, so content-visibility
    culling is redundant inside rows — and skipping it keeps offsetHeight
@@ -4197,6 +4251,16 @@ a[href] {
   content-visibility: auto;
   contain-intrinsic-size: 1px 60px;
 }
+/* Virtuoso already owns transcript virtualization. A second content-visibility
+ * viewport inside each mounted row gives the browser a 60px intrinsic box and
+ * then expands it when the row crosses the viewport, which makes Virtuoso's
+ * upward compensation write a large reverse frame during manual reading. Keep
+ * content-visibility for non-transcript message lists, but let the transcript
+ * size tree see the real row geometry from its first mount. */
+.transcript__row .msg {
+  content-visibility: visible;
+  contain-intrinsic-size: auto;
+}
 .msg--user {
   display: flex;
   flex-direction: column;
@@ -4839,13 +4903,119 @@ button.reasoning-summary:focus-visible {
 }
 
 .msg-search-sources {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
   margin-top: 0.75em;
+  color: var(--fg-faint);
+  font-size: var(--text-md);
 }
-.msg-search-sources .md {
+.msg-search-sources__toggle {
+  display: inline-flex;
+  align-items: center;
+  align-self: flex-start;
+  gap: 6px;
+  min-height: 24px;
+  padding: 2px 8px 2px 4px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg-faint);
+  cursor: pointer;
+  -webkit-app-region: no-drag;
+}
+.msg-search-sources__toggle:hover,
+.msg-search-sources__toggle:focus-visible {
   color: var(--fg);
+  background: color-mix(in srgb, var(--fg) 6%, transparent);
 }
-.msg-search-sources .md a {
+.msg-search-sources__chevron {
+  flex: 0 0 auto;
+  transition: transform 0.2s;
+}
+.msg-search-sources__chevron--open {
+  transform: rotate(90deg);
+}
+.msg-search-sources__body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 4px 0 2px 32px;
+  max-width: min(760px, 100%);
+}
+.msg-search-source {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  min-width: 0;
+}
+.msg-search-source__link {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 2px;
+  color: var(--fg);
+  text-decoration: none;
+}
+.msg-search-source__link:hover .msg-search-source__title,
+.msg-search-source__link:focus-visible .msg-search-source__title {
   color: var(--accent);
+}
+.msg-search-source__title {
+  overflow-wrap: anywhere;
+  font-weight: 560;
+  line-height: 1.35;
+}
+.msg-search-source__url {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  gap: 5px;
+  color: var(--fg-faint);
+  font-size: var(--text-sm);
+  line-height: 1.3;
+}
+.msg-search-source__url > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.msg-search-source__copy {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--fg-faint);
+  cursor: pointer;
+  -webkit-app-region: no-drag;
+}
+.msg-search-source__copy:hover,
+.msg-search-source__copy:focus-visible {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--fg) 6%, transparent);
+}
+.tool__search-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: var(--fg-faint);
+  font-size: var(--text-sm);
+  line-height: 1.4;
+}
+.tool__search-query {
+  color: var(--fg);
+  overflow-wrap: anywhere;
+}
+.tool__search-count {
+  color: var(--fg-faint);
 }
 
 .msg-memory-citations {
@@ -5149,6 +5319,19 @@ button.reasoning-summary:focus-visible {
 .md {
   font-family: var(--font-content-family);
   font-weight: var(--font-weight-regular);
+}
+/* KaTeX \boxed draws its frame as an empty .fbox span that relies on
+   width:100% resolving against an inline-table + table-layout:fixed row.
+   WKWebView resolves that percentage to the empty span's intrinsic width (0),
+   so the box's top/bottom borders collapse to nothing and the left/right
+   borders merge into a single tall vertical bar. Fill the frame to its
+   containing row with -webkit-fill-available instead, which preserves the
+   span's inline-block baseline alignment (its vertical position) while giving
+   it the full content width. Keep a standards-compatible fallback for
+   browsers that do not implement the WebKit value. */
+.md .katex .fbox {
+  width: 100%;
+  width: -webkit-fill-available;
 }
 .md--stream-tail {
   overflow-wrap: anywhere;
@@ -5796,8 +5979,7 @@ button.reasoning-summary:focus-visible {
 }
 
 .mermaid-diagram__preview:active,
-.mermaid-diagram__preview svg:active,
-.mermaid-diagram__preview .svg-pan-zoom_viewport:active {
+.mermaid-diagram__preview svg:active {
   cursor: grabbing;
 }
 
@@ -5807,6 +5989,7 @@ button.reasoning-summary:focus-visible {
   height: 100%;
   max-width: none;
   cursor: grab;
+  touch-action: none;
 }
 
 .mermaid-diagram__preview a {
@@ -6649,9 +6832,9 @@ body > .mermaid-diagram--fullscreen {
   transition: border-color 0.12s;
 }
 .composer-card--resized {
-  /* --composer-height is always the user's logical height; the run strip's
-     reservation lives in this calc so the live resize drag (which writes the
-     raw logical height) and the React render path can never disagree. */
+  /* --composer-height excludes the run strip and may grow above the user's
+     saved minimum to reveal a longer draft. The strip reservation stays in
+     this calc so live resize and content sizing share one coordinate space. */
   height: calc(var(--composer-height) + var(--composer-run-strip-reserved, 0px));
   display: flex;
   flex-direction: column;
@@ -6659,10 +6842,9 @@ body > .mermaid-diagram--fullscreen {
 .composer-card:focus-within {
   border-color: var(--fg-faint);
 }
-/* Run strip: an in-flow bar at the top of the card. For user-resized cards
-   (fixed --composer-height), the JS adds the strip's reserved height so the
-   meta row stays fully visible. For auto-height cards the card grows
-   naturally. */
+/* Run strip: an in-flow bar at the top of the card. For user-sized cards JS
+   adds the strip's reserved height so the input's logical minimum is unchanged.
+   For natural-height cards the card grows without the explicit reservation. */
 .composer-run-strip {
   display: flex;
   align-items: center;
@@ -7081,8 +7263,8 @@ body > .mermaid-diagram--fullscreen {
   vertical-align: text-bottom;
 }
 .composer-card--resized .composer__rich-input {
-  /* Fill the user's fixed card height and scroll inside; height: auto would
-     collapse the input to its intrinsic height and break the resized layout. */
+  /* Fill the current logical card height during live resize; content sizing
+     supplies an inline height after the gesture settles. */
   height: 100%;
   min-height: 0;
   overflow-y: auto;
@@ -7102,8 +7284,8 @@ body > .mermaid-diagram--fullscreen {
   display: none;                    /* Chrome / Safari / Wails webview */
 }
 .composer-card--resized .composer__input {
-  /* The resized card gets no inline textarea height from JS; height: auto
-     would pin the rows=1 textarea to a single visible line forever. */
+  /* Fill the current logical card height during live resize; content sizing
+     supplies an inline height after the gesture settles. */
   height: 100%;
   min-height: 0;
   max-height: none;
@@ -7111,6 +7293,17 @@ body > .mermaid-diagram--fullscreen {
   scrollbar-width: thin;           /* restore scrollbar when resized */
 }
 .composer-card--resized .composer__input::-webkit-scrollbar {
+  display: block;
+  width: 6px;
+}
+.composer-card--auto-overflow .composer__input {
+  /* Autosize mode keeps the scrollbar hidden while content fits; once the
+     inline overflow-y flips to auto (content exceeds the max height) restore
+     the thin scrollbar so long drafts expose their scrollability
+     (#8494/#8742/#9019). */
+  scrollbar-width: thin;
+}
+.composer-card--auto-overflow .composer__input::-webkit-scrollbar {
   display: block;
   width: 6px;
 }
@@ -10037,7 +10230,6 @@ body > .mermaid-diagram--fullscreen {
 /* ── workspace side panel ────────────────────────────────────────────────── */
 .workspace-panel {
   --workspace-tree-width: 280px;
-  --workspace-tree-rail-width: 44px;
   --workspace-preview-min-width: 360px;
   position: relative;
   min-width: 0;
@@ -10053,15 +10245,6 @@ body > .mermaid-diagram--fullscreen {
 .workspace-panel--embedded {
   border-left: none;
 }
-.workspace-panel--with-tree-rail:not(.workspace-panel--tree-hidden) {
-  grid-template-columns: var(--workspace-tree-rail-width) minmax(var(--workspace-preview-min-width), 1fr) var(--workspace-tree-width);
-}
-.workspace-panel--with-tree-rail:not(.workspace-panel--tree-hidden) .workspace-files {
-  grid-column: 3;
-}
-.workspace-panel--with-tree-rail:not(.workspace-panel--tree-hidden) .workspace-preview {
-  grid-column: 2;
-}
 .workspace-panel--tree-hidden {
   grid-template-columns: minmax(0, 1fr);
 }
@@ -10074,8 +10257,7 @@ body > .mermaid-diagram--fullscreen {
 .workspace-panel--detail-only {
   grid-template-columns: minmax(0, 1fr);
 }
-.workspace-panel--detail-only .workspace-files,
-.workspace-panel--detail-only .workspace-tree-rail {
+.workspace-panel--detail-only .workspace-files {
   display: none;
 }
 .workspace-panel--detail-only .workspace-preview {
@@ -10119,9 +10301,6 @@ body > .mermaid-diagram--fullscreen {
   background: transparent;
   cursor: col-resize;
   touch-action: none;
-}
-.workspace-panel--with-tree-rail .workspace-tree-resizer {
-  left: calc(100% - var(--workspace-tree-width) - 4px);
 }
 .workspace-tree-resizer::after {
   content: "";
@@ -10345,78 +10524,6 @@ body > .mermaid-diagram--fullscreen {
 }
 .workspace-iconbtn--on {
   color: var(--fg-dim);
-}
-.workspace-tree-rail {
-  grid-row: 1;
-  grid-column: 1;
-  min-width: 0;
-  min-height: 0;
-  display: flex;
-  align-items: flex-start;
-  justify-content: center;
-  padding-top: 6px;
-  background: var(--workspace-files-bg);
-  border-right: 1px solid var(--border-soft);
-}
-.workspace-panel--embedded .workspace-tree-rail {
-  padding-top: 9px;
-}
-.workspace-tree-reveal {
-  background: var(--bg-elev);
-  border: 1px solid var(--border-soft);
-  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.08);
-}
-.workspace-preview__meta {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  min-width: 0;
-  padding: 8px 18px;
-  border-bottom: 1px solid var(--border-soft);
-  color: var(--fg-faint);
-  font-size: 11.5px;
-  white-space: nowrap;
-}
-.workspace-panel--embedded .workspace-preview__meta {
-  padding: 7px 12px;
-}
-.workspace-preview__meta span,
-.workspace-crumb {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.workspace-crumb,
-.workspace-crumb-group {
-  display: inline-flex;
-  align-items: center;
-  min-width: 0;
-  gap: 7px;
-}
-.workspace-crumb {
-  --wails-draggable: no-drag;
-  max-width: 160px;
-  padding: 0;
-  border: none;
-  background: transparent;
-  color: var(--fg-dim);
-  font: inherit;
-}
-.workspace-crumb:hover {
-  color: var(--fg);
-}
-.workspace-crumb--current {
-  color: var(--fg);
-  cursor: default;
-}
-.workspace-crumb--current:hover {
-  color: var(--fg);
-}
-.workspace-preview__size {
-  margin-left: auto;
-  flex-shrink: 0;
-  font-family: var(--mono);
 }
 .workspace-preview__body {
   position: relative;
@@ -17329,6 +17436,38 @@ body > .mermaid-diagram--fullscreen {
   font-size: var(--font-control-small);
   line-height: 1.45;
 }
+.provider-quick-setup {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 18px;
+  border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--border));
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--accent) 5%, var(--bg-elev-1));
+}
+.provider-quick-setup__intro {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.provider-quick-setup__intro strong {
+  color: var(--fg);
+  font-size: var(--text-xl);
+}
+.provider-quick-setup__intro span {
+  max-width: 64ch;
+  color: var(--fg-dim);
+  font-size: var(--font-control-small);
+  line-height: 1.5;
+}
+.provider-quick-setup__key {
+  min-height: 42px;
+}
+.provider-quick-setup__actions {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
 .provider-add-segmented {
   width: fit-content;
   display: inline-flex;
@@ -17364,6 +17503,66 @@ body > .mermaid-diagram--fullscreen {
   grid-auto-rows: 92px;
   align-items: stretch;
   gap: 8px;
+}
+.provider-featured-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.provider-featured-picker__label {
+  color: var(--fg-dim);
+  font-size: var(--font-control-small);
+  font-weight: 650;
+}
+.provider-featured-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+.provider-featured-grid .provider-template-card {
+  min-height: 84px;
+}
+.provider-preset-group {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--bg) 55%, var(--bg-elev-2) 45%);
+}
+.provider-preset-group > h4,
+.provider-preset-section > h5 {
+  margin: 0;
+  color: var(--fg);
+}
+.provider-preset-group > h4 {
+  font-size: var(--text-lg);
+}
+.provider-preset-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.provider-preset-section > h5 {
+  font-size: var(--font-control);
+}
+.provider-preset-section__hint {
+  margin: -2px 0 0;
+  color: var(--fg-dim);
+  font-size: var(--font-control-small);
+}
+.provider-preset-details {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 2px;
+}
+.provider-preset-details > summary {
+  color: var(--fg-dim);
+  font-size: var(--font-control-small);
+  font-weight: 650;
+  cursor: pointer;
 }
 .provider-template-card {
   display: flex;
@@ -17826,6 +18025,20 @@ body > .mermaid-diagram--fullscreen {
   flex-direction: column;
   gap: 6px;
   padding-top: 2px;
+}
+.provider-route-settings {
+  padding-top: 2px;
+}
+.provider-route-settings > summary {
+  width: fit-content;
+  color: var(--fg-dim);
+  font-size: var(--font-control-small);
+  font-weight: 650;
+  cursor: pointer;
+  user-select: none;
+}
+.provider-route-settings[open] > summary {
+  margin-bottom: 8px;
 }
 .provider-profile-row {
   display: grid;
@@ -21039,6 +21252,15 @@ body > .mermaid-diagram--fullscreen {
   }
   .provider-access-card__actions {
     flex-wrap: wrap;
+  }
+  .provider-quick-setup__actions {
+    flex-direction: column-reverse;
+  }
+  .provider-quick-setup__actions .btn {
+    width: 100%;
+  }
+  .provider-featured-grid {
+    grid-template-columns: 1fr;
   }
   .provider-profile-row {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -24428,6 +24650,28 @@ body > .mermaid-diagram--fullscreen {
   user-select: none;
 }
 
+.project-tree__skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 6px;
+  padding-bottom: 6px;
+}
+
+.project-tree__skeleton-bar {
+  display: block;
+  height: 12px;
+  width: 72%;
+  border-radius: 4px;
+  background: var(--fg-faint);
+  opacity: 0.16;
+  animation: pulse 1.2s ease-in-out infinite;
+}
+
+.project-tree__skeleton-bar--short {
+  width: 48%;
+}
+
 .project-tree__header-actions .project-tree__add-project:focus-visible,
 .project-tree__header-actions .project-tree__collapse-all:focus-visible,
 .project-tree__header-actions .project-tree__header-action-btn:focus-visible {
@@ -24732,6 +24976,36 @@ body > .mermaid-diagram--fullscreen {
   white-space: nowrap;
 }
 
+.project-tree__topic-recovery {
+  flex: none;
+  max-width: 72px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--accent);
+  font-size: 10px;
+  line-height: 16px;
+  padding: 0 4px;
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  border-radius: 4px;
+}
+
+.project-tree__catalog-rebuild {
+  flex: none;
+  border: 0;
+  padding: 2px 6px;
+  border-radius: 4px;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.project-tree__catalog-rebuild:hover {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
 .project-tree__topic-im {
   flex: 0 1 auto;
   min-width: 0;
@@ -24782,6 +25056,22 @@ body > .mermaid-diagram--fullscreen {
   border-radius: 5px;
   background: color-mix(in srgb, var(--project-accent, var(--accent)) 11%, transparent);
   color: color-mix(in srgb, var(--project-accent, var(--accent)) 72%, var(--fg-dim));
+  font-size: 10.5px;
+  font-weight: 620;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.project-tree__topic-recovery-copies {
+  flex: 0 0 auto;
+  height: 17px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 5px;
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--fg-faint) 10%, transparent);
+  color: var(--fg-faint);
   font-size: 10.5px;
   font-weight: 620;
   line-height: 1;
@@ -25307,6 +25597,9 @@ body > .mermaid-diagram--fullscreen {
 }
 
 .project-tree__catalog-progress {
+	display: flex;
+	align-items: center;
+	gap: 8px;
   padding: 4px 10px 6px;
   color: var(--fg-muted);
   font-size: 11px;
@@ -27424,8 +27717,7 @@ body > .mermaid-diagram--fullscreen {
   border-radius: 7px;
 }
 
-.workspace-preview__head,
-.workspace-preview__meta {
+.workspace-preview__head {
   border-color: var(--border-soft);
 }
 
@@ -29523,8 +29815,7 @@ body > .mermaid-diagram--fullscreen {
   text-align: center;
 }
 
-:root[data-theme-style] .workspace-preview__head,
-:root[data-theme-style] .workspace-preview__meta {
+:root[data-theme-style] .workspace-preview__head {
   border-color: var(--border-soft);
 }
 
@@ -29544,8 +29835,7 @@ body > .mermaid-diagram--fullscreen {
   font-weight: 650;
 }
 
-:root[data-theme-style] .workspace-current-file__path,
-:root[data-theme-style] .workspace-preview__meta {
+:root[data-theme-style] .workspace-current-file__path {
   font-family: var(--mono);
 }
 
@@ -29555,20 +29845,6 @@ body > .mermaid-diagram--fullscreen {
   color: var(--fg);
   border-color: var(--border);
   background: var(--bg-soft);
-}
-
-:root[data-theme-style] .workspace-preview__meta {
-  min-height: 32px;
-  padding: 6px 12px;
-  background: var(--chat-bg);
-}
-
-:root[data-theme-style] .workspace-crumb {
-  color: var(--fg-dim);
-}
-
-:root[data-theme-style] .workspace-crumb--current {
-  color: var(--fg);
 }
 
 :root[data-theme-style] .workspace-preview__body {
@@ -31850,7 +32126,7 @@ body > .mermaid-diagram--fullscreen {
   flex: 1 1 auto !important;
   line-height: 1.25 !important;
   min-height: 20px !important;
-  max-height: 96px !important;
+  max-height: min(30vh, 160px) !important;
   padding: 4px 0 !important;
   overflow-y: auto !important;
   resize: none !important;
@@ -34700,12 +34976,6 @@ body > .mermaid-diagram--fullscreen {
   display: none;
 }
 
-/* Second layer: breadcrumb path row (hide — duplicates the first path). */
-.app--creation .workbench-dock .workspace-panel--changed-overview .workspace-preview__meta,
-:root[data-theme-style] .app--creation .workbench-dock .workspace-panel--changed-overview .workspace-preview__meta {
-  display: none;
-}
-
 .app--creation .workbench-dock .workspace-panel--changed-overview .workspace-preview__body,
 :root[data-theme-style] .app--creation .workbench-dock .workspace-panel--changed-overview .workspace-preview__body {
   padding: 8px 10px 14px;
@@ -35542,6 +35812,97 @@ body > .mermaid-diagram--fullscreen {
   flex-direction: column;
   gap: 8px;
   min-width: 0;
+}
+.diag-section__body--frontend {
+  padding-top: 12px;
+}
+.diag-frontend-recording__copy {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.diag-frontend-recording__copy strong {
+  font-size: 14px;
+}
+.diag-frontend-recording__copy span {
+  color: var(--text-muted, #888);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.diag-page .frontend-diagnostics--embedded {
+  --wails-draggable: no-drag;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
+  min-height: 32px;
+  padding: 4px;
+  border: 1px solid var(--border, rgba(127,127,127,.25));
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--bg-elev, #fff) 94%, transparent);
+  box-shadow: var(--shadow-2);
+  color: var(--fg-dim, #777);
+  font-size: var(--font-caption, 12px);
+}
+.diag-page .frontend-diagnostics--embedded button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-height: 26px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.diag-page .frontend-diagnostics--embedded button:hover {
+  background: var(--bg-hover, rgba(127,127,127,.12));
+  color: var(--fg, inherit);
+}
+.diag-page .frontend-diagnostics--embedded button:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+.diag-page .frontend-diagnostics--embedded button:disabled {
+  opacity: .55;
+  cursor: wait;
+}
+.diag-page .frontend-diagnostics--embedded .frontend-diagnostics__toggle {
+  border: 1px solid var(--border, rgba(127,127,127,.25));
+  background: var(--bg-elev, #fff);
+  color: var(--fg-dim, #777);
+  white-space: nowrap;
+}
+.diag-page .frontend-diagnostics--embedded .frontend-diagnostics__toggle--on {
+  border-color: color-mix(in srgb, var(--accent, #4af) 48%, var(--border, rgba(127,127,127,.25)));
+  background: var(--accent-soft, rgba(68,136,255,.12));
+  color: var(--accent, #4af);
+}
+.diag-page .frontend-diagnostics--embedded .scroll-diagnostics__status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 6px;
+  white-space: nowrap;
+}
+.diag-page .frontend-diagnostics--embedded .scroll-diagnostics__dot {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 7px;
+  border-radius: 50%;
+  background: var(--danger, #e35);
+}
+.diag-page .frontend-diagnostics--embedded.scroll-diagnostics--stopped .scroll-diagnostics__dot {
+  background: var(--success, #2a6);
+}
+.diag-page .frontend-diagnostics--embedded .scroll-diagnostics__export {
+  background: var(--accent-soft, rgba(68,136,255,.12));
+  color: var(--accent, #4af);
+  white-space: nowrap;
 }
 .diag-issue-group h4 {
   margin: 8px 0 4px;
