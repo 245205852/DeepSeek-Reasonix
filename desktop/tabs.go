@@ -2148,6 +2148,7 @@ type TabMeta struct {
 	WorkspacePath     string             `json:"workspacePath,omitempty"`
 	GitBranch         string             `json:"gitBranch,omitempty"`
 	IsolatedWorktree  bool               `json:"isolatedWorktree,omitempty"`
+	Remote            *RemoteTabRef      `json:"remote,omitempty"`
 	TopicID           string             `json:"topicId"`
 	TopicTitle        string             `json:"topicTitle"`
 	SessionPath       string             `json:"sessionPath,omitempty"`
@@ -6483,6 +6484,7 @@ type ProjectNode struct {
 	// muted "恢复副本" count badge; History still owns the full copy list.
 	RecoveryCopyCount int           `json:"recoveryCopyCount,omitempty"`
 	IsolatedWorktree  bool          `json:"isolatedWorktree,omitempty"`
+	Remote            *RemoteTabRef `json:"remote,omitempty"`
 	RuntimeOnly       bool          `json:"runtimeOnly,omitempty"`
 	Children          []ProjectNode `json:"children,omitempty"`
 }
