@@ -177,6 +177,10 @@ type remoteKernel interface {
 	StopServer(hostID, workspace string) error
 	ServerStatus(hostID, workspace string) RemoteServerView
 	ServerLogs(ctx context.Context, hostID, workspace string, tailLines int) (string, error)
+	// ServeSnapshot is the read-only lookup for already-running serves; it
+	// returns the registry's view and token only when the recorded state is
+	// ready with a usable URL.
+	ServeSnapshot(hostID, workspace string) (RemoteServerView, string, bool)
 	CheckPlatform(ctx context.Context, hostID string) error
 
 	Close() error
@@ -216,9 +220,6 @@ func (a *App) stopRemoteRuntime() {
 // emitRemoteEvent bridges a kernel callback to the frontend through the async
 // emitter so a slow webview never blocks the kernel.
 func (a *App) emitRemoteEvent(name string, payload any) {
-	if a.remoteEventHook != nil {
-		a.remoteEventHook(name, payload)
-	}
 	ctx := a.bootContext()
 	if ctx == nil {
 		return
@@ -229,9 +230,6 @@ func (a *App) emitRemoteEvent(name string, payload any) {
 // remoteEventSink implementation on *App.
 func (a *App) onStatus(s RemoteConnectionStatusView) {
 	a.emitRemoteEvent("remote:status", s)
-	// Open remote tabs follow the SSH lifecycle: suspend on transient
-	// drops, re-attach on reconnect, park in error on terminal failure.
-	a.remoteTabsHostStatus(s.HostID, s.State, s.Error)
 	// A terminal SSH failure (auth, host key, exhausted retries) kills the
 	// tunnel: close the host's web window so the user is not left staring at a
 	// dead Serve page. The frontend already shows the failure reason through
@@ -1522,6 +1520,25 @@ func (m *desktopRemoteManager) CheckPlatform(ctx context.Context, hostID string)
 		return fmt.Errorf("remote host platform check failed: %w", perr)
 	}
 	return nil
+}
+
+// ServeSnapshot is the read-only resolution for callers that want to talk to
+// an already-running serve without waking one: it returns the registry's view
+// and token only when the recorded state is ready with a usable URL. Query
+// paths (session listing) must go through this — a full EnsureServer from a
+// poll serializes behind tab bootstraps on the per-host lock and starves them.
+func (m *desktopRemoteManager) ServeSnapshot(hostID, workspace string) (RemoteServerView, string, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	mh := m.hosts[hostID]
+	if mh == nil {
+		return RemoteServerView{}, "", false
+	}
+	e := mh.serves[workspace]
+	if e == nil || e.view.State != "ready" || e.view.LocalURL == "" || e.token == "" {
+		return RemoteServerView{}, "", false
+	}
+	return e.view, e.token, true
 }
 
 func (m *desktopRemoteManager) Close() error {

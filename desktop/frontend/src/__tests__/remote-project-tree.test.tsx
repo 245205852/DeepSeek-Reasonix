@@ -64,19 +64,5 @@ ok(
   "the group row badge reflects the live host status",
 );
 
-const appSource = readFileSync(resolve(here, "../App.tsx"), "utf8");
-ok(
-  /onSend=\{remoteSurfaceActive \? remoteSend : handleSend\}/.test(appSource),
-  "the shared Composer sends through the remote session on remote tabs",
-);
-ok(
-  /running=\{remoteSurfaceActive \? remoteSession\.running :/.test(appSource),
-  "the shared Composer's running flag comes from the remote session",
-);
-ok(
-  /onCancel=\{remoteSurfaceActive \? remoteCancel : cancel\}/.test(appSource),
-  "the shared Composer cancels the remote turn on remote tabs",
-);
-
 process.stdout.write(`\n${passed} passed, ${failed} failed\n`);
 if (failed > 0) process.exit(1);

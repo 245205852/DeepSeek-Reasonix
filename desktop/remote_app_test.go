@@ -111,6 +111,12 @@ func (f *fakeRemoteKernel) StopServer(_ string, workspace string) error {
 	f.stoppedWorkspaces = append(f.stoppedWorkspaces, workspace)
 	return nil
 }
+func (f *fakeRemoteKernel) ServeSnapshot(string, string) (RemoteServerView, string, bool) {
+	if f.ensureErr != nil || f.ensureView.State != "ready" || f.ensureView.LocalURL == "" || f.ensureToken == "" {
+		return RemoteServerView{}, "", false
+	}
+	return f.ensureView, f.ensureToken, true
+}
 func (f *fakeRemoteKernel) ServerStatus(string, string) RemoteServerView { return f.ensureView }
 func (f *fakeRemoteKernel) ServerLogs(context.Context, string, string, int) (string, error) {
 	return "log line", nil
