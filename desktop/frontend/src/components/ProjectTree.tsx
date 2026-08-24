@@ -1574,7 +1574,7 @@ export function ProjectTree({
         label: t("projectTree.remoteStopServer"),
         onSelect: () => {
           closeMenu();
-          void app.StopRemoteServer(node.remote!.hostId).catch((e) => {
+          void app.StopRemoteServer(node.remote!.hostId, node.remote!.workspace).catch((e) => {
             showToast(e instanceof Error ? e.message : String(e), "error");
           });
         },

@@ -15,18 +15,19 @@ import (
 
 // fakeRemoteKernel implements remoteKernel for binding-layer tests.
 type fakeRemoteKernel struct {
-	hosts           []RemoteHostView
-	statuses        []RemoteConnectionStatusView
-	writeResult     RemoteWriteResult
-	ensureView      RemoteServerView
-	ensureToken     string
-	ensureErr       error
-	platformErr     error
-	platformChecks  []string
-	resolveCalls    []bool
-	secretCalls     []remoteSecretAnswer
-	secretPromptIDs []string
-	closed          bool
+	hosts             []RemoteHostView
+	statuses          []RemoteConnectionStatusView
+	writeResult       RemoteWriteResult
+	ensureView        RemoteServerView
+	ensureToken       string
+	ensureErr         error
+	platformErr       error
+	platformChecks    []string
+	stoppedWorkspaces []string
+	resolveCalls      []bool
+	secretCalls       []remoteSecretAnswer
+	secretPromptIDs   []string
+	closed            bool
 }
 
 func TestRemoteConnectionErrorDetailsPreserveHostKeyMismatch(t *testing.T) {
@@ -106,9 +107,12 @@ func (f *fakeRemoteKernel) RemoveForward(string, string) error { return nil }
 func (f *fakeRemoteKernel) EnsureServer(context.Context, string, string) (RemoteServerView, string, error) {
 	return f.ensureView, f.ensureToken, f.ensureErr
 }
-func (f *fakeRemoteKernel) StopServer(string) error              { return nil }
-func (f *fakeRemoteKernel) ServerStatus(string) RemoteServerView { return f.ensureView }
-func (f *fakeRemoteKernel) ServerLogs(context.Context, string, int) (string, error) {
+func (f *fakeRemoteKernel) StopServer(_ string, workspace string) error {
+	f.stoppedWorkspaces = append(f.stoppedWorkspaces, workspace)
+	return nil
+}
+func (f *fakeRemoteKernel) ServerStatus(string, string) RemoteServerView { return f.ensureView }
+func (f *fakeRemoteKernel) ServerLogs(context.Context, string, string, int) (string, error) {
 	return "log line", nil
 }
 
