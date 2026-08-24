@@ -255,7 +255,8 @@ when the sole automatic threshold is crossed.
 
 - Each provider declares `context_window` (tokens). The only automatic trigger is
   `agent.compact_ratio` (default **0.80**; presets 0.70 / 0.80 / 0.85; range
-  0.65–0.85).
+  0.30–0.85). Lower values compact sooner and may increase summary cost or
+  reduce prompt-cache reuse.
   `triggerTokens = floor(context_window × compact_ratio)`.
 - **Below the trigger** ordinary requests remain append-only and no sidecar is
   written. Every provider request uses the durable, bounded tool `Content`;

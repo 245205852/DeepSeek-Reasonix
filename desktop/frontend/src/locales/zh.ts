@@ -1823,7 +1823,7 @@ export const zh: Record<DictKey, string> = {
   "settings.compactRatioCustomValue": "{percent}% · 自定义",
   "settings.compactRatioApply": "应用",
   "settings.compactRatioCustomAria": "自定义压缩阈值百分比",
-  "settings.compactRatioCustomHint": "65至85%。达阈值后先剪枝长工具结果，必要时摘要旧前缀，并原样保留最近16%。Enter 应用。",
+  "settings.compactRatioCustomHint": "30至85%。数值越低越早压缩，可能增加摘要调用和成本，也可能降低缓存复用。达阈值后先剪枝长工具结果，必要时摘要旧前缀，并原样保留最近16%。Enter 应用。",
   "settings.compactRatioPreset.70": "70% · 主动",
   "settings.compactRatioPreset.80": "80% · 推荐",
   "settings.compactRatioPreset.85": "85% · 较晚",

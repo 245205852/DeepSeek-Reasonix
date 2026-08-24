@@ -146,7 +146,8 @@ type Tool interface {
 transcript，仅在唯一自动阈值被跨越时安装 provider 可见的短 **checkpoint**。
 
 - 每个 provider 声明 `context_window`（tokens）。唯一自动触发值是
-  `agent.compact_ratio`（默认 **0.80**；预设 0.70 / 0.80 / 0.85；范围 0.65–0.85）。
+  `agent.compact_ratio`（默认 **0.80**；预设 0.70 / 0.80 / 0.85；范围 0.30–0.85）。
+  数值越低越早压缩，可能增加摘要成本或降低 prompt prefix 缓存复用。
   `triggerTokens = floor(context_window × compact_ratio)`。
 - **阈值以下**普通请求保持 append-only，不写 projection。所有 provider 请求只使用
   持久化且有界的 tool `Content`；本地 `RawContent` 不会进入 sampling、重试、摘要或 replay。
