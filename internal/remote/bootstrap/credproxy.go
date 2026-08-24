@@ -12,6 +12,31 @@ import (
 	"reasonix/internal/remote/sftpfs"
 )
 
+// CredentialProxyOptions configures local-proxy credential mode: the remote
+// serve's model calls route back to the desktop over the SSH reverse tunnel,
+// so the real provider key never leaves the desktop. The bootstrap installs a
+// provider entry pointing at the tunnel and injects a virtual token into the
+// serve environment; the desktop-side proxy validates the token and swaps in
+// the real key.
+type CredentialProxyOptions struct {
+	// BaseURL is the loopback URL on the REMOTE host that tunnels back to the
+	// desktop's credential proxy, e.g. http://127.0.0.1:18999.
+	BaseURL string
+	// Token is the virtual token the serve presents; it travels in the
+	// process environment (root-readable only), never in argv or files.
+	Token string
+	// Provider is the provider name installed into the remote config; the
+	// serve is launched with --model <Provider> so it selects this entry.
+	Provider string
+	// Model is the model name the provider entry carries (the desktop's
+	// current default model, resolved by the caller).
+	Model string
+	// Kind is the provider kind the entry carries ("openai" or "anthropic"):
+	// the serve formats its model requests per kind, so it must match the
+	// desktop provider behind the proxy. Empty reads as "openai".
+	Kind string
+}
+
 // TokenEnvName is the environment variable the launch command sets and the
 // installed provider entry reads (api_key_env).
 const TokenEnvName = "REASONIX_PROXY_TOKEN"
@@ -84,31 +109,6 @@ func credentialProviderBlock(opts *CredentialProxyOptions) string {
 // in the remote config. The returned bool reports whether anything was
 // rewritten: the desktop uses it to decide that RUNNING serves (whose
 // in-memory providers were built from the previous config) must reload.
-// CredentialProxyOptions configures local-proxy credential mode: the remote
-// serve's model calls route back to the desktop over the SSH reverse tunnel,
-// so the real provider key never leaves the desktop. The bootstrap installs a
-// provider entry pointing at the tunnel and injects a virtual token into the
-// serve environment; the desktop-side proxy validates the token and swaps in
-// the real key.
-type CredentialProxyOptions struct {
-	// BaseURL is the loopback URL on the REMOTE host that tunnels back to the
-	// desktop's credential proxy, e.g. http://127.0.0.1:18999.
-	BaseURL string
-	// Token is the virtual token the serve presents; it travels in the
-	// process environment (root-readable only), never in argv or files.
-	Token string
-	// Provider is the provider name installed into the remote config; the
-	// serve is launched with --model <Provider> so it selects this entry.
-	Provider string
-	// Model is the model name the provider entry carries (the desktop's
-	// current default model, resolved by the caller).
-	Model string
-	// Kind is the provider kind the entry carries ("openai" or "anthropic"):
-	// the serve formats its model requests per kind, so it must match the
-	// desktop provider behind the proxy. Empty reads as "openai".
-	Kind string
-}
-
 func ensureCredentialProvider(ctx context.Context, fs *sftpfs.FS, home string, opts *CredentialProxyOptions) (bool, error) {
 	if opts == nil || strings.TrimSpace(opts.BaseURL) == "" || strings.TrimSpace(opts.Token) == "" ||
 		strings.TrimSpace(opts.Provider) == "" || strings.TrimSpace(opts.Model) == "" {

@@ -269,16 +269,3 @@ func TestCredentialModeConfigRoundTrip(t *testing.T) {
 		t.Fatalf("bogus mode normalized to %q", n)
 	}
 }
-
-// seedBridgeTestHost installs a config-backed host for bridge-level tests.
-func seedBridgeTestHost(t *testing.T, hostID string) {
-	t.Helper()
-	home := t.TempDir()
-	t.Setenv("REASONIX_HOME", home)
-	t.Setenv("HOME", home)
-	if err := editUserConfig(func(c *config.Config) error {
-		return c.UpsertRemoteHost(config.RemoteHostEntry{Name: hostID, Host: "127.0.0.1", Port: 22, User: "dev"})
-	}); err != nil {
-		t.Fatal(err)
-	}
-}
