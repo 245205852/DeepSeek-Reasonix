@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"sort"
@@ -1082,7 +1083,7 @@ func (t *UseCapabilityTool) resolveCall(ctx context.Context, id string, args jso
 		var ok bool
 		spec, ok = t.specFor(server)
 		if !ok {
-			return t.resolveUnavailable(base, id, modelName, fmt.Sprintf("MCP server %q is not configured", server)), nil
+			return t.resolveUnavailable(base, id, modelName, mcpServerUnregisteredMessage(server)), nil
 		}
 		spec = plugin.ResolveStoredAuthorization(ctx, spec)
 	}
@@ -1403,7 +1404,7 @@ func (t *UseCapabilityTool) lockAuthorizedRuntimeServer(ctx context.Context, ser
 	if t.runtime == nil {
 		spec, ok := t.specFor(server)
 		if !ok {
-			return plugin.Spec{}, func() {}, fmt.Errorf("MCP server %q is not configured", server)
+			return plugin.Spec{}, func() {}, errors.New(mcpServerUnregisteredMessage(server))
 		}
 		spec = plugin.ResolveStoredAuthorization(ctx, spec)
 		if !spec.ServerAuthorized() {
@@ -1419,11 +1420,11 @@ func (t *UseCapabilityTool) lockAuthorizedRuntimeServer(ctx context.Context, ser
 	t.runtime.mu.RUnlock()
 	if !ok {
 		unlock()
-		return plugin.Spec{}, func() {}, fmt.Errorf("MCP server %q is not configured", server)
+		return plugin.Spec{}, func() {}, errors.New(mcpServerUnregisteredMessage(server))
 	}
 	if !configured.enabled {
 		unlock()
-		return plugin.Spec{}, func() {}, fmt.Errorf("MCP server %q is disabled in this session", server)
+		return plugin.Spec{}, func() {}, errors.New(mcpServerDisabledMessage(server))
 	}
 	spec := plugin.ResolveStoredAuthorization(ctx, cloneMCPSpec(configured.spec))
 	if !spec.ServerAuthorized() {
@@ -1469,6 +1470,22 @@ func (t *UseCapabilityTool) serverEnabled(server string) bool {
 	return true
 }
 
+// mcpServerUnregisteredMessage is the single wording for "this session has no
+// such MCP server". Both dispatch routes reach that state — the registry-resident
+// mcp__server__tool path through lockAuthorizedRuntimeServer, and use_capability
+// through serverEnabled — so they share one spelling rather than drifting into
+// "not configured" and "not registered" for one condition.
+func mcpServerUnregisteredMessage(server string) string {
+	return fmt.Sprintf("MCP server %q is not registered in this session", server)
+}
+
+// mcpServerDisabledMessage is the counterpart for a server this session knows
+// but the user turned off. Distinct from the above on purpose: the two have
+// different causes and different fixes.
+func mcpServerDisabledMessage(server string) string {
+	return fmt.Sprintf("MCP server %q is disabled in this session", server)
+}
+
 func (t *UseCapabilityTool) serverRegistered(server string) bool {
 	if t.runtime != nil {
 		return t.runtime.serverRegistered(server)
@@ -1484,9 +1501,9 @@ func (t *UseCapabilityTool) serverRegistered(server string) bool {
 // exist.
 func (t *UseCapabilityTool) serverUnavailableReason(server string) string {
 	if !t.serverRegistered(server) {
-		return fmt.Sprintf("MCP server %q is not registered in this session", server)
+		return mcpServerUnregisteredMessage(server)
 	}
-	return fmt.Sprintf("MCP server %q is disabled in this session", server)
+	return mcpServerDisabledMessage(server)
 }
 
 func (t *UseCapabilityTool) configuredServers() []mcpRuntimeServer {
