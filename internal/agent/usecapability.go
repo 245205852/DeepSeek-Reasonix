@@ -292,6 +292,26 @@ func (r *MCPCapabilityRuntime) enabledSpec(server string) (plugin.Spec, bool) {
 	return cloneMCPSpec(configured.spec), true
 }
 
+// ServerEnabled is the exported form of serverEnabled. Hosts and regression
+// tests need to assert against the real dispatch gate rather than a proxy for
+// it, because a server can connect and list tools while still being refused.
+func (r *MCPCapabilityRuntime) ServerEnabled(server string) bool {
+	return r.serverEnabled(server)
+}
+
+// serverRegistered reports whether this runtime knows the server at all,
+// independent of whether it is enabled. The two states have different causes and
+// different fixes, so they must not share one message.
+func (r *MCPCapabilityRuntime) serverRegistered(server string) bool {
+	if r == nil {
+		return false
+	}
+	r.mu.RLock()
+	_, ok := r.servers[strings.TrimSpace(server)]
+	r.mu.RUnlock()
+	return ok
+}
+
 func (r *MCPCapabilityRuntime) serverEnabled(server string) bool {
 	if r == nil {
 		return false
@@ -875,7 +895,7 @@ func (t *UseCapabilityTool) inspect(ctx context.Context, id string) (string, err
 			}
 			if server != "" {
 				if !t.serverEnabled(server) {
-					return string(b) + "\n\nServer is disabled in this session.", nil
+					return string(b) + "\n\n" + t.serverUnavailableReason(server), nil
 				}
 				if t.host != nil && t.host.HasClient(server) {
 					// serverTools refreshes the snapshot too: inspecting a
@@ -991,7 +1011,7 @@ func (t *UseCapabilityTool) resolveCall(ctx context.Context, id string, args jso
 		return tool.ResolvedCall{}, err
 	}
 	if !t.serverEnabled(server) {
-		return t.resolveUnavailable(base, id, plugin.ModelToolName(server, raw), fmt.Sprintf("MCP server %q is disabled in this session", server)), nil
+		return t.resolveUnavailable(base, id, plugin.ModelToolName(server, raw), t.serverUnavailableReason(server)), nil
 	}
 	var runtimeSpec plugin.Spec
 	releaseRuntime := func() {}
@@ -1449,6 +1469,26 @@ func (t *UseCapabilityTool) serverEnabled(server string) bool {
 	return true
 }
 
+func (t *UseCapabilityTool) serverRegistered(server string) bool {
+	if t.runtime != nil {
+		return t.runtime.serverRegistered(server)
+	}
+	// Mirrors serverEnabled's standalone branch: without a runtime there is no
+	// registry to be absent from.
+	return true
+}
+
+// serverUnavailableReason explains why dispatch was refused. A server the
+// runtime never registered is not a server the user disabled, and saying
+// "disabled" for the first case sends people hunting for a toggle that does not
+// exist.
+func (t *UseCapabilityTool) serverUnavailableReason(server string) string {
+	if !t.serverRegistered(server) {
+		return fmt.Sprintf("MCP server %q is not registered in this session", server)
+	}
+	return fmt.Sprintf("MCP server %q is disabled in this session", server)
+}
+
 func (t *UseCapabilityTool) configuredServers() []mcpRuntimeServer {
 	if t.runtime != nil {
 		return t.runtime.configuredServers()
@@ -1496,7 +1536,7 @@ func parseMCPServerCapabilityID(id string) (string, bool) {
 func (t *UseCapabilityTool) resolveServerConnect(ctx context.Context, server string, base tool.ResolvedCall) (tool.ResolvedCall, error) {
 	id := "mcp-server:" + server
 	if !t.serverEnabled(server) {
-		return t.resolveUnavailable(base, id, plugin.ToolPrefix(server), fmt.Sprintf("MCP server %q is disabled in this session", server)), nil
+		return t.resolveUnavailable(base, id, plugin.ToolPrefix(server), t.serverUnavailableReason(server)), nil
 	}
 	if t.host != nil && t.host.HasClient(server) {
 		out, err := t.listServerTools(ctx, server)

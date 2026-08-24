@@ -785,6 +785,17 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 		}
 		applyMCPIsolation(&extraSpecs[i], root, pluginSpecOptions)
 	}
+	// Host-session servers arrive through an explicit host action (ACP
+	// session/new mcpServers), so they are authoritative for use_capability
+	// dispatch exactly like an auto-started config plugin. Without this they
+	// connect and list their tools, but every mcp-tool:<server>/<tool> call is
+	// refused: enabledMCPNames is otherwise built only from config
+	// autoStartEntries, so a host-session name is never marked enabled.
+	for i := range extraSpecs {
+		if name := strings.TrimSpace(extraSpecs[i].Name); name != "" {
+			enabledMCPNames[name] = true
+		}
+	}
 	// Auto-demote: any eager plugin that has been chronically slow (recent
 	// samples repeatedly hit the blocking startup budget) drops to background
 	// for this session. The user keeps eager intent, just doesn't pay for it
@@ -1551,6 +1562,12 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 	var capLedger *capability.Ledger
 	var capAudit *capability.Audit
 	capSpecs := PluginSpecsForRootWithOptions(cfg.Plugins, root, pluginSpecOptions)
+	// extraSpecs already reach pluginHost through eagerSpecs, which is why a
+	// host-session server connects and its tools appear in the catalog. The
+	// capability runtime is a second, separate registry seeded only from
+	// cfg.Plugins, so it must be told about them too or use_capability cannot
+	// resolve mcp-server:/mcp-tool: ids that the catalog just advertised.
+	capSpecs = append(capSpecs, extraSpecs...)
 	cachedTools, cacheKeyOK := capability.LoadCachedToolsForSpecs(capSpecs)
 	skillStore.ConfigureToolBindings(func(sk skill.Skill) []tool.MCPBinding {
 		return skillMCPBindings(sk, reg, capSpecs, cachedTools, cacheKeyOK)

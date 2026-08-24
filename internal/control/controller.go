@@ -6238,3 +6238,15 @@ func (c *Controller) emitPlanModeReadOnlyCommandTrustResult(r PlanModeReadOnlyCo
 		c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: fmt.Sprintf(i18n.M.PlanModeReadOnlyCommandTrustAlreadyFmt, r.Path, r.CoveredBy)})
 	}
 }
+
+// CapabilityServerEnabled reports whether the use_capability proxy may dispatch
+// to an MCP server. It mirrors the exact gate guarding mcp-tool: calls, so it is
+// false both when the capability runtime never registered the server and when it
+// registered it as disabled — the two states a host-session server can land in
+// while still connecting and listing its tools normally.
+func (c *Controller) CapabilityServerEnabled(name string) bool {
+	if c == nil || c.capabilityRuntime == nil {
+		return false
+	}
+	return c.capabilityRuntime.ServerEnabled(name)
+}
