@@ -667,6 +667,7 @@ export interface AppBindings extends SessionCatalogBindings, ProjectTreeOrganiza
   AddRemoteForward(hostId: string, input: RemoteForwardInput): Promise<RemoteForwardView>;
   RemoveRemoteForward(hostId: string, forwardId: string): Promise<void>;
   OpenRemoteWorkspace(hostId: string, workspace: string): Promise<void>;
+  CheckRemotePlatform(hostId: string): Promise<void>;
   StopRemoteServer(hostId: string): Promise<void>;
   RemoteServerStatus(hostId: string): Promise<RemoteServerView>;
   RemoteServerLogs(hostId: string, tailLines: number): Promise<string>;
@@ -5704,6 +5705,7 @@ function makeMockApp(): AppBindings {
       __emitMockRemote("forwards", { hostId, forwards: mockRemoteForwards[hostId] });
     },
     async OpenRemoteWorkspace() {},
+    async CheckRemotePlatform() {},
     async StopRemoteServer(hostId) {
       __emitMockRemote("server", { hostId, workspace: "", state: "stopped" });
     },
