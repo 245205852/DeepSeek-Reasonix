@@ -536,7 +536,9 @@ func (m *desktopRemoteManager) reloadServeProviders(ctx context.Context, hostID,
 						log.Printf("[remote] reloadServeProviders: stop legacy serve failed host=%s ws=%s err=%v", hostID, ws, err)
 					}
 					if _, _, err := m.EnsureServer(context.Background(), hostID, ws); err != nil {
-						log.Printf("[remote] reloadServeProviders: restart legacy serve failed host=%s ws=%s err=%v", hostID, ws, err)
+						// EnsureServer errors can carry credential-configuration context.
+						// Keep logs useful for correlation without persisting that detail.
+						log.Printf("[remote] reloadServeProviders: restart legacy serve failed host=%s ws=%s", hostID, ws)
 					}
 				}(hostID, ws)
 			}
