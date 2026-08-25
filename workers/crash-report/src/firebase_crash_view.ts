@@ -60,16 +60,25 @@ export function firebaseMeta(group: FirebaseGroupRow): FirebaseCrashGroupMeta {
     lastBuildCommit: group.last_build_commit,
     lastChannel: group.last_channel,
     regressedAt: group.regressed_at,
+    writerGeneration: 0,
+    sampleEpoch: 1,
+    sampleState: "active",
   };
 }
 
 export function firebaseSamples(
-  samples?: { first?: FirebaseCrashSample; latest?: Record<string, FirebaseCrashSample> | FirebaseCrashSample[] },
+  samples?: {
+    first?: FirebaseCrashSample;
+    latest?: Record<string, FirebaseCrashSample | { marker?: unknown }> |
+      Array<FirebaseCrashSample | { marker?: unknown }>;
+  },
 ): ReportSample[] {
   if (!samples) return [];
+  const isSample = (value: FirebaseCrashSample | { marker?: unknown }): value is FirebaseCrashSample =>
+    typeof (value as Partial<FirebaseCrashSample>).eventId === "string";
   const latest = Array.isArray(samples.latest)
-    ? samples.latest.filter((value): value is FirebaseCrashSample => Boolean(value))
-    : Object.values(samples.latest ?? {});
+    ? samples.latest.filter(isSample)
+    : Object.values(samples.latest ?? {}).filter(isSample);
   const unique = new Map<string, FirebaseCrashSample>();
   for (const sample of [...latest, ...(samples.first ? [samples.first] : [])]) {
     if (sample && typeof sample.eventId === "string") unique.set(sample.eventId, sample);

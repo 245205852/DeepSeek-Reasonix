@@ -92,6 +92,31 @@ CREATE TABLE IF NOT EXISTS firebase_crash_group_leases (
   expires_at TEXT NOT NULL
 );
 
+-- Durable Firebase lifecycle, capacity reservation, and fencing state. The
+-- older lease table above remains for rolling-deployment compatibility only.
+CREATE TABLE IF NOT EXISTS firebase_crash_group_state (
+  fingerprint TEXT PRIMARY KEY,
+  sample_state TEXT NOT NULL DEFAULT 'active'
+    CHECK (sample_state IN ('active', 'compacted', 'archiving', 'archived')),
+  sample_epoch INTEGER NOT NULL DEFAULT 1 CHECK (sample_epoch >= 1),
+  epoch_first_event_id TEXT NOT NULL DEFAULT '',
+  reserved_bytes INTEGER NOT NULL DEFAULT 655360 CHECK (reserved_bytes >= 0),
+  last_seen TEXT NOT NULL,
+  compacted_at TEXT NOT NULL DEFAULT '',
+  archived_at TEXT NOT NULL DEFAULT '',
+  archive_reason TEXT NOT NULL DEFAULT ''
+    CHECK (archive_reason IN ('', 'retention', 'admin')),
+  lease_owner TEXT NOT NULL DEFAULT '',
+  lease_generation INTEGER NOT NULL DEFAULT 0 CHECK (lease_generation >= 0),
+  lease_expires_at TEXT NOT NULL DEFAULT ''
+);
+
+CREATE INDEX IF NOT EXISTS firebase_crash_group_state_lifecycle
+  ON firebase_crash_group_state (sample_state, last_seen);
+
+CREATE INDEX IF NOT EXISTS firebase_crash_group_state_lease
+  ON firebase_crash_group_state (lease_expires_at);
+
 CREATE TABLE IF NOT EXISTS pings (
   date TEXT NOT NULL,
   install_id TEXT NOT NULL,

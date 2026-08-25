@@ -50,25 +50,36 @@ import {
   acquireFirebaseGroupLease,
   claimFirebaseCrash,
   crashStorageMode,
-  dueFirebaseCrashes,
   enqueueFirebaseCrash,
-  firebaseOutboxExists,
-  firebaseProjectionReceipt,
+  firebaseEventExists,
+  firebaseGroupState,
   firebaseProjectionExists,
   firebaseStorageReady,
-  markFirebaseDelivered,
   projectionCompletionStatements,
   purgeFirebaseDeliveryState,
   recordFirebaseRetry,
+  reclaimUnusedFirebaseReservation,
   releaseFirebaseGroupLease,
-  type FirebaseOutboxRow,
+  renewFirebaseGroupLease,
+  reserveFirebaseGroup,
+  type FirebaseGroupLease,
 } from "./crash_delivery";
 import {
-  deleteFirebaseCrashGroup,
   readFirebaseCrashGroup,
-  writeFirebaseCrashGroup,
   writeFirebaseGroupMeta,
 } from "./firebase_rtdb";
+import {
+  deliverCrashEventToFirebase,
+  drainFirebaseCrashOutbox as drainFirebaseOutbox,
+  type StoredCrashEvent,
+} from "./firebase_delivery";
+import {
+  archiveFirebaseGroupForAdmin,
+  firebaseStorageSummary,
+  runFirebaseCrashLifecycle,
+  FIREBASE_OUTBOX_WARNING,
+  type FirebaseStorageSummary,
+} from "./firebase_lifecycle";
 import {
   firebaseMeta,
   firebaseSamples,
@@ -549,14 +560,6 @@ function storageUnavailable(op: string, err: unknown): Response {
   return new Response("storage unavailable", { status: 503 });
 }
 
-type StoredCrashEvent = {
-  eventId: string;
-  fingerprint: string;
-  receivedAt: string;
-  keepD1Sample: boolean;
-  report: ReportPayload;
-};
-
 async function prepareCrashEvent(r: ReportPayload, keepD1Sample: boolean): Promise<StoredCrashEvent> {
   const message = scrubSensitiveText(r.message);
   const errorMessage = scrubSensitiveText(r.errorMessage ?? "");
@@ -629,7 +632,8 @@ async function prepareCrashEvent(r: ReportPayload, keepD1Sample: boolean): Promi
 }
 
 async function projectCrashEvent(env: Env, event: StoredCrashEvent): Promise<void> {
-  if (await firebaseProjectionExists(env, event.eventId)) {
+  const firebaseDelivery = crashStorageMode(env) !== "d1";
+  if (firebaseDelivery && await firebaseProjectionExists(env, event.eventId)) {
     await env.DB.prepare(
       "UPDATE firebase_crash_outbox SET state = 'projected', updated_at = ?2 WHERE event_id = ?1",
     ).bind(event.eventId, new Date().toISOString()).run();
@@ -716,80 +720,16 @@ async function projectCrashEvent(env: Env, event: StoredCrashEvent): Promise<voi
        )`,
     ).bind(event.fingerprint, LATEST_SAMPLES_PER_GROUP));
   }
-  statements.push(...projectionCompletionStatements(env.DB, event.eventId, event.fingerprint, event.receivedAt));
+  if (firebaseDelivery) {
+    statements.push(...projectionCompletionStatements(
+      env.DB, event.eventId, event.fingerprint, event.receivedAt,
+    ));
+  }
   await env.DB.batch(statements);
 }
 
-async function deliverCrashEventToFirebase(env: Env, event: StoredCrashEvent, attempts: number): Promise<boolean> {
-  try {
-    const [group, receipt] = await Promise.all([
-      loadFirebaseGroupMeta(env, event.fingerprint),
-      firebaseProjectionReceipt(env, event.eventId),
-    ]);
-    if (!group || !receipt) throw new Error("firebase projection state is missing");
-    const { installId: _installId, ...publicReport } = event.report;
-    const stillLatest = Number(receipt.group_count) > Number(group.count) - LATEST_SAMPLES_PER_GROUP;
-    await writeFirebaseCrashGroup(
-      env,
-      firebaseMeta(group),
-      { ...publicReport, eventId: event.eventId, receivedAt: event.receivedAt },
-      stillLatest ? Number(receipt.latest_slot) : null,
-      Number(receipt.first_sample) === 1,
-    );
-    await markFirebaseDelivered(env, event.eventId);
-    return true;
-  } catch (error) {
-    console.error("firebase crash delivery failed", error);
-    await recordFirebaseRetry(env, event.eventId, "projected", attempts);
-    return false;
-  }
-}
-
-function parseStoredCrash(row: FirebaseOutboxRow): StoredCrashEvent | undefined {
-  try {
-    const value = JSON.parse(row.payload) as Partial<StoredCrashEvent>;
-    const report = Report.safeParse(value.report);
-    if (
-      !report.success || value.eventId !== row.event_id || value.fingerprint !== row.fingerprint ||
-      !/^(?:dev:)?[0-9a-f]{64}$/.test(value.fingerprint ?? "") ||
-      typeof value.receivedAt !== "string" || typeof value.keepD1Sample !== "boolean"
-    ) return undefined;
-    return { ...value, report: report.data } as StoredCrashEvent;
-  } catch {
-    return undefined;
-  }
-}
-
 export async function drainFirebaseCrashOutbox(env: Env): Promise<void> {
-  if (crashStorageMode(env) === "d1" || !firebaseStorageReady(env)) return;
-  for (const row of await dueFirebaseCrashes(env)) {
-    const event = parseStoredCrash(row);
-    if (!event) {
-      console.error(`firebase crash outbox row ${row.event_id} is invalid`);
-      await recordFirebaseRetry(env, row.event_id, "queued", row.attempts);
-      continue;
-    }
-    const leaseOwner = await acquireFirebaseGroupLease(env, row.fingerprint);
-    if (!leaseOwner) continue;
-    try {
-      if (!await firebaseOutboxExists(env, row.event_id)) continue;
-      if (row.state !== "projected") {
-        if (!await claimFirebaseCrash(env, row.event_id, new Date().toISOString())) continue;
-        try {
-          await projectCrashEvent(env, event);
-        } catch (error) {
-          console.error("firebase crash projection failed", error);
-          await recordFirebaseRetry(env, row.event_id, "queued", row.attempts);
-          continue;
-        }
-      }
-      if (!await deliverCrashEventToFirebase(env, event, row.attempts)) break;
-    } finally {
-      await releaseFirebaseGroupLease(env, row.fingerprint, leaseOwner).catch((error) => {
-        console.error("firebase crash group lease release failed", error);
-      });
-    }
-  }
+  return drainFirebaseOutbox(env, projectCrashEvent);
 }
 
 async function handleReport(request: Request, env: Env): Promise<Response> {
@@ -811,18 +751,25 @@ async function handleReport(request: Request, env: Env): Promise<Response> {
   }
   const event = await prepareCrashEvent(parsed.data, mode !== "firebase");
   if (mode !== "d1") {
-    let leaseOwner: string | null = null;
+    let lease: FirebaseGroupLease | null = null;
     try {
+      if (await firebaseEventExists(env, event.eventId)) return new Response("ok", { status: 202 });
+      if (await reserveFirebaseGroup(env, event.fingerprint, event.receivedAt) === "full") {
+        return new Response("storage unavailable", { status: 503 });
+      }
       const enqueued = await enqueueFirebaseCrash(
         env, event.eventId, event.fingerprint, JSON.stringify(event), event.receivedAt,
       );
       if (enqueued === "duplicate") return new Response("ok", { status: 202 });
-      if (enqueued === "full") return new Response("storage unavailable", { status: 503 });
-      leaseOwner = await acquireFirebaseGroupLease(env, event.fingerprint);
+      if (enqueued === "full") {
+        await reclaimUnusedFirebaseReservation(env, event.fingerprint);
+        return new Response("storage unavailable", { status: 503 });
+      }
+      lease = await acquireFirebaseGroupLease(env, event.fingerprint);
     } catch (err) {
       return storageUnavailable("report outbox", err);
     }
-    if (!leaseOwner) return new Response("ok", { status: 202 });
+    if (!lease) return new Response("ok", { status: 202 });
     try {
       if (!await claimFirebaseCrash(env, event.eventId, new Date().toISOString())) {
         return new Response("ok", { status: 202 });
@@ -834,16 +781,13 @@ async function handleReport(request: Request, env: Env): Promise<Response> {
         await recordFirebaseRetry(env, event.eventId, "queued", 0);
         return new Response("ok", { status: 202 });
       }
-      await deliverCrashEventToFirebase(env, event, 0);
+      await deliverCrashEventToFirebase(env, event, 0, lease);
       return new Response("ok", { status: 202 });
     } finally {
-      await releaseFirebaseGroupLease(env, event.fingerprint, leaseOwner).catch((error) => {
+      await releaseFirebaseGroupLease(env, event.fingerprint, lease).catch((error) => {
         console.error("firebase crash group lease release failed", error);
       });
     }
-  }
-  if (await firebaseProjectionExists(env, event.eventId)) {
-    return new Response("ok", { status: 202 });
   }
   try {
     await projectCrashEvent(env, event);
@@ -1127,6 +1071,7 @@ async function handleStats(request: Request, env: Env, user: User, activeModule:
     criticalOpenReports: 0,
   };
   let latestVersion = "";
+  let firebaseStorage: FirebaseStorageSummary | undefined;
 
   if (activeModule === "usage") {
     latestVersion = await latestObservedVersion(env, surface);
@@ -1158,6 +1103,7 @@ async function handleStats(request: Request, env: Env, user: User, activeModule:
     platforms = facets.platforms;
     diagnosticFacets = facets;
     installationLinkedSince = linkedSince?.value ?? "";
+    if (crashStorageMode(env) !== "d1") firebaseStorage = await firebaseStorageSummary(env);
   } else if (activeModule === "preferences") {
     metrics = await metricRows(env, days, surface);
   } else {
@@ -1171,7 +1117,8 @@ async function handleStats(request: Request, env: Env, user: User, activeModule:
 
   return html(
     renderStats(
-      { daily, versions, platforms, crashes, metrics, previousMetrics, sources, diagnosticFacets, installationLinkedSince, overview, latestVersion, filters },
+      { daily, versions, platforms, crashes, metrics, previousMetrics, sources, diagnosticFacets,
+        installationLinkedSince, overview, latestVersion, filters, firebaseStorage },
       user,
       activeModule,
     ),
@@ -1182,13 +1129,18 @@ async function handleGroup(env: Env, fingerprint: string, user: User): Promise<R
   const group = await env.DB.prepare("SELECT * FROM groups WHERE fingerprint = ?1").bind(fingerprint).first<Group>();
   if (!group) return new Response("not found", { status: 404 });
   group.severity = effectiveGroupSeverity(group);
+  const state = crashStorageMode(env) === "d1" ? null : await firebaseGroupState(env, fingerprint);
   let reports: ReportSample[];
   if (crashStorageMode(env) === "firebase") {
-    try {
-      const stored = await readFirebaseCrashGroup(env, fingerprint);
-      reports = firebaseSamples(stored?.samples);
-    } catch (error) {
-      return storageUnavailable("firebase group detail", error);
+    if (state?.sample_state === "archived") {
+      reports = [];
+    } else {
+      try {
+        const stored = await readFirebaseCrashGroup(env, fingerprint);
+        reports = firebaseSamples(stored?.samples);
+      } catch (error) {
+        return storageUnavailable("firebase group detail", error);
+      }
     }
   } else {
     const stored = await env.DB.prepare(
@@ -1198,28 +1150,43 @@ async function handleGroup(env: Env, fingerprint: string, user: User): Promise<R
     ).bind(fingerprint).all<ReportSample>();
     reports = stored.results;
   }
-  return html(renderGroup(group, reports, user, await groupDiagnosticSummary(env, fingerprint)));
+  return html(renderGroup(
+    group, reports, user, await groupDiagnosticSummary(env, fingerprint),
+    state ? { state: state.sample_state, epoch: Number(state.sample_epoch) } : undefined,
+  ));
 }
 
-async function syncFirebaseGroupMetaLocked(env: Env, fingerprint: string): Promise<void> {
+async function syncFirebaseGroupMetaLocked(
+  env: Env,
+  fingerprint: string,
+  lease?: FirebaseGroupLease,
+): Promise<void> {
   if (crashStorageMode(env) === "d1") return;
-  const group = await loadFirebaseGroupMeta(env, fingerprint);
-  if (!group) return;
-  await writeFirebaseGroupMeta(env, fingerprint, firebaseMeta(group));
+  if (!lease) throw new Error("firebase crash group lease is missing");
+  const [group, state] = await Promise.all([
+    loadFirebaseGroupMeta(env, fingerprint),
+    firebaseGroupState(env, fingerprint),
+  ]);
+  if (!group || !state) return;
+  if (state.sample_state === "archived") return;
+  await writeFirebaseGroupMeta(
+    env, fingerprint, firebaseMeta(group), lease.generation, Number(state.sample_epoch),
+    state.sample_state, () => renewFirebaseGroupLease(env, fingerprint, lease),
+  );
 }
 
 async function withFirebaseGroupLease<T>(
   env: Env,
   fingerprint: string,
-  operation: () => Promise<T>,
+  operation: (lease?: FirebaseGroupLease) => Promise<T>,
 ): Promise<T> {
   if (crashStorageMode(env) === "d1") return operation();
-  const owner = await acquireFirebaseGroupLease(env, fingerprint);
-  if (!owner) throw new Error("firebase crash group is busy");
+  const lease = await acquireFirebaseGroupLease(env, fingerprint);
+  if (!lease) throw new Error("firebase crash group is busy");
   try {
-    return await operation();
+    return await operation(lease);
   } finally {
-    await releaseFirebaseGroupLease(env, fingerprint, owner).catch((error) => {
+    await releaseFirebaseGroupLease(env, fingerprint, lease).catch((error) => {
       console.error("firebase crash group lease release failed", error);
     });
   }
@@ -1233,10 +1200,9 @@ async function handleGroupAction(request: Request, env: Env, admin: User, finger
 
   if (a.action === "delete") {
     try {
-      await withFirebaseGroupLease(env, fingerprint, async () => {
-        if (crashStorageMode(env) !== "d1") {
-          await deleteFirebaseCrashGroup(env, fingerprint);
-        }
+      if (crashStorageMode(env) !== "d1") {
+        await archiveFirebaseGroupForAdmin(env, fingerprint);
+      } else {
         await env.DB.batch([
           env.DB.prepare("DELETE FROM reports WHERE fingerprint = ?1").bind(fingerprint),
           env.DB.prepare("DELETE FROM report_daily WHERE fingerprint = ?1").bind(fingerprint),
@@ -1245,7 +1211,7 @@ async function handleGroupAction(request: Request, env: Env, admin: User, finger
           env.DB.prepare("DELETE FROM firebase_crash_outbox WHERE fingerprint = ?1").bind(fingerprint),
           env.DB.prepare("DELETE FROM groups WHERE fingerprint = ?1").bind(fingerprint),
         ]);
-      });
+      }
     } catch (error) {
       return storageUnavailable("firebase group deletion", error);
     }
@@ -1255,11 +1221,11 @@ async function handleGroupAction(request: Request, env: Env, admin: User, finger
   if (a.action === "status") {
     const status = a.status ?? "open";
     try {
-      await withFirebaseGroupLease(env, fingerprint, async () => {
+      await withFirebaseGroupLease(env, fingerprint, async (lease) => {
         await env.DB.prepare(
           "UPDATE groups SET status = ?1, resolved_at = CASE WHEN ?1 = 'resolved' THEN ?3 ELSE resolved_at END WHERE fingerprint = ?2",
         ).bind(status, fingerprint, new Date().toISOString()).run();
-        await syncFirebaseGroupMetaLocked(env, fingerprint);
+        await syncFirebaseGroupMetaLocked(env, fingerprint, lease);
       });
     } catch (error) {
       return storageUnavailable("firebase group metadata", error);
@@ -1277,11 +1243,11 @@ async function handleGroupAction(request: Request, env: Env, admin: User, finger
   if (a.action === "severity") {
     const severity = a.severity ?? "medium";
     try {
-      await withFirebaseGroupLease(env, fingerprint, async () => {
+      await withFirebaseGroupLease(env, fingerprint, async (lease) => {
         await env.DB.prepare("UPDATE groups SET severity = ?1 WHERE fingerprint = ?2")
           .bind(severity, fingerprint)
           .run();
-        await syncFirebaseGroupMetaLocked(env, fingerprint);
+        await syncFirebaseGroupMetaLocked(env, fingerprint, lease);
       });
     } catch (error) {
       return storageUnavailable("firebase group metadata", error);
@@ -1488,6 +1454,20 @@ async function sendAlert(env: Env, text: string): Promise<void> {
 
 async function runIngestSentinel(env: Env): Promise<void> {
   const problems: string[] = [];
+  if (crashStorageMode(env) !== "d1") {
+    try {
+      const storage = await firebaseStorageSummary(env);
+      if (storage.reservedBytes >= storage.budgetBytes * 0.8) {
+        problems.push(`Firebase reserved storage is ${Math.round(storage.reservedBytes / 1048576)} MiB`);
+      }
+      if (storage.stuckArchiving > 0) problems.push(`${storage.stuckArchiving} Firebase archives are stuck`);
+      if (storage.outboxCount >= FIREBASE_OUTBOX_WARNING) {
+        problems.push(`Firebase outbox contains ${storage.outboxCount} rows`);
+      }
+    } catch (err) {
+      problems.push(`Firebase storage sentinel failed: ${errText(err)}`);
+    }
+  }
   try {
     await env.DB.prepare(
       `INSERT INTO pings (date, install_id, version, os, arch, opens)
@@ -1686,8 +1666,9 @@ export default {
     }
     ctx.waitUntil(Promise.all([
       purgeExpiredStatsRows(env),
-      purgeFirebaseDeliveryState(env),
+      crashStorageMode(env) === "d1" ? Promise.resolve() : purgeFirebaseDeliveryState(env),
       drainFirebaseCrashOutbox(env),
+      crashStorageMode(env) === "d1" ? Promise.resolve() : runFirebaseCrashLifecycle(env),
     ]).then(() => undefined));
   },
 };

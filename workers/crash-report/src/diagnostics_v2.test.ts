@@ -16,6 +16,7 @@ import type { Env } from "./env";
 import diagnosticsMigrationSQL from "../migrate-diagnostics-v2.sql?raw";
 import freshSchemaSQL from "../schema.sql?raw";
 import firebaseCrashMigrationSQL from "../migrate-firebase-crash.sql?raw";
+import firebaseCrashCapacityMigrationSQL from "../migrate-firebase-crash-capacity.sql?raw";
 import {
   classifyDiagnosticsV2Schema,
   diagnosticsV2SchemaEntries,
@@ -182,11 +183,15 @@ describe("diagnostics v2 compatibility and privacy", () => {
     const migrated = new DatabaseSync(":memory:");
     const fresh = new DatabaseSync(":memory:");
     try {
+      migrated.exec("CREATE TABLE groups (fingerprint TEXT PRIMARY KEY, last_seen TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'open')");
       migrated.exec(firebaseCrashMigrationSQL);
+      expect(classifyFirebaseCrashSchema(migrated.prepare(firebaseCrashSchemaQuery).all()).state).toBe("partial");
+      migrated.exec(firebaseCrashCapacityMigrationSQL);
       fresh.exec(freshSchemaSQL);
       expect(classifyFirebaseCrashSchema(migrated.prepare(firebaseCrashSchemaQuery).all()).state).toBe("complete");
       expect(classifyFirebaseCrashSchema(fresh.prepare(firebaseCrashSchemaQuery).all()).state).toBe("complete");
       expect(firebaseCrashMigrationSQL).not.toMatch(/\b(?:DROP|ALTER)\b/);
+      expect(firebaseCrashCapacityMigrationSQL).not.toMatch(/\b(?:DROP|ALTER)\b/);
     } finally {
       migrated.close();
       fresh.close();
@@ -253,9 +258,8 @@ describe("diagnostics v2 storage consistency", () => {
       expect.stringContaining("INSERT INTO report_installations"),
       expect.stringContaining("INSERT INTO report_event_dimensions"),
       expect.stringContaining("DELETE FROM reports"),
-      expect.stringContaining("INSERT OR IGNORE INTO firebase_crash_receipts"),
-      expect.stringContaining("UPDATE firebase_crash_outbox SET state = 'projected'"),
     ]);
+    expect(committed.every((statement) => !statement.sql.includes("firebase_crash_"))).toBe(true);
   });
 
   it("preserves separate GPU and runtime event dimensions for one installation", () => {

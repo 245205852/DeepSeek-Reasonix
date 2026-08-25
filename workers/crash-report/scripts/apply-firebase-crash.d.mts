@@ -4,8 +4,14 @@ export type FirebaseCrashSchemaState = {
 };
 
 export const firebaseCrashSchemaEntries: readonly string[];
+export const firebaseCrashV1SchemaEntries: readonly string[];
+export const firebaseCrashV2SchemaEntries: readonly string[];
 export const firebaseCrashSchemaQuery: string;
+export const firebaseCrashCapacityQuery: string;
 
 export function classifyFirebaseCrashSchema(
   rows: Array<Record<string, unknown>>,
-): FirebaseCrashSchemaState;
+): FirebaseCrashSchemaState & {
+  v1: FirebaseCrashSchemaState;
+  v2: FirebaseCrashSchemaState;
+};
