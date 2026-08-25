@@ -186,6 +186,84 @@ func TestSetActiveRemoteTabPersistsAndUnknownKeepsSelection(t *testing.T) {
 	}
 }
 
+func TestSetActiveRemoteTabBlocksWhenCurrentSessionCannotPersist(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "blocked.jsonl")
+	if err := os.Mkdir(path, 0o755); err != nil {
+		t.Fatalf("mkdir blocked path: %v", err)
+	}
+	a, _ := appWithTab(t, path)
+	a.remoteTabMu.Lock()
+	a.remoteTabs = map[string]*remoteTab{
+		"remote-1": {id: "remote-1", ref: RemoteTabRef{HostID: "box", Workspace: "~/app"}, state: "ready"},
+	}
+	a.remoteTabLayout.order = []string{"remote-1"}
+	a.remoteTabMu.Unlock()
+
+	err := a.SetActiveTab("remote-1")
+	if err == nil || !strings.Contains(err.Error(), "save current session before switching tabs") {
+		t.Fatalf("SetActiveTab(remote) error = %v, want persistence failure", err)
+	}
+	a.remoteTabMu.Lock()
+	active := a.remoteTabLayout.activeID
+	a.remoteTabMu.Unlock()
+	if active != "" {
+		t.Fatalf("remote active tab = %q, want local selection preserved", active)
+	}
+}
+
+func TestSetActiveLocalTabKeepsRemoteSelectionWhenSessionCannotPersist(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "blocked.jsonl")
+	if err := os.Mkdir(path, 0o755); err != nil {
+		t.Fatalf("mkdir blocked path: %v", err)
+	}
+	a, _ := appWithTab(t, path)
+	seedLocalTab(a, "target")
+	a.remoteTabMu.Lock()
+	a.remoteTabs = map[string]*remoteTab{
+		"remote-1": {id: "remote-1", ref: RemoteTabRef{HostID: "box", Workspace: "~/app"}, state: "ready"},
+	}
+	a.remoteTabLayout.activeID = "remote-1"
+	a.remoteTabLayout.order = []string{"remote-1"}
+	a.remoteTabMu.Unlock()
+
+	err := a.SetActiveTab("target")
+	if err == nil || !strings.Contains(err.Error(), "save current session before switching tabs") {
+		t.Fatalf("SetActiveTab(local) error = %v, want persistence failure", err)
+	}
+	a.remoteTabMu.Lock()
+	active := a.remoteTabLayout.activeID
+	a.remoteTabMu.Unlock()
+	if active != "remote-1" {
+		t.Fatalf("remote active tab = %q, want original remote selection", active)
+	}
+	if a.activeTabID != "test_tab" {
+		t.Fatalf("local active tab = %q, want original local tab", a.activeTabID)
+	}
+}
+
+func TestOpenRemoteProjectTabBlocksBeforeMutationWhenLocalSessionCannotPersist(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("REASONIX_HOME", home)
+	t.Setenv("HOME", home)
+	seedBridgeTestHost(t, "box")
+	path := filepath.Join(t.TempDir(), "blocked.jsonl")
+	if err := os.Mkdir(path, 0o755); err != nil {
+		t.Fatalf("mkdir blocked path: %v", err)
+	}
+	a, _ := appWithTab(t, path)
+
+	_, err := a.OpenRemoteProjectTab("box", "~/app", RemoteTabOpenOptions{NewSession: true})
+	if err == nil || !strings.Contains(err.Error(), "save current session before switching tabs") {
+		t.Fatalf("OpenRemoteProjectTab error = %v, want persistence failure", err)
+	}
+	a.remoteTabMu.Lock()
+	remoteCount := len(a.remoteTabs)
+	a.remoteTabMu.Unlock()
+	if remoteCount != 0 {
+		t.Fatalf("remote tab count = %d, want no mutation after failed save", remoteCount)
+	}
+}
+
 // TestOpenRemoteProjectTabRevivesShell: the tree-group path (ensure-open)
 // reconnects a disconnected shell in place instead of only activating it.
 func TestOpenRemoteProjectTabRevivesShell(t *testing.T) {

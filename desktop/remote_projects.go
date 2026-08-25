@@ -244,6 +244,9 @@ func (a *App) remoteProjectNodes() ([]ProjectNode, error) {
 // CLI and can take minutes, so the surface follows progress through
 // remote-tab:{id}:state events instead of this promise.
 func (a *App) OpenRemoteProjectTab(hostID, workspace string, opts RemoteTabOpenOptions) (TabMeta, error) {
+	a.tabSelectionMu.Lock()
+	defer a.tabSelectionMu.Unlock()
+
 	hostID = strings.TrimSpace(hostID)
 	workspace = strings.TrimSpace(workspace)
 	if hostID == "" || workspace == "" {
@@ -256,6 +259,9 @@ func (a *App) OpenRemoteProjectTab(hostID, workspace string, opts RemoteTabOpenO
 	host, ok := cfg.RemoteHost(hostID)
 	if !ok {
 		return TabMeta{}, fmt.Errorf("remote host %q is not configured", hostID)
+	}
+	if err := a.snapshotActiveLocalBeforeRemote(); err != nil {
+		return TabMeta{}, err
 	}
 	// The pin registry collapses overlapping paths into the existing group:
 	// whatever nested path the caller asked for, the tab must land on the
@@ -435,6 +441,22 @@ func (a *App) activateRemoteTab(tabID string, meta TabMeta) {
 	a.remoteTabLayout.activeID = tabID
 	a.remoteTabMu.Unlock()
 	a.emitRemoteEvent("remote-tab:opened", meta)
+}
+
+// snapshotActiveLocalBeforeRemote preserves the same data-loss barrier used
+// by local-to-local tab switches. The caller serializes cross-registry tab
+// selection with tabSelectionMu.
+func (a *App) snapshotActiveLocalBeforeRemote() error {
+	a.remoteTabMu.Lock()
+	remoteActive := a.remoteTabLayout.activeID != ""
+	a.remoteTabMu.Unlock()
+	if remoteActive {
+		return nil
+	}
+	a.mu.RLock()
+	active := a.tabs[a.activeTabID]
+	a.mu.RUnlock()
+	return a.snapshotTabForAction(active, "switching tabs")
 }
 
 // remoteTabMeta builds the frontend-facing shape of one remote tab; the
