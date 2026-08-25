@@ -204,7 +204,11 @@ const reboundTabO = { ...tabO, sessionGeneration: 2 };
 tabsById.set("tab-o", reboundTabO);
 generationTwoHistory = deferred<HistoryMessage[]>();
 heldTabOHistory = generationTwoHistory.promise;
-await act(async () => { await controller?.switchTab("tab-o", reboundTabO); await flushPromises(); });
+let generationTwoSwitch: Promise<TabMeta[] | undefined> | undefined;
+await act(async () => {
+  generationTwoSwitch = controller?.switchTab("tab-o", reboundTabO);
+  await flushPromises();
+});
 
 eq(controller?.activeTabId, "tab-o", "generation-rebound tab becomes the selected target");
 eq(controller?.state.items.length, 0, "generation-rebound tab clears its prior session before history settles");
@@ -213,11 +217,19 @@ eq(controller?.state.hydrating, true, "generation-rebound tab remains in target 
 
 await act(async () => {
   generationTwoHistory.reject(new Error("generation 2 history failed"));
-  await generationTwoHistory.promise.catch(() => undefined);
+  await Promise.all([generationTwoHistory.promise.catch(() => undefined), generationTwoSwitch]);
   await flushPromises();
 });
-await waitFor("target history error", () => Boolean(controller?.state.hydrateError));
-ok(!(controller?.state.items.some((item) => item.kind === "user" && item.text === "history O generation 1") ?? false), "target history failure never restores the prior generation");
+await waitFor("source restored after target history failure", () => controller?.activeTabId === "tab-a");
+eq(backendActiveId, "tab-a", "target history failure rebinds backend focus to the retained source session");
+ok(controller?.state.items.some((item) => item.kind === "user" && item.text === "history A") ?? false, "target history failure restores the retained source transcript");
+ok(!(controller?.state.items.some((item) => item.kind === "user" && item.text === "history O generation 1") ?? false), "target history failure never restores the prior target generation");
+
+await act(async () => {
+  await controller?.openProjectTab(reboundTabO.workspaceRoot, reboundTabO.topicId || "");
+  await flushPromises();
+});
+await waitFor("generation two retry", () => controller?.state.items.some((item) => item.kind === "user" && item.text === "history O generation 2") ?? false);
 
 // A mount/ready sync can start before a same-tab session rebind and resolve
 // afterwards. Its tab id still matches, so the navigation generation — not the
