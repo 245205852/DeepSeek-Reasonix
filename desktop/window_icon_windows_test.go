@@ -7,6 +7,10 @@ import (
 	"testing"
 )
 
+type windowIconCall struct {
+	hwnd, selector, icon uintptr
+}
+
 func TestApplyWindowIconsFromExecutableRetriesUntilWindowAppears(t *testing.T) {
 	var findCalls atomic.Int32
 	var assigned atomic.Int32
@@ -42,11 +46,62 @@ func TestApplyWindowIconsFromExecutableRetriesUntilWindowAppears(t *testing.T) {
 }
 
 func TestAssignWindowIconsSkipsWhenNoIconLoaded(t *testing.T) {
+	oldLoad, oldSend, oldSetClass := windowIconLoadIcons, windowIconSendMessage, windowIconSetClassLong
 	windowIconLoadIcons = func() (uintptr, uintptr) { return 0, 0 }
-	defer func() { windowIconLoadIcons = loadExecutableIcons }()
+	windowIconSendMessage = func(uintptr, uintptr, uintptr, uintptr) {
+		t.Fatal("SendMessageW called without a loaded icon")
+	}
+	windowIconSetClassLong = func(uintptr, uintptr, uintptr) {
+		t.Fatal("SetClassLongPtrW called without a loaded icon")
+	}
+	t.Cleanup(func() {
+		windowIconLoadIcons, windowIconSendMessage, windowIconSetClassLong = oldLoad, oldSend, oldSetClass
+	})
 
-	// Must not panic and must not reach SendMessage; if it did, SendMessage
-	// with hwnd 0 is harmless, so just assert no panic + no icon load path
-	// return that crashes. The real assertion is that with (0,0) we return.
 	assignWindowIcons(0xDEAD)
+}
+
+func TestAssignWindowIconsUsesWin32BigAndSmallSelectors(t *testing.T) {
+	oldLoad, oldSend, oldSetClass := windowIconLoadIcons, windowIconSendMessage, windowIconSetClassLong
+	t.Cleanup(func() {
+		windowIconLoadIcons, windowIconSendMessage, windowIconSetClassLong = oldLoad, oldSend, oldSetClass
+	})
+
+	windowIconLoadIcons = func() (uintptr, uintptr) { return 0xAAAA, 0xBBBB }
+	var messages []windowIconCall
+	windowIconSendMessage = func(hwnd, message, selector, icon uintptr) {
+		if message != wmSetIcon {
+			t.Fatalf("SendMessageW message = 0x%X, want WM_SETICON", message)
+		}
+		messages = append(messages, windowIconCall{hwnd: hwnd, selector: selector, icon: icon})
+	}
+	var classIcons []windowIconCall
+	windowIconSetClassLong = func(hwnd, selector, icon uintptr) {
+		classIcons = append(classIcons, windowIconCall{hwnd: hwnd, selector: selector, icon: icon})
+	}
+
+	assignWindowIcons(0x1234)
+
+	wantMessages := []windowIconCall{
+		{hwnd: 0x1234, selector: 1, icon: 0xAAAA}, // ICON_BIG
+		{hwnd: 0x1234, selector: 0, icon: 0xBBBB}, // ICON_SMALL
+	}
+	assertWindowIconCalls(t, "window messages", messages, wantMessages)
+	wantClassIcons := []windowIconCall{
+		{hwnd: 0x1234, selector: gclpHicon, icon: 0xAAAA},
+		{hwnd: 0x1234, selector: gclpHiconSm, icon: 0xBBBB},
+	}
+	assertWindowIconCalls(t, "class icons", classIcons, wantClassIcons)
+}
+
+func assertWindowIconCalls(t *testing.T, label string, got, want []windowIconCall) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("%s count = %d, want %d: %#v", label, len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("%s[%d] = %#v, want %#v", label, i, got[i], want[i])
+		}
+	}
 }

@@ -14,21 +14,23 @@ var (
 	windowIconShell32  = windows.NewLazySystemDLL("shell32.dll")
 	windowIconKernel32 = windows.NewLazySystemDLL("kernel32.dll")
 
-	windowIconSendMessage  = windowIconUser32.NewProc("SendMessageW")
-	windowIconSetClassLong = windowIconUser32.NewProc("SetClassLongPtrW")
-	windowIconExtractIcons = windowIconShell32.NewProc("ExtractIconExW")
-	windowIconGetModuleFn  = windowIconKernel32.NewProc("GetModuleFileNameW")
+	windowIconSendMessageProc  = windowIconUser32.NewProc("SendMessageW")
+	windowIconSetClassLongProc = windowIconUser32.NewProc("SetClassLongPtrW")
+	windowIconExtractIcons     = windowIconShell32.NewProc("ExtractIconExW")
+	windowIconGetModuleFn      = windowIconKernel32.NewProc("GetModuleFileNameW")
 
 	// Injectable seams for tests (mirrors icon_repair_windows.go's pattern).
 	windowIconFindWindow   = currentProcessTopLevelWindow
 	windowIconLoadIcons    = loadExecutableIcons
 	windowIconAssignWindow = assignWindowIcons
+	windowIconSendMessage  = sendWindowIconMessage
+	windowIconSetClassLong = setWindowClassIcon
 )
 
 const (
 	wmSetIcon = 0x0080
 	iconBig   = 1
-	iconSmall = 2
+	iconSmall = 0
 
 	// GCLP_HICON / GCLP_HICONSM as signed int32 index values; must be passed
 	// as uintptr after the two's-complement wrap for 64-bit SetClassLongPtrW.
@@ -70,19 +72,28 @@ func assignWindowIcons(hwnd uintptr) {
 		return
 	}
 	if large != 0 {
-		windowIconSendMessage.Call(hwnd, wmSetIcon, iconBig, large)
-		windowIconSetClassLong.Call(hwnd, gclpHicon, large)
+		windowIconSendMessage(hwnd, wmSetIcon, iconBig, large)
+		windowIconSetClassLong(hwnd, gclpHicon, large)
 	}
 	if small != 0 {
-		windowIconSendMessage.Call(hwnd, wmSetIcon, iconSmall, small)
-		windowIconSetClassLong.Call(hwnd, gclpHiconSm, small)
+		windowIconSendMessage(hwnd, wmSetIcon, iconSmall, small)
+		windowIconSetClassLong(hwnd, gclpHiconSm, small)
 	}
 }
 
+func sendWindowIconMessage(hwnd, message, iconType, icon uintptr) {
+	windowIconSendMessageProc.Call(hwnd, message, iconType, icon)
+}
+
+func setWindowClassIcon(hwnd, index, icon uintptr) {
+	windowIconSetClassLongProc.Call(hwnd, index, icon)
+}
+
 // loadExecutableIcons extracts the first icon group embedded in this
-// executable via ExtractIconExW. Handle ownership transfers to the window;
-// the handles are process-wide, shared by the window and its class, so no
-// DestroyIcon is needed here.
+// executable via ExtractIconExW. The window and its class retain references,
+// not ownership, so the handles must remain valid for the Wails process
+// lifetime. This startup path runs once and retains at most two handles; the
+// operating system reclaims them when the process exits.
 func loadExecutableIcons() (large, small uintptr) {
 	var exePath [2048]uint16
 	if _, _, _ = windowIconGetModuleFn.Call(
