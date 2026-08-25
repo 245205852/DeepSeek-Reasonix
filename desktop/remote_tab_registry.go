@@ -253,7 +253,7 @@ const remoteTabReattachAttempts = 3
 // connection came back. Transient failures retry while the same tab remains
 // reconnecting; exhaustion parks it in user-retryable serve_down.
 func (a *App) reattachRemoteTab(tabID string) {
-	for attempt := 0; attempt < remoteTabReattachAttempts; attempt++ {
+	for attempt := range remoteTabReattachAttempts {
 		if a.reattachRemoteTabOnce(tabID) {
 			return
 		}

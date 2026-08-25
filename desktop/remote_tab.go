@@ -330,9 +330,10 @@ func (a *App) remoteTabPump(ctx context.Context, tabID string, gen uint64, opene
 		if json.Unmarshal([]byte(frame), &probe) == nil && probe.Kind != "" {
 			kind = probe.Kind
 		}
-		if kind == "approval_request" || kind == "ask_request" {
+		switch kind {
+		case "approval_request", "ask_request":
 			a.cacheRemotePendingEvent(tabID, gen, kind, json.RawMessage(frame))
-		} else if kind == "turn_done" {
+		case "turn_done":
 			a.remoteTabMu.Lock()
 			if tab := a.remoteTabs[tabID]; tab != nil && tab.gen == gen {
 				tab.pendingEvents = nil
