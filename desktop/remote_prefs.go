@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 
@@ -73,12 +74,7 @@ func remoteSessionPinned(hostID, workspace, name string) bool {
 }
 
 func remoteSessionPinnedLocked(p remotePrefs, key string) bool {
-	for _, existing := range p.PinnedSessions {
-		if existing == key {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(p.PinnedSessions, key)
 }
 
 func setRemoteSessionPinned(hostID, workspace, name string, pinned bool) error {

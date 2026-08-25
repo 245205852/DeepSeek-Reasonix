@@ -9,7 +9,7 @@ func (a *App) SetActiveTab(tabID string) error {
 	defer a.tabSelectionMu.Unlock()
 
 	a.remoteTabMu.Lock()
-	if tab, isRemote := a.remoteTabs[tabID]; isRemote {
+	if _, isRemote := a.remoteTabs[tabID]; isRemote {
 		switchingFromLocal := a.remoteTabLayout.activeID == ""
 		a.remoteTabMu.Unlock()
 		if switchingFromLocal {
@@ -19,7 +19,7 @@ func (a *App) SetActiveTab(tabID string) error {
 		}
 
 		a.remoteTabMu.Lock()
-		tab, isRemote = a.remoteTabs[tabID]
+		tab, isRemote := a.remoteTabs[tabID]
 		if !isRemote {
 			a.remoteTabMu.Unlock()
 			return fmt.Errorf("tab %q not found", tabID)

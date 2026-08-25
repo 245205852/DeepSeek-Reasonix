@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -574,14 +575,7 @@ func TestRemoteTabCommandsForwardedToServe(t *testing.T) {
 	}
 	calls := fs.recorded()
 	for _, step := range steps {
-		found := false
-		for _, c := range calls {
-			if c == step.want {
-				found = true
-				break
-			}
-		}
-		if !found {
+		if !slices.Contains(calls, step.want) {
 			t.Fatalf("%s: serve saw %v, want %q", step.name, calls, step.want)
 		}
 	}

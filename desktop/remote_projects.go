@@ -572,7 +572,9 @@ func (a *App) bootstrapRemoteTab(tabID, hostID, workspace string) {
 		openTab.topicTitle = a.localizedDefaultTopicTitle()
 	}
 	a.remoteTabMu.Unlock()
-	a.saveLastRemoteWorkspace(hostID, workspace)
+	// The attached session is already usable; remembering the explorer default
+	// is auxiliary and must not downgrade a healthy tab when prefs are unwritable.
+	_ = a.saveLastRemoteWorkspace(hostID, workspace)
 	a.emitRemoteTabState(tabID, "ready", "")
 }
 
