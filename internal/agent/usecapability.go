@@ -573,6 +573,13 @@ func (t *UseCapabilityTool) ResolveCall(ctx context.Context, args json.RawMessag
 	}
 	action := strings.ToLower(strings.TrimSpace(p.Action))
 	id := strings.TrimSpace(p.CapabilityID)
+	if action == "call" && strings.HasPrefix(id, "mcp-tool:") {
+		normalized, err := normalizeMCPToolArguments(p.Arguments)
+		if err != nil {
+			return tool.ResolvedCall{}, err
+		}
+		p.Arguments = normalized
+	}
 	base := tool.ResolvedCall{
 		DisplayName:  "use_capability",
 		ProxyAction:  action,
@@ -664,6 +671,30 @@ func (t *UseCapabilityTool) ResolveCall(ctx context.Context, args json.RawMessag
 	default:
 		return tool.ResolvedCall{}, fmt.Errorf("unknown action %q; use list, inspect, call, or decline", p.Action)
 	}
+}
+
+// normalizeMCPToolArguments accepts the object shape required by MCP and the
+// common provider failure mode where that object is encoded once as a JSON
+// string. It deliberately decodes at most one string layer. This runs before
+// ResolveCall returns, so permission, hooks, evidence, audit, and execution all
+// observe the same normalized bytes.
+func normalizeMCPToolArguments(raw json.RawMessage) (json.RawMessage, error) {
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "" || trimmed == "null" {
+		return json.RawMessage(`{}`), nil
+	}
+	if strings.HasPrefix(trimmed, `"`) {
+		var inner string
+		if err := json.Unmarshal(raw, &inner); err != nil {
+			return nil, fmt.Errorf("arguments for an MCP tool must be a JSON object or a single JSON string containing an object: %w", err)
+		}
+		trimmed = strings.TrimSpace(inner)
+	}
+	var object map[string]any
+	if !strings.HasPrefix(trimmed, "{") || json.Unmarshal([]byte(trimmed), &object) != nil || object == nil {
+		return nil, fmt.Errorf("arguments for an MCP tool must be a JSON object; arrays, scalars, malformed JSON, and nested JSON strings are not supported")
+	}
+	return json.RawMessage(append([]byte(nil), trimmed...)), nil
 }
 
 func (t *UseCapabilityTool) Execute(ctx context.Context, args json.RawMessage) (string, error) {
