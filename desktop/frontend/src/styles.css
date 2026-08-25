@@ -1,4 +1,5 @@
 /*
+/*
  * Reasonix desktop — single-column, developer-dense, terminal-flavored chat UI.
  *
  * Multi-platform notes:
@@ -475,6 +476,7 @@
   color-scheme: dark;
 }
 
+/* Theme styles are "directions" — graphite / aurora / slate / carbon /
 /* Theme styles are "directions" — graphite / aurora / slate / carbon /
    nocturne / amber — and each is independent of light/dark. Dark accent (brighter, dark fg) is the
    default for every direction; the light accent is applied when the user
@@ -1971,6 +1973,7 @@ textarea {
 }
 
 /* Independent typography regions. Missing custom properties deliberately fall
+/* Independent typography regions. Missing custom properties deliberately fall
    back to the global appearance settings, preserving existing installations. */
 .transcript,
 .transcript__live-region {
@@ -2013,6 +2016,7 @@ textarea {
 }
 
 /* Root typography tokens are computed before inheritance, so a descendant
+/* Root typography tokens are computed before inheritance, so a descendant
    --font-scale cannot retroactively change them. Re-declare the proportional
    tokens at each semantic region root to make independent scaling real. */
 body,
@@ -2039,6 +2043,7 @@ body,
   --font-control-small: var(--text-sm);
 }
 
+/* Only real hyperlinks get the pointer cursor; everything else (buttons, tabs,
 /* Only real hyperlinks get the pointer cursor; everything else (buttons, tabs,
    tree rows, menu items) stays default so the UI reads as native chrome. */
 a[href] {
@@ -2119,6 +2124,7 @@ a[href] {
   grid-template-columns: 0px minmax(0, 1fr) minmax(0, var(--workspace-width));
 }
 /* Skip dock-column interpolation in creation mode. WebKit can mount the
+/* Skip dock-column interpolation in creation mode. WebKit can mount the
    overview at zero inline size and fail to repaint its text on reopen. */
 .app--creation .layout.layout--workspace-open,
 .app--creation .layout.layout--workspace-open.layout--sidebar-collapsed {
@@ -2131,6 +2137,7 @@ a[href] {
 .layout--workspace-maximized.layout--sidebar-collapsed {
   grid-template-columns: 0px minmax(0, 1fr);
 }
+/* Terminal drawer — an independent bottom panel below the chat pane.
 /* Terminal drawer — an independent bottom panel below the chat pane.
    Sidebar and workspace panel stay full-height in columns 1 and 3;
    the terminal occupies column 2 row 3, statusbar at row 4. */
@@ -2180,6 +2187,7 @@ a[href] {
   overflow: hidden;
 }
 /* Border and background only visible when the terminal is actually expanded,
+/* Border and background only visible when the terminal is actually expanded,
    avoiding a 1px artifact line when the drawer is collapsed to 0px. */
 .layout--terminal-drawer-expanded .terminal-drawer {
   background: var(--terminal-bg, #111315);
@@ -2192,6 +2200,7 @@ a[href] {
   border-bottom: 1px solid var(--terminal-border);
 }
 /* When the terminal drawer is open, the sidebar and workspace panel span the
+/* When the terminal drawer is open, the sidebar and workspace panel span the
    full content height (rows 2–3) so only the chat pane is shortened. */
 .layout.layout--terminal-drawer-open .sidebar {
   grid-row: 2 / 4;
@@ -2199,6 +2208,7 @@ a[href] {
 .layout.layout--terminal-drawer-open .workbench-dock {
   grid-row: 2 / 4;
 }
+/* The dock's vertical drag handle must span the same rows as the dock so the
 /* The dock's vertical drag handle must span the same rows as the dock so the
    resizer line extends from the top of the chat area down to the bottom of
    the terminal drawer. */
@@ -2246,6 +2256,7 @@ a[href] {
   grid-row: 3;
 }
 
+/* Keep the old layout--terminal-open rules for backward compat — they are
 /* Keep the old layout--terminal-open rules for backward compat — they are
    no longer added by App.tsx but may remain in cached localStorage styles. */
 .layout--terminal-open {
@@ -2349,6 +2360,7 @@ a[href] {
   overflow: hidden;
 }
 
+/* Windows window movement belongs to the dedicated chrome surfaces. Keep the
 /* Windows window movement belongs to the dedicated chrome surfaces. Keep the
    navigation sidebar and its adjacent resize handle out of the native drag path. */
 .app--windows .sidebar {
@@ -3320,6 +3332,7 @@ a[href] {
 }
 
 /* Startup splash restored from the v0.50 desktop intro. It masks cold boot while
+/* Startup splash restored from the v0.50 desktop intro. It masks cold boot while
    the Wails bridge and background startup work settle, then yields to the app. */
 .startup-splash {
   position: fixed;
@@ -3475,6 +3488,7 @@ a[href] {
   .transcript-navigation-overlay__spinner { animation: none; }
 }
 /* The active turn streams as the virtual list's in-flow Footer: inside the
+/* The active turn streams as the virtual list's in-flow Footer: inside the
    scroller, right after the last history row, but outside Virtuoso's
    measured size tree — unbounded growth never reaches the list's anchors or
    recovery machinery (#8657/#8688). */
@@ -3506,6 +3520,7 @@ a[href] {
 }
 
 /* ── Virtual transcript rows ─────────────────────────────────────── */
+/* React Virtuoso owns list offsets and row measurement. Rows stay in normal
 /* React Virtuoso owns list offsets and row measurement. Rows stay in normal
    flow; flow-root contains child margins so ResizeObserver sees the complete
    dynamic height instead of a collapsed margin outside the measured item. */
@@ -3603,6 +3618,7 @@ a[href] {
   height: max(0px, calc(var(--transcript-row-estimate) - 32px));
   overflow: hidden;
 }
+/* Offscreen rows are unmounted by the virtualizer, so content-visibility
 /* Offscreen rows are unmounted by the virtualizer, so content-visibility
    culling is redundant inside rows — and skipping it keeps offsetHeight
    measurements exact instead of contain-intrinsic-size placeholders. */
@@ -4252,6 +4268,7 @@ a[href] {
   contain-intrinsic-size: 1px 60px;
 }
 /* Virtuoso already owns transcript virtualization. A second content-visibility
+/* Virtuoso already owns transcript virtualization. A second content-visibility
  * viewport inside each mounted row gives the browser a 60px intrinsic box and
  * then expands it when the row crosses the viewport, which makes Virtuoso's
  * upward compensation write a large reverse frame during manual reading. Keep
@@ -4769,6 +4786,7 @@ a[href] {
   contain-intrinsic-size: 1px 36px;
 }
 /* T1: a tone-colored sweep bar along the bottom while the card is running
+/* T1: a tone-colored sweep bar along the bottom while the card is running
    (running cards render a .process-card__spin status icon). */
 @media (prefers-reduced-motion: no-preference) {
   .process-card:has(.process-card__spin)::after {
@@ -4844,6 +4862,7 @@ a[href] {
   white-space: nowrap;
   text-overflow: ellipsis;
 }
+/* While streaming the summary scrolls to the line tail, where a trailing
 /* While streaming the summary scrolls to the line tail, where a trailing
    ellipsis would sit on top of the live text. */
 .reasoning-summary[data-follow-end] {
@@ -5435,6 +5454,7 @@ button.reasoning-summary:focus-visible {
   padding: 1px 5px;
 }
 /* Horizontal overflow only: never create a vertical nested scroller. CSS
+/* Horizontal overflow only: never create a vertical nested scroller. CSS
    forces overflow-y to "auto" when overflow-x is non-visible, so tables use a
    wrapper (below) for x-scroll and the table itself stays overflow:visible. */
 .md-table-scroll {
@@ -5444,6 +5464,7 @@ button.reasoning-summary:focus-visible {
   overflow-y: hidden;
   margin: 0 0 12px;
 }
+/* Large tables default to an in-flow preview; expand mounts the virtual
 /* Large tables default to an in-flow preview; expand mounts the virtual
    scroller only when the user opts in (see MarkdownTable.tsx). */
 .md-table-fold {
@@ -5502,6 +5523,7 @@ button.reasoning-summary:focus-visible {
   background: var(--bg-soft);
   font-weight: var(--font-weight-strong);
 }
+/* Row-virtualized oversized markdown tables (see MarkdownTable.tsx): the
 /* Row-virtualized oversized markdown tables (see MarkdownTable.tsx): the
    wrapper owns vertical scroll, the thead stays pinned, and body rows are
    absolutely positioned by the virtualizer. Flex rows keep header/body cells
@@ -5569,6 +5591,7 @@ button.reasoning-summary:focus-visible {
   opacity: 0.55;
 }
 
+/* Override browser user-agent <code> monospace so inherited font (from
 /* Override browser user-agent <code> monospace so inherited font (from
    .code / .code-lines-wrap) reaches highlighted tokens and line text. */
 .code code,
@@ -6359,6 +6382,7 @@ body > .mermaid-diagram--fullscreen {
   border-color: var(--accent-soft);
 }
 /* Read-only research calls keep the same process-card shell, but their content
+/* Read-only research calls keep the same process-card shell, but their content
    is visually quieter than write/shell/sub-agent calls. */
 .tool--quiet {
   border-color: var(--border-soft);
@@ -6452,6 +6476,7 @@ body > .mermaid-diagram--fullscreen {
   min-width: 0;
 }
 /* Sub-agent progress chip: phase + running elapsed + recent activity. The dot
+/* Sub-agent progress chip: phase + running elapsed + recent activity. The dot
  * carries the phase color; the chip never grows the head beyond one line. */
 .tool__subagent-chip {
   display: inline-flex;
@@ -6504,6 +6529,7 @@ body > .mermaid-diagram--fullscreen {
   50% { opacity: 0.35; }
 }
 
+/* Expanded sub-agent preview: reasoning / response preview / notices live in
 /* Expanded sub-agent preview: reasoning / response preview / notices live in
  * their own block and never mix with ordinary tool output. Long text wraps;
  * it must not widen the chat column. */
@@ -6748,6 +6774,7 @@ body > .mermaid-diagram--fullscreen {
   padding: 12px 32px 10px;
 }
 /* Decision cards (plan/tool approval, ask, clear-context) can grow tall; cap
+/* Decision cards (plan/tool approval, ask, clear-context) can grow tall; cap
    the footer and let it scroll so approval buttons never slip behind the
    status bar (#7030). Scoped to the decision state only: an unconditional
    overflow here clips the upward-popping "/" and "@" menus (.slashmenu), whose
@@ -6843,6 +6870,7 @@ body > .mermaid-diagram--fullscreen {
   border-color: var(--fg-faint);
 }
 /* Run strip: an in-flow bar at the top of the card. For user-sized cards JS
+/* Run strip: an in-flow bar at the top of the card. For user-sized cards JS
    adds the strip's reserved height so the input's logical minimum is unchanged.
    For natural-height cards the card grows without the explicit reservation. */
 .composer-run-strip {
@@ -6879,6 +6907,7 @@ body > .mermaid-diagram--fullscreen {
 .composer-run-strip--waiting .composer-run-strip__dot {
   animation: none;
 }
+/* Attention handoff: while a prompt card is waiting on the user, the card
 /* Attention handoff: while a prompt card is waiting on the user, the card
    drops the accent running tint and takes a calm warn edge instead. */
 .composer-card--waiting {
@@ -6920,6 +6949,7 @@ body > .mermaid-diagram--fullscreen {
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 70%, transparent);
   opacity: 0.95;
 }
+/* Hide the resize handle while the input is focused — the user is typing,
 /* Hide the resize handle while the input is focused — the user is typing,
    not resizing.  The handle otherwise appears as a colored pill above the
    card on hover (which always co-occurs with focus after a click). */
@@ -7557,6 +7587,7 @@ body > .mermaid-diagram--fullscreen {
   --composer-modebar-active-fg: var(--mode-auto-fg);
 }
 
+/* Two segments instead of three, so the thumb spans half the track. Standard
 /* Two segments instead of three, so the thumb spans half the track. Standard
    needs a solid neutral thumb, not the near-invisible default: otherwise
    leaving delivery reads as the pill vanishing rather than sliding. */
@@ -9289,6 +9320,7 @@ body > .mermaid-diagram--fullscreen {
   min-width: 88px;
 }
 /* Unified decision surface: vertical full-width options, sticky footer, and
+/* Unified decision surface: vertical full-width options, sticky footer, and
    one bounded content scroller. Never collapses to horizontal pills. */
 .prompt-shelf--decision .prompt-shelf__card {
   grid-template-rows: minmax(0, 1fr) auto;
@@ -10051,6 +10083,7 @@ body > .mermaid-diagram--fullscreen {
   min-width: 0;
   overflow-wrap: anywhere;
 }
+/* Tool-approval consequence preview: same quick-pick pattern as the ask
 /* Tool-approval consequence preview: same quick-pick pattern as the ask
    detail row — pill buttons stay compact, the row spells out what the
    hovered/selected action will do. */
@@ -10823,6 +10856,7 @@ body > .mermaid-diagram--fullscreen {
   font-size: 11px;
 }
 /* past:chats hover preview (PR-C2). Inherits colors from the .tooltip container
+/* past:chats hover preview (PR-C2). Inherits colors from the .tooltip container
    (--fg / --fg-dim / --fg-faint / --border / --bg-elev) and only adjusts layout. */
 .past-chat-hover {
   display: flex;
@@ -11055,6 +11089,7 @@ body > .mermaid-diagram--fullscreen {
   transition: opacity 0.12s ease;
 }
 /* Guides appear only while hovering the files panel so the expanded-tree
+/* Guides appear only while hovering the files panel so the expanded-tree
    connectors don't clutter the default view. */
 .workspace-files:hover .workspace-tree__guides,
 .workspace-files:focus-within .workspace-tree__guides {
@@ -11125,6 +11160,7 @@ body > .mermaid-diagram--fullscreen {
   border-radius: var(--tree-row-radius);
 }
 /* Hover/selection highlight spans the whole row (file entry + revert button)
+/* Hover/selection highlight spans the whole row (file entry + revert button)
    so the revert control sits inside the same background as the file. The
    inner file button stays transparent and inherits the row's surface. */
 .workspace-change-row:hover {
@@ -11166,6 +11202,7 @@ body > .mermaid-diagram--fullscreen {
   pointer-events: none;
   transition: opacity var(--dur-fast), color var(--dur-fast), border-color var(--dur-fast), background var(--dur-fast);
 }
+/* The revert control is a per-row action overlaid on the status badge: hidden
 /* The revert control is a per-row action overlaid on the status badge: hidden
    until the row is hovered, then revealed in the same right-hand slot so it
    reads as replacing the badge. Keyboard focus reveals it too, so the action
@@ -11575,6 +11612,7 @@ body > .mermaid-diagram--fullscreen {
     opacity: 0;
   }
 }
+/* Overlays that opt into exit animation via useMountTransition flip
 /* Overlays that opt into exit animation via useMountTransition flip
  * data-state="closing" before unmount; reverse the backdrop fade. */
 .drawer-backdrop[data-state="closing"] {
@@ -16773,6 +16811,7 @@ body > .mermaid-diagram--fullscreen {
 }
 
 /* Preserve the original wide-screen flex relationship. The narrow breakpoint
+/* Preserve the original wide-screen flex relationship. The narrow breakpoint
    turns this wrapper into a real flex item to keep its controls together. */
 .memory-tabs-row__tail {
   display: contents;
@@ -21432,6 +21471,7 @@ body > .mermaid-diagram--fullscreen {
   margin-top: 2px;
 }
 /* sub-agent calls render indented under their parent task card — the base
+/* sub-agent calls render indented under their parent task card — the base
    tool__body already provides border-left + 12px padding, so subagent just
    needs left indent for hierarchy.  Expanded padding is handled by
    .tool--open .tool__body. */
@@ -22198,6 +22238,7 @@ body > .mermaid-diagram--fullscreen {
 }
 
 /* onboarding — first-run gate covering the whole window. Sits above every
+/* onboarding — first-run gate covering the whole window. Sits above every
    other layer; the card is centered, terminal-styled, with a faint scanline
    accent so it reads as "stop and paste a key" rather than a generic modal. */
 .onboarding {
@@ -22385,6 +22426,7 @@ body > .mermaid-diagram--fullscreen {
 }
 
 /* Memory filter input: a full-width mem-input variant that sits below
+/* Memory filter input: a full-width mem-input variant that sits below
    the section title. The existing mem-input already has a 28px height
    and the right border tokens; this just sets margin so it doesn't
    crowd the doc list. */
@@ -22394,6 +22436,7 @@ body > .mermaid-diagram--fullscreen {
 
 }
 
+/* InlineDiff: a compact before/after diff card. The header strip carries
 /* InlineDiff: a compact before/after diff card. The header strip carries
    the filename, the +/- counts, and a Copy button. The body is a monospace
    pre with +/- row coloring. The CSS tokens are the same --add-bg /
@@ -22759,6 +22802,7 @@ body > .mermaid-diagram--fullscreen {
 }
 
 /* The image viewer is an app-level fullscreen surface. Hide the custom
+/* The image viewer is an app-level fullscreen surface. Hide the custom
    Windows caption controls while it is open so the preview owns the only
    visible close affordance; native shortcuts such as Alt+F4 remain intact. */
 .app--windows-frameless:has(.image-viewer-backdrop) > .windows-window-controls {
@@ -22767,6 +22811,7 @@ body > .mermaid-diagram--fullscreen {
   pointer-events: none;
 }
 
+/* When the workspace panel is closed (no layout--workspace-open or
 /* When the workspace panel is closed (no layout--workspace-open or
    layout--workspace-maximized), make the window controls box transparent so it
    blends into the title bar / background instead of showing a distinct box. */
@@ -22781,6 +22826,7 @@ body > .mermaid-diagram--fullscreen {
   box-shadow: none;
 }
 
+/* When a drawer/palette overlay is open, dim the window controls so they
 /* When a drawer/palette overlay is open, dim the window controls so they
    visually sit behind the backdrop instead of staying highlighted on top. */
 .drawer-backdrop[data-state="open"] ~ .windows-window-controls {
@@ -23503,6 +23549,7 @@ body > .mermaid-diagram--fullscreen {
   --wails-draggable: no-drag;
 }
 /* When the dock is closed in workbench mode, the fixed top-right dock-toggle
+/* When the dock is closed in workbench mode, the fixed top-right dock-toggle
    overlaps the topic bar's right edge; leave room so the actions don't
    collide with it. When the dock is open it occupies the right column, so no
    extra margin is needed. Classic/creation keep the toggle inside the actions
@@ -23657,6 +23704,7 @@ body > .mermaid-diagram--fullscreen {
 }
 
 /* Borderless icon-only entries: file opener, More menu, workspace toggle,
+/* Borderless icon-only entries: file opener, More menu, workspace toggle,
    and the utility (search) button. Default state has no background/border —
    hover/focus still highlight so the controls stay discoverable. */
 .topicbar__actions .external-opener,
@@ -23688,6 +23736,7 @@ body > .mermaid-diagram--fullscreen {
   color: var(--fg) !important;
 }
 
+/* Compact icon + caret: shrink the primary so the app icon sits close to
 /* Compact icon + caret: shrink the primary so the app icon sits close to
    the caret instead of being spread across two centered halves. */
 .topicbar__actions .external-opener__primary {
@@ -24199,6 +24248,7 @@ body > .mermaid-diagram--fullscreen {
 }
 
 /* L1: command-search bar — opens the ⌘K palette. Sits after the new-tab
+/* L1: command-search bar — opens the ⌘K palette. Sits after the new-tab
    button and fills the remaining strip width like the prototype. */
 .tabbar__command {
   flex: 1 1 auto;
@@ -24475,6 +24525,7 @@ body > .mermaid-diagram--fullscreen {
 }
 
 /* Header-action-btn in the header-actions row uses min-width so it can
+/* Header-action-btn in the header-actions row uses min-width so it can
    expand when a time-filter label is shown alongside the clock icon. */
 .project-tree__header-actions .project-tree__header-action-btn {
   width: auto;
@@ -24564,6 +24615,7 @@ body > .mermaid-diagram--fullscreen {
   user-select: none;
 }
 
+/* Classic hover preview card: rendered through a body portal so the sidebar's
 /* Classic hover preview card: rendered through a body portal so the sidebar's
    overflow clipping cannot cut it off; pointer-events stay off so it never
    steals the hover from the row underneath. */
@@ -25128,6 +25180,7 @@ body > .mermaid-diagram--fullscreen {
 }
 
 /* Classic single-line rows: the activity time sits right-aligned on the title
+/* Classic single-line rows: the activity time sits right-aligned on the title
    line (turns and the exact date live in the hover preview card). Mirrors the
    workbench side recipe, including the swap with the shortcut badge. */
 .app--classic .project-tree__topic-side {
@@ -25645,6 +25698,33 @@ body > .mermaid-diagram--fullscreen {
   opacity: 0.45;
 }
 
+.project-tree__empty-secondary {
+  --wails-draggable: no-drag;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  height: 32px;
+  margin: 0 8px;
+  border: 1px solid var(--border-soft);
+  border-radius: 7px;
+  background: transparent;
+  color: var(--fg-dim);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 560;
+}
+
+.project-tree__empty-secondary:hover:not(:disabled) {
+  background: var(--sidebar-hover);
+  color: var(--fg);
+}
+
+.project-tree__empty-secondary:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
 .context-inspector,
 .workbench-dock {
   grid-row: 2;
@@ -25691,6 +25771,7 @@ body > .mermaid-diagram--fullscreen {
   --wails-draggable: drag;
 }
 
+/* Dock collapse/expand toggle pinned to the top-right corner of the window.
 /* Dock collapse/expand toggle pinned to the top-right corner of the window.
    Fixed position keeps it at the same spot whether the dock is open (it
    overlaps the dock's tools row) or closed (it sits on the topic bar's
@@ -26958,9 +27039,11 @@ body > .mermaid-diagram--fullscreen {
 }
 
 /* ----------------------------------------------------------------------------
+/* ----------------------------------------------------------------------------
  * Native-feel: overscroll containment, reduced-motion, view-transition suppression
  * -------------------------------------------------------------------------- */
 
+/* Prevent rubber-band / pull-to-refresh on scrollable panels so the webview
 /* Prevent rubber-band / pull-to-refresh on scrollable panels so the webview
    feels like a native window, not a browser tab. */
 .transcript,
@@ -27113,6 +27196,7 @@ body > .mermaid-diagram--fullscreen {
 }
 
 /* Respect the OS reduced-motion preference: squash all animations and force
+/* Respect the OS reduced-motion preference: squash all animations and force
    instant scrolling so the UI feels immediate rather than web-like. */
 @media (prefers-reduced-motion: reduce) {
   *,
@@ -27125,6 +27209,7 @@ body > .mermaid-diagram--fullscreen {
   }
 }
 
+/* ----------------------------------------------------------------------------
 /* ----------------------------------------------------------------------------
  * Native Workbench refresh
  * -------------------------------------------------------------------------- */
@@ -27740,6 +27825,7 @@ body > .mermaid-diagram--fullscreen {
   }
 }
 
+/* -------------------------------------------------------------------------
 /* -------------------------------------------------------------------------
    Shared desktop implementation
    Keeps every theme on the Graphite-tuned app shell. Theme styles should swap
@@ -29614,6 +29700,7 @@ body > .mermaid-diagram--fullscreen {
 }
 
 /* Classic and Workbench use compact text tabs in the right dock. A restrained
+/* Classic and Workbench use compact text tabs in the right dock. A restrained
    hairline clarifies each hit target without turning the strip into boxed
    segmented controls. Creation keeps its separate equal-column treatment. */
 .app--classic .workbench-dock__tab + .workbench-dock__tab,
@@ -29634,6 +29721,7 @@ body > .mermaid-diagram--fullscreen {
   transform: translateY(-50%);
 }
 
+/* Theme-style turns the strip into browser-like tabs (small rounded rects,
 /* Theme-style turns the strip into browser-like tabs (small rounded rects,
    selected one raised); the hairline separator reads as clutter between them. */
 :root[data-theme-style] .app--classic .workbench-dock__tab + .workbench-dock__tab::before,
@@ -29720,6 +29808,7 @@ body > .mermaid-diagram--fullscreen {
 }
 
 /* Change rows: the highlight spans the whole row (file entry + revert button).
+/* Change rows: the highlight spans the whole row (file entry + revert button).
    The entry button inherits the row surface instead of painting its own. */
 :root[data-theme-style] .workspace-change-row:hover {
   background: var(--workspace-files-hover);
@@ -29769,6 +29858,7 @@ body > .mermaid-diagram--fullscreen {
   background: var(--bg-soft);
 }
 
+/* The changed-tab content sits directly in the preview body whose theme-style
 /* The changed-tab content sits directly in the preview body whose theme-style
    left/right padding is 0 (code/markdown views supply their own). Give the
    outer containers a horizontal inset. Only the outermost layer gets padding:
@@ -29898,6 +29988,7 @@ body > .mermaid-diagram--fullscreen {
   box-shadow: var(--app-graphite-shadow-float);
 }
 
+/* Inline note panels (completion summary, git warnings) sit inside the
 /* Inline note panels (completion summary, git warnings) sit inside the
    workspace surface — no floating elevation, just a hairline + soft fill. */
 :root[data-theme-style] .workspace-note {
@@ -30134,6 +30225,7 @@ body > .mermaid-diagram--fullscreen {
   background: linear-gradient(120deg, #ff5a2c, #ff8a3d);
 }
 
+/* Theme direction accents for the design-signature controls copied from the
 /* Theme direction accents for the design-signature controls copied from the
    new_design comps: panel toggles, run-mode badges, active sessions, and file
    tree folder rows all use each theme's accent + accent-soft pair. */
@@ -31285,6 +31377,7 @@ body > .mermaid-diagram--fullscreen {
 }
 
 /* ==========================================================================
+/* ==========================================================================
    Creation desktop style — scaffold
    --------------------------------------------------------------------------
    The "creation" desktop layout style (Settings → Desktop style → Creation).
@@ -31646,6 +31739,7 @@ body > .mermaid-diagram--fullscreen {
 }
 
 /* Scope compact swatches to real theme cards only — do not crush
+/* Scope compact swatches to real theme cards only — do not crush
    AppearanceOverview hero (.appearance-overview__thumb-base.theme-card__swatches). */
 .app--creation .theme-card .theme-card__swatches,
 :root[data-theme-style] .app--creation .theme-card .theme-card__swatches {
@@ -31674,6 +31768,7 @@ body > .mermaid-diagram--fullscreen {
   display: none;
 }
 
+/* Creation Graphite swatch colors apply to both theme cards and
 /* Creation Graphite swatch colors apply to both theme cards and
    AppearanceOverview hero (do not nest under .theme-card). */
 :root[data-theme-style] .app--creation .theme-card__swatches[data-theme-style-card="graphite"] .theme-card__swatch--bg {
@@ -32877,6 +32972,7 @@ body > .mermaid-diagram--fullscreen {
 
 /* popover 卡片 —— 对齐 context-panel__capacity-card 风格（portal 到 body，无 .app--creation 前缀） */
 /*
+/*
  * NOTE (font-scale): this popover is portaled to <body>, so it has no
  * .app--creation prefix, yet it is ONLY rendered in creation layout
  * (Composer gates it behind showContextWindowRing = sidebarCreation =
@@ -33585,6 +33681,7 @@ body > .mermaid-diagram--fullscreen {
 }
 
 /* Creation: hide native chat scrollbar and use a controllable custom rail.
+/* Creation: hide native chat scrollbar and use a controllable custom rail.
    Native WebView2 thumb hover-size is unreliable; custom thumb can snap thick/thin.
    Keep this scrolling layer opaque too: transparent transcript backgrounds can
    leave stale turn-action pixels behind when message nodes are removed (#6359). */
@@ -34106,6 +34203,7 @@ body > .mermaid-diagram--fullscreen {
 }
 
 /* ── Creation: 工具信息流 ───────────────────────────────────────────────────
+/* ── Creation: 工具信息流 ───────────────────────────────────────────────────
    状态圆点替代左侧文字图标（done=绿 / error=红 / stopped=橙 / running 无点）；
    圆点置于工具头最右端（折叠箭头之后）。classic/workbench 下圆点默认隐藏，
    左侧文字图标不变，零影响。 */
@@ -34243,6 +34341,7 @@ body > .mermaid-diagram--fullscreen {
 }
 
 /* 工具头与深度思考头对齐：reasoning__head 在 Creation 下 padding:0（flush），
+/* 工具头与深度思考头对齐：reasoning__head 在 Creation 下 padding:0（flush），
    tool__head 默认 padding:3px 8px 会比思考头左右各多 8px，导致层级错位。
    Creation 下统一为 0，与 reasoning__head 同起点。 */
 .app--creation .tool__head,
@@ -34250,6 +34349,7 @@ body > .mermaid-diagram--fullscreen {
   padding: 0;
 }
 
+/* 移除非思考卡片的左侧竖线（思考模式 .reasoning__body 保留）。
 /* 移除非思考卡片的左侧竖线（思考模式 .reasoning__body 保留）。
    readonly-batch__body / turn-collapse__body / tool__body 的 border-left 统一去掉。 */
 .app--creation .tool__body,
@@ -34270,6 +34370,7 @@ body > .mermaid-diagram--fullscreen {
 }
 
 /* 限制工具头标题宽度，给右侧 meta（耗时/箭头/圆点）留出可见空间。
+/* 限制工具头标题宽度，给右侧 meta（耗时/箭头/圆点）留出可见空间。
    Bash 等命令常超长，不限宽会把箭头和圆点挤出视野。仅 Creation 作用域。
    summary 在 Creation 下直接隐藏——它对 bash 只是"N 行"摘要，信息量低，
    留着反而挤占右侧关键元素。 */
@@ -34288,6 +34389,7 @@ body > .mermaid-diagram--fullscreen {
   display: none;
 }
 
+/* Tool and process typography follows the semantic region preferences in every
 /* Tool and process typography follows the semantic region preferences in every
    layout; Creation only changes spacing and color treatment. */
 .app--creation .tool,
@@ -34336,6 +34438,7 @@ body > .mermaid-diagram--fullscreen {
 }
 
 /* 工具卡片内的代码块（命令参数/输出/diff）与 diff 标签、错误/提示统一思源黑体。
+/* 工具卡片内的代码块（命令参数/输出/diff）与 diff 标签、错误/提示统一思源黑体。
    注意：思源黑体为比例字体，代码列对齐会丢失，但字体风格绝对统一。
    Noto Sans SC 是思源黑体的开源同源版本，系统已装。 */
 .app--creation .tool__body .code,
@@ -34354,6 +34457,7 @@ body > .mermaid-diagram--fullscreen {
 }
 
 /* 工具错误信息：Creation 下去掉醒目的红底块（base 用 --del-bg），
+/* 工具错误信息：Creation 下去掉醒目的红底块（base 用 --del-bg），
    改为左对齐纯文本，与命令输出同起点（base 有 30px 左缩进，这里清零）。
    仅 .app--creation 作用域，classic/workbench 的红底错误框保持不变。 */
 .app--creation .tool__err,
@@ -34365,6 +34469,7 @@ body > .mermaid-diagram--fullscreen {
   text-align: left;
 }
 
+/* 工具体内代码块（命令参数/输出/diff）底部的横向滚动条：Creation 下隐藏滑道，
 /* 工具体内代码块（命令参数/输出/diff）底部的横向滚动条：Creation 下隐藏滑道，
    只留一条 4px 细滑块（默认半透明，hover 略加深）。所有工具通用，不只 shell。
    仅作用于 .app--creation .tool__body .code，不碰全局 --scrollbar-* token，
@@ -34658,6 +34763,7 @@ body > .mermaid-diagram--fullscreen {
 }
 
 /* Emergency only: when the dock is forced below the Creation default (viewport
+/* Emergency only: when the dock is forced below the Creation default (viewport
    squeeze), drop labels. Equal columns remain so icons stay self-centered. */
 @container (max-width: 250px) {
   .app--creation .workbench-dock__tab,
@@ -34694,6 +34800,7 @@ body > .mermaid-diagram--fullscreen {
   height: 1px;
 }
 
+/* Creation workspace tree — align with left project-tree language.
 /* Creation workspace tree — align with left project-tree language.
    Virtualized rows estimate 24px (WorkspacePanel useVirtualizer); keep row
    height at/near that value so scroll math does not drift. */
@@ -34929,6 +35036,7 @@ body > .mermaid-diagram--fullscreen {
   color: var(--fg);
 }
 
+/* Creation "Changes" overview: keep the first-line path context, drop the
 /* Creation "Changes" overview: keep the first-line path context, drop the
    second-line breadcrumb meta (duplicate path). Only when no file selected
    (.workspace-panel--changed-overview). File preview keeps normal head/meta. */
@@ -35536,6 +35644,7 @@ body > .mermaid-diagram--fullscreen {
 }
 
 /* When workspace panel is open the workbench-dock covers the right edge, so the
+/* When workspace panel is open the workbench-dock covers the right edge, so the
    topicbar no longer needs the window-controls safe space — use the normal 18px
    padding instead to prevent buttons from being pushed off-screen or overlapping
    the dock. */
@@ -35546,6 +35655,7 @@ body > .mermaid-diagram--fullscreen {
   padding-right: 18px;
 }
 
+/* Workbench hides AppChrome, so its dock is also the native title surface.
 /* Workbench hides AppChrome, so its dock is also the native title surface.
    Keep the Windows caption buttons on a dedicated first row and render the
    complete dock tab strip below it, matching Classic's separated chrome. */
@@ -35569,6 +35679,7 @@ body > .mermaid-diagram--fullscreen {
 }
 
 /* Workbench keeps its workspace toggle in the fixed top-right dock-toggle
+/* Workbench keeps its workspace toggle in the fixed top-right dock-toggle
    instead of an AppChrome rail; shift it left of the Windows caption strip
    (min/max/close) so it never sits under the window controls. Same safe inset
    as the classic-mode panel toggle. */
@@ -35577,6 +35688,7 @@ body > .mermaid-diagram--fullscreen {
   right: calc(var(--windows-window-controls-safe) + 8px);
 }
 
+/* Creation sets tools padding via shorthand; re-assert the Windows safe
 /* Creation sets tools padding via shorthand; re-assert the Windows safe
    inset with higher specificity so 「文件 / 改动」 cannot sit under min/max/close.
    Tabs fill this free strip; each tab is an equal column that self-centers. */
@@ -35661,6 +35773,7 @@ body > .mermaid-diagram--fullscreen {
 }
 
 /* ============================================================================
+/* ============================================================================
    Windows + Creation: Vertical alignment for titlebar elements
    ========================================================================= */
 
@@ -35670,6 +35783,7 @@ body > .mermaid-diagram--fullscreen {
   margin-top: -32px !important;
 }
 
+/* Align topicbar (replaces app-chrome in Creation mode) with Windows controls
 /* Align topicbar (replaces app-chrome in Creation mode) with Windows controls
    without changing the shared macOS/Linux Creation geometry above. */
 .app--windows.app--creation .topicbar,
@@ -35687,6 +35801,7 @@ body > .mermaid-diagram--fullscreen {
   transform: none;
 }
 
+/* Reduce session title font size and weight. The rename input replaces the h1
 /* Reduce session title font size and weight. The rename input replaces the h1
    while editing (App.tsx topicbarEditing), so it must carry the same size or
    entering rename mode visibly jumps back to the 10px Creation default. */
@@ -35714,6 +35829,7 @@ body > .mermaid-diagram--fullscreen {
   transform: translateY(0.5px) scale(0.94) !important;
 }
 
+/* Windows 控制框在 Creation 下默认用 --bg-elev（近纯白），与右侧 workbench-dock
 /* Windows 控制框在 Creation 下默认用 --bg-elev（近纯白），与右侧 workbench-dock
    的统一底色（sidebar-bg 88%）有明显色差。改用相同底色，让控制框与右侧面板连成一片。 */
 .app--windows.app--creation .windows-window-controls,
@@ -35964,6 +36080,7 @@ body > .mermaid-diagram--fullscreen {
 }
 
 /* ==========================================================================
+/* ==========================================================================
    Theme Pack V1 — background layer, scene, library editor
    Overlay CSS variables are injected last by themePack.ts so pack tokens win
    over base style sheets and Creation-local variables.
@@ -36053,6 +36170,7 @@ body > .mermaid-diagram--fullscreen {
   isolation: isolate;
 }
 
+/*
 /*
   Background visibility: .layout paints opaque var(--bg) by default, which fully
   covers .theme-bg underneath. When a pack background is active, make the layout
@@ -36461,6 +36579,7 @@ body > .mermaid-diagram--fullscreen {
 }
 
 /*
+/*
   WebView2 can retain stale raster pixels when children are removed from a
   transparent scrolling layer (#6359, #7011). Scope the opaque backing to the
   primary chat transcript: history previews already own an opaque card surface,
@@ -36478,6 +36597,7 @@ body > .mermaid-diagram--fullscreen {
   background-size: 100% 100%, 100% 100% !important;
 }
 
+/*
 /*
   Background packs normally show a fixed image through translucent panes. The
   two fixed pseudo-layers preserve the existing .theme-bg geometry exactly:
@@ -37825,6 +37945,7 @@ body > .mermaid-diagram--fullscreen {
 }
 
 /* The settings navigation consumes part of the window width, so gallery
+/* The settings navigation consumes part of the window width, so gallery
    responsiveness must follow its own content box rather than the viewport. */
 @container theme-gallery (max-width: 760px) {
   .theme-gallery__body,
@@ -39013,6 +39134,7 @@ body > .mermaid-diagram--fullscreen {
 }
 
 /* Terminal-drawer footer compaction (terminal is open + non-Creation layout).
+/* Terminal-drawer footer compaction (terminal is open + non-Creation layout).
    !important is necessary because the footer padding is set by multiple theme /
    media-query rules with varying specificity that are hard to predict.
    Keep the top spacing (composer→statusbar) intact; only reduce the bottom
@@ -39021,6 +39143,7 @@ body > .mermaid-diagram--fullscreen {
   padding-bottom: 4px !important;
 }
 
+/* Classic and Workbench share the same compact four-view strip at the dock's
 /* Classic and Workbench share the same compact four-view strip at the dock's
    minimum width. Creation keeps its equal-column tab treatment. */
 @container (max-width: 420px) {
@@ -39034,6 +39157,7 @@ body > .mermaid-diagram--fullscreen {
   }
 }
 
+/* DingTalk bot channel: the credential row and manual setup form need
 /* DingTalk bot channel: the credential row and manual setup form need
    their own multi-column layout; the shared .bot-secret-row is forced to a
    single column inside .bot-detail-card, which stacks five elements. */
@@ -39055,6 +39179,7 @@ body > .mermaid-diagram--fullscreen {
 .bot-manual-form.bot-manual-form--dingtalk .bot-card-field > div {
   justify-content: flex-start;
 }
+/* 钉钉凭据区与飞书一致：单列竖排（通用 .bot-detail-card .bot-secret-row
 /* 钉钉凭据区与飞书一致：单列竖排（通用 .bot-detail-card .bot-secret-row
    已强制为 1fr；这里不再覆盖为多列横排，避免 5 个元素挤一行放不下）。 */
 
@@ -39096,6 +39221,7 @@ body > .mermaid-diagram--fullscreen {
   color: var(--fg);
 }
 
+/* ── Topic bar background ───────────────────────────────────────────
 /* ── Topic bar background ───────────────────────────────────────────
    Unify the chat-pane header with the surrounding chat surface. The
    topic bar defaults to --bg-elev; in light themes that reads as a hard
