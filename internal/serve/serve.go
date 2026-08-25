@@ -728,16 +728,8 @@ func (s *Server) submit(w http.ResponseWriter, r *http.Request) {
 	}
 	// Intercept /model <ref> for runtime model switching (the controller's
 	// Submit path only lists models — switching is frontend-specific).
-	if strings.HasPrefix(trimmed, "/model ") {
-		ref := strings.TrimSpace(strings.TrimPrefix(trimmed, "/model"))
-		if ref != "" {
-			if err := s.switchModel(r.Context(), ref); err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
+	if s.submitModelCommand(w, r, trimmed) {
+		return
 	}
 	// Intercept /effort <level> for reasoning effort switching.
 	if strings.HasPrefix(trimmed, "/effort ") {

@@ -2,8 +2,11 @@ package serve
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
+
+	"reasonix/internal/config"
 )
 
 func (s *Server) modelSwitch(w http.ResponseWriter, r *http.Request) {
@@ -14,11 +17,76 @@ func (s *Server) modelSwitch(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "missing model ref", http.StatusBadRequest)
 		return
 	}
-	if err := s.switchModel(r.Context(), strings.TrimSpace(body.Ref)); err != nil {
+	ref, err := s.canonicalRuntimeModelRef(body.Ref)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := s.switchModel(r.Context(), ref); err != nil {
 		http.Error(w, err.Error(), runtimeSwitchErrorStatus(err))
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// submitModelCommand handles the text-command twin of POST /model.
+func (s *Server) submitModelCommand(w http.ResponseWriter, r *http.Request, input string) bool {
+	if !strings.HasPrefix(input, "/model ") {
+		return false
+	}
+	ref, err := s.canonicalRuntimeModelRef(strings.TrimSpace(strings.TrimPrefix(input, "/model")))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return true
+	}
+	if err := s.switchModel(r.Context(), ref); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return true
+	}
+	w.WriteHeader(http.StatusNoContent)
+	return true
+}
+
+// canonicalRuntimeModelRef converts an HTTP-provided selector into a value
+// owned by the active provider catalog or on-disk configuration. Besides
+// rejecting models the UI could not have listed, returning the trusted catalog
+// value prevents request data from becoming a provider/session path input.
+func (s *Server) canonicalRuntimeModelRef(raw string) (string, error) {
+	requested := strings.TrimSpace(raw)
+	if requested == "" {
+		return "", fmt.Errorf("missing model ref")
+	}
+	for _, descriptor := range s.ctl().ProviderCatalog() {
+		candidate := strings.TrimSpace(descriptor.Ref)
+		if candidate != "" && candidate == requested {
+			return candidate, nil
+		}
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		return "", fmt.Errorf("load config: %w", err)
+	}
+	entry, ok := cfg.ResolveModel(requested)
+	if !ok {
+		return "", fmt.Errorf("unknown model ref %q", requested)
+	}
+	for i := range cfg.Providers {
+		providerEntry := &cfg.Providers[i]
+		if providerEntry.Name != entry.Name {
+			continue
+		}
+		models := providerEntry.ChatModelList()
+		if len(models) == 0 {
+			models = providerEntry.ModelList()
+		}
+		for _, model := range models {
+			if model == entry.Model {
+				return providerEntry.Name + "/" + model, nil
+			}
+		}
+		break
+	}
+	return "", fmt.Errorf("unknown model ref %q", requested)
 }
 
 func (s *Server) effortSwitch(w http.ResponseWriter, r *http.Request) {

@@ -9,6 +9,7 @@ import (
 
 	"reasonix/internal/config"
 	"reasonix/internal/control"
+	"reasonix/internal/provider"
 )
 
 // TestControllerAccessorIsRaceSafe guards the switchModel concurrency contract:
@@ -38,6 +39,22 @@ func TestControllerAccessorIsRaceSafe(t *testing.T) {
 		})
 	}
 	wg.Wait()
+}
+
+func TestCanonicalRuntimeModelRefUsesCatalogOwnedValue(t *testing.T) {
+	ctrl := control.New(control.Options{ProviderResolver: &provider.StaticResolver{
+		Descriptors: []provider.Descriptor{{Ref: "safe/model"}},
+	}})
+	defer ctrl.Close()
+	s := &Server{ctrl: ctrl}
+
+	ref, err := s.canonicalRuntimeModelRef("  safe/model  ")
+	if err != nil || ref != "safe/model" {
+		t.Fatalf("canonical ref = %q, %v", ref, err)
+	}
+	if _, err := s.canonicalRuntimeModelRef("attacker/model"); err == nil {
+		t.Fatal("unknown request model was not rejected")
+	}
 }
 
 // TestModelAndEffortRoutesValidateInput pins the HTTP routes for model and
