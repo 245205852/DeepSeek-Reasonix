@@ -131,6 +131,9 @@ import type {
   SessionClearResult,
 } from "./types";
 
+export const COMPACT_RATIO_MIN_PERCENT = 30;
+export const COMPACT_RATIO_MAX_PERCENT = 85;
+
 export interface DesktopShellStatusView {
   trayState: "probing" | "ready" | "unavailable";
   backgroundCloseAvailable: boolean;
@@ -662,6 +665,8 @@ export interface AppBindings extends SessionCatalogBindings, ProjectTreeOrganiza
   AddRemoteForward(hostId: string, input: RemoteForwardInput): Promise<RemoteForwardView>;
   RemoveRemoteForward(hostId: string, forwardId: string): Promise<void>;
   OpenRemoteWorkspace(hostId: string, workspace: string): Promise<void>;
+  PickRemoteIdentityFile(): Promise<string>;
+  CheckRemotePlatform(hostId: string): Promise<void>;
   StopRemoteServer(hostId: string): Promise<void>;
   RemoteServerStatus(hostId: string): Promise<RemoteServerView>;
   RemoteServerLogs(hostId: string, tailLines: number): Promise<string>;
@@ -669,7 +674,6 @@ export interface AppBindings extends SessionCatalogBindings, ProjectTreeOrganiza
   ScanRemoteLegacyWorkbenchData(): Promise<RemoteLegacyWorkbenchData>;
   CleanRemoteLegacyWorkbenchData(target: "mirrors" | "trust"): Promise<void>;
 }
-
 // Compile-time drift check. Exclude<A, B> extracts keys in A that are missing
 // from B. If that set is non-empty, AssertNever<non-never> fails with
 // "Type 'X' does not satisfy the constraint 'never'".
@@ -1015,9 +1019,6 @@ export function onRemoteServer(cb: (s: RemoteServerView) => void): () => void {
   }
   return registerMockRemoteListener("server", cb as (v: unknown) => void);
 }
-
-
-
 // Mock event fan-out so browser-dev and tsx tests can drive remote:* events
 // without a Wails runtime.
 type MockRemoteChannel = "status" | "forwards" | "server";
@@ -4970,7 +4971,11 @@ function makeMockApp(): AppBindings {
       settings.agent = { ...settings.agent, temperature, maxSteps, plannerMaxSteps, systemPrompt };
     },
     async SetCompactRatio(ratio: number) {
-      if (!Number.isFinite(ratio) || ratio < 0.65 || ratio > 0.85) throw new Error("compact ratio must be between 0.65 and 0.85");
+      if (!Number.isFinite(ratio)
+        || ratio < COMPACT_RATIO_MIN_PERCENT / 100
+        || ratio > COMPACT_RATIO_MAX_PERCENT / 100) {
+        throw new Error(`compact ratio must be between ${COMPACT_RATIO_MIN_PERCENT / 100} and ${COMPACT_RATIO_MAX_PERCENT / 100}`);
+      }
       settings.agent = { ...settings.agent, compactRatio: ratio };
     },
     async SetReasoningLanguage(lang: string) {
@@ -5617,6 +5622,8 @@ function makeMockApp(): AppBindings {
       __emitMockRemote("forwards", { hostId, forwards: mockRemoteForwards[hostId] });
     },
     async OpenRemoteWorkspace() {},
+    async PickRemoteIdentityFile() { return "~/.ssh/id_ed25519"; },
+    async CheckRemotePlatform() {},
     async StopRemoteServer(hostId) {
       __emitMockRemote("server", { hostId, workspace: "", state: "stopped" });
     },

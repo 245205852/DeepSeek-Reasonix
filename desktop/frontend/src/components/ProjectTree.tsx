@@ -30,6 +30,7 @@ import { useProjectTreeFrontendDiagnostics, type ProjectTreeDiagnosticSnapshot }
 import { summarizeProjectTreeSessions } from "../lib/projectTreeDiagnostics";
 import { GLOBAL_PROJECT_ORDER_KEY, ProjectTreeFolderActivity, ProjectTreeGroupRows, applyProjectOrder, projectTreeProjectRoots, reorderedProjectRoots, useProjectTreeOrganization, type ProjectDropPosition } from "./ProjectTreeOrganization";
 import { ProjectTreeSessionArchiveMenu } from "./ProjectTreeSessionArchiveMenu";
+import { ProjectTreeHeaderAddControl, ProjectTreeRemoteAction, projectTreeHeaderAddItems } from "./ProjectTreeAddControls";
 
 interface ProjectTreeProps {
   activeScope?: string;
@@ -464,7 +465,7 @@ export function ProjectTree({
   }, [applyRuntimeProjection]);
   refreshRef.current = refresh;
 
-  const { addingProject, handleAddProject, openBlankProjectFlow, blankProjectFlow } = useProjectCreation({
+  const { addingProject, handleAddProject, openBlankProjectFlow, blankProjectFlow, openRemoteConnectFlow, remoteConnectFlow } = useProjectCreation({
     onAddProject,
     onRefresh: refresh,
     showToast,
@@ -1239,7 +1240,7 @@ export function ProjectTree({
           className={`project-tree__topic${scopeClass}${isSessionNode ? " project-tree__topic--session" : ""}${active ? " project-tree__topic--active" : ""}${node.running ? " project-tree__topic--running" : ""}${status ? ` project-tree__topic--status-${status}` : ""}${unread ? " project-tree__topic--unread" : ""}${!isSessionNode && pinned ? " project-tree__topic--pinned" : ""}${topicMenuOpen ? " project-tree__topic--menu-open" : ""}${topicDrag.className}${sideTimeVisible && (timeLabel || showStatusInSide || showWaitingPill) ? " project-tree__topic--with-side" : metaFull ? " project-tree__topic--has-meta" : ""}${imSource ? " project-tree__topic--im-source" : ""}${shortcutIndex > 0 ? " project-tree__topic--show-shortcut" : ""}`}
           style={accentStyle}
           {...topicDrag.props}
-          onContextMenu={isSessionNode ? undefined : openTopicMenu}
+          onContextMenu={openTopicMenu}
           onMouseEnter={classicTopics ? (event) => scheduleHoverCard(event.currentTarget, key, node) : undefined}
           onMouseLeave={classicTopics ? cancelHoverCard : undefined}
           onMouseDown={classicTopics ? cancelHoverCard : undefined}
@@ -1875,25 +1876,17 @@ export function ProjectTree({
     },
   ];
 
-  const workbenchHeaderAddItems: ContextMenuItem[] = [
-    {
-      key: "blank-project",
-      icon: <FolderPlus size={13} />,
-      label: t("projectTree.createBlankProject"),
-      disabled: addingProject,
-      onSelect: () => { closeMenu(); openBlankProjectFlow(); },
-    },
-    {
-      key: "existing-folder",
-      icon: <FolderPlus size={13} />,
-      label: t("projectTree.useExistingFolder"),
-      disabled: addingProject,
-      onSelect: () => {
-        closeMenu();
-        void handleAddProject();
-      },
-    },
-  ];
+  const addItemCallbacks = {
+    onBlank: () => { closeMenu(); openBlankProjectFlow(); },
+    onLocal: () => { closeMenu(); void handleAddProject(); },
+    onRemote: () => { closeMenu(); openRemoteConnectFlow(); },
+  };
+  const classicHeaderAddItems = projectTreeHeaderAddItems({
+    localLabel: t("projectTree.addProjectTooltip"), remoteLabel: t("projectTree.remoteConnection"), disabled: addingProject, ...addItemCallbacks,
+  });
+  const workbenchHeaderAddItems = projectTreeHeaderAddItems({
+    blankLabel: t("projectTree.createBlankProject"), localLabel: t("projectTree.useExistingFolder"), remoteLabel: t("projectTree.remoteConnection"), disabled: addingProject, ...addItemCallbacks,
+  });
 
   const timeFilterBadge = timeFilter !== "all" ? (timeFilter === "1d" ? "24h" : timeFilter) : "";
   const timeFilterDisplayLabel = timeFilter === "all" ? t("projectTree.timeFilterAll")
@@ -2114,17 +2107,11 @@ export function ProjectTree({
                 {canRestoreCollapsedView ? <ListRestart size={14} /> : <ListCollapse size={14} />}
               </button>
             </Tooltip>
-            <Tooltip label={t("projectTree.addProjectTooltip")} className="project-tree__action-slot project-tree__header-action-slot project-tree__action-slot--add">
-              <button
-                type="button"
-                className="project-tree__add-project"
-                aria-label={t("projectTree.addProjectTooltip")}
-                disabled={addingProject}
-                onClick={() => void handleAddProject()}
-              >
-                <FolderPlus size={14} />
-              </button>
-            </Tooltip>
+            <ProjectTreeHeaderAddControl
+              open={workbenchHeaderMenu === "add"} point={menuPoint} items={classicHeaderAddItems}
+              label={t("projectTree.addProjectTooltip")} disabled={addingProject}
+              onOpen={(event) => openWorkbenchHeaderMenu(event, "add")} onClose={closeMenu}
+            />
           </>
         )}
       </span>
@@ -2158,6 +2145,7 @@ export function ProjectTree({
           <FolderPlus size={14} />
           <span>{t("projectTree.addProjectTooltip")}</span>
         </button>
+        <ProjectTreeRemoteAction label={t("projectTree.remoteConnection")} disabled={addingProject} onClick={openRemoteConnectFlow} />
       </div>
     );
   };
@@ -2268,6 +2256,7 @@ export function ProjectTree({
         document.body,
       )}
       {blankProjectFlow}
+      {remoteConnectFlow}
     </div>
   );
 }

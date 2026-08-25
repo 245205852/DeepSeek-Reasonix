@@ -188,6 +188,7 @@ function testProjectTreeWiresEveryRaceGuard() {
   assert.match(archiveSource, /onReloadStarted: \(\) => releaseArchiveTombstone\(topicId\)/);
   assert.match(archiveSource, /await refreshRef\.current\(reloadOptions\)[\s\S]*finally \{[\s\S]*endTrashingTopic\(topicId\)/);
   assert.match(source, /const topicMenuOpen = menuNodeKey === key/);
+  assert.match(source, /onContextMenu=\{openTopicMenu\}/);
   assert.match(source, /node\.sessionPath \?\? ""/);
   assert.match(sessionMenuSource, /disabled: !sessionPath \|\| blocked \|\| busy/);
   assert.match(source, /void trashSession\(sessionPath\)/);

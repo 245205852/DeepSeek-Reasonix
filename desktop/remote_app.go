@@ -176,7 +176,7 @@ type remoteKernel interface {
 	StopServer(hostID string) error
 	ServerStatus(hostID string) RemoteServerView
 	ServerLogs(ctx context.Context, hostID string, tailLines int) (string, error)
-
+	CheckPlatform(ctx context.Context, hostID string) error
 	Close() error
 }
 
