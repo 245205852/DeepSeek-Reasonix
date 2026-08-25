@@ -38,7 +38,7 @@ export type Group = {
   regressed_at: string;
 };
 
-type ReportSample = {
+export type ReportSample = {
   version: string;
   os: string;
   arch: string;

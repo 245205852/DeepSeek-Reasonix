@@ -7,18 +7,35 @@
 
 ## 发布顺序
 
-1. 冻结唯一候选 SHA，已发布 tag 不得移动或重建。
-2. 备份 D1，并先用 `PRAGMA table_info` 检查生产，再应用
+1. Firebase 项目保持 Spark 且不关联 Cloud Billing；只在
+   `asia-southeast1` 创建 Realtime Database，并部署
+   `workers/crash-report/firebase/database.rules.json`，确认客户端读写均被拒绝。不得启用
+   Functions、Firestore、BigQuery、Hosting、Storage 或 Secret Manager。
+2. 配置仓库 Secret：`FIREBASE_DATABASE_URL`、`FIREBASE_CLIENT_EMAIL` 和
+   `FIREBASE_PRIVATE_KEY`。服务账号必须专用于 crash 投递且仅授予 Realtime Database
+   权限。不得使用 Web Firebase 配置，也不得在 Desktop 产物中包含 Firebase SDK 或配置。
+3. 冻结唯一候选 SHA，已发布 tag 不得移动或重建。
+4. 备份 D1，并先用 `PRAGMA table_info` 检查生产，再应用
    `workers/crash-report/migrate-diagnostics-v2.sql`。若 draft 字段已提前存在，停止发布，
    另做纯加法 reconciliation migration。
-3. 验证 `report_daily`、`report_installations`、
+5. 应用 `migrate-firebase-crash.sql`，验证 `firebase_crash_outbox`、
+   `firebase_crash_receipts`、`firebase_crash_group_leases` 和投递索引。outbox 上限
+   5000 条、保留 30 天；幂等回执保留 90 天。
+6. 验证 `report_daily`、`report_installations`、
    `report_event_dimensions`、`diagnostics_meta`、fingerprint/date 索引、ping
    窗口索引，以及 `installation_linked_since`。
-4. 先部署 Worker；用旧 Report/Ping/Metrics、legacy `webview2`、Windows/Linux
+7. 先运行 `npm run migrate:firebase-data` dry-run，再通过 `-- --apply` 配合服务账号环境
+   变量执行导入。脚本仅迁移每组首个和最近 5 个样本，不输出报告正文或凭据。
+8. Worker 先使用 `dual` 模式；用旧 Report/Ping/Metrics、legacy `webview2`、Windows/Linux
    `webRuntime` payload 做 `channel=test` smoke。
-5. 用同一 SHA 生成签名 Windows/Linux 构建；能力矩阵和性能门禁通过后才发布 feature
+9. 连续比较 7 个完整 UTC 日；fingerprint、计数、样本和脱敏结果一致后，才将
+   `CRASH_STORAGE_MODE` 从 `dual` 切换为 `firebase`。Firebase 模式下 D1 只保留聚合、
+   索引和有界 outbox，不再写入新 `reports` 原文。
+10. 用同一 SHA 生成签名 Windows/Linux 构建；能力矩阵和性能门禁通过后才发布 feature
    release。
-6. 通过管理界面保留审计地整理历史数据：忽略 `[go panic] safe` / `v9.9.9`，将
+11. 再稳定观察 7 天后归档 D1 旧原始样本。保留 `d1`、`dual`、`firebase` 三种回滚
+   模式；Worker 回滚不要求客户端升级。
+12. 通过管理界面保留审计地整理历史数据：忽略 `[go panic] safe` / `v9.9.9`，将
    `72daba81` 标记为在 `desktop-v1.19.3` 解决，忽略旧
    `desktop.abnormal_exit` replay 分组。
 
@@ -33,6 +50,11 @@
 - 删除测试分组会删除三张诊断聚合表的对应数据；
 - 诊断事实、ping、metric user 按 30 天分块清理；
 - `channel=test` 始终位于 development namespace。
+- 重复 `eventId` 返回 `202` 且不重复增加聚合；
+- Firebase timeout、401、429 或 5xx 会保留 projected outbox，交给每 6 小时重试；
+  outbox 满时返回 `503`，客户端必须保留 pending；
+- Desktop 自动报告按版本和 dedup key 只成功上传一次，失败不进入 512 条/180 天账本；
+  用户主动提交的 Desktop/CLI 报告不受本地 fingerprint 去重限制。
 
 ## 正常体验门禁
 

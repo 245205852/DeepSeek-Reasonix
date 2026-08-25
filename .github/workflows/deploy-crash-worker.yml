@@ -36,6 +36,28 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: npm run migrate:diagnostics-v2
+      - name: Apply and verify Firebase crash D1 migration
+        working-directory: workers/crash-report
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: npm run migrate:firebase-crash
+      - name: Sync Firebase crash secrets
+        working-directory: workers/crash-report
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          FIREBASE_DATABASE_URL: ${{ secrets.FIREBASE_DATABASE_URL }}
+          FIREBASE_CLIENT_EMAIL: ${{ secrets.FIREBASE_CLIENT_EMAIL }}
+          FIREBASE_PRIVATE_KEY: ${{ secrets.FIREBASE_PRIVATE_KEY }}
+        run: |
+          configured=0
+          [ -n "$FIREBASE_DATABASE_URL" ] && configured=$((configured + 1))
+          [ -n "$FIREBASE_CLIENT_EMAIL" ] && configured=$((configured + 1))
+          [ -n "$FIREBASE_PRIVATE_KEY" ] && configured=$((configured + 1))
+          if [ "$configured" -ne 0 ] && [ "$configured" -ne 3 ]; then
+            echo "Firebase crash secrets must be either all configured or all absent."
+            exit 1
+          fi
+          node -e 'process.stdout.write(JSON.stringify({FIREBASE_DATABASE_URL:process.env.FIREBASE_DATABASE_URL||null,FIREBASE_CLIENT_EMAIL:process.env.FIREBASE_CLIENT_EMAIL||null,FIREBASE_PRIVATE_KEY:process.env.FIREBASE_PRIVATE_KEY||null}))' | npx wrangler secret bulk
       - name: Deploy
         working-directory: workers/crash-report
         env:

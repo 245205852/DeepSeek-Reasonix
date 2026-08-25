@@ -9,19 +9,43 @@ itself resolve a crash issue.
 
 ## Release order
 
-1. Freeze one candidate SHA. Do not move or recreate a published tag.
-2. Back up D1 and inspect `PRAGMA table_info` before applying
+1. Keep the Firebase project on Spark with no Cloud Billing account. Create
+   only a Realtime Database in `asia-southeast1`, deploy
+   `workers/crash-report/firebase/database.rules.json`, and confirm both client
+   reads and writes are denied. Do not enable Functions, Firestore, BigQuery,
+   Hosting, Storage, or Secret Manager.
+2. Configure the three repository secrets `FIREBASE_DATABASE_URL`,
+   `FIREBASE_CLIENT_EMAIL`, and `FIREBASE_PRIVATE_KEY`. The service account must
+   be dedicated to crash delivery and limited to Realtime Database. Never use
+   the Firebase Web configuration or ship Firebase SDK/configuration in a
+   Desktop artifact.
+3. Freeze one candidate SHA. Do not move or recreate a published tag.
+4. Back up D1 and inspect `PRAGMA table_info` before applying
    `workers/crash-report/migrate-diagnostics-v2.sql`. If draft diagnostics-v2
    columns already exist, stop and create an additive reconciliation migration.
-3. Verify `report_daily`, `report_installations`,
+5. Apply `migrate-firebase-crash.sql`, then verify `firebase_crash_outbox`,
+   `firebase_crash_receipts`, `firebase_crash_group_leases`, and the delivery
+   indexes. The outbox is capped at 5,000 rows and 30 days; idempotency receipts
+   are retained for 90 days.
+6. Verify `report_daily`, `report_installations`,
    `report_event_dimensions`, `diagnostics_meta`, their fingerprint/date
    indexes, and the ping window index. Confirm `installation_linked_since`.
-4. Deploy the Worker first. Smoke-test old Report/Ping/Metrics payloads, a
+7. Run `npm run migrate:firebase-data` as a dry run, then rerun with `-- --apply`
+   using service-account environment variables. It imports each group's first
+   and latest five retained samples without logging report bodies or credentials.
+8. Deploy the Worker in `dual` mode first. Smoke-test old Report/Ping/Metrics payloads, a
    legacy `webview2` payload, and Windows/Linux `webRuntime` payloads using
    `channel=test`.
-5. Build signed Windows and Linux artifacts from the frozen SHA. Complete the
+9. Compare D1 and Firebase for seven complete UTC days. Switch
+   `CRASH_STORAGE_MODE` from `dual` to `firebase` only after counts,
+   fingerprints, retained samples, and redaction match. In Firebase mode D1
+   keeps aggregates and the bounded outbox but no new raw `reports` rows.
+10. Build signed Windows and Linux artifacts from the frozen SHA. Complete the
    capability matrix and performance gates before a feature release.
-6. Use the admin UI for the audited historical cleanup: ignore the synthetic
+11. After seven more stable days, archive old D1 raw samples. Keep `d1`, `dual`,
+   and `firebase` as rollback modes; a Worker rollback does not require a client
+   update.
+12. Use the admin UI for the audited historical cleanup: ignore the synthetic
    `[go panic] safe` / `v9.9.9` group; resolve `72daba81` in
    `desktop-v1.19.3`; ignore the legacy `desktop.abnormal_exit` replay group.
 
@@ -41,6 +65,12 @@ engine/kind/reason/exit code must share one fingerprint. Then verify:
 - retention removes diagnostic facts, pings, and metric-user rows after 30
   days in bounded chunks;
 - `channel=test` remains in the development namespace.
+- duplicate `eventId` values return `202` without incrementing aggregates;
+- Firebase timeout, 401, 429, or 5xx leaves a projected outbox row for the
+  six-hour retry, while a full outbox returns `503` so clients retain pending;
+- automatic Desktop reports are sent once per version and dedup key, failed
+  sends do not enter the 512-entry/180-day ledger, and explicit Desktop/CLI
+  reports bypass local fingerprint suppression.
 
 ## Normal-experience gates
 

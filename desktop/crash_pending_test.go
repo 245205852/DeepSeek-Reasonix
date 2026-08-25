@@ -6,10 +6,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func readPending(t *testing.T) (crashReport, bool) {
@@ -243,5 +246,166 @@ func TestPendingCrashDoesNotPersistInstallID(t *testing.T) {
 	}
 	if bytes.Contains(body, []byte("installId")) || bytes.Contains(body, []byte("install-id")) {
 		t.Fatalf("pending report persisted an installation identity: %s", body)
+	}
+}
+
+func TestFlushPendingCrashDeduplicatesSameVersionAndResendsAfterUpgrade(t *testing.T) {
+	removeAllPendingCrashes()
+	oldVersion, oldEndpoint := version, crashEndpoint
+	t.Cleanup(func() {
+		version, crashEndpoint = oldVersion, oldEndpoint
+		removeAllPendingCrashes()
+	})
+	version = "v9.9.9"
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer srv.Close()
+	crashEndpoint = srv.URL
+
+	report := baseCrashReport("crash")
+	report.Source = "go"
+	report.ErrorType = "panic"
+	report.TopFrame = "main.go:12"
+	report.Message = "same crash"
+	if !writePendingReport(report, false) || !writePendingReport(report, false) {
+		t.Fatal("failed to queue duplicate reports")
+	}
+	NewApp().flushPendingCrash()
+	if got := hits.Load(); got != 1 {
+		t.Fatalf("same-version uploads = %d, want 1", got)
+	}
+
+	report.Version = "v10.0.0"
+	report.EventID, report.DedupKey = "", ""
+	if !writePendingReport(report, false) {
+		t.Fatal("failed to queue upgraded report")
+	}
+	NewApp().flushPendingCrash()
+	if got := hits.Load(); got != 2 {
+		t.Fatalf("uploads after version upgrade = %d, want 2", got)
+	}
+	info, err := os.Stat(crashLedgerPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
+		t.Fatalf("ledger permissions = %o, want 600", info.Mode().Perm())
+	}
+}
+
+func TestConcurrentFlushPendingCrashUsesOneCrossProcessLedgerOwner(t *testing.T) {
+	removeAllPendingCrashes()
+	oldVersion, oldEndpoint := version, crashEndpoint
+	t.Cleanup(func() {
+		version, crashEndpoint = oldVersion, oldEndpoint
+		removeAllPendingCrashes()
+	})
+	version = "v9.9.9"
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer srv.Close()
+	crashEndpoint = srv.URL
+	writePendingCrash("concurrent", "boom", []byte("stack"))
+
+	start := make(chan struct{})
+	var done sync.WaitGroup
+	for range 2 {
+		done.Add(1)
+		go func() {
+			defer done.Done()
+			<-start
+			NewApp().flushPendingCrash()
+		}()
+	}
+	close(start)
+	done.Wait()
+	if got := hits.Load(); got != 1 {
+		t.Fatalf("concurrent uploads = %d, want 1", got)
+	}
+}
+
+func TestFlushPendingCrashFailureDoesNotRecordOrDelete(t *testing.T) {
+	removeAllPendingCrashes()
+	oldVersion, oldEndpoint := version, crashEndpoint
+	t.Cleanup(func() {
+		version, crashEndpoint = oldVersion, oldEndpoint
+		removeAllPendingCrashes()
+	})
+	version = "v9.9.9"
+	status := atomic.Int32{}
+	status.Store(http.StatusServiceUnavailable)
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(int(status.Load()))
+	}))
+	defer srv.Close()
+	crashEndpoint = srv.URL
+	writePendingCrash("retry", "boom", []byte("stack"))
+
+	NewApp().flushPendingCrash()
+	if _, ok := readPending(t); !ok {
+		t.Fatal("failed upload removed pending crash")
+	}
+	if ledger := loadCrashLedger(crashLedgerPath(), time.Now().UTC()); len(ledger.Entries) != 0 {
+		t.Fatalf("failed upload recorded ledger entry: %+v", ledger.Entries)
+	}
+	status.Store(http.StatusAccepted)
+	NewApp().flushPendingCrash()
+	if hits.Load() != 2 {
+		t.Fatalf("retry requests = %d, want 2", hits.Load())
+	}
+	if _, ok := readPending(t); ok {
+		t.Fatal("successful retry left pending crash")
+	}
+}
+
+func TestFlushPendingCrashBackfillsOldIdentityAndPreservesFutureSchema(t *testing.T) {
+	removeAllPendingCrashes()
+	oldVersion, oldEndpoint := version, crashEndpoint
+	t.Cleanup(func() {
+		version, crashEndpoint = oldVersion, oldEndpoint
+		removeAllPendingCrashes()
+	})
+	version = "v9.9.9"
+	if err := os.MkdirAll(pendingCrashDir(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	oldPath := filepath.Join(pendingCrashDir(), "001-old.json")
+	futurePath := filepath.Join(pendingCrashDir(), "002-future.json")
+	oldReport := `{"kind":"crash","version":"v9.9.9","os":"linux","arch":"amd64","message":"old","schemaVersion":2,"source":"go","errorType":"panic","topFrame":"main.go:12"}`
+	futureReport := `{"kind":"crash","version":"v10.0.0","os":"linux","arch":"amd64","message":"future","schemaVersion":99,"futureField":"keep"}`
+	if err := os.WriteFile(oldPath, []byte(oldReport), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(futurePath, []byte(futureReport), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var uploaded crashReport
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&uploaded); err != nil {
+			t.Error(err)
+		}
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer srv.Close()
+	crashEndpoint = srv.URL
+
+	NewApp().flushPendingCrash()
+	if len(uploaded.EventID) != 32 || len(uploaded.DedupKey) != 64 {
+		t.Fatalf("old report identity not backfilled: %+v", uploaded)
+	}
+	if _, err := os.Stat(oldPath); !os.IsNotExist(err) {
+		t.Fatalf("old report was not removed after send: %v", err)
+	}
+	body, err := os.ReadFile(futurePath)
+	if err != nil || !bytes.Contains(body, []byte(`"futureField":"keep"`)) {
+		t.Fatalf("future schema was not preserved: body=%s err=%v", body, err)
 	}
 }

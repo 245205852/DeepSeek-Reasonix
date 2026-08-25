@@ -15,12 +15,17 @@ import {
 import type { Env } from "./env";
 import diagnosticsMigrationSQL from "../migrate-diagnostics-v2.sql?raw";
 import freshSchemaSQL from "../schema.sql?raw";
+import firebaseCrashMigrationSQL from "../migrate-firebase-crash.sql?raw";
 import {
   classifyDiagnosticsV2Schema,
   diagnosticsV2SchemaEntries,
   diagnosticsV2SchemaQuery,
   parseWranglerRows,
 } from "../scripts/apply-diagnostics-v2.mjs";
+import {
+  classifyFirebaseCrashSchema,
+  firebaseCrashSchemaQuery,
+} from "../scripts/apply-firebase-crash.mjs";
 
 const oldReport = {
   kind: "crash",
@@ -172,6 +177,21 @@ describe("diagnostics v2 compatibility and privacy", () => {
       db.close();
     }
   });
+
+  it("keeps the Firebase outbox migration additive and aligned with fresh installs", () => {
+    const migrated = new DatabaseSync(":memory:");
+    const fresh = new DatabaseSync(":memory:");
+    try {
+      migrated.exec(firebaseCrashMigrationSQL);
+      fresh.exec(freshSchemaSQL);
+      expect(classifyFirebaseCrashSchema(migrated.prepare(firebaseCrashSchemaQuery).all()).state).toBe("complete");
+      expect(classifyFirebaseCrashSchema(fresh.prepare(firebaseCrashSchemaQuery).all()).state).toBe("complete");
+      expect(firebaseCrashMigrationSQL).not.toMatch(/\b(?:DROP|ALTER)\b/);
+    } finally {
+      migrated.close();
+      fresh.close();
+    }
+  });
 });
 
 describe("stats window and release baseline", () => {
@@ -233,6 +253,8 @@ describe("diagnostics v2 storage consistency", () => {
       expect.stringContaining("INSERT INTO report_installations"),
       expect.stringContaining("INSERT INTO report_event_dimensions"),
       expect.stringContaining("DELETE FROM reports"),
+      expect.stringContaining("INSERT OR IGNORE INTO firebase_crash_receipts"),
+      expect.stringContaining("UPDATE firebase_crash_outbox SET state = 'projected'"),
     ]);
   });
 
