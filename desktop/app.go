@@ -7060,6 +7060,10 @@ type ServerView struct {
 	Status                 string         `json:"status"`
 	StartIntent            string         `json:"startIntent,omitempty"` // deprecated: derived from Enabled
 	RuntimeState           string         `json:"runtimeState,omitempty"`
+	ProtocolVersion        string         `json:"protocolVersion,omitempty"`
+	SessionState           string         `json:"sessionState,omitempty"`
+	ReconnectAttempts      int            `json:"reconnectAttempts,omitempty"`
+	ErrorKind              string         `json:"errorKind,omitempty"`
 	Availability           string         `json:"availability,omitempty"`
 	Enabled                bool           `json:"enabled"`
 	Installed              bool           `json:"installed"`
@@ -7714,12 +7718,7 @@ func (a *App) mcpServersView() []ServerView {
 			}
 			seen[s.Name] = true
 			connected[s.Name] = true
-			view := ServerView{
-				Name: s.Name, Transport: s.Transport, Status: "connected", RuntimeState: "ready",
-				Tools: s.Tools, Prompts: s.Prompts, Resources: s.Resources,
-				HasTools: s.HasTools,
-				ToolList: pluginToolsToView(s.ToolList),
-			}
+			view := pluginServerToView(s)
 			if p, ok := configured[s.Name]; ok {
 				view = withPluginConfigInWorkspace(view, p, workspaceRoot)
 			}
@@ -9178,13 +9177,7 @@ func findMCPServerView(ctrl control.SessionAPI, name string) (ServerView, bool) 
 	}
 	for _, s := range ctrl.Host().Servers() {
 		if s.Name == name {
-			view := ServerView{
-				Name: s.Name, Transport: s.Transport, Status: "connected",
-				Tools: s.Tools, Prompts: s.Prompts, Resources: s.Resources,
-				HasTools: s.HasTools,
-				ToolList: pluginToolsToView(s.ToolList),
-			}
-			return view, true
+			return pluginServerToView(s), true
 		}
 	}
 	for _, f := range ctrl.Host().Failures() {
