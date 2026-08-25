@@ -145,6 +145,55 @@ func TestRemoteTabServeDownCanRetry(t *testing.T) {
 	waitForTabState(t, a, meta.ID, "ready")
 }
 
+func TestRemoteTabFocusOnlyAttachPreservesCurrentServeSession(t *testing.T) {
+	fs := newFakeServe(t, "s3cret", []serveSessionEntry{{Name: "current", Path: "/current.jsonl", Title: "Current", Current: true}})
+	kernel := &fakeRemoteKernel{statuses: []RemoteConnectionStatusView{{HostID: "box", State: "connected"}}, ensureView: RemoteServerView{HostID: "box", State: "ready", LocalURL: fs.server.URL}, ensureToken: "s3cret"}
+	seedBridgeTestHost(t, "box")
+	a := &App{remoteRuntime: kernel}
+	cleanupRemoteTabPumps(t, a)
+	meta, err := a.OpenRemoteProjectTab("box", "~/app", RemoteTabOpenOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForTabState(t, a, meta.ID, "ready")
+	newCalled, resumed, _ := fs.snapshot()
+	if newCalled != 0 || resumed != "" {
+		t.Fatalf("focus-only attach changed Serve session: new=%d resume=%q", newCalled, resumed)
+	}
+}
+
+func TestRemoteSavedSessionLookupCannotReviveDisconnectedGeneration(t *testing.T) {
+	fs := newFakeServe(t, "s3cret", []serveSessionEntry{{Name: "saved", Path: "/saved.jsonl", Title: "Saved"}})
+	fs.sessionsStarted = make(chan struct{}, 1)
+	fs.sessionsRelease = make(chan struct{})
+	kernel := &fakeRemoteKernel{statuses: []RemoteConnectionStatusView{{HostID: "box", State: "connected"}}, ensureView: RemoteServerView{HostID: "box", State: "ready", LocalURL: fs.server.URL}, ensureToken: "s3cret"}
+	seedBridgeTestHost(t, "box")
+	a := &App{remoteRuntime: kernel}
+	cleanupRemoteTabPumps(t, a)
+	meta := openReadyRemoteTab(t, a, RemoteTabOpenOptions{NewSession: true})
+
+	done := make(chan struct{})
+	go func() { a.resumeRemoteTabSession(meta.ID, "saved"); close(done) }()
+	select {
+	case <-fs.sessionsStarted:
+	case <-time.After(time.Second):
+		t.Fatal("saved-session lookup did not start")
+	}
+	a.suspendRemoteTabPumps("box", "reconnecting", "")
+	close(fs.sessionsRelease)
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("saved-session lookup did not finish")
+	}
+	a.remoteTabMu.Lock()
+	state := a.remoteTabs[meta.ID].state
+	a.remoteTabMu.Unlock()
+	if state != "reconnecting" {
+		t.Fatalf("stale session lookup changed state to %q", state)
+	}
+}
+
 func TestRemoteTabReplacementServeReentersLearnedSessionBeforeReady(t *testing.T) {
 	oldServe := newFakeServe(t, "s3cret", nil)
 	newServe := newFakeServe(t, "s3cret", []serveSessionEntry{{Name: "generated", Path: "/generated.jsonl", Title: "Generated"}})

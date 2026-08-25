@@ -36,6 +36,8 @@ type fakeServe struct {
 	enterDelay        time.Duration
 	failHistory       bool // /history replies 500 when set
 	failSessions      bool // /sessions replies 500 when set
+	sessionsStarted   chan struct{}
+	sessionsRelease   chan struct{}
 	eventsConns       int  // /events connections opened
 	eventsStatus      int  // non-zero makes /events fail before opening
 	eventsCloseEarly  bool // return immediately after the initial 200 frames
@@ -141,7 +143,21 @@ func newFakeServe(t *testing.T, token string, sessions []serveSessionEntry) *fak
 		fs.record(r.Method, "/sessions", "")
 		fs.mu.Lock()
 		fail := fs.failSessions
+		started, release := fs.sessionsStarted, fs.sessionsRelease
 		fs.mu.Unlock()
+		if started != nil {
+			select {
+			case started <- struct{}{}:
+			default:
+			}
+		}
+		if release != nil {
+			select {
+			case <-release:
+			case <-r.Context().Done():
+				return
+			}
+		}
 		if fail {
 			http.Error(w, "sessions unavailable", http.StatusInternalServerError)
 			return

@@ -25,8 +25,14 @@ const remoteTabStreamOpenStability = 50 * time.Millisecond
 // takes a path rather than a name, named sessions resolve through /sessions.
 func enterRemoteSession(ctx context.Context, client *http.Client, base string, opts RemoteTabOpenOptions) error {
 	name := strings.TrimSpace(opts.SessionName)
-	if opts.NewSession || name == "" {
+	if opts.NewSession {
 		return servePost(ctx, client, serveURL(base, "/new"), nil)
+	}
+	// An empty target is a focus-only attach. The managed Serve may already
+	// own an idle conversation shared with another client; attaching must not
+	// abandon it. Only an explicit NewSession request is allowed to POST /new.
+	if name == "" {
+		return nil
 	}
 	sessions, err := serveSessions(ctx, client, base)
 	if err != nil {

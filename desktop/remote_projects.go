@@ -307,6 +307,11 @@ func (a *App) registerRemoteTabOpen(tab *remoteTab, hostLabel string, opts Remot
 // CLI and can take minutes, so the surface follows progress through
 // remote-tab:{id}:state events instead of this promise.
 func (a *App) OpenRemoteProjectTab(hostID, workspace string, opts RemoteTabOpenOptions) (TabMeta, error) {
+	singleSurface := a.singleSurfaceLayoutEnabled()
+	if singleSurface {
+		a.singleSurfaceMu.Lock()
+		defer a.singleSurfaceMu.Unlock()
+	}
 	a.tabSelectionMu.Lock()
 	defer a.tabSelectionMu.Unlock()
 
@@ -345,6 +350,20 @@ func (a *App) OpenRemoteProjectTab(hostID, workspace string, opts RemoteTabOpenO
 		cancel()
 	}
 	if registration.reuseID != "" {
+		meta, ok := a.remoteTabMetaSnapshot(registration.reuseID)
+		if !ok {
+			return TabMeta{}, fmt.Errorf("remote tab %q closed while opening", registration.reuseID)
+		}
+		if singleSurface {
+			meta, err = a.keepOnlyRemoteVisibleTab(registration.reuseID)
+			if err != nil {
+				return TabMeta{}, err
+			}
+		}
+
+		// Apply the requested session transition only after the visible-surface
+		// transaction succeeds. A snapshot failure must leave the remote Serve's
+		// current conversation untouched so retrying the navigation is safe.
 		if registration.revive {
 			a.emitRemoteTabState(registration.reuseID, "connecting", "")
 			a.goSafe("remoteTabServe", func() { a.bootstrapRemoteTab(registration.reuseID, hostID, workspace) })
@@ -357,7 +376,7 @@ func (a *App) OpenRemoteProjectTab(hostID, workspace string, opts RemoteTabOpenO
 				a.resetRemoteTabSession(registration.reuseID)
 			}
 		}
-		meta, ok := a.remoteTabMetaSnapshot(registration.reuseID)
+		meta, ok = a.remoteTabMetaSnapshot(registration.reuseID)
 		if !ok {
 			return TabMeta{}, fmt.Errorf("remote tab %q closed while opening", registration.reuseID)
 		}
@@ -367,14 +386,19 @@ func (a *App) OpenRemoteProjectTab(hostID, workspace string, opts RemoteTabOpenO
 	}
 
 	a.emitRemoteTabState(tabID, "connecting", "")
-
-	a.goSafe("remoteTabServe", func() { a.bootstrapRemoteTab(tabID, hostID, workspace) })
-
 	meta, ok := a.remoteTabMetaSnapshot(tabID)
 	if !ok {
 		return TabMeta{}, fmt.Errorf("remote tab %q closed while opening", tabID)
 	}
+	if singleSurface {
+		meta, err = a.keepOnlyRemoteVisibleTab(tabID)
+		if err != nil {
+			_ = a.CloseRemoteTab(tabID)
+			return TabMeta{}, err
+		}
+	}
 	a.activateRemoteTab(tabID, meta)
+	a.goSafe("remoteTabServe", func() { a.bootstrapRemoteTab(tabID, hostID, workspace) })
 	// Persist after activation so the file records the highlighted remote id.
 	a.saveTabsFromRemote()
 	return meta, nil

@@ -105,9 +105,10 @@ console.log("\nbundle budgets");
 // remote transcript and routes job cancellation to that host. Parsers and
 // retry policy remain lazy; the measured selector adds under 0.1 KiB gzip.
 // Remote runtime parity adds scoped approvals, status-only reconciliation,
-// and session quality-floor routing. The measured initial path is 439.30 KiB;
+// session quality-floor routing, dropped-frame reconciliation, and remote
+// runtime-command dispatch. The measured initial path is 439.60 KiB;
 // retain 0.10 KiB of bounded toolchain headroom.
-const initialJSBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 439.4 : 439.4;
+const initialJSBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 439.7 : 439.7;
 assertBudget("initial JavaScript gzip", initialJSGzip, initialJSBudgetKiB * 1024);
 assertBudget("largest initial JavaScript chunk gzip", largestInitialJS, 280 * 1024);
 // Render-blocking CSS is intentionally absent: styles.css loads deferred via
@@ -171,8 +172,8 @@ const rawInitialBytes = [...initialJS, ...initialCSS, ...appShellCSS]
 // main remain within that measured remote-session ceiling. The remote approval
 // fences, extracted ownership modules, and remote status-bar isolation bring
 // the measured initial payload to 2380.9 KiB; retain 0.1 KiB of bounded
-// raw/toolchain headroom. Scoped remote approvals and status-only refresh add
-// 1.1 KiB raw; the measured payload is 2382.03 KiB.
-const rawInitialBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 2_382.1 : 2_382.1;
+// raw/toolchain headroom. Scoped remote approvals, status reconciliation, and
+// runtime command dispatch bring the measured payload to 2382.9 KiB.
+const rawInitialBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 2_383.0 : 2_383.0;
 assertBudget("initial raw JavaScript and CSS", rawInitialBytes, rawInitialBudgetKiB * 1024);
 assertBudget("largest initial JavaScript chunk raw", largestInitialJSRaw, 1_000 * 1024);

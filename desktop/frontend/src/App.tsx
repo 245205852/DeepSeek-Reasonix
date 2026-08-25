@@ -137,7 +137,7 @@ import {
   type RestorableToolApprovalMode,
 } from "./lib/toolApprovalMode";
 import { useComposerModeActions } from "./lib/useComposerModeActions";
-import { useRemoteComposerProfileSync, useRemoteComposerRuntimeActions } from "./lib/useRemoteComposerIntegration";
+import { remoteRuntimeCommand, useRemoteComposerProfileSync, useRemoteComposerRuntimeActions } from "./lib/useRemoteComposerIntegration";
 import {
   CREATION_RIGHT_DOCK_MIN_RENDER_WIDTH,
   CREATION_RIGHT_DOCK_TREE_MIN_WIDTH,
@@ -2025,12 +2025,15 @@ export default function App() {
     [activeTabId, applyGoalForTab],
   );
   const remoteComposerSend = useCallback(async (displayText: string, submitText = displayText): Promise<void> => {
+    const trimmed = (submitText || displayText).trim();
+    const runtimeCommand = remoteRuntimeCommand(trimmed);
+    if (runtimeCommand) return remoteSession[runtimeCommand.method](runtimeCommand.value);
     if (activeTabId && collaborationMode === "goal" && !goal.trim()) {
-      const nextGoal = (submitText || displayText).trim();
+      const nextGoal = trimmed;
       if (nextGoal) await applyGoalForTab(activeTabId, nextGoal);
     }
     await remoteSend(displayText, submitText);
-  }, [activeTabId, applyGoalForTab, collaborationMode, goal, remoteSend]);
+  }, [activeTabId, applyGoalForTab, collaborationMode, goal, remoteSend, remoteSession]);
   const cancelRuntimeJob = useCallback(async (tabId: string, jobId: string): Promise<boolean> => {
     try {
       const cancelled = await app.CancelJobForTab(tabId, jobId);
@@ -2046,12 +2049,11 @@ export default function App() {
   const cycleMode = useCallback(() => {
     runGoalAction(() => applyCollaborationMode(collaborationMode === "plan" ? "normal" : "plan"));
   }, [applyCollaborationMode, collaborationMode, runGoalAction]);
-  // Switching models rebuilds the controller, which starts in normal mode — so
-  // re-apply the current mode, or the pill would say plan/YOLO while the fresh
-  // controller silently uses normal gating.
+  // Switching models rebuilds the controller, which starts in normal mode — re-apply
+  // it or the pill would say plan/YOLO while the fresh controller uses normal gating.
   const switchModel = useCallback(
     async (name: string) => {
-      if (remoteSurfaceActive && activeTabId) return app.SetRemoteTabModel(activeTabId, name).then(() => true);
+      if (remoteSurfaceActive && activeTabId) return remoteSession.setModel(name).then(() => true);
       const switched = await setModel(name);
       if (!switched) return false;
       if (!activeTabId) return false;
@@ -2064,7 +2066,7 @@ export default function App() {
       );
       return profileApplied;
     },
-    [activeTabId, composerProfile, goal, remoteSurfaceActive, setControllerComposerProfileForTab, setModel, toolApprovalMode],
+    [activeTabId, composerProfile, goal, remoteSession, remoteSurfaceActive, setControllerComposerProfileForTab, setModel, toolApprovalMode],
   );
 
   // Startup and workspace/model rebuilds create a fresh controller in normal

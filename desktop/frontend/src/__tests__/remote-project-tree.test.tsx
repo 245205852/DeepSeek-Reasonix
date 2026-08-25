@@ -85,6 +85,16 @@ ok(
   "remote goal activation and goal-draft submission stay on the remote controller",
 );
 ok(
+  /remoteRuntimeCommand\(trimmed\)[\s\S]*?remoteSession\[runtimeCommand\.method\]\(runtimeCommand\.value\)[\s\S]*?await remoteSend/.test(appSource) &&
+    /\^\\\/\(model\|effort\)/.test(remoteIntegrationSource),
+  "remote model and effort slash commands bypass optimistic conversational submit",
+);
+ok(
+  /const remote = index\.get\(topicId\);[\s\S]*?if \(!remote\) return false;[\s\S]*?await action\(remote\);/.test(remoteSource) &&
+    !/if \(remote\.name\) await action\(remote\)/.test(remoteSource),
+  "synthetic blank remote sessions still invoke rename, pin, and delete mutations",
+);
+ok(
   /onRemoteTabUpdated\(\(meta\)/.test(remoteSource) &&
     /RemoteProjectSessions\(meta\.remote\.hostId, meta\.remote\.workspace\)/.test(remoteSource),
   "remote tab metadata updates refresh the affected session group",

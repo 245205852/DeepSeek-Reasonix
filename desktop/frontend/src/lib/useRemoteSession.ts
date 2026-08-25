@@ -55,6 +55,7 @@ export interface RemoteSessionApi {
   approve: (callId: string, decision: string) => Promise<void>;
   answer: (callId: string, answers: RemoteAskAnswer[]) => Promise<void>;
   rewind: (turn: number, scope: string) => Promise<void>;
+  setModel: (ref: string) => Promise<void>;
   setEffort: (level: string) => Promise<void>;
   setQualityFloor: (floor: QualityFloor) => Promise<void>;
   pauseGoal: () => Promise<void>;
@@ -65,6 +66,7 @@ export interface RemoteSessionApi {
 }
 
 type RemoteStatus = {
+  running?: unknown;
   label?: unknown;
   plan?: unknown;
   toolApprovalMode?: unknown;
@@ -199,11 +201,16 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
   const [surfaceGeneration, setSurfaceGeneration] = useState(0);
   const [promptError, setPromptError] = useState("");
   const [hydrated, setHydrated] = useState(false);
+  const transcriptRef = useRef(transcript);
   const hydratedRef = useRef(false);
   const hydratingRef = useRef(false);
   const bufferedEventsRef = useRef<WireEvent[]>([]);
   const hydrateRef = useRef<{ tabId: string; run: (force?: boolean) => Promise<void> } | null>(null);
   const refreshStatusRef = useRef<{ tabId: string; run: () => Promise<void> } | null>(null);
+
+  useEffect(() => {
+    transcriptRef.current = transcript;
+  }, [transcript]);
 
   const applyRemoteStatus = useCallback((status: unknown) => {
     if (!isAuthoritativeRemoteStatus(status)) return;
@@ -231,10 +238,35 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
     setHydrated(false);
     let cancelled = false;
     let hydratePromise: Promise<void> | null = null;
+    let historyReconcilePromise: Promise<void> | null = null;
     // Never start the snapshot retry loop on a shell with no connection: the
     // ready transition triggers the first hydration instead. (initial is
     // deliberately not a dependency — only the mount-time snapshot matters.)
     const skipHydrate = start === "disconnected";
+
+    // Reconcile durable history after a turn settles without advancing
+    // surfaceGeneration. Serve's broadcaster is intentionally bounded, so a
+    // slow subscriber can miss intermediate tool/text frames even when it
+    // receives turn_done (or when the watchdog observes the settled status).
+    const reconcileHistory = async () => {
+      if (historyReconcilePromise) return historyReconcilePromise;
+      historyReconcilePromise = (async () => {
+        const snap = await app.RemoteTabSnapshot(tabId);
+        if (cancelled) return;
+        const messages = Array.isArray(snap.history) ? (snap.history as HistoryMessage[]) : [];
+        const checkpoints = remoteCheckpoints(snap.checkpoints);
+        setTranscript((current) => {
+          let next = reducer(current, { type: "history", messages });
+          next = reducer(next, { type: "checkpoints", checkpoints });
+          return next;
+        });
+      })();
+      try {
+        await historyReconcilePromise;
+      } finally {
+        historyReconcilePromise = null;
+      }
+    };
 
     // Metadata-only commands and turn completion refresh /status without
     // replacing history or advancing surfaceGeneration. That signal is
@@ -243,6 +275,8 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
     const refreshStatus = async () => {
       const status = await app.RemoteTabStatus(tabId);
       if (cancelled) return;
+      const settledWithPossibleFrameLoss = transcriptRef.current.running
+        && (status as RemoteStatus | null)?.running === false;
       const { hydrateRemoteTelemetry } = await loadRemoteSurface();
       if (cancelled) return;
       applyRemoteStatus(status);
@@ -250,6 +284,7 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
         reducer(current, remoteStatusToAction(status, Date.now())),
         status,
       ));
+      if (settledWithPossibleFrameLoss) void reconcileHistory().catch(() => undefined);
     };
     refreshStatusRef.current = { tabId, run: refreshStatus };
 
@@ -318,7 +353,10 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
             }
             return next;
           });
-          if (replay.some((event) => event.kind === "turn_done")) void refreshStatus();
+          if (replay.some((event) => event.kind === "turn_done")) {
+            void refreshStatus();
+            void reconcileHistory().catch(() => undefined);
+          }
           return;
         } catch (error) {
           if (!cancelled) setError(String(error));
@@ -363,7 +401,10 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
         return;
       }
       setTranscript((s) => reducer(s, { type: "event", e: event }));
-      if (event.kind === "turn_done") void refreshStatus();
+      if (event.kind === "turn_done") {
+        void refreshStatus();
+        void reconcileHistory().catch(() => undefined);
+      }
     });
     return () => {
       cancelled = true;
@@ -425,7 +466,7 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
     setPromptError("");
     try {
       await app.ApproveRemoteTab(tabId, callId, decision);
-      setTranscript((s) => ({ ...s, approval: undefined }));
+      setTranscript((s) => s.approval?.id === callId ? { ...s, approval: undefined } : s);
     } catch (error) {
       setPromptError(error instanceof Error ? error.message : String(error));
       throw error;
@@ -437,7 +478,7 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
     setPromptError("");
     try {
       await app.AnswerRemoteTab(tabId, callId, answers);
-      setTranscript((s) => ({ ...s, ask: undefined }));
+      setTranscript((s) => s.ask?.id === callId ? { ...s, ask: undefined } : s);
     } catch (error) {
       setPromptError(error instanceof Error ? error.message : String(error));
       throw error;
@@ -504,6 +545,12 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
     await refreshStatus();
   }, [refreshStatus, tabId]);
 
+  const setModel = useCallback(async (ref: string) => {
+    if (!tabId) return;
+    await app.SetRemoteTabModel(tabId, ref);
+    await refreshStatus();
+  }, [refreshStatus, tabId]);
+
   const setQualityFloor = useCallback(async (floor: QualityFloor) => {
     if (!tabId) return;
     await app.SetRemoteTabQualityFloor(tabId, floor);
@@ -530,7 +577,7 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
   return {
     state, error, transcript, hydrated, running: transcript.running, modelLabel,
     composerProfile, effort, surfaceGeneration, promptError, submit, cancelTurn,
-    approve, answer, rewind, setEffort, setQualityFloor, pauseGoal, resumeGoal, steer, cancelJob,
+    approve, answer, rewind, setModel, setEffort, setQualityFloor, pauseGoal, resumeGoal, steer, cancelJob,
     retryHydration,
   };
 }

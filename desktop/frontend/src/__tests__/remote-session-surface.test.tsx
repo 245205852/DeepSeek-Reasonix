@@ -66,6 +66,13 @@ let failOpen = false;
 let failHydration = true;
 let statusGoalStatus: "stopped" | "complete" = "stopped";
 let statusQualityFloor: "standard" | "delivery" = "standard";
+let statusModelLabel = "DeepSeek · Mock";
+let statusEffort = "high";
+let snapshotHistory: unknown[] = [];
+let blockApproval = false;
+let releaseApproval: (() => void) | undefined;
+let blockAnswer = false;
+let releaseAnswer: (() => void) | undefined;
 let resolveRaceSnapshot: ((value: { history: unknown[]; status: unknown }) => void) | undefined;
 window.go = { main: { App: {
   async RemoteTabSnapshot(tabId: string) {
@@ -79,7 +86,7 @@ window.go = { main: { App: {
 		};
     if (tabId === "tab-status-fallback") return { history: [] };
     return {
-      history: [],
+      history: snapshotHistory,
       checkpoints: [{
         turn: 3,
         prompt: "checkpoint",
@@ -90,13 +97,13 @@ window.go = { main: { App: {
         canConversation: true,
       }],
       status: {
-        label: "DeepSeek · Mock",
+        label: statusModelLabel,
         plan: true,
         toolApprovalMode: "auto",
         goal: "",
-        goalStatus: "stopped",
-        qualityFloor: "standard",
-        effort: { supported: true, current: "high", default: "auto", levels: ["auto", "high"] },
+        goalStatus: statusGoalStatus,
+        qualityFloor: statusQualityFloor,
+        effort: { supported: true, current: statusEffort, default: "auto", levels: ["auto", "high", "max"] },
         used: 1200,
         window: 64000,
         cacheHit: 800,
@@ -115,8 +122,9 @@ window.go = { main: { App: {
 		}
 		return {
 			running: false, pendingPrompt: false, backgroundJobs: 0,
-			label: "DeepSeek · Mock", plan: true, toolApprovalMode: "auto", goal: "",
+			label: statusModelLabel, plan: true, toolApprovalMode: "auto", goal: "",
 			goalStatus: statusGoalStatus, qualityFloor: statusQualityFloor,
+			effort: { supported: true, current: statusEffort, default: "auto", levels: ["auto", "high", "max"] },
 		};
 	},
   async SubmitRemoteTab(tabId: string, text: string) {
@@ -136,6 +144,12 @@ window.go = { main: { App: {
   },
   async SetRemoteTabEffort(tabId: string, level: string) {
     tape.push(`effort:${tabId}:${level}`);
+    statusEffort = level;
+  },
+  async SetRemoteTabModel(tabId: string, ref: string) {
+    tape.push(`model:${tabId}:${ref}`);
+    statusModelLabel = `Model · ${ref}`;
+    statusEffort = "max";
   },
   async SetRemoteTabQualityFloor(tabId: string, floor: string) {
     tape.push(`quality-floor:${tabId}:${floor}`);
@@ -156,9 +170,11 @@ window.go = { main: { App: {
   async ApproveRemoteTab(tabId: string, callId: string, decision: string) {
     tape.push(`approve:${tabId}:${callId}:${decision}`);
 		if (failApproval) throw new Error("tunnel write failed");
+		if (blockApproval) await new Promise<void>((resolve) => { releaseApproval = resolve; });
   },
 	async AnswerRemoteTab(tabId: string, callId: string, answers: Array<{ QuestionID: string; Selected: string[] }>) {
 		tape.push(`answer:${tabId}:${callId}:${JSON.stringify(answers)}`);
+		if (blockAnswer) await new Promise<void>((resolve) => { releaseAnswer = resolve; });
   },
   async OpenRemoteProjectTab(hostId: string, workspace: string, opts?: { newSession?: boolean }) {
     tape.push(`open:${hostId}:${workspace}:${opts?.newSession ? "new" : ""}`);
@@ -400,12 +416,52 @@ ok(probe?.transcript.context.used === 1200 && probe.transcript.context.window ==
   "snapshot status hydrates remote context, usage, balance, cost, and jobs");
 const turnDoneGeneration = probe?.surfaceGeneration;
 statusGoalStatus = "complete";
+snapshotHistory = [
+  { role: "user", content: "server-side prompt" },
+  { role: "assistant", content: "reconciled final answer" },
+];
 await act(async () => {
   __emitMockRemoteTab("tab-remote-2", "event", { kind: "turn_done" });
   await flush();
 });
 ok(probe?.composerProfile?.goalStatus === "complete" && probe.surfaceGeneration === turnDoneGeneration,
   "turn_done refreshes goal status without replacing the transcript surface");
+ok(probe?.transcript.items.some((item) => item.kind === "assistant" && item.text === "reconciled final answer") === true,
+  "turn_done reconciles durable history after dropped Serve frames");
+
+await act(async () => {
+  __emitMockRemoteTab("tab-remote-2", "event", { kind: "approval_request", approval: { id: "approval-old", tool: "bash", subject: "old" } });
+  await flush();
+});
+blockApproval = true;
+let oldApproval: Promise<void> | undefined;
+await act(async () => {
+  oldApproval = probe?.approve("approval-old", "allow");
+  await flush();
+  __emitMockRemoteTab("tab-remote-2", "event", { kind: "approval_request", approval: { id: "approval-next", tool: "bash", subject: "next" } });
+  releaseApproval?.();
+  await oldApproval;
+  await flush();
+});
+blockApproval = false;
+ok(probe?.transcript.approval?.id === "approval-next", "an answered approval cannot clear the next prompt");
+
+await act(async () => {
+  __emitMockRemoteTab("tab-remote-2", "event", { kind: "ask_request", ask: { id: "ask-old", questions: [] } });
+  await flush();
+});
+blockAnswer = true;
+let oldAnswer: Promise<void> | undefined;
+await act(async () => {
+  oldAnswer = probe?.answer("ask-old", []);
+  await flush();
+  __emitMockRemoteTab("tab-remote-2", "event", { kind: "ask_request", ask: { id: "ask-next", questions: [] } });
+  releaseAnswer?.();
+  await oldAnswer;
+  await flush();
+});
+blockAnswer = false;
+ok(probe?.transcript.ask?.id === "ask-next", "an answered ask cannot clear the next prompt");
 await act(async () => {
   await probe?.submit("run tests");
   await flush();
@@ -424,6 +480,7 @@ await act(async () => {
 const metadataGeneration = probe?.surfaceGeneration;
 statusGoalStatus = "complete";
 await act(async () => {
+  await probe?.setModel("remote/new-model");
   await probe?.setEffort("high");
   await probe?.setQualityFloor("delivery");
   await probe?.pauseGoal();
@@ -435,6 +492,8 @@ await act(async () => {
 ok(probe?.surfaceGeneration === metadataGeneration, "metadata-only remote commands preserve the transcript generation and viewport");
 ok(probe?.composerProfile?.goalStatus === "complete" && probe.composerProfile.qualityFloor === "delivery",
   "status-only refresh updates goal status and quality floor");
+ok(probe?.modelLabel === "Model · remote/new-model" && probe.effort?.current === "high",
+  "model switching refreshes the authoritative remote profile before the next turn");
 for (const want of [
   "submit:tab-remote-2:run tests",
   "cancel:tab-remote-2",
@@ -444,6 +503,7 @@ for (const want of [
   "fork:tab-remote-2:3:",
   "summarize:tab-remote-2:3:from",
   "summarize:tab-remote-2:3:upto",
+  "model:tab-remote-2:remote/new-model",
   "effort:tab-remote-2:high",
   "quality-floor:tab-remote-2:delivery",
   "pause-goal:tab-remote-2",

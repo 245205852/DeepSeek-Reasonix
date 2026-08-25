@@ -103,18 +103,18 @@ func (a *App) resumeRemoteTabSession(tabID, name string) {
 	tab.sessionMu.Lock()
 	defer tab.sessionMu.Unlock()
 	a.remoteTabMu.Lock()
-	if a.remoteTabs[tabID] != tab || tab.client == nil {
+	if a.remoteTabs[tabID] != tab || tab.client == nil || tab.state != "ready" {
 		a.remoteTabMu.Unlock()
 		return
 	}
-	client, base := tab.client, tab.base
+	client, base, gen := tab.client, tab.base, tab.gen
 	a.remoteTabMu.Unlock()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	entries, err := serveSessions(ctx, client, base)
 	if err != nil {
-		a.emitRemoteTabState(tabID, "ready", fmt.Sprintf("Could not open remote session %q: %v", name, err))
+		a.transitionRemoteTabState(tabID, gen, "ready", "ready", fmt.Sprintf("Could not open remote session %q: %v", name, err))
 		return
 	}
 	for _, entry := range entries {
@@ -124,10 +124,10 @@ func (a *App) resumeRemoteTabSession(tabID, name string) {
 		body, _ := json.Marshal(map[string]string{"path": entry.Path})
 		if err := servePost(ctx, client, serveURL(base, "/resume"), body); err != nil {
 			if remoteSessionTransitionBusy(err) {
-				a.emitRemoteTabState(tabID, "ready", "Finish the current turn before switching sessions.")
+				a.transitionRemoteTabState(tabID, gen, "ready", "ready", "Finish the current turn before switching sessions.")
 				return
 			}
-			a.emitRemoteTabState(tabID, "error", err.Error())
+			a.transitionRemoteTabState(tabID, gen, "ready", "error", err.Error())
 			return
 		}
 		title := strings.TrimSpace(entry.Title)
@@ -136,20 +136,22 @@ func (a *App) resumeRemoteTabSession(tabID, name string) {
 		}
 		a.remoteTabMu.Lock()
 		current := a.remoteTabs[tabID]
-		if current != tab || current.client != client {
+		if current != tab || current.client != client || current.gen != gen || current.state != "ready" {
 			a.remoteTabMu.Unlock()
 			return
 		}
 		current.topicTitle = title
 		current.session.reset = false
+		current.session.newSession = false
+		current.session.name = name
 		meta := remoteTabMetaLocked(current)
 		a.remoteTabMu.Unlock()
 		a.emitRemoteEvent("remote-tab:updated", meta)
 		a.saveTabsFromRemote()
-		a.emitRemoteTabState(tabID, "ready", "")
+		a.transitionRemoteTabState(tabID, gen, "ready", "ready", "")
 		return
 	}
-	a.emitRemoteTabState(tabID, "error", fmt.Sprintf("remote session %q not found", name))
+	a.transitionRemoteTabState(tabID, gen, "ready", "error", fmt.Sprintf("remote session %q not found", name))
 }
 
 func (a *App) SetRemoteSessionPinned(hostID, workspace, name string, pinned bool) error {

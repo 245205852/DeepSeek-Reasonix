@@ -62,7 +62,11 @@ export function useRemoteSessionActions(
   ) => {
     const remote = index.get(topicId);
     if (!remote) return false;
-    if (remote.name) await action(remote);
+    // The synthesized current blank session intentionally has an empty name.
+    // Its rename/pin/delete bindings still own that row and must decide whether
+    // the requested mutation is supported; never report success without
+    // invoking the backend action.
+    await action(remote);
     refresh();
     return true;
   }, [index, refresh]);

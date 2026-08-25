@@ -6,6 +6,12 @@ import type { RemoteSessionApi } from "./useRemoteSession";
 
 type RemoteProfile = RemoteSessionApi["composerProfile"];
 
+export function remoteRuntimeCommand(input: string): { method: "setModel" | "setEffort"; value: string } | undefined {
+  const match = /^\/(model|effort)\s+(\S+)$/.exec(input.trim());
+  if (!match) return undefined;
+  return { method: match[1] === "model" ? "setModel" : "setEffort", value: match[2] };
+}
+
 export function useRemoteComposerProfileSync(options: {
   activeTabId?: string;
   remote: boolean;

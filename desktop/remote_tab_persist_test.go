@@ -293,6 +293,51 @@ func TestOpenRemoteProjectTabRevivesShell(t *testing.T) {
 	waitForTabState(t, a, "shell-1", "ready")
 }
 
+func TestOpenRemoteProjectTabAppliesSingleSurfacePolicy(t *testing.T) {
+	fs := newFakeServe(t, "s3cret", nil)
+	kernel := &fakeRemoteKernel{statuses: []RemoteConnectionStatusView{{HostID: "box", State: "connected"}, {HostID: "box-two", State: "connected"}}, ensureView: RemoteServerView{State: "ready", LocalURL: fs.server.URL}, ensureToken: "s3cret"}
+	seedBridgeTestHost(t, "box")
+	if err := editUserConfig(func(c *config.Config) error {
+		if err := c.SetDesktopLayoutStyle("workbench"); err != nil {
+			return err
+		}
+		return c.UpsertRemoteHost(config.RemoteHostEntry{Name: "box-two", Host: "127.0.0.1", Port: 22, User: "dev"})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	a := &App{remoteRuntime: kernel}
+	cleanupRemoteTabPumps(t, a)
+	seedLocalTab(a, "local")
+	a.mu.Lock()
+	a.activeTabID = "local"
+	a.mu.Unlock()
+
+	first, err := a.OpenRemoteProjectTab("box", "~/app", RemoteTabOpenOptions{NewSession: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForTabState(t, a, first.ID, "ready")
+	second, err := a.OpenRemoteProjectTab("box-two", "~/other", RemoteTabOpenOptions{NewSession: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForTabState(t, a, second.ID, "ready")
+
+	tabs := a.ListTabs()
+	if len(tabs) != 1 || tabs[0].ID != second.ID || !tabs[0].Active {
+		t.Fatalf("single-surface tabs = %+v, want only active remote %q", tabs, second.ID)
+	}
+	a.mu.RLock()
+	localCount := len(a.tabs)
+	a.mu.RUnlock()
+	a.remoteTabMu.Lock()
+	remoteCount := len(a.remoteTabs)
+	a.remoteTabMu.Unlock()
+	if localCount != 0 || remoteCount != 1 {
+		t.Fatalf("single-surface registry counts local=%d remote=%d", localCount, remoteCount)
+	}
+}
+
 // TestReorderTabsMixedPersistsBothOrders: the full strip order partitions into
 // local and remote orders; both persist; unknown remote ids reject the whole
 // reorder without mutating either side.
