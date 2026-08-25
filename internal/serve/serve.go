@@ -510,6 +510,8 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("GET /checkpoints", s.checkpoints)
 	mux.HandleFunc("GET /branches", s.branches)
 	mux.HandleFunc("GET /models", s.models)
+	mux.HandleFunc("POST /model", s.modelSwitch)
+	mux.HandleFunc("POST /effort", s.effortSwitch)
 	mux.HandleFunc("POST /extensions/reload", s.reloadExtensionsHTTP)
 	mux.HandleFunc("GET /status", s.status)
 	mux.HandleFunc("GET /sessions", s.sessions)
