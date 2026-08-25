@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -37,6 +38,12 @@ func TestRemoteTabReconnectDoesNotLogEnsureServerSecrets(t *testing.T) {
 	}
 	if !strings.Contains(logs.String(), "EnsureServer NOT-READY") {
 		t.Fatalf("reconnect failure was not logged structurally: %q", logs.String())
+	}
+	a.remoteTabMu.Lock()
+	state := a.remoteTabs["remote-1"].state
+	a.remoteTabMu.Unlock()
+	if kernel.ensureCalls != remoteTabReattachAttempts || state != "serve_down" {
+		t.Fatalf("reattach exhaustion calls/state = %d/%q", kernel.ensureCalls, state)
 	}
 }
 
@@ -86,6 +93,35 @@ func TestSetRemoteTabModelFailureKeepsPreviousModel(t *testing.T) {
 	}
 }
 
+func TestRemoteProxyModelCatalogCannotCrossProviderProtocols(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	setDesktopTestCredential(t, "OPENAI_TEST_KEY", "sk-openai")
+	setDesktopTestCredential(t, "ANTHROPIC_TEST_KEY", "sk-anthropic")
+	cfg := config.Default()
+	cfg.DefaultModel = "chat/gpt-test"
+	cfg.Providers = []config.ProviderEntry{
+		{Name: "chat", Kind: "openai", BaseURL: "https://chat.example/v1", Models: []string{"gpt-test", "gpt-next"}, Default: "gpt-test", APIKeyEnv: "OPENAI_TEST_KEY"},
+		{Name: "claude", Kind: "anthropic", BaseURL: "https://claude.example", Models: []string{"claude-test"}, Default: "claude-test", APIKeyEnv: "ANTHROPIC_TEST_KEY"},
+	}
+	if err := cfg.UpsertRemoteHost(config.RemoteHostEntry{Name: "box", Host: "127.0.0.1", CredentialMode: "local-proxy"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.SaveTo(config.UserConfigPath()); err != nil {
+		t.Fatal(err)
+	}
+	a := &App{remoteTabs: map[string]*remoteTab{
+		"remote": {id: "remote", ref: RemoteTabRef{HostID: "box", Workspace: "~/app"}, state: "ready", model: "chat/gpt-test"},
+	}}
+	models := a.ModelsForTab("remote")
+	if len(models) != 2 || slices.ContainsFunc(models, func(model ModelInfo) bool { return model.Provider == "claude" }) {
+		t.Fatalf("local-proxy catalog crossed protocols: %+v", models)
+	}
+	err := a.SetRemoteTabModel("remote", "claude/claude-test")
+	if err == nil || !strings.Contains(err.Error(), "must be restarted to change protocol") {
+		t.Fatalf("cross-protocol switch error = %v", err)
+	}
+}
+
 // TestRemoteTabSnapshotMergesServeMembers: all six GETs merge in parallel;
 // only /history is required — its failure errors, optional members degrade.
 func TestRemoteTabSnapshotMergesServeMembers(t *testing.T) {
@@ -111,6 +147,14 @@ func TestRemoteTabSnapshotMergesServeMembers(t *testing.T) {
 		if len(raw) == 0 {
 			t.Fatalf("snapshot member %s is empty", name)
 		}
+	}
+	before := len(fs.recorded())
+	if _, err := a.RemoteTabStatus(meta.ID); err != nil {
+		t.Fatal(err)
+	}
+	statusCalls := fs.recorded()[before:]
+	if len(statusCalls) != 1 || !strings.HasPrefix(statusCalls[0], "GET /status") {
+		t.Fatalf("status-only binding fetched extra snapshot members: %v", statusCalls)
 	}
 
 	fs.mu.Lock()
@@ -276,13 +320,17 @@ func TestRemoteTabFollowsHostReconnect(t *testing.T) {
 		ensureToken: "s3cret",
 	}
 	seedBridgeTestHost(t, "box")
-	a := &App{remoteRuntime: kernel}
+	events := &eventLog{}
+	a := &App{remoteRuntime: kernel, remoteEventHook: events.add}
 	cleanupRemoteTabPumps(t, a)
 	meta := openReadyRemoteTab(t, a, RemoteTabOpenOptions{NewSession: true})
 	firstConns := fs.eventsCount()
 
 	a.remoteTabsHostStatus("box", "reconnecting", "")
 	waitForTabState(t, a, meta.ID, "reconnecting")
+	if events.count("remote-tab:"+meta.ID+":state ") == 0 {
+		t.Fatal("host disconnect changed backend state without emitting a tab-state event")
+	}
 	if err := a.SubmitRemoteTab(meta.ID, "hi"); err == nil {
 		t.Fatal("commands during reconnecting must fail")
 	}
@@ -303,6 +351,54 @@ func TestRemoteTabFollowsHostReconnect(t *testing.T) {
 	a.remoteTabMu.Unlock()
 	if !strings.Contains(tabErr, "ssh: auth failed") {
 		t.Fatalf("tab error = %q, want the host failure text", tabErr)
+	}
+}
+
+func TestCloseActiveRemoteTabSelectsAdjacentLocalTab(t *testing.T) {
+	a := &App{}
+	seedLocalTab(a, "local-a")
+	seedLocalTab(a, "local-b")
+	a.mu.Lock()
+	a.activeTabID = "local-a"
+	a.mu.Unlock()
+	a.remoteTabMu.Lock()
+	a.remoteTabs = map[string]*remoteTab{"remote": {id: "remote", state: "ready"}}
+	a.remoteTabLayout = remoteTabLayoutState{activeID: "remote", order: []string{"remote"}, stripOrder: []string{"local-a", "remote", "local-b"}}
+	a.remoteTabMu.Unlock()
+	if err := a.CloseRemoteTab("remote"); err != nil {
+		t.Fatal(err)
+	}
+	a.mu.RLock()
+	active := a.activeTabID
+	a.mu.RUnlock()
+	if active != "local-b" {
+		t.Fatalf("active local tab = %q, want adjacent local-b", active)
+	}
+}
+
+func TestStopRemoteServerParksTabsWithoutRestart(t *testing.T) {
+	fs := newFakeServe(t, "s3cret", nil)
+	kernel := &fakeRemoteKernel{
+		statuses:   []RemoteConnectionStatusView{{HostID: "box", State: "connected"}},
+		ensureView: RemoteServerView{HostID: "box", State: "ready", LocalURL: fs.server.URL}, ensureToken: "s3cret",
+	}
+	seedBridgeTestHost(t, "box")
+	a := &App{remoteRuntime: kernel}
+	cleanupRemoteTabPumps(t, a)
+	meta := openReadyRemoteTab(t, a, RemoteTabOpenOptions{NewSession: true})
+	before := kernel.ensureCalls
+	if err := a.StopRemoteServer("box", "~/app"); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	a.remoteTabMu.Lock()
+	state, client := a.remoteTabs[meta.ID].state, a.remoteTabs[meta.ID].client
+	a.remoteTabMu.Unlock()
+	if state != "serve_down" || client != nil {
+		t.Fatalf("stopped tab state/client = %q/%v", state, client)
+	}
+	if kernel.ensureCalls != before {
+		t.Fatalf("explicit stop restarted Serve: EnsureServer calls %d -> %d", before, kernel.ensureCalls)
 	}
 }
 
@@ -361,7 +457,7 @@ func TestListTabsIncludesRemoteEntries(t *testing.T) {
 
 // TestRemoteTabTitleAdoptsServeSession pins the title pipeline: the serve's
 // LLM-generated title for the current session replaces the workspace-name
-// default and reaches the chrome through the tab-opened channel.
+// default and reaches the chrome through the metadata-only update channel.
 func TestRemoteTabTitleAdoptsServeSession(t *testing.T) {
 	fs := newFakeServe(t, "s3cret", []serveSessionEntry{
 		{Name: "s1", Path: "/x.jsonl", Title: "Fix the login bug", Turns: 1, Current: true},
@@ -391,7 +487,7 @@ func TestRemoteTabTitleAdoptsServeSession(t *testing.T) {
 	}
 	found := false
 	for _, e := range log.recorded() {
-		if strings.HasPrefix(e, "remote-tab:opened ") && strings.Contains(e, meta.ID) && strings.Contains(e, "Fix the login bug") {
+		if strings.HasPrefix(e, "remote-tab:updated ") && strings.Contains(e, meta.ID) && strings.Contains(e, "Fix the login bug") {
 			found = true
 		}
 	}
@@ -431,6 +527,13 @@ func TestRemoteTabNewSessionResetsServeSession(t *testing.T) {
 	}
 	if len(sessions) == 0 || sessions[0].Name != "" || !sessions[0].Current || sessions[0].Title != "新的会话" {
 		t.Fatalf("sessions = %+v, want the synthetic blank leading the listing", sessions)
+	}
+	if err := a.RenameRemoteProjectSession("box", "~/app", "", "空白会话标题"); err != nil {
+		t.Fatal(err)
+	}
+	sessions, err = a.RemoteProjectSessions("box", "~/app")
+	if err != nil || len(sessions) == 0 || sessions[0].Title != "空白会话标题" {
+		t.Fatalf("renamed blank session = %+v, err=%v", sessions, err)
 	}
 
 	// A further new-session open reuses the blank: no extra POST /new — the
@@ -521,6 +624,13 @@ func TestRenameRemoteProjectSession(t *testing.T) {
 	a.remoteTabMu.Unlock()
 	if title != "我的新标题" {
 		t.Fatalf("live tab title = %q, want the override", title)
+	}
+	a.refreshRemoteTabTitle(meta.ID)
+	a.remoteTabMu.Lock()
+	title = a.remoteTabs[meta.ID].topicTitle
+	a.remoteTabMu.Unlock()
+	if title != "我的新标题" {
+		t.Fatalf("automatic refresh replaced the manual title with %q", title)
 	}
 
 	if err := a.RenameRemoteProjectSession("box", "~/app", "s1", ""); err != nil {

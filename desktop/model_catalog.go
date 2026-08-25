@@ -2,6 +2,7 @@ package main
 
 import (
 	"log/slog"
+	"strings"
 	"time"
 
 	"reasonix/internal/config"
@@ -42,7 +43,7 @@ func (a *App) ModelsForTab(tabID string) []ModelInfo {
 			}
 			return []ModelInfo{}
 		}
-		return a.desktopModelCatalog(cur, "", nil)
+		return a.remoteProxyModelCatalog(cur)
 	}
 	a.mu.RLock()
 	curModel := ""
@@ -55,6 +56,38 @@ func (a *App) ModelsForTab(tabID string) []ModelInfo {
 	}
 	a.mu.RUnlock()
 	return a.desktopModelCatalog(curModel, workspaceRoot, ctrl)
+}
+
+func (a *App) remoteProxyModelCatalog(curModel string) []ModelInfo {
+	cfg, err := config.Load()
+	if err != nil {
+		return []ModelInfo{}
+	}
+	current, ok := cfg.ResolveModel(curModel)
+	if !ok {
+		return []ModelInfo{}
+	}
+	kind := strings.TrimSpace(current.Kind)
+	if kind == "" {
+		kind = "openai"
+	}
+	canonical := current.Name + "/" + current.Model
+	out := []ModelInfo{}
+	for i := range cfg.Providers {
+		entry := &cfg.Providers[i]
+		entryKind := strings.TrimSpace(entry.Kind)
+		if entryKind == "" {
+			entryKind = "openai"
+		}
+		if !strings.EqualFold(entryKind, kind) || !modelProviderAccessAllowed(cfg.Desktop.ProviderAccess, entry.Name) || !entry.Configured() {
+			continue
+		}
+		for _, model := range entry.ChatModelList() {
+			ref := entry.Name + "/" + model
+			out = append(out, ModelInfo{Ref: ref, Provider: entry.Name, Model: model, Current: ref == canonical})
+		}
+	}
+	return out
 }
 
 func (a *App) desktopModelCatalog(curModel, workspaceRoot string, ctrl control.SessionAPI) []ModelInfo {

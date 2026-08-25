@@ -34,6 +34,27 @@ func (a *App) RenameRemoteProjectSession(hostID, workspace, name, title string) 
 	if live == nil {
 		return nil
 	}
+	if strings.TrimSpace(name) == "" {
+		next := strings.TrimSpace(title)
+		if next == "" {
+			next = a.localizedDefaultTopicTitle()
+		}
+		a.remoteTabMu.Lock()
+		current := a.remoteTabs[liveID]
+		if current != live || current.client != client || !current.session.reset {
+			a.remoteTabMu.Unlock()
+			return nil
+		}
+		changed := current.topicTitle != next
+		current.topicTitle = next
+		meta := remoteTabMetaLocked(current)
+		a.remoteTabMu.Unlock()
+		if changed {
+			a.emitRemoteEvent("remote-tab:updated", meta)
+			a.saveTabsFromRemote()
+		}
+		return nil
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	entries, err := serveSessions(ctx, client, base)
@@ -64,7 +85,7 @@ func (a *App) RenameRemoteProjectSession(hostID, workspace, name, title string) 
 		meta := remoteTabMetaLocked(current)
 		a.remoteTabMu.Unlock()
 		if changed {
-			a.emitRemoteEvent("remote-tab:opened", meta)
+			a.emitRemoteEvent("remote-tab:updated", meta)
 			a.saveTabsFromRemote()
 		}
 		return nil
@@ -101,6 +122,10 @@ func (a *App) resumeRemoteTabSession(tabID, name string) {
 		}
 		body, _ := json.Marshal(map[string]string{"path": entry.Path})
 		if err := servePost(ctx, client, serveURL(base, "/resume"), body); err != nil {
+			if remoteSessionTransitionBusy(err) {
+				a.emitRemoteTabState(tabID, "ready", "Finish the current turn before switching sessions.")
+				return
+			}
 			a.emitRemoteTabState(tabID, "error", err.Error())
 			return
 		}
@@ -118,7 +143,7 @@ func (a *App) resumeRemoteTabSession(tabID, name string) {
 		current.session.reset = false
 		meta := remoteTabMetaLocked(current)
 		a.remoteTabMu.Unlock()
-		a.emitRemoteEvent("remote-tab:opened", meta)
+		a.emitRemoteEvent("remote-tab:updated", meta)
 		a.saveTabsFromRemote()
 		a.emitRemoteTabState(tabID, "ready", "")
 		return
@@ -190,6 +215,7 @@ func (a *App) SetRemoteTabModel(tabID, ref string) error {
 	}
 	hostID := tab.ref.HostID
 	workspace := tab.ref.Workspace
+	currentModel := tab.model
 	a.remoteTabMu.Unlock()
 	localProxy := a.remoteTabLocalProxy(tabID)
 
@@ -205,6 +231,18 @@ func (a *App) SetRemoteTabModel(tabID, ref string) error {
 		}
 		if !modelProviderAccessAllowed(cfg.Desktop.ProviderAccess, entry.Name) {
 			return fmt.Errorf("model %q is not available", ref)
+		}
+		currentEntry, currentOK := cfg.ResolveModel(currentModel)
+		currentKind := "openai"
+		if currentOK && strings.TrimSpace(currentEntry.Kind) != "" {
+			currentKind = strings.TrimSpace(currentEntry.Kind)
+		}
+		nextKind := strings.TrimSpace(entry.Kind)
+		if nextKind == "" {
+			nextKind = "openai"
+		}
+		if !strings.EqualFold(currentKind, nextKind) {
+			return fmt.Errorf("model %q uses %s protocol; this remote session is running %s and must be restarted to change protocol", ref, nextKind, currentKind)
 		}
 		canonical := entry.Name + "/" + entry.Model
 		if _, err := a.applyCredentialProxyModel(hostID, workspace, canonical); err != nil {
@@ -344,6 +382,9 @@ func (a *App) refreshRemoteTabTitle(tabID string) {
 		if title == "" {
 			return
 		}
+		if override := remoteSessionTitleOverride(tab.ref.HostID, tab.ref.Workspace, entry.Name); override != "" {
+			title = override
+		}
 		a.remoteTabMu.Lock()
 		current := a.remoteTabs[tabID]
 		if current != tab || current.client != client {
@@ -358,7 +399,7 @@ func (a *App) refreshRemoteTabTitle(tabID string) {
 		meta := remoteTabMetaLocked(current)
 		a.remoteTabMu.Unlock()
 		if changed {
-			a.emitRemoteEvent("remote-tab:opened", meta)
+			a.emitRemoteEvent("remote-tab:updated", meta)
 			a.saveTabsFromRemote()
 		}
 		return
@@ -405,7 +446,7 @@ func (a *App) resetRemoteTabSession(tabID string) {
 	tab.session.reset = true
 	meta := remoteTabMetaLocked(tab)
 	a.remoteTabMu.Unlock()
-	a.emitRemoteEvent("remote-tab:opened", meta)
+	a.emitRemoteEvent("remote-tab:updated", meta)
 	a.saveTabsFromRemote()
 	a.emitRemoteTabState(tabID, "ready", "")
 }

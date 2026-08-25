@@ -23,6 +23,8 @@ console.log("\nRemote project tree wiring");
 const here = dirname(fileURLToPath(import.meta.url));
 const source = readFileSync(resolve(here, "../components/ProjectTree.tsx"), "utf8");
 const remoteSource = readFileSync(resolve(here, "../components/ProjectTreeRemoteGroups.tsx"), "utf8");
+const appSource = readFileSync(resolve(here, "../App.tsx"), "utf8");
+const modeActionsSource = readFileSync(resolve(here, "../lib/useComposerModeActions.ts"), "utf8");
 
 ok(
   /remoteSession: \{ hostId: node\.remote!\.hostId, workspace: node\.remote!\.workspace, name: row\.name \}/.test(remoteSource) &&
@@ -68,6 +70,16 @@ ok(
     /eligibleSessionKeys\.current\.has\(key\)/.test(remoteSource) &&
     /filter\(\(\[key\]\) => connected\.has\(key\)\)/.test(remoteSource),
   "session fetches deduplicate in flight and discard disconnected or stale group results",
+);
+ok(
+  /useComposerModeActions\(\{[\s\S]*?remote: remoteSurfaceActive/.test(appSource) &&
+    /if \(remote && activeTabId\)[\s\S]*?SetRemoteTabPlanMode\(activeTabId,[\s\S]*?SetRemoteTabToolApprovalMode\(activeTabId,/.test(modeActionsSource),
+  "remote composer mode changes route through the remote plan and approval endpoints",
+);
+ok(
+  /tab\.id === tabId && tab\.remote[\s\S]*?SetRemoteTabGoal\(tabId, trimmed\)/.test(appSource) &&
+    /onSend=\{remoteSurfaceActive \? remoteComposerSend : handleSend\}/.test(appSource),
+  "remote goal activation and goal-draft submission stay on the remote controller",
 );
 
 process.stdout.write(`\n${passed} passed, ${failed} failed\n`);

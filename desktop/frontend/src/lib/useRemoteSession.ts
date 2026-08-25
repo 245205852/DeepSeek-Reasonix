@@ -3,6 +3,7 @@ import { app, onRemoteTabEvent, onRemoteTabState } from "./bridge";
 import type { CancelOutcome } from "./inboxCancel";
 import { initialState, reducer, type State } from "./useController";
 import type { HistoryMessage, RemoteTabStateValue, TabMeta, WireEvent } from "./types";
+import type { RemoteAskAnswer } from "./remoteTypes";
 
 // The remote session reuses the local transcript pipeline end to end: serve
 // frames share the agent event wire form, so they run through the same
@@ -36,10 +37,13 @@ export interface RemoteSessionApi {
   running: boolean;
   /** The serve's label for the active model, for the composer capsule. */
   modelLabel: string;
+  /** Changes whenever the tab adopts a new/reconnected Serve session snapshot. */
+  surfaceGeneration: number;
+  promptError: string;
   submit: (text: string) => Promise<void>;
   cancelTurn: () => Promise<void>;
   approve: (callId: string, decision: string) => Promise<void>;
-  answer: (callId: string, value: string) => Promise<void>;
+  answer: (callId: string, answers: RemoteAskAnswer[]) => Promise<void>;
 }
 
 export function useRemoteComposer(
@@ -79,8 +83,12 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
   const [error, setError] = useState("");
   const [transcript, setTranscript] = useState<State>(initialState);
   const [modelLabel, setModelLabel] = useState("");
+  const [surfaceGeneration, setSurfaceGeneration] = useState(0);
+  const [promptError, setPromptError] = useState("");
   const [hydrated, setHydrated] = useState(false);
   const hydratedRef = useRef(false);
+  const hydratingRef = useRef(false);
+  const bufferedEventsRef = useRef<WireEvent[]>([]);
 
   useEffect(() => {
     if (!tabId) return;
@@ -88,11 +96,15 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
     // then flows through remote-tab:{id}:state events once a connect begins.
     const start = initial ?? "connecting";
     setState(start);
-    setError("")
-    setTranscript(initialState)
+    setError("");
+    setPromptError("");
+    setTranscript(initialState);
     hydratedRef.current = false;
+    hydratingRef.current = false;
+    bufferedEventsRef.current = [];
     setHydrated(false);
     let cancelled = false;
+    let hydratePromise: Promise<void> | null = null;
     // Never start the snapshot retry loop on a shell with no connection: the
     // ready transition triggers the first hydration instead. (initial is
     // deliberately not a dependency — only the mount-time snapshot matters.)
@@ -110,28 +122,63 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
       return hydrateLoop();
     };
     const hydrateLoop = async () => {
-      for (let attempt = 0; attempt < 60 && !cancelled && !hydratedRef.current; attempt++) {
-        try {
-          const snap = await app.RemoteTabSnapshot(tabId);
-          if (cancelled) return;
-          const messages = Array.isArray(snap.history) ? (snap.history as HistoryMessage[]) : [];
-          hydratedRef.current = true;
-          setHydrated(true);
-          const status = (snap.status ?? null) as { label?: unknown } | null;
-          setModelLabel(typeof status?.label === "string" ? status.label : "");
-          setTranscript((s) => {
-            let next = reducer(s, { type: "history", messages });
-            // Hydrate doubles as the post-reconnect running reconciliation:
-            // whatever the serve reports about its current state lands now,
-            // not only after the next watchdog tick.
-            next = reducer(next, remoteStatusToAction(snap.status, Date.now()));
-            return next;
-          });
-          return;
-        } catch {
-          // Executor form: the src tsconfig lib predates Promise.withResolvers.
-          await new Promise<void>((resolve) => setTimeout(resolve, 500));
+      if (hydratePromise) return hydratePromise;
+      hydratingRef.current = true;
+      hydratePromise = (async () => {
+        for (let attempt = 0; attempt < 60 && !cancelled && !hydratedRef.current; attempt++) {
+          try {
+            const snap = await app.RemoteTabSnapshot(tabId);
+            if (cancelled) return;
+            const messages = Array.isArray(snap.history) ? (snap.history as HistoryMessage[]) : [];
+            hydratedRef.current = true;
+            setHydrated(true);
+            setSurfaceGeneration((generation) => generation + 1);
+            const status = (snap.status ?? null) as { label?: unknown } | null;
+            setModelLabel(typeof status?.label === "string" ? status.label : "");
+            const replay = [
+              ...(Array.isArray(snap.pendingEvents) ? snap.pendingEvents : []),
+              ...bufferedEventsRef.current,
+            ] as WireEvent[];
+            bufferedEventsRef.current = [];
+            hydratingRef.current = false;
+            setTranscript((s) => {
+              let next = reducer(s, { type: "history", messages });
+              // Hydrate doubles as the post-reconnect running reconciliation:
+              // whatever the serve reports about its current state lands now,
+              // not only after the next watchdog tick.
+              next = reducer(next, remoteStatusToAction(snap.status, Date.now()));
+              const seenPrompts = new Set<string>();
+              for (const event of replay) {
+                const promptId = event.kind === "approval_request"
+                  ? event.approval?.id
+                  : event.kind === "ask_request" ? event.ask?.id : undefined;
+                const promptKey = promptId ? `${event.kind}:${promptId}` : "";
+                if (promptKey && seenPrompts.has(promptKey)) continue;
+                if (promptKey) seenPrompts.add(promptKey);
+                next = reducer(next, { type: "event", e: event });
+              }
+              return next;
+            });
+            return;
+          } catch {
+            // Executor form: the src tsconfig lib predates Promise.withResolvers.
+            await new Promise<void>((resolve) => setTimeout(resolve, 500));
+          }
         }
+        hydratingRef.current = false;
+        if (bufferedEventsRef.current.length > 0) {
+          const buffered = bufferedEventsRef.current;
+          bufferedEventsRef.current = [];
+          setTranscript((current) => buffered.reduce(
+            (next, event) => reducer(next, { type: "event", e: event }),
+            current,
+          ));
+        }
+      })();
+      try {
+        await hydratePromise;
+      } finally {
+        hydratePromise = null;
       }
     };
     if (!skipHydrate) void hydrateLoop();
@@ -151,10 +198,17 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
     });
     const offEvent = onRemoteTabEvent(tabId, (raw) => {
       if (cancelled) return;
-      setTranscript((s) => reducer(s, { type: "event", e: (raw ?? {}) as WireEvent }));
+      const event = (raw ?? {}) as WireEvent;
+      if (hydratingRef.current) {
+        bufferedEventsRef.current.push(event);
+        return;
+      }
+      setTranscript((s) => reducer(s, { type: "event", e: event }));
     });
     return () => {
       cancelled = true;
+      hydratingRef.current = false;
+      bufferedEventsRef.current = [];
       offState();
       offEvent();
     };
@@ -170,9 +224,9 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
     let cancelled = false;
     const reconcile = async () => {
       try {
-        const snap = await app.RemoteTabSnapshot(tabId);
+        const status = await app.RemoteTabStatus(tabId);
         if (cancelled) return;
-        setTranscript((s) => reducer(s, remoteStatusToAction(snap.status, Date.now())));
+        setTranscript((s) => reducer(s, remoteStatusToAction(status, Date.now())));
       } catch {
         // Transient; the next tick retries.
       }
@@ -210,15 +264,27 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
 
   const approve = useCallback(async (callId: string, decision: string) => {
     if (!tabId) return;
-    setTranscript((s) => ({ ...s, approval: undefined }));
-    await app.ApproveRemoteTab(tabId, callId, decision);
+    setPromptError("");
+    try {
+      await app.ApproveRemoteTab(tabId, callId, decision);
+      setTranscript((s) => ({ ...s, approval: undefined }));
+    } catch (error) {
+      setPromptError(error instanceof Error ? error.message : String(error));
+      throw error;
+    }
   }, [tabId]);
 
-  const answer = useCallback(async (callId: string, value: string) => {
+  const answer = useCallback(async (callId: string, answers: RemoteAskAnswer[]) => {
     if (!tabId) return;
-    setTranscript((s) => ({ ...s, ask: undefined }));
-    await app.AnswerRemoteTab(tabId, callId, value);
+    setPromptError("");
+    try {
+      await app.AnswerRemoteTab(tabId, callId, answers);
+      setTranscript((s) => ({ ...s, ask: undefined }));
+    } catch (error) {
+      setPromptError(error instanceof Error ? error.message : String(error));
+      throw error;
+    }
   }, [tabId]);
 
-  return { state, error, transcript, hydrated, running: transcript.running, modelLabel, submit, cancelTurn, approve, answer };
+  return { state, error, transcript, hydrated, running: transcript.running, modelLabel, surfaceGeneration, promptError, submit, cancelTurn, approve, answer };
 }

@@ -11,6 +11,7 @@
 // "expanded"), and preference switches applying to folds already on screen.
 
 import { isHostRecoveryGuidance } from "./hostRecoverySteer";
+import { stableStringHash } from "./stableStringHash";
 import { isBatchedReadOnlyTool, isSteerNoticeText, type ExtensionItem, type Item } from "./useController";
 import { appendTurnActionCopyText } from "./turnActionCopy";
 import { isCreationGroupableTool, toolGroupKind, type ToolGroupKind } from "../components/ToolGroup";
@@ -236,19 +237,6 @@ export function buildTurnModels(
     }
   }
   flush();
-  const usedSegmentKeys = new Set<string>();
-  const uniqueSegmentKey = (base: string): string => {
-    let key = base || "seg";
-    if (!usedSegmentKeys.has(key)) {
-      usedSegmentKeys.add(key);
-      return key;
-    }
-    let n = 1;
-    while (usedSegmentKeys.has(`${base || "seg"}#${n}`)) n += 1;
-    key = `${base || "seg"}#${n}`;
-    usedSegmentKeys.add(key);
-    return key;
-  };
 
   for (let index = 0; index < turns.length; index += 1) {
     const model = turns[index];
@@ -260,7 +248,19 @@ export function buildTurnModels(
       const displayItems = foldDisplayItems(segment.processItems, live, hideReasoning);
       const turnActive = model.isActive && isLastSegment;
       return {
-        key: uniqueSegmentKey(segment.processItems[0]?.id ?? ""),
+        // Duplicate raw ids occur in imported/merged histories. Derive the
+        // disambiguator from stable turn/item identity rather than occurrence
+        // order, so prepending older history never renames an already mounted row.
+        key: `${segment.processItems[0]?.id || "seg"}@${stableStringHash(
+          JSON.stringify([
+            model.user?.id ?? "",
+            model.user?.historyTurn ?? -1,
+            model.user?.createdAt ?? 0,
+            segmentIndex,
+            segment.processItems.map((item) => [item.kind, item.id]),
+            segment.outsideItems.map((item) => [item.kind, item.id]),
+          ]),
+        )}`,
         processItems: segment.processItems,
         outsideItems: segment.outsideItems,
         displayItems,

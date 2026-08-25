@@ -59,6 +59,20 @@ const fixture: Item[] = [
   { kind: "assistant", id: "a3", text: "answer two", reasoning: "more", streaming: false },
 ];
 
+{
+  const current: Item[] = [
+    { kind: "user", id: "u-current", text: "current" },
+    { kind: "phase", id: "duplicate-phase", text: "current work" },
+  ];
+  const before = buildTurnModels(current)[0]?.segments[0]?.key;
+  const after = buildTurnModels([
+    { kind: "user", id: "u-older", text: "older" },
+    { kind: "phase", id: "duplicate-phase", text: "older work" },
+    ...current,
+  ])[1]?.segments[0]?.key;
+  eq(after, before, "prepending history with a duplicate raw id preserves the mounted segment key");
+}
+
 const turnOf = new Map([
   ["u1", 0],
   ["u2", 1],
@@ -84,7 +98,7 @@ const keys = (rows: TranscriptRow[]) => rows.map((row) => row.key).join(",");
   );
   eq(
     keys(rows),
-    "u:u1,ph:a1,n:n1,a:a2,ta:u1,u:u2,ph:a3,a:a3,ta:u2",
+    `u:u1,ph:${models[0].segments[0].key},n:n1,a:a2,ta:u1,u:u2,ph:${models[1].segments[0].key},a:a3,ta:u2`,
     "row keys derive from stable item ids",
   );
 }
@@ -100,8 +114,9 @@ const keys = (rows: TranscriptRow[]) => rows.map((row) => row.key).join(",");
   // Expanding a fold inserts its process rows into the model; collapsing
   // removes them again. Read-only tools batch; the write tool stays a card.
   const models = buildTurnModels(fixture);
+  const foldKey = models[0].segments[0].key;
   let folds = EMPTY_FOLDS;
-  folds = foldMapWithToggle(folds, "a1", false);
+  folds = foldMapWithToggle(folds, foldKey, false);
   const openRows = buildTranscriptRows(models, rowOptions(folds));
   eq(
     kinds(openRows),
@@ -110,7 +125,7 @@ const keys = (rows: TranscriptRow[]) => rows.map((row) => row.key).join(",");
   );
   const batch = openRows.find((row) => row.kind === "tool-batch");
   eq(batch && "items" in batch ? batch.items.length : 0, 2, "consecutive completed read-only tools batch into one row");
-  const collapsed = buildTranscriptRows(models, rowOptions(foldMapWithToggle(folds, "a1", true)));
+  const collapsed = buildTranscriptRows(models, rowOptions(foldMapWithToggle(folds, foldKey, true)));
   eq(kinds(collapsed), "user,process-header,notice,answer,turn-actions,user,process-header,answer,turn-actions", "collapsing removes the process rows again");
 }
 
@@ -234,13 +249,14 @@ const keys = (rows: TranscriptRow[]) => rows.map((row) => row.key).join(",");
   eq(defaultFoldOpen(states[0], "auto"), true, "running folds default open");
 
   const seeded = reconcileFoldEntries(EMPTY_FOLDS, states, "auto", false);
-  ok(seeded?.get("a1")?.open === true, "reconcile seeds running folds open");
+  const foldKey = states[0].key;
+  ok(seeded?.get(foldKey)?.open === true, "reconcile seeds running folds open");
 
   const settledModels = buildTurnModels(fixture.slice(0, 7), undefined, false);
   const settledStates = foldSegmentStates(settledModels);
   eq(settledStates[0].hasRunningWork, false, "settled turn clears the running flag");
   const closed = reconcileFoldEntries(seeded ?? EMPTY_FOLDS, settledStates, "auto", false);
-  ok(closed?.get("a1")?.open === false, "completion auto-closes an untouched fold");
+  ok(closed?.get(foldKey)?.open === false, "completion auto-closes an untouched fold");
   eq(reconcileFoldEntries(closed ?? EMPTY_FOLDS, settledStates, "auto", false), null, "steady state reconciles to no change");
 }
 
@@ -248,31 +264,33 @@ const keys = (rows: TranscriptRow[]) => rows.map((row) => row.key).join(",");
   // Expanded reasoning pins only reasoning-bearing folds across completion.
   const running = buildTurnModels(fixture.slice(0, 7), { id: "a2", hasAnswerText: true, hasReasoning: false, reasoningComplete: true }, true);
   const runningStates = foldSegmentStates(running, true);
+  const foldKey = runningStates[0].key;
   eq(runningStates[0]?.keepReasoningExpanded, true, "expanded mode marks a reasoning-bearing fold as pinned");
   const seeded = reconcileFoldEntries(EMPTY_FOLDS, runningStates, "auto", false) ?? EMPTY_FOLDS;
 
   const settledModels = buildTurnModels(fixture.slice(0, 7), undefined, false);
   const settledPinnedStates = foldSegmentStates(settledModels, true);
   const completed = reconcileFoldEntries(seeded, settledPinnedStates, "auto", false);
-  ok(completed?.get("a1")?.open === true, "expanded reasoning keeps its parent fold open after completion");
+  ok(completed?.get(foldKey)?.open === true, "expanded reasoning keeps its parent fold open after completion");
 
-  const manuallyCollapsed = foldMapWithToggle(seeded, "a1", true);
+  const manuallyCollapsed = foldMapWithToggle(seeded, foldKey, true);
   const completedCollapsed = reconcileFoldEntries(manuallyCollapsed, settledPinnedStates, "auto", false);
-  ok(completedCollapsed?.get("a1")?.open === false, "manual parent collapse still wins when expanded reasoning completes");
+  ok(completedCollapsed?.get(foldKey)?.open === false, "manual parent collapse still wins when expanded reasoning completes");
 
   const settledAutoStates = foldSegmentStates(settledModels, false);
   const backToAuto = reconcileFoldEntries(completed ?? EMPTY_FOLDS, settledAutoStates, "auto", false);
-  ok(backToAuto?.get("a1")?.open === false, "leaving expanded reasoning re-applies the automatic parent fold policy");
+  ok(backToAuto?.get(foldKey)?.open === false, "leaving expanded reasoning re-applies the automatic parent fold policy");
 }
 
 {
   // User override survives completion; a fold with nothing outside never
   // auto-closes.
-  const overridden: FoldMap = new Map([["a1", { open: true, userOverridden: true, running: true }]]);
   const settledModels = buildTurnModels(fixture.slice(0, 7), undefined, false);
   const states = foldSegmentStates(settledModels);
+  const foldKey = states[0].key;
+  const overridden: FoldMap = new Map([[foldKey, { open: true, userOverridden: true, running: true }]]);
   const next = reconcileFoldEntries(overridden, states, "auto", false);
-  ok(next?.get("a1")?.open === true, "user-opened fold survives completion");
+  ok(next?.get(foldKey)?.open === true, "user-opened fold survives completion");
 
   const soloModels = buildTurnModels([
     { kind: "user", id: "u5", text: "cancelled" },
@@ -285,13 +303,14 @@ const keys = (rows: TranscriptRow[]) => rows.map((row) => row.key).join(",");
 
 {
   // Preference switches apply to existing folds and clear manual overrides.
-  const seeded: FoldMap = new Map([["a1", { open: true, userOverridden: true, running: false }]]);
   const models = buildTurnModels(fixture.slice(0, 7), undefined, false);
   const states = foldSegmentStates(models);
+  const foldKey = states[0].key;
+  const seeded: FoldMap = new Map([[foldKey, { open: true, userOverridden: true, running: false }]]);
   const expanded = reconcileFoldEntries(seeded, states, "expanded", true);
-  ok(expanded?.get("a1")?.open === true && expanded.get("a1")?.userOverridden === false, "switching to expanded opens folds and clears overrides");
+  ok(expanded?.get(foldKey)?.open === true && expanded.get(foldKey)?.userOverridden === false, "switching to expanded opens folds and clears overrides");
   const backToAuto = reconcileFoldEntries(expanded ?? EMPTY_FOLDS, states, "auto", true);
-  ok(backToAuto?.get("a1")?.open === false, "switching back to auto re-closes completed folds");
+  ok(backToAuto?.get(foldKey)?.open === false, "switching back to auto re-closes completed folds");
 
   const pruned = reconcileFoldEntries(backToAuto ?? EMPTY_FOLDS, [], "auto", false);
   ok(pruned?.size === 0, "vanished segments are pruned from the fold map");

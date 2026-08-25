@@ -63,6 +63,12 @@ export interface RemoteTabSnapshot {
   checkpoints?: unknown[];
   models?: string[];
   status?: unknown;
+  pendingEvents?: unknown[];
+}
+
+export interface RemoteAskAnswer {
+  QuestionID: string;
+  Selected: string[];
 }
 
 export interface RemoteHostView {

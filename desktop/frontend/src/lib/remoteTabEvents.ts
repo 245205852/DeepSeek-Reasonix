@@ -3,6 +3,7 @@ import type { RemoteTabState, TabMeta } from "./types";
 type MockRemoteTabChannel = "event" | "state";
 const mockListeners = new Map<string, Set<(payload: unknown) => void>>();
 const openedListeners = new Set<(meta: TabMeta) => void>();
+const updatedListeners = new Set<(meta: TabMeta) => void>();
 
 function runtimeAvailable(): boolean {
   return typeof window !== "undefined" && Boolean(window.go?.main?.App && window.runtime);
@@ -39,10 +40,22 @@ export function onRemoteTabOpened(cb: (meta: TabMeta) => void): () => void {
   return () => openedListeners.delete(cb);
 }
 
+export function onRemoteTabUpdated(cb: (meta: TabMeta) => void): () => void {
+  if (runtimeAvailable()) {
+    return window.runtime!.EventsOn("remote-tab:updated", (payload?: unknown) => cb((payload ?? {}) as TabMeta));
+  }
+  updatedListeners.add(cb);
+  return () => updatedListeners.delete(cb);
+}
+
 export function __emitMockRemoteTab(tabId: string, channel: MockRemoteTabChannel, payload: unknown): void {
   for (const cb of mockListeners.get(`${tabId}:${channel}`) ?? []) cb(payload);
 }
 
 export function __emitMockRemoteTabOpened(meta: TabMeta): void {
   for (const cb of openedListeners) cb(meta);
+}
+
+export function __emitMockRemoteTabUpdated(meta: TabMeta): void {
+  for (const cb of updatedListeners) cb(meta);
 }

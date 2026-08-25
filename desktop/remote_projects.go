@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"path"
@@ -75,6 +76,12 @@ type remoteTab struct {
 	token  string
 	gen    uint64
 	cancel context.CancelFunc
+	// attachedGen marks a pump that survived the open/session-entry barrier.
+	// It stays internal so ListTabs never exposes a transient non-wire state.
+	attachedGen uint64
+	// Pending approval/ask frames are retained while the frontend surface is
+	// inactive. RemoteTabSnapshot replays them when that surface mounts again.
+	pendingEvents map[string]json.RawMessage
 }
 
 type remoteTabSessionState struct {
@@ -190,6 +197,9 @@ func cleanRemoteWorkspace(ws string) string {
 // isRemoteSubpath reports parent/child nesting between two cleaned POSIX
 // paths; equal paths are deliberately not subpaths of each other.
 func isRemoteSubpath(parent, child string) bool {
+	if parent == "/" {
+		return strings.HasPrefix(child, "/") && child != "/"
+	}
 	return strings.HasPrefix(child, parent+"/")
 }
 
@@ -226,10 +236,12 @@ func (a *App) remoteProjectNodes() ([]ProjectNode, error) {
 			label = remoteWorkspaceName(p.Workspace)
 		}
 		out = append(out, ProjectNode{
-			Key:    "project_remote_" + store.RemoteWorkspaceSlug(p.HostID+":"+p.Workspace),
-			Kind:   "project",
-			Label:  label,
-			Root:   p.Workspace,
+			Key:   "project_remote_" + store.RemoteWorkspaceSlug(p.HostID+":"+p.Workspace),
+			Kind:  "project",
+			Label: label,
+			// Root participates in tree selection and drag identity. Qualify it
+			// with the host so identical paths on two hosts never alias.
+			Root:   "remote-project:" + p.HostID + ":" + p.Workspace,
 			Remote: &RemoteTabRef{HostID: p.HostID, Workspace: p.Workspace},
 		})
 	}
@@ -237,6 +249,54 @@ func (a *App) remoteProjectNodes() ([]ProjectNode, error) {
 }
 
 // ── Remote project tabs ──
+
+type remoteTabOpenRegistration struct {
+	reuseID    string
+	reuseBlank bool
+	revive     bool
+	retired    []context.CancelFunc
+}
+
+// registerRemoteTabOpen serializes reuse, error-shell retirement, and insert.
+func (a *App) registerRemoteTabOpen(tab *remoteTab, hostLabel string, opts RemoteTabOpenOptions) remoteTabOpenRegistration {
+	a.remoteTabMu.Lock()
+	defer a.remoteTabMu.Unlock()
+	if a.remoteTabs == nil {
+		a.remoteTabs = map[string]*remoteTab{}
+	}
+	var result remoteTabOpenRegistration
+	for _, existing := range a.remoteTabs {
+		if existing.ref != tab.ref || existing.state == "error" {
+			continue
+		}
+		result.reuseID = existing.id
+		result.reuseBlank = existing.session.reset
+		result.revive = existing.state == "disconnected" || existing.state == "serve_down"
+		existing.hostLabel = hostLabel
+		if (result.revive || existing.client == nil) && (opts.NewSession || strings.TrimSpace(opts.SessionName) != "") {
+			existing.session.newSession = opts.NewSession
+			existing.session.name = strings.TrimSpace(opts.SessionName)
+		}
+		if result.revive {
+			existing.state = "connecting"
+		}
+		return result
+	}
+	for id, existing := range a.remoteTabs {
+		if existing.ref != tab.ref || existing.state != "error" {
+			continue
+		}
+		if existing.cancel != nil {
+			result.retired = append(result.retired, existing.cancel)
+		}
+		delete(a.remoteTabs, id)
+		a.remoteTabLayout.order = removeRemoteTabOrderID(a.remoteTabLayout.order, id)
+	}
+	tab.modelSeq = remoteTabModelSeq.Add(1)
+	a.remoteTabs[tab.id] = tab
+	a.remoteTabLayout.order = append(a.remoteTabLayout.order, tab.id)
+	return result
+}
 
 // OpenRemoteProjectTab registers the project (idempotent), opens an in-app
 // tab for the remote workspace, and returns its meta immediately. The remote
@@ -276,64 +336,29 @@ func (a *App) OpenRemoteProjectTab(hostID, workspace string, opts RemoteTabOpenO
 	tabID := newTabID()
 	tab := &remoteTab{id: tabID, ref: ref, state: "connecting", session: remoteTabSessionState{newSession: opts.NewSession, name: opts.SessionName}, hostLabel: host.Name, topicTitle: remoteWorkspaceName(workspace), model: resolveNewSessionModel(cfg)}
 
-	// Reuse-or-insert is one critical section: simultaneous opens for the same
-	// workspace must never create two tabs and two competing session entries.
-	a.remoteTabMu.Lock()
-	if a.remoteTabs == nil {
-		a.remoteTabs = map[string]*remoteTab{}
-	}
-	var reuseID string
-	var reuseBlank bool
-	var revive bool
-	var retired []context.CancelFunc
-	for _, existing := range a.remoteTabs {
-		if existing.ref.HostID == hostID && existing.ref.Workspace == workspace && existing.state != "error" {
-			reuseID = existing.id
-			reuseBlank = existing.session.reset
-			revive = existing.state == "disconnected"
-			existing.hostLabel = host.Name
-			if revive {
-				existing.state = "connecting"
-			}
-			break
-		}
-	}
-	if reuseID == "" {
-		for id, existing := range a.remoteTabs {
-			if existing.ref.HostID == hostID && existing.ref.Workspace == workspace && existing.state == "error" {
-				if existing.cancel != nil {
-					retired = append(retired, existing.cancel)
-				}
-				delete(a.remoteTabs, id)
-				a.remoteTabLayout.order = removeRemoteTabOrderID(a.remoteTabLayout.order, id)
-			}
-		}
-		tab.modelSeq = remoteTabModelSeq.Add(1)
-		a.remoteTabs[tabID] = tab
-		a.remoteTabLayout.order = append(a.remoteTabLayout.order, tabID)
-	}
-	a.remoteTabMu.Unlock()
-	for _, cancel := range retired {
+	// Reuse-or-insert is atomic so concurrent opens cannot create two sessions.
+	registration := a.registerRemoteTabOpen(tab, host.Name, opts)
+	for _, cancel := range registration.retired {
 		cancel()
 	}
-	if reuseID != "" {
-		if revive {
-			a.emitRemoteTabState(reuseID, "connecting", "")
-			a.goSafe("remoteTabServe", func() { a.bootstrapRemoteTab(reuseID, hostID, workspace) })
+	if registration.reuseID != "" {
+		if registration.revive {
+			a.emitRemoteTabState(registration.reuseID, "connecting", "")
+			a.goSafe("remoteTabServe", func() { a.bootstrapRemoteTab(registration.reuseID, hostID, workspace) })
 		} else if name := strings.TrimSpace(opts.SessionName); name != "" {
-			a.resumeRemoteTabSession(reuseID, name)
+			a.resumeRemoteTabSession(registration.reuseID, name)
 		} else {
 			// Reuse the pending blank like EnsureBlankTab does locally; only
 			// reset again once the current session earned content.
-			if opts.NewSession && !reuseBlank {
-				a.resetRemoteTabSession(reuseID)
+			if opts.NewSession && !registration.reuseBlank {
+				a.resetRemoteTabSession(registration.reuseID)
 			}
 		}
-		meta, ok := a.remoteTabMetaSnapshot(reuseID)
+		meta, ok := a.remoteTabMetaSnapshot(registration.reuseID)
 		if !ok {
-			return TabMeta{}, fmt.Errorf("remote tab %q closed while opening", reuseID)
+			return TabMeta{}, fmt.Errorf("remote tab %q closed while opening", registration.reuseID)
 		}
-		a.activateRemoteTab(reuseID, meta)
+		a.activateRemoteTab(registration.reuseID, meta)
 		a.saveTabsFromRemote()
 		return meta, nil
 	}
@@ -556,12 +581,25 @@ func (a *App) bootstrapRemoteTab(tabID, hostID, workspace string) {
 	// and session entry inside run under a bounded sub-context.
 	entered, err := a.attachRemoteTabServe(ctx, tabID, view.LocalURL, token, opts)
 	if err != nil {
-		a.emitRemoteTabState(tabID, "error", err.Error())
+		// Pump failures publish their own reconnecting/error state. Only a
+		// pre-attach failure should transition the original connecting shell.
+		a.remoteTabMu.Lock()
+		current := a.remoteTabs[tabID]
+		connecting := current != nil && current.state == "connecting"
+		a.remoteTabMu.Unlock()
+		if connecting {
+			a.emitRemoteTabState(tabID, "error", err.Error())
+		}
 		return
 	}
 	a.remoteTabMu.Lock()
 	openTab = a.remoteTabs[tabID]
 	if openTab == nil {
+		a.remoteTabMu.Unlock()
+		return
+	}
+	gen := openTab.gen
+	if openTab.attachedGen != gen || openTab.state != "connecting" {
 		a.remoteTabMu.Unlock()
 		return
 	}
@@ -572,10 +610,12 @@ func (a *App) bootstrapRemoteTab(tabID, hostID, workspace string) {
 		openTab.topicTitle = a.localizedDefaultTopicTitle()
 	}
 	a.remoteTabMu.Unlock()
-	// The attached session is already usable; remembering the explorer default
-	// is auxiliary and must not downgrade a healthy tab when prefs are unwritable.
+	if !a.publishRemoteTabAttachedReady(tabID, gen) {
+		return
+	}
+	// The confirmed /events pump makes the session usable without losing prompts.
+	// Saving the explorer default is auxiliary and cannot downgrade a healthy tab.
 	_ = a.saveLastRemoteWorkspace(hostID, workspace)
-	a.emitRemoteTabState(tabID, "ready", "")
 }
 
 // waitForRemoteHost polls the kernel until the host is usable. The frontend

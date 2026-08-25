@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
-	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -25,16 +24,21 @@ type fakeServe struct {
 	token  string
 	server *httptest.Server
 
-	mu          sync.Mutex
-	newCalled   int
-	resumePath  string
-	cookieOnNew bool
-	sessions    []serveSessionEntry
-	calls       []string // "METHOD /path body" per command request
-	failNext    string   // non-empty ⇒ next command endpoint replies 409 with this text
-	failEnter   string   // non-empty ⇒ next /new or /resume replies 409
-	failHistory bool     // /history replies 500 when set
-	eventsConns int      // /events connections opened
+	mu                sync.Mutex
+	newCalled         int
+	resumePath        string
+	cookieOnNew       bool
+	sessions          []serveSessionEntry
+	calls             []string // "METHOD /path body" per command request
+	failNext          string   // non-empty ⇒ next command endpoint replies 409 with this text
+	failEnter         string   // non-empty ⇒ next /new or /resume replies 409
+	enterDelay        time.Duration
+	failHistory       bool // /history replies 500 when set
+	eventsConns       int  // /events connections opened
+	eventsStatus      int  // non-zero makes /events fail before opening
+	eventsCloseEarly  bool // return immediately after the initial 200 frames
+	statusPayload     string
+	statusAfterCancel string
 }
 
 func (fs *fakeServe) eventsCount() int {
@@ -88,6 +92,7 @@ func newFakeServe(t *testing.T, token string, sessions []serveSessionEntry) *fak
 		fs.cookieOnNew = cookieErr == nil
 		fail := fs.failEnter
 		fs.failEnter = ""
+		enterDelay := fs.enterDelay
 		if fail != "" {
 			fs.mu.Unlock()
 			http.Error(w, fail, http.StatusConflict)
@@ -98,6 +103,9 @@ func newFakeServe(t *testing.T, token string, sessions []serveSessionEntry) *fak
 			fs.sessions[i].Current = false
 		}
 		fs.mu.Unlock()
+		if enterDelay > 0 {
+			time.Sleep(enterDelay)
+		}
 		w.WriteHeader(http.StatusNoContent)
 	})
 	mux.HandleFunc("POST /resume", func(w http.ResponseWriter, r *http.Request) {
@@ -111,6 +119,7 @@ func newFakeServe(t *testing.T, token string, sessions []serveSessionEntry) *fak
 		fs.mu.Lock()
 		fail := fs.failEnter
 		fs.failEnter = ""
+		enterDelay := fs.enterDelay
 		if fail != "" {
 			fs.mu.Unlock()
 			http.Error(w, fail, http.StatusConflict)
@@ -121,6 +130,9 @@ func newFakeServe(t *testing.T, token string, sessions []serveSessionEntry) *fak
 			fs.sessions[i].Current = fs.sessions[i].Path == body.Path
 		}
 		fs.mu.Unlock()
+		if enterDelay > 0 {
+			time.Sleep(enterDelay)
+		}
 		w.WriteHeader(http.StatusNoContent)
 	})
 	mux.HandleFunc("GET /sessions", func(w http.ResponseWriter, r *http.Request) {
@@ -130,7 +142,13 @@ func newFakeServe(t *testing.T, token string, sessions []serveSessionEntry) *fak
 	mux.HandleFunc("GET /events", func(w http.ResponseWriter, r *http.Request) {
 		fs.mu.Lock()
 		fs.eventsConns++
+		eventsStatus := fs.eventsStatus
+		closeEarly := fs.eventsCloseEarly
 		fs.mu.Unlock()
+		if eventsStatus != 0 {
+			http.Error(w, "event stream unavailable", eventsStatus)
+			return
+		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		flusher, ok := w.(http.Flusher)
 		if !ok {
@@ -140,6 +158,9 @@ func newFakeServe(t *testing.T, token string, sessions []serveSessionEntry) *fak
 		fmt.Fprintf(w, "data: %s\n\n", `{"kind":"session_start"}`)
 		fmt.Fprintf(w, "data: %s\n\n", `{"kind":"ready"}`)
 		flusher.Flush()
+		if closeEarly {
+			return
+		}
 		<-r.Context().Done()
 	})
 	command := func(path string) http.HandlerFunc {
@@ -149,6 +170,9 @@ func newFakeServe(t *testing.T, token string, sessions []serveSessionEntry) *fak
 			fs.mu.Lock()
 			fail := fs.failNext
 			fs.failNext = ""
+			if path == "/cancel" && fs.statusAfterCancel != "" {
+				fs.statusPayload = fs.statusAfterCancel
+			}
 			fs.mu.Unlock()
 			if fail != "" {
 				http.Error(w, fail, http.StatusConflict)
@@ -181,7 +205,17 @@ func newFakeServe(t *testing.T, token string, sessions []serveSessionEntry) *fak
 	snapshot("/todos", `[]`)
 	snapshot("/checkpoints", `[{"turn":1}]`)
 	snapshot("/models", `{"current":"remote/chat","label":"chat","models":[{"ref":"remote/chat","provider":"remote","model":"chat","active":true}]}`)
-	snapshot("/status", `{"state":"ready"}`)
+	mux.HandleFunc("GET /status", func(w http.ResponseWriter, r *http.Request) {
+		fs.record(r.Method, "/status", "")
+		fs.mu.Lock()
+		payload := fs.statusPayload
+		fs.mu.Unlock()
+		if payload == "" {
+			payload = `{"state":"ready"}`
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(payload))
+	})
 	snapshot("/branches", `{"branches":[]}`)
 	snapshot("/skills", `[]`)
 	gate := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -532,71 +566,6 @@ func openReadyRemoteTab(t *testing.T, a *App, opts RemoteTabOpenOptions) TabMeta
 	}
 	waitForTabState(t, a, meta.ID, "ready")
 	return meta
-}
-
-// TestRemoteTabCommandsForwardedToServe pins that every command binding
-// reaches the right serve endpoint with the mapped body.
-func TestRemoteTabCommandsForwardedToServe(t *testing.T) {
-	fs := newFakeServe(t, "s3cret", nil)
-	kernel := &fakeRemoteKernel{
-		statuses:    []RemoteConnectionStatusView{{HostID: "box", State: "connected"}},
-		ensureView:  RemoteServerView{HostID: "box", State: "ready", LocalURL: fs.server.URL},
-		ensureToken: "s3cret",
-	}
-	seedBridgeTestHost(t, "box")
-	a := &App{remoteRuntime: kernel}
-	cleanupRemoteTabPumps(t, a)
-	meta := openReadyRemoteTab(t, a, RemoteTabOpenOptions{NewSession: true})
-
-	steps := []struct {
-		name string
-		call func() error
-		want string
-	}{
-		{"submit", func() error { return a.SubmitRemoteTab(meta.ID, "hello") }, `POST /submit {"input":"hello"}`},
-		{"cancel", func() error { return a.CancelRemoteTab(meta.ID) }, "POST /cancel {}"},
-		{"approve", func() error { return a.ApproveRemoteTab(meta.ID, "call-1", "allow") }, `POST /approve {"allow":true,"id":"call-1"}`},
-		{"approve-deny", func() error { return a.ApproveRemoteTab(meta.ID, "call-2", "deny") }, `POST /approve {"allow":false,"id":"call-2"}`},
-		{"answer", func() error { return a.AnswerRemoteTab(meta.ID, "ask-1", "yes") }, `POST /answer {"answers":[{"QuestionID":"ask-1","Selected":["yes"]}],"id":"ask-1"}`},
-		{"rewind", func() error { return a.RewindRemoteTab(meta.ID, "3") }, `POST /rewind {"scope":"both","turn":3}`},
-		{"approval-mode", func() error { return a.SetRemoteTabToolApprovalMode(meta.ID, "auto") }, `POST /tool-approval-mode {"mode":"auto"}`},
-		{"goal", func() error { return a.SetRemoteTabGoal(meta.ID, "ship it") }, `POST /goal {"goal":"ship it"}`},
-		{"effort", func() error { return a.SetRemoteTabEffort(meta.ID, "high") }, `POST /effort {"level":"high"}`},
-		{"plan-on", func() error { return a.SetRemoteTabPlanMode(meta.ID, true) }, `POST /plan {"on":true}`},
-		{"compact", func() error { return a.CompactRemoteTab(meta.ID) }, "POST /compact {}"},
-		{"fork", func() error { return a.ForkRemoteTab(meta.ID, 2, "try-auth") }, `POST /fork {"name":"try-auth","turn":2}`},
-		{"summarize", func() error { return a.SummarizeRemoteTab(meta.ID, 4, "upto") }, `POST /summarize {"mode":"upto","turn":4}`},
-		{"forget", func() error { return a.ForgetRemoteTab(meta.ID, "api-key") }, `POST /forget {"name":"api-key"}`},
-	}
-	for _, step := range steps {
-		if err := step.call(); err != nil {
-			t.Fatalf("%s: %v", step.name, err)
-		}
-	}
-	calls := fs.recorded()
-	for _, step := range steps {
-		if !slices.Contains(calls, step.want) {
-			t.Fatalf("%s: serve saw %v, want %q", step.name, calls, step.want)
-		}
-	}
-	if _, err := a.RemoteTabBranches(meta.ID); err != nil {
-		t.Fatalf("branches: %v", err)
-	}
-	if _, err := a.RemoteTabSkills(meta.ID); err != nil {
-		t.Fatalf("skills: %v", err)
-	}
-	foundBranches, foundSkills := false, false
-	for _, c := range fs.recorded() {
-		if c == "GET /branches " {
-			foundBranches = true
-		}
-		if c == "GET /skills " {
-			foundSkills = true
-		}
-	}
-	if !foundBranches || !foundSkills {
-		t.Fatalf("branches/skills reads missing: %v", fs.recorded())
-	}
 }
 
 // TestRemoteTabCommandRejectsUnknownOrUnreadyTab: an unknown tabID and a

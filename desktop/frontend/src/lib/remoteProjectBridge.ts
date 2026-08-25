@@ -1,5 +1,5 @@
 import type { TabMeta } from "./types";
-import type { RemoteProjectView, RemoteSessionView, RemoteTabOpenOptions, RemoteTabSnapshot } from "./remoteTypes";
+import type { RemoteAskAnswer, RemoteProjectView, RemoteSessionView, RemoteTabOpenOptions, RemoteTabSnapshot } from "./remoteTypes";
 
 export interface RemoteProjectBindings {
   AddRemoteProject(hostId: string, workspace: string): Promise<RemoteProjectView>;
@@ -15,12 +15,13 @@ export interface RemoteProjectBindings {
   SubmitRemoteTab(tabId: string, text: string): Promise<void>;
   CancelRemoteTab(tabId: string): Promise<void>;
   ApproveRemoteTab(tabId: string, callId: string, decision: string): Promise<void>;
-  AnswerRemoteTab(tabId: string, callId: string, answer: string): Promise<void>;
+  AnswerRemoteTab(tabId: string, callId: string, answers: RemoteAskAnswer[]): Promise<void>;
   SetRemoteTabModel(tabId: string, ref: string): Promise<void>;
   RewindRemoteTab(tabId: string, checkpointId: string): Promise<void>;
   SetRemoteTabToolApprovalMode(tabId: string, mode: string): Promise<void>;
   SetRemoteTabGoal(tabId: string, goal: string): Promise<void>;
   RemoteTabSnapshot(tabId: string): Promise<RemoteTabSnapshot>;
+  RemoteTabStatus(tabId: string): Promise<unknown>;
   SetRemoteTabEffort(tabId: string, level: string): Promise<void>;
   SetRemoteTabPlanMode(tabId: string, on: boolean): Promise<void>;
   CompactRemoteTab(tabId: string): Promise<void>;

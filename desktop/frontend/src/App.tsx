@@ -99,7 +99,6 @@ import {
   type ComposerInsertRequest,
   type DesktopStartupSettingsView,
   type Mode,
-  modeHasPlan,
   type RewindResultView,
   type RemoteHostView,
   type SessionMeta,
@@ -119,7 +118,6 @@ import {
   composerProfileFromMeta,
   composerProfileFromTab,
   composerProfileMode,
-  composerProfileWithMode,
   controllerComposerProfileCollaborationMode,
   defaultComposerProfile,
   displayedComposerProfileCollaborationMode,
@@ -135,10 +133,10 @@ import {
   type UserPlanModeIntents,
 } from "./lib/composerProfile";
 import {
-  restorableToolApprovalMode,
   toggleYoloToolApprovalMode,
   type RestorableToolApprovalMode,
 } from "./lib/toolApprovalMode";
+import { useComposerModeActions } from "./lib/useComposerModeActions";
 import {
   CREATION_RIGHT_DOCK_MIN_RENDER_WIDTH,
   CREATION_RIGHT_DOCK_TREE_MIN_WIDTH,
@@ -1100,6 +1098,7 @@ export default function App() {
     setEffort,
     cancelJob,
     switchTab,
+    switchRemoteTab,
     openProjectTab,
     createIsolatedWorktree,
     openGlobalTab,
@@ -1953,47 +1952,13 @@ export default function App() {
     void app.SetTrayLocale(locale).catch(() => {});
   }, [locale]);
 
-  // applyMode is the single source of truth for the input mode: it updates the
-  // local pill and pushes the matching gate state to the controller (plan = read
-  // only; yolo = auto-approve approval-gated tools while user decisions still wait).
-  // normal clears both.
-  const applyMode = useCallback(
-    (m: Mode) => {
-      userPlanModeByTabRef.current = updateUserPlanModeIntent(userPlanModeByTabRef.current, activeTabId, modeHasPlan(m));
-      patchActiveComposerProfile(composerProfileWithMode(m), ["collaborationMode", "toolApprovalMode", "goal"]);
-      void syncModeToController(m);
-    },
-    [activeTabId, patchActiveComposerProfile, syncModeToController],
-  );
-  const applyCollaborationMode = useCallback(
-    async (m: CollaborationMode): Promise<void> => {
-      if (m === "goal") {
-        userPlanModeByTabRef.current = updateUserPlanModeIntent(userPlanModeByTabRef.current, activeTabId, false);
-        patchActiveComposerProfile({ collaborationMode: "normal", goalDraftMode: true, goal: "" }, ["collaborationMode", "goal"]);
-        return setControllerCollaborationMode("normal");
-      }
-      if (goal.trim()) await clearControllerGoal();
-      await setControllerCollaborationMode(m);
-      userPlanModeByTabRef.current = updateUserPlanModeIntent(userPlanModeByTabRef.current, activeTabId, m === "plan");
-      patchActiveComposerProfile({ collaborationMode: m, goalDraftMode: false, goal: "" }, ["collaborationMode", "goal"]);
-    },
-    [activeTabId, clearControllerGoal, goal, patchActiveComposerProfile, setControllerCollaborationMode],
-  );
-  const applyToolApprovalMode = useCallback(
-    (m: ToolApprovalMode) => {
-      if (!activeTabId) return;
-      if (m === "yolo") {
-        if (toolApprovalMode !== "yolo") {
-          yoloRestoreToolApprovalModesRef.current[activeTabId] = restorableToolApprovalMode(toolApprovalMode);
-        }
-      } else {
-        yoloRestoreToolApprovalModesRef.current[activeTabId] = restorableToolApprovalMode(m);
-      }
-      patchActiveComposerProfile({ toolApprovalMode: m }, ["toolApprovalMode"]);
-      void setControllerToolApprovalMode(m);
-    },
-    [activeTabId, patchActiveComposerProfile, setControllerToolApprovalMode, toolApprovalMode],
-  );
+  const { applyMode, applyCollaborationMode, applyToolApprovalMode } = useComposerModeActions({
+    activeTabId, remote: remoteSurfaceActive, collaborationMode, toolApprovalMode, goal,
+    planIntentRef: userPlanModeByTabRef, yoloRestoreRef: yoloRestoreToolApprovalModesRef,
+    patchProfile: patchActiveComposerProfile, setControllerMode: syncModeToController,
+    setControllerCollaborationMode, setControllerToolApprovalMode, clearControllerGoal,
+    showError: (message) => showToast(message, "error"),
+  });
   const applyQualityFloor = useCallback(
     (floor: QualityFloor) => {
       if (!activeTabId) return;
@@ -2031,10 +1996,15 @@ export default function App() {
       const trimmed = nextGoal.trim();
       // Activate the backend Goal first. Only then patch the local profile so a
       // failed SetGoalForTab cannot leave the Composer thinking a Goal is active.
+      if (tabMetas.some((tab) => tab.id === tabId && tab.remote)) {
+        await app.SetRemoteTabGoal(tabId, trimmed);
+        patchActivatedGoalForTab(tabId, trimmed);
+        return;
+      }
       await (trimmed ? setControllerGoalForTab(tabId, trimmed) : clearControllerGoalForTab(tabId));
       patchActivatedGoalForTab(tabId, trimmed);
     },
-    [clearControllerGoalForTab, patchActivatedGoalForTab, setControllerGoalForTab],
+    [clearControllerGoalForTab, patchActivatedGoalForTab, setControllerGoalForTab, tabMetas],
   );
   const applyGoal = useCallback(
     async (nextGoal: string): Promise<void> => {
@@ -2043,6 +2013,13 @@ export default function App() {
     },
     [activeTabId, applyGoalForTab],
   );
+  const remoteComposerSend = useCallback(async (displayText: string, submitText = displayText): Promise<void> => {
+    if (activeTabId && collaborationMode === "goal" && !goal.trim()) {
+      const nextGoal = (submitText || displayText).trim();
+      if (nextGoal) await applyGoalForTab(activeTabId, nextGoal);
+    }
+    await remoteSend(displayText, submitText);
+  }, [activeTabId, applyGoalForTab, collaborationMode, goal, remoteSend]);
   const cancelRuntimeJob = useCallback(async (tabId: string, jobId: string): Promise<boolean> => {
     try {
       const cancelled = await app.CancelJobForTab(tabId, jobId);
@@ -2498,8 +2475,13 @@ export default function App() {
     setTabMetas((current) => seedActiveTabMetaList(current, tab));
     setTabOrderIds((current) => current.includes(tab.id) ? current : [...current, tab.id]);
   }, []);
+  const updateRemoteTabMeta = useCallback((tab: TabMeta): void => {
+    setTabMetas((current) => current.map((existing) => existing.id === tab.id
+      ? { ...existing, ...tab, active: existing.active }
+      : existing));
+  }, []);
 
-  useRemoteTabOpened(activeTabIdRef, seedActiveTabMeta, switchTab);
+  useRemoteTabOpened(activeTabIdRef, seedActiveTabMeta, updateRemoteTabMeta, switchRemoteTab);
 
   useEffect(() => {
     const unsub = onEvent((e) => {
@@ -3234,7 +3216,8 @@ export default function App() {
         async (request) => {
           try {
             if (!isNavigationIntentCurrent(request.navigationIntentSeq)) return;
-            await switchTab(request.tabId, request.optimisticTab, request.navigationIntentSeq);
+            if (request.optimisticTab?.remote) await switchRemoteTab(request.optimisticTab, request.navigationIntentSeq);
+            else await switchTab(request.tabId, request.optimisticTab, request.navigationIntentSeq);
             if (!isNavigationIntentCurrent(request.navigationIntentSeq)) return;
             await refreshTabMetas(
               () => isNavigationIntentCurrent(request.navigationIntentSeq),
@@ -3246,7 +3229,7 @@ export default function App() {
         },
       );
     },
-    [beginNavigationSurface, enterChatViewForTabNavigation, isNavigationIntentCurrent, noteNavigationIntent, refreshTabMetas, settleNavigationSurface, switchTab],
+    [beginNavigationSurface, enterChatViewForTabNavigation, isNavigationIntentCurrent, noteNavigationIntent, refreshTabMetas, settleNavigationSurface, switchRemoteTab, switchTab],
   );
 
   const revealBackgroundRuntime = useCallback(async (tabId: string): Promise<void> => {
@@ -4546,6 +4529,7 @@ export default function App() {
                 activeWorkspaceRoot={activeTab?.workspaceRoot}
                 activeTopicId={activeTab?.topicId}
                 activeSessionPath={activeTab?.sessionPath}
+                activeRemote={activeTab?.remote}
                 imTopicSources={imTopicSources}
                 onOpenTopic={handleOpenTopic}
                 onCreateTopic={(scope, workspaceRoot) => openBlankSession(scope, scope === "project" ? workspaceRoot : "")}
@@ -5137,12 +5121,12 @@ export default function App() {
               goalStatus={state.meta?.goalStatus}
               goalRuntime={state.meta?.goalRuntime}
               cwd={state.meta?.cwd}
-              modelLabel={remoteSurfaceActive ? activeTab?.label || remoteSession.modelLabel || t("status.connecting") : state.meta?.label ?? t("status.connecting")}
+              modelLabel={remoteSurfaceActive ? remoteSession.modelLabel || activeTab?.label || t("status.connecting") : state.meta?.label ?? t("status.connecting")}
               imageInputEnabled={state.meta?.imageInputEnabled !== false}
               imageUnderstandingEnabled={state.meta?.visionFallbackEnabled === true}
               tabId={activeTabId}
               effort={state.effort}
-              onSend={remoteSurfaceActive ? remoteSend : handleSend}
+              onSend={remoteSurfaceActive ? remoteComposerSend : handleSend}
               onInvocationMetadataChange={handleInvocationMetadataChange}
               onSteer={handleSteer}
               onCancel={remoteSurfaceActive ? remoteCancel : cancel}

@@ -19,6 +19,8 @@ import (
 // session cookie over the loopback tunnel. Subsequent API and SSE requests
 // use that cookie, keeping the token out of request lines and access logs.
 
+const remoteTabStreamOpenStability = 50 * time.Millisecond
+
 // enterRemoteSession enters a fresh or named Serve session. Since /resume
 // takes a path rather than a name, named sessions resolve through /sessions.
 func enterRemoteSession(ctx context.Context, client *http.Client, base string, opts RemoteTabOpenOptions) error {
@@ -40,6 +42,14 @@ func enterRemoteSession(ctx context.Context, client *http.Client, base string, o
 		}
 	}
 	return fmt.Errorf("remote session %q not found", name)
+}
+
+func remoteSessionTransitionBusy(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := err.Error()
+	return strings.Contains(message, "status 409") || strings.Contains(message, "while a turn is running")
 }
 
 // attachRemoteTabServe starts the event pump before entering the session so
@@ -86,20 +96,79 @@ func (a *App) attachRemoteTabServe(ctx context.Context, tabID, base, token strin
 	tab.cancel = cancelPump
 	a.remoteTabMu.Unlock()
 
-	a.goSafe("remoteTabPump", func() { a.remoteTabPump(pumpCtx, tabID, gen) })
+	opened := make(chan error, 1)
+	a.goSafe("remoteTabPump", func() { a.remoteTabPump(pumpCtx, tabID, gen, opened) })
+	select {
+	case err = <-opened:
+		if err != nil {
+			a.retireRemoteTabGeneration(tabID, gen)
+			return false, err
+		}
+	case <-callCtx.Done():
+		a.retireRemoteTabGeneration(tabID, gen)
+		return false, callCtx.Err()
+	}
 	err = enterRemoteSession(callCtx, client, base, opts)
+	entered := err == nil
 	if err != nil {
 		// A busy serve refuses session transitions with 409 but retains its
 		// usable current session. Keep the attach so pending work remains visible.
-		if strings.Contains(err.Error(), "status 409") || strings.Contains(err.Error(), "while a turn is running") {
+		if remoteSessionTransitionBusy(err) {
 			log.Printf("[remote] attachRemoteTabServe: enterRemoteSession BUSY (attached to current session) tab=%s err=%v", tabID, err)
-			return false, nil
+			entered = false
+		} else {
+			log.Printf("[remote] attachRemoteTabServe: enterRemoteSession FAILED tab=%s err=%v", tabID, err)
+			a.retireRemoteTabGeneration(tabID, gen)
+			return false, err
 		}
-		log.Printf("[remote] attachRemoteTabServe: enterRemoteSession FAILED tab=%s err=%v", tabID, err)
-		a.retireRemoteTabGeneration(tabID, gen)
-		return false, err
 	}
-	return true, nil
+	if !a.waitRemoteTabStreamStable(callCtx, tabID, gen) {
+		return false, fmt.Errorf("remote tab %q event stream closed during session attach", tabID)
+	}
+	// A 200 response is only the stream-open barrier. The stream can still die
+	// while /new or /resume is in flight; publish readiness only if its pump has
+	// not already moved this same generation into reconnecting/error.
+	if !a.markRemoteTabAttached(tabID, gen) {
+		return false, fmt.Errorf("remote tab %q event stream closed during session attach", tabID)
+	}
+	return entered, nil
+}
+
+func (a *App) waitRemoteTabStreamStable(ctx context.Context, tabID string, gen uint64) bool {
+	timer := time.NewTimer(remoteTabStreamOpenStability)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return a.remoteTabGenerationCurrent(tabID, gen)
+	}
+}
+
+func (a *App) markRemoteTabAttached(tabID string, gen uint64) bool {
+	a.remoteTabMu.Lock()
+	defer a.remoteTabMu.Unlock()
+	tab := a.remoteTabs[tabID]
+	if tab == nil || tab.gen != gen || tab.state != "connecting" {
+		return false
+	}
+	tab.attachedGen = gen
+	return true
+}
+
+func (a *App) publishRemoteTabAttachedReady(tabID string, gen uint64) bool {
+	a.remoteTabMu.Lock()
+	tab := a.remoteTabs[tabID]
+	if tab == nil || tab.gen != gen || tab.attachedGen != gen || tab.state != "connecting" {
+		a.remoteTabMu.Unlock()
+		return false
+	}
+	tab.attachedGen = 0
+	tab.state = "ready"
+	tab.err = ""
+	a.remoteTabMu.Unlock()
+	a.emitRemoteEvent(fmt.Sprintf("remote-tab:%s:state", tabID), RemoteTabStateView{State: "ready"})
+	return true
 }
 
 func (a *App) remoteTabGenerationCurrent(tabID string, gen uint64) bool {
@@ -118,6 +187,7 @@ func (a *App) retireRemoteTabGeneration(tabID string, gen uint64) {
 	}
 	cancel := tab.cancel
 	tab.gen++
+	tab.attachedGen = 0
 	tab.cancel = nil
 	tab.client = nil
 	tab.base = ""
@@ -126,6 +196,35 @@ func (a *App) retireRemoteTabGeneration(tabID string, gen uint64) {
 	if cancel != nil {
 		cancel()
 	}
+}
+
+// reconnectRemoteTabGeneration retires a dead pump and atomically parks its
+// tab in reconnecting. The bool reports whether this pump should start the
+// retry loop; a pump opened by an existing retry loop leaves retries to its
+// caller so two loops cannot race each other.
+func (a *App) reconnectRemoteTabGeneration(tabID string, gen uint64) bool {
+	a.remoteTabMu.Lock()
+	tab := a.remoteTabs[tabID]
+	if tab == nil || tab.gen != gen {
+		a.remoteTabMu.Unlock()
+		return false
+	}
+	startRetry := tab.state != "reconnecting"
+	cancel := tab.cancel
+	tab.gen++
+	tab.attachedGen = 0
+	tab.cancel = nil
+	tab.client = nil
+	tab.base = ""
+	tab.token = ""
+	tab.state = "reconnecting"
+	tab.err = ""
+	a.remoteTabMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	a.emitRemoteEvent(fmt.Sprintf("remote-tab:%s:state", tabID), RemoteTabStateView{State: "reconnecting"})
+	return startRetry
 }
 
 func (a *App) emitRemoteTabStateForGeneration(tabID string, gen uint64, state, errMsg string) bool {
@@ -142,9 +241,33 @@ func (a *App) emitRemoteTabStateForGeneration(tabID string, gen uint64, state, e
 	return true
 }
 
+func (a *App) transitionRemoteTabState(tabID string, gen uint64, from, state, errMsg string) bool {
+	a.remoteTabMu.Lock()
+	tab := a.remoteTabs[tabID]
+	if tab == nil || tab.gen != gen || tab.state != from {
+		a.remoteTabMu.Unlock()
+		return false
+	}
+	tab.state = state
+	tab.err = errMsg
+	a.remoteTabMu.Unlock()
+	a.emitRemoteEvent(fmt.Sprintf("remote-tab:%s:state", tabID), RemoteTabStateView{State: state, Error: errMsg})
+	return true
+}
+
 // remoteTabPump forwards Serve events for one tab generation. Cancellation,
 // stream death, or a generation mismatch retires the pump.
-func (a *App) remoteTabPump(ctx context.Context, tabID string, gen uint64) {
+func (a *App) remoteTabPump(ctx context.Context, tabID string, gen uint64, opened chan<- error) {
+	signalOpened := func(err error) {
+		if opened == nil {
+			return
+		}
+		select {
+		case opened <- err:
+		default:
+		}
+		opened = nil
+	}
 	a.remoteTabMu.Lock()
 	tab := a.remoteTabs[tabID]
 	var client *http.Client
@@ -154,17 +277,22 @@ func (a *App) remoteTabPump(ctx context.Context, tabID string, gen uint64) {
 	}
 	a.remoteTabMu.Unlock()
 	if client == nil || base == "" {
+		if opened != nil {
+			opened <- fmt.Errorf("remote tab %q event stream was retired before opening", tabID)
+		}
 		return
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, serveURL(base, "/events"), nil)
 	if err != nil {
+		signalOpened(err)
 		a.emitRemoteTabStateForGeneration(tabID, gen, "error", err.Error())
 		return
 	}
 	req.Header.Set("Accept", "text/event-stream")
 	resp, err := client.Do(req)
 	if err != nil {
+		signalOpened(err)
 		if ctx.Err() == nil {
 			log.Printf("[remote] remoteTabPump: /events DO-FAILED tab=%s err=%v", tabID, err)
 			a.emitRemoteTabStateForGeneration(tabID, gen, "error", err.Error())
@@ -173,10 +301,13 @@ func (a *App) remoteTabPump(ctx context.Context, tabID string, gen uint64) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
+		err = fmt.Errorf("serve /events: status %d", resp.StatusCode)
+		signalOpened(err)
 		log.Printf("[remote] remoteTabPump: /events BAD-STATUS tab=%s status=%d", tabID, resp.StatusCode)
-		a.emitRemoteTabStateForGeneration(tabID, gen, "error", fmt.Sprintf("serve /events: status %d", resp.StatusCode))
+		a.emitRemoteTabStateForGeneration(tabID, gen, "error", err.Error())
 		return
 	}
+	signalOpened(nil)
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 64<<10), serveEventMaxBytes)
 	for scanner.Scan() {
@@ -199,6 +330,15 @@ func (a *App) remoteTabPump(ctx context.Context, tabID string, gen uint64) {
 		if json.Unmarshal([]byte(frame), &probe) == nil && probe.Kind != "" {
 			kind = probe.Kind
 		}
+		if kind == "approval_request" || kind == "ask_request" {
+			a.cacheRemotePendingEvent(tabID, gen, kind, json.RawMessage(frame))
+		} else if kind == "turn_done" {
+			a.remoteTabMu.Lock()
+			if tab := a.remoteTabs[tabID]; tab != nil && tab.gen == gen {
+				tab.pendingEvents = nil
+			}
+			a.remoteTabMu.Unlock()
+		}
 		a.emitRemoteEvent(fmt.Sprintf("remote-tab:%s:event", tabID), json.RawMessage(frame))
 		if kind == "turn_done" {
 			// The serve generates the session title from the finished
@@ -214,9 +354,48 @@ func (a *App) remoteTabPump(ctx context.Context, tabID string, gen uint64) {
 	}
 	// Only the current generation reacts to an unexpected stream death.
 	// Reattach now; the host status hook also retries on connection recovery.
-	if ctx.Err() == nil && a.emitRemoteTabStateForGeneration(tabID, gen, "reconnecting", "") {
-		a.goSafe("remoteTabReattach", func() { a.reattachRemoteTab(tabID) })
+	if ctx.Err() == nil {
+		if startRetry := a.reconnectRemoteTabGeneration(tabID, gen); startRetry {
+			a.goSafe("remoteTabReattach", func() { a.reattachRemoteTab(tabID) })
+		}
 	}
+}
+
+func (a *App) cacheRemotePendingEvent(tabID string, gen uint64, kind string, frame json.RawMessage) {
+	var probe struct {
+		Approval *struct {
+			ID string `json:"id"`
+		} `json:"approval"`
+		Ask *struct {
+			ID string `json:"id"`
+		} `json:"ask"`
+	}
+	_ = json.Unmarshal(frame, &probe)
+	id := ""
+	if probe.Approval != nil {
+		id = probe.Approval.ID
+	} else if probe.Ask != nil {
+		id = probe.Ask.ID
+	}
+	key := kind + ":" + strings.TrimSpace(id)
+	a.remoteTabMu.Lock()
+	defer a.remoteTabMu.Unlock()
+	tab := a.remoteTabs[tabID]
+	if tab == nil || tab.gen != gen {
+		return
+	}
+	if tab.pendingEvents == nil {
+		tab.pendingEvents = make(map[string]json.RawMessage)
+	}
+	tab.pendingEvents[key] = append(json.RawMessage(nil), frame...)
+}
+
+func (a *App) clearRemotePendingEvent(tabID, kind, callID string) {
+	a.remoteTabMu.Lock()
+	if tab := a.remoteTabs[tabID]; tab != nil {
+		delete(tab.pendingEvents, kind+":"+strings.TrimSpace(callID))
+	}
+	a.remoteTabMu.Unlock()
 }
 
 // serveGet fetches a JSON member of the tab snapshot, returning the raw
@@ -262,7 +441,7 @@ func (a *App) remoteTabCommandClient(tabID string) (*http.Client, string, error)
 	tab := a.remoteTabs[tabID]
 	var client *http.Client
 	var base string
-	usable := tab != nil && tab.client != nil && tab.state != "reconnecting" && tab.state != "error"
+	usable := tab != nil && tab.client != nil && tab.state == "ready"
 	if usable {
 		client, base = tab.client, tab.base
 	}
@@ -346,13 +525,21 @@ func (a *App) ApproveRemoteTab(tabID, callID, decision string) error {
 	ctx, cancel := commandContext(a)
 	defer cancel()
 	body, _ := json.Marshal(map[string]any{"id": callID, "allow": strings.EqualFold(strings.TrimSpace(decision), "allow")})
-	return servePost(ctx, client, serveURL(base, "/approve"), body)
+	if err := servePost(ctx, client, serveURL(base, "/approve"), body); err != nil {
+		return err
+	}
+	a.clearRemotePendingEvent(tabID, "approval_request", callID)
+	return nil
 }
 
-// AnswerRemoteTab answers an ask_request. Serve decodes event.AskAnswer
-// (no json tags ⇒ fields marshal as QuestionID/Selected); callID doubles as
-// the question id for the single-answer desktop shape.
-func (a *App) AnswerRemoteTab(tabID, callID, answer string) error {
+type RemoteAskAnswer struct {
+	QuestionID string   `json:"QuestionID"`
+	Selected   []string `json:"Selected"`
+}
+
+// AnswerRemoteTab preserves the batch ask id at the top level and sends every
+// question's own id/selections in the Serve AskAnswer wire shape.
+func (a *App) AnswerRemoteTab(tabID, callID string, answers []RemoteAskAnswer) error {
 	client, base, err := a.remoteTabCommandClient(tabID)
 	if err != nil {
 		return err
@@ -361,9 +548,13 @@ func (a *App) AnswerRemoteTab(tabID, callID, answer string) error {
 	defer cancel()
 	body, _ := json.Marshal(map[string]any{
 		"id":      callID,
-		"answers": []map[string]any{{"QuestionID": callID, "Selected": []string{answer}}},
+		"answers": answers,
 	})
-	return servePost(ctx, client, serveURL(base, "/answer"), body)
+	if err := servePost(ctx, client, serveURL(base, "/answer"), body); err != nil {
+		return err
+	}
+	a.clearRemotePendingEvent(tabID, "ask_request", callID)
+	return nil
 }
 
 // RewindRemoteTab rewinds to a checkpoint. Serve identifies checkpoints by
@@ -408,12 +599,13 @@ func (a *App) SetRemoteTabGoal(tabID, goal string) error {
 // RemoteTabSnapshot mirrors the frontend shape: raw serve payloads passed
 // through verbatim so the surface decides how to consume them.
 type RemoteTabSnapshot struct {
-	History     json.RawMessage `json:"history"`
-	Context     json.RawMessage `json:"context,omitempty"`
-	Todos       json.RawMessage `json:"todos,omitempty"`
-	Checkpoints json.RawMessage `json:"checkpoints,omitempty"`
-	Models      json.RawMessage `json:"models,omitempty"`
-	Status      json.RawMessage `json:"status,omitempty"`
+	History       json.RawMessage   `json:"history"`
+	Context       json.RawMessage   `json:"context,omitempty"`
+	Todos         json.RawMessage   `json:"todos,omitempty"`
+	Checkpoints   json.RawMessage   `json:"checkpoints,omitempty"`
+	Models        json.RawMessage   `json:"models,omitempty"`
+	Status        json.RawMessage   `json:"status,omitempty"`
+	PendingEvents []json.RawMessage `json:"pendingEvents,omitempty"`
 }
 
 // RemoteTabSnapshot merges the serve's GET members in parallel. Only
@@ -459,263 +651,25 @@ func (a *App) RemoteTabSnapshot(tabID string) (RemoteTabSnapshot, error) {
 	if len(snap.History) == 0 {
 		return RemoteTabSnapshot{}, fmt.Errorf("remote tab %q: empty history", tabID)
 	}
+	a.remoteTabMu.Lock()
+	if tab := a.remoteTabs[tabID]; tab != nil {
+		keys := make([]string, 0, len(tab.pendingEvents))
+		for key := range tab.pendingEvents {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			snap.PendingEvents = append(snap.PendingEvents, append(json.RawMessage(nil), tab.pendingEvents[key]...))
+		}
+	}
+	a.remoteTabMu.Unlock()
 	return snap, nil
 }
 
-// remoteTabMetas returns chrome metas for every open remote tab (in strip
-// order) plus the currently highlighted remote tab id ("" when a local tab is
-// active).
-func reconcileTabStripOrder(preferred, localIDs, remoteIDs []string) []string {
-	valid := make(map[string]bool, len(localIDs)+len(remoteIDs))
-	for _, id := range localIDs {
-		valid[id] = true
-	}
-	for _, id := range remoteIDs {
-		valid[id] = true
-	}
-	seen := make(map[string]bool, len(valid))
-	out := make([]string, 0, len(valid))
-	appendID := func(id string) {
-		if valid[id] && !seen[id] {
-			seen[id] = true
-			out = append(out, id)
-		}
-	}
-	for _, id := range preferred {
-		appendID(id)
-	}
-	for _, id := range localIDs {
-		appendID(id)
-	}
-	for _, id := range remoteIDs {
-		appendID(id)
-	}
-	return out
-}
-
-func (a *App) remoteTabMetas(localIDs []string) ([]TabMeta, string, []string) {
-	a.remoteTabMu.Lock()
-	defer a.remoteTabMu.Unlock()
-	ids := a.orderedRemoteTabIDsLocked()
-	metas := make([]TabMeta, 0, len(ids))
-	for _, id := range ids {
-		if tab := a.remoteTabs[id]; tab != nil {
-			meta := remoteTabMetaLocked(tab)
-			meta.Active = id == a.remoteTabLayout.activeID
-			metas = append(metas, meta)
-		}
-	}
-	a.remoteTabLayout.stripOrder = reconcileTabStripOrder(a.remoteTabLayout.stripOrder, localIDs, ids)
-	return metas, a.remoteTabLayout.activeID, append([]string(nil), a.remoteTabLayout.stripOrder...)
-}
-
-// orderedRemoteTabIDsLocked returns the remote strip order with self-repair:
-// registry keys missing from the order append in sorted order (mirrors
-// orderedTabIDsLocked for the local side). Caller holds remoteTabMu.
-func (a *App) orderedRemoteTabIDsLocked() []string {
-	seen := make(map[string]bool, len(a.remoteTabLayout.order))
-	out := make([]string, 0, len(a.remoteTabs))
-	for _, id := range a.remoteTabLayout.order {
-		if a.remoteTabs[id] != nil && !seen[id] {
-			seen[id] = true
-			out = append(out, id)
-		}
-	}
-	var missing []string
-	for id := range a.remoteTabs {
-		if !seen[id] {
-			missing = append(missing, id)
-		}
-	}
-	sort.Strings(missing)
-	return append(out, missing...)
-}
-
-// remoteTabsFileEntries snapshots the persisted remote tab section (entries
-// plus strip order plus the active remote id). Called from the tab-file write
-// path — lock order tabsSaveMu → remoteTabMu.
-func (a *App) remoteTabsFileEntries(localIDs []string) ([]desktopRemoteTabEntry, []string, []string, string) {
-	a.remoteTabMu.Lock()
-	defer a.remoteTabMu.Unlock()
-	ids := a.orderedRemoteTabIDsLocked()
-	entries := make([]desktopRemoteTabEntry, 0, len(ids))
-	for _, id := range ids {
-		tab := a.remoteTabs[id]
-		if tab == nil {
-			continue
-		}
-		entries = append(entries, desktopRemoteTabEntry{
-			ID:         tab.id,
-			HostID:     tab.ref.HostID,
-			Workspace:  tab.ref.Workspace,
-			TopicTitle: tab.topicTitle,
-			Model:      tab.model,
-		})
-	}
-	order := append([]string(nil), ids...)
-	if len(order) == 0 {
-		order = nil
-	}
-	stripOrder := reconcileTabStripOrder(a.remoteTabLayout.stripOrder, localIDs, ids)
-	if len(entries) == 0 {
-		stripOrder = nil
-	}
-	a.remoteTabLayout.stripOrder = append([]string(nil), stripOrder...)
-	return entries, order, stripOrder, a.remoteTabLayout.activeID
-}
-
-// CloseRemoteTab tears down one remote tab: the SSE pump stops and the
-// registry entry goes away. The remote serve and the SSH connection stay
-// untouched — other tabs on the same host keep running.
-func (a *App) CloseRemoteTab(tabID string) error {
-	a.remoteTabMu.Lock()
-	tab := a.remoteTabs[tabID]
-	closingIndex := -1
-	for i, id := range a.remoteTabLayout.stripOrder {
-		if id == tabID {
-			closingIndex = i
-			break
-		}
-	}
-	delete(a.remoteTabs, tabID)
-	a.remoteTabLayout.order = removeRemoteTabOrderID(a.remoteTabLayout.order, tabID)
-	if a.remoteTabLayout.activeID == tabID {
-		a.remoteTabLayout.activeID = ""
-		remaining := removeRemoteTabOrderID(append([]string(nil), a.remoteTabLayout.stripOrder...), tabID)
-		if len(remaining) > 0 && closingIndex >= 0 {
-			nextIndex := closingIndex
-			if nextIndex >= len(remaining) {
-				nextIndex = len(remaining) - 1
-			}
-			if a.remoteTabs[remaining[nextIndex]] != nil {
-				a.remoteTabLayout.activeID = remaining[nextIndex]
-			}
-		}
-	}
-	var cancel context.CancelFunc
-	if tab != nil {
-		cancel = tab.cancel
-	}
-	a.remoteTabMu.Unlock()
-	if cancel != nil {
-		cancel()
-	}
-	a.saveTabsFromRemote()
-	return nil
-}
-
-// remoteTabsHostStatus reacts to SSH transitions for every open tab on the
-// host: losing the tunnel suspends the pumps, a regained connection
-// re-attaches each tab to the still-running remote serve, and a terminal
-// failure parks the tabs in error.
-func (a *App) remoteTabsHostStatus(hostID, state, errText string) {
-	switch state {
-	case "connecting", "reconnecting":
-		a.suspendRemoteTabPumps(hostID, "reconnecting", "")
-	case "connected":
-		a.resumeRemoteTabs(hostID)
-	case "stopped":
-		a.suspendRemoteTabPumps(hostID, "error", errText)
-	}
-}
-
-func (a *App) suspendRemoteTabPumps(hostID, state, errText string) {
-	a.remoteTabMu.Lock()
-	for _, tab := range a.remoteTabs {
-		if tab.ref.HostID != hostID || tab.state == "disconnected" || (tab.state == "connecting" && tab.client == nil) {
-			// A restored shell was never connected this run: host status
-			// transitions must not flip it into a runtime state. The same is
-			// true for a first bootstrap that is still waiting for that host.
-			continue
-		}
-		tab.gen++
-		if tab.cancel != nil {
-			tab.cancel()
-			tab.cancel = nil
-		}
-		tab.state = state
-		tab.err = errText
-	}
-	a.remoteTabMu.Unlock()
-}
-
-// resumeRemoteTabs re-attaches every suspended tab of a reconnected host.
-// The remote serve kept running through the SSH drop, so re-attachment only
-// rebuilds the tunnel client and the event pump; the serve still holds the
-// active session, so no session re-entry is needed.
-func (a *App) resumeRemoteTabs(hostID string) {
-	a.remoteTabMu.Lock()
-	tabIDs := make([]string, 0, 2)
-	for id, tab := range a.remoteTabs {
-		if tab.ref.HostID == hostID && tab.state == "reconnecting" {
-			tabIDs = append(tabIDs, id)
-		}
-	}
-	a.remoteTabMu.Unlock()
-	for _, tabID := range tabIDs {
-		a.goSafe("remoteTabReattach", func() { a.reattachRemoteTab(tabID) })
-	}
-}
-
-// reattachRemoteTab rebuilds one tab's serve client and pump after the
-// host connection came back. Any failure leaves the tab in reconnecting —
-// the next connected transition retries.
-func (a *App) reattachRemoteTab(tabID string) {
-	a.remoteTabMu.Lock()
-	tab := a.remoteTabs[tabID]
-	if tab == nil || tab.state != "reconnecting" {
-		a.remoteTabMu.Unlock()
-		return
-	}
-	hostID, workspace := tab.ref.HostID, tab.ref.Workspace
-	a.remoteTabMu.Unlock()
-
-	rt, err := a.remoteRT()
-	if err != nil {
-		return
-	}
-	ctx := a.bootContext()
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	view, token, err := rt.EnsureServer(ctx, hostID, workspace)
-	if err != nil || view.State != "ready" || view.LocalURL == "" {
-		// EnsureServer errors can include remote process output, including
-		// provider credentials forwarded during bootstrap. Keep reconnect
-		// diagnostics structural so secrets can never reach desktop logs.
-		log.Printf("[remote] reattachRemoteTab: EnsureServer NOT-READY tab=%s state=%s localURL=%q", tabID, view.State, view.LocalURL)
-		return
-	}
-	callCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-	client, clientErr := newServeHTTPClient(view.LocalURL)
-	if clientErr != nil {
-		return
-	}
-	if err := serveHandshake(callCtx, client, view.LocalURL, token); err != nil {
-		log.Printf("[remote] reattachRemoteTab: handshake FAILED tab=%s base=%q err=%v", tabID, view.LocalURL, err)
-		return
-	}
-
-	a.remoteTabMu.Lock()
-	if cur := a.remoteTabs[tabID]; cur != tab || tab.state != "reconnecting" {
-		a.remoteTabMu.Unlock()
-		return
-	}
-	tab.gen++
-	if tab.cancel != nil {
-		tab.cancel()
-	}
-	tab.client = client
-	tab.base = view.LocalURL
-	tab.token = token
-	gen := tab.gen
-	pumpCtx, cancelPump := context.WithCancel(ctx)
-	tab.cancel = cancelPump
-	a.remoteTabMu.Unlock()
-
-	a.goSafe("remoteTabPump", func() { a.remoteTabPump(pumpCtx, tabID, gen) })
-	a.emitRemoteTabState(tabID, "ready", "")
+// RemoteTabStatus is the small status-only binding used by watchdog and close
+// policy polling. It deliberately avoids transferring full history.
+func (a *App) RemoteTabStatus(tabID string) (json.RawMessage, error) {
+	return a.remoteTabGet(tabID, "/status")
 }
 
 // listTabsWithRemote merges the remote strip entries into a local tab list.

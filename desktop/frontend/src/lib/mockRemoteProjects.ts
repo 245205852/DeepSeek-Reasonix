@@ -107,6 +107,7 @@ export function createMockRemoteProjects(events: RemoteProjectMockEvents = {}): 
     async RemoteTabSnapshot(tabId) {
       return { history: [], status: { label: tabs.get(tabId)?.label ?? "" } };
     },
+    async RemoteTabStatus() { return { running: false, pendingPrompt: false, backgroundJobs: 0 }; },
     async SetRemoteTabEffort() {},
     async SetRemoteTabPlanMode() {},
     async CompactRemoteTab() {},

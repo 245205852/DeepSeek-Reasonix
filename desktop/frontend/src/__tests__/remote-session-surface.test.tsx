@@ -61,11 +61,22 @@ globalThis.cancelAnimationFrame = dom.window.cancelAnimationFrame?.bind(dom.wind
 Object.defineProperty(elementProto, "detachEvent", { configurable: true, value: () => {} });
 
 const tape: string[] = [];
+let failApproval = false;
+let resolveRaceSnapshot: ((value: { history: unknown[]; status: unknown }) => void) | undefined;
 window.go = { main: { App: {
   async RemoteTabSnapshot(tabId: string) {
     tape.push(`snapshot:${tabId}`);
+		if (tabId === "tab-race") return new Promise<{ history: unknown[]; status: unknown }>((resolve) => { resolveRaceSnapshot = resolve; });
+		if (tabId === "tab-replay") return {
+			history: [], status: { label: "Replay" },
+			pendingEvents: [{ kind: "approval_request", approval: { id: "replayed-approval", tool: "bash", subject: "pending while inactive" } }],
+		};
     return { history: [], status: { label: "DeepSeek · Mock" } };
   },
+	async RemoteTabStatus(tabId: string) {
+		tape.push(`status:${tabId}`);
+		return { running: false, pendingPrompt: false, backgroundJobs: 0 };
+	},
   async SubmitRemoteTab(tabId: string, text: string) {
     tape.push(`submit:${tabId}:${text}`);
   },
@@ -74,9 +85,10 @@ window.go = { main: { App: {
   },
   async ApproveRemoteTab(tabId: string, callId: string, decision: string) {
     tape.push(`approve:${tabId}:${callId}:${decision}`);
+		if (failApproval) throw new Error("tunnel write failed");
   },
-  async AnswerRemoteTab(tabId: string, callId: string, answer: string) {
-    tape.push(`answer:${tabId}:${callId}:${answer}`);
+	async AnswerRemoteTab(tabId: string, callId: string, answers: Array<{ QuestionID: string; Selected: string[] }>) {
+		tape.push(`answer:${tabId}:${callId}:${JSON.stringify(answers)}`);
   },
   async OpenRemoteProjectTab(hostId: string, workspace: string, opts?: { newSession?: boolean }) {
     tape.push(`open:${hostId}:${workspace}:${opts?.newSession ? "new" : ""}`);
@@ -171,7 +183,22 @@ await act(async () => {
     await flush();
   });
   ok(tape.includes("approve:tab-remote-1:call-9:allow"), "allow click forwards ApproveRemoteTab");
-  ok(!document.querySelector(".remote-surface__approval"), "approval card clears after deciding");
+	ok(!document.querySelector(".remote-surface__approval"), "approval card clears after deciding");
+}
+
+await act(async () => {
+	failApproval = true;
+	__emitMockRemoteTab("tab-remote-1", "event", { kind: "approval_request", approval: { id: "call-fail", tool: "bash", subject: "keep this prompt" } });
+	await flush();
+});
+{
+	await act(async () => {
+		[...document.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent?.trim() === "Allow")?.click();
+		await flush();
+	});
+	ok(Boolean(document.querySelector(".remote-surface__approval")), "a failed approval command preserves the decision card");
+	ok(document.body.textContent?.includes("tunnel write failed") === true, "a failed approval command surfaces an actionable error");
+	failApproval = false;
 }
 
 await act(async () => {
@@ -182,11 +209,16 @@ await act(async () => {
   const dialog = document.querySelector(".remote-surface__ask");
   ok(Boolean(dialog), "ask card renders");
   ok(dialog?.textContent?.includes("Deploy now?") === true, "ask prompt renders");
-  await act(async () => {
-    [...document.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent?.trim() === "yes")?.click();
-    await flush();
-  });
-  ok(tape.includes("answer:tab-remote-1:ask-7:yes"), "option click forwards AnswerRemoteTab");
+	await act(async () => {
+		[...document.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent?.trim() === "yes")?.click();
+		await flush();
+	});
+	ok(!tape.some((entry) => entry.startsWith("answer:tab-remote-1:ask-7")), "selecting an option keeps the ask open until explicit submit");
+	await act(async () => {
+		[...document.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent?.trim() === "Submit")?.click();
+		await flush();
+	});
+	ok(tape.includes('answer:tab-remote-1:ask-7:[{"QuestionID":"q1","Selected":["yes"]}]'), "submit forwards the question id and complete selection batch");
 }
 
 await act(async () => {
@@ -197,6 +229,11 @@ await act(async () => {
   const warning = document.querySelector(".remote-surface--warning");
   ok(Boolean(warning), "serve_down renders the warning state");
   ok(warning?.textContent?.includes("tunnel closed") === true, "serve error detail renders");
+  await act(async () => {
+    warning?.querySelector<HTMLButtonElement>("button")?.click();
+    await flush();
+  });
+  ok(tape.includes("open:gpu-box:~/app:"), "serve_down retry preserves the backend's parked session target");
 }
 
 // ── Restored shell: the disconnected state renders a reconnect affordance
@@ -243,19 +280,55 @@ ok(Boolean(probe?.transcript.items.some((item) => item.kind === "user" && item.t
 await act(async () => {
   await probe?.cancelTurn();
   await probe?.approve("call-1", "allow");
-  await probe?.answer("ask-1", "yes");
+	await probe?.answer("ask-1", [{ QuestionID: "q1", Selected: ["yes"] }]);
   await flush();
 });
 for (const want of [
   "submit:tab-remote-2:run tests",
   "cancel:tab-remote-2",
   "approve:tab-remote-2:call-1:allow",
-  "answer:tab-remote-2:ask-1:yes",
+	'answer:tab-remote-2:ask-1:[{"QuestionID":"q1","Selected":["yes"]}]',
 ]) {
   ok(tape.includes(want), `command forwarded: ${want}`);
 }
 
 await act(async () => probeRoot.unmount());
+
+// ── Hydration fence: an SSE event delivered while the snapshot is in flight
+// is replayed after history instead of being overwritten by it. ──
+let raceProbe: RemoteSessionApi | undefined;
+function RaceProbe() {
+	raceProbe = useRemoteSession("tab-race");
+	return null;
+}
+const raceRoot = createRoot(document.createElement("div"));
+await act(async () => {
+	raceRoot.render(<LocaleProvider><RaceProbe /></LocaleProvider>);
+	await Promise.resolve();
+});
+await act(async () => {
+	__emitMockRemoteTab("tab-race", "event", { kind: "turn_started" });
+	__emitMockRemoteTab("tab-race", "event", { kind: "text", text: "arrived during hydration" });
+	resolveRaceSnapshot?.({ history: [], status: { running: true, label: "Race" } });
+	await flush();
+});
+ok(raceProbe?.transcript.live.text === "arrived during hydration", "hydration replays concurrently delivered remote events");
+await act(async () => raceRoot.unmount());
+
+// Pending prompt frames retained by Desktop are replayed by the next snapshot,
+// which restores decisions missed while the tab had no frontend listener.
+let replayProbe: RemoteSessionApi | undefined;
+function ReplayProbe() {
+	replayProbe = useRemoteSession("tab-replay");
+	return null;
+}
+const replayRoot = createRoot(document.createElement("div"));
+await act(async () => {
+	replayRoot.render(<LocaleProvider><ReplayProbe /></LocaleProvider>);
+	await flush();
+});
+ok(replayProbe?.transcript.approval?.id === "replayed-approval", "snapshot replays a prompt emitted while the remote tab was inactive");
+await act(async () => replayRoot.unmount());
 dom.window.close();
 process.stdout.write(`\n${passed} passed, ${failed} failed\n`);
 if (failed > 0) process.exit(1);

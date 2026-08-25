@@ -786,6 +786,11 @@ func (a *App) restoreOrBuildTabs() {
 		}
 		return
 	}
+	if len(f.RemoteTabs) > 0 {
+		// A remote-only single-surface layout is restored above as disconnected
+		// shells. It is not a first launch and must not grow a fallback Global tab.
+		return
+	}
 
 	// First launch: create a default Global tab.
 	tab := a.createTabEntry("global", globalTabWorkspaceRoot(), "")

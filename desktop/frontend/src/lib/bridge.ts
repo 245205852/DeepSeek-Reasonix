@@ -134,8 +134,15 @@ import type {
   SessionClearResult,
 } from "./types";
 import { __emitMockRemoteTab, __emitMockRemoteTabOpened } from "./remoteTabEvents";
-export { __emitMockRemoteTab, onRemoteTabEvent, onRemoteTabOpened, onRemoteTabState } from "./remoteTabEvents";
-
+export {
+  __emitMockRemoteTab,
+  __emitMockRemoteTabOpened,
+  __emitMockRemoteTabUpdated,
+  onRemoteTabEvent,
+  onRemoteTabOpened,
+  onRemoteTabState,
+  onRemoteTabUpdated,
+} from "./remoteTabEvents";
 export const COMPACT_RATIO_MIN_PERCENT = 30;
 export const COMPACT_RATIO_MAX_PERCENT = 85;
 
