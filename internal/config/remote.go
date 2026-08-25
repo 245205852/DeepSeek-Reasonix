@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"net"
+	"path"
 	"strconv"
 	"strings"
 )
@@ -47,7 +48,7 @@ type RemoteForwardEntry struct {
 }
 
 // RemoteProjectEntry pins one remote workspace so it shows in the project
-// entry list. It references a host by name; the host entry must exist.
+// tree. It references a configured host by name.
 type RemoteProjectEntry struct {
 	HostID    string `toml:"host_id"`
 	Workspace string `toml:"workspace"`
@@ -72,8 +73,7 @@ func (r RemoteConfig) Clone() RemoteConfig {
 		}
 	}
 	if r.Projects != nil {
-		out.Projects = make([]RemoteProjectEntry, len(r.Projects))
-		copy(out.Projects, r.Projects)
+		out.Projects = append([]RemoteProjectEntry(nil), r.Projects...)
 	}
 	return out
 }
@@ -202,27 +202,47 @@ func (c *Config) RemoveRemoteHost(name string) bool {
 	for i := range c.Remote.Hosts {
 		if c.Remote.Hosts[i].Name == name {
 			c.Remote.Hosts = append(c.Remote.Hosts[:i], c.Remote.Hosts[i+1:]...)
+			projects := c.Remote.Projects[:0]
+			for _, project := range c.Remote.Projects {
+				if project.HostID != name {
+					projects = append(projects, project)
+				}
+			}
+			c.Remote.Projects = projects
 			return true
 		}
 	}
 	return false
 }
 
-// RemoteProject looks up a pinned remote workspace by host and path
+func normalizeRemoteWorkspace(workspace string) string {
+	workspace = strings.TrimSpace(workspace)
+	if workspace == "" {
+		return ""
+	}
+	return path.Clean(workspace)
+}
+
+// RemoteProject looks up a pinned remote workspace by host and normalized
+// POSIX path. Remote targets are currently Linux/macOS, so slash semantics are
+// stable even when the desktop itself runs on another platform.
 func (c *Config) RemoteProject(hostID, workspace string) (RemoteProjectEntry, bool) {
-	for _, p := range c.Remote.Projects {
-		if p.HostID == hostID && p.Workspace == workspace {
-			return p, true
+	hostID = strings.TrimSpace(hostID)
+	workspace = normalizeRemoteWorkspace(workspace)
+	for _, project := range c.Remote.Projects {
+		if project.HostID == hostID && normalizeRemoteWorkspace(project.Workspace) == workspace {
+			return project, true
 		}
 	}
 	return RemoteProjectEntry{}, false
 }
 
-// UpsertRemoteProject adds e, or replaces the entry with the same
-// host + workspace (preserving position). Mirrors Upsert RemoteHost.
+// UpsertRemoteProject adds e, or replaces the entry with the same host and
+// normalized workspace while preserving its position.
 func (c *Config) UpsertRemoteProject(e RemoteProjectEntry) error {
 	e.HostID = strings.TrimSpace(e.HostID)
-	e.Workspace = strings.TrimSpace(e.Workspace)
+	e.Workspace = normalizeRemoteWorkspace(e.Workspace)
+	e.Title = strings.TrimSpace(e.Title)
 	if e.HostID == "" {
 		return fmt.Errorf("remote project: host is required")
 	}
@@ -233,8 +253,9 @@ func (c *Config) UpsertRemoteProject(e RemoteProjectEntry) error {
 		return fmt.Errorf("remote project: unknown remote host %q", e.HostID)
 	}
 	for i := range c.Remote.Projects {
-		if c.Remote.Projects[i].HostID == e.HostID && c.Remote.Projects[i].Workspace == e.Workspace {
-			c.Remote.Projects[i] = e
+		project := &c.Remote.Projects[i]
+		if project.HostID == e.HostID && normalizeRemoteWorkspace(project.Workspace) == e.Workspace {
+			*project = e
 			return nil
 		}
 	}
@@ -242,10 +263,14 @@ func (c *Config) UpsertRemoteProject(e RemoteProjectEntry) error {
 	return nil
 }
 
-// RemoveRemoteProject deletes the pinned workspace, reporting whether it was present
+// RemoveRemoteProject deletes the pinned workspace, reporting whether it was
+// present.
 func (c *Config) RemoveRemoteProject(hostID, workspace string) bool {
+	hostID = strings.TrimSpace(hostID)
+	workspace = normalizeRemoteWorkspace(workspace)
 	for i := range c.Remote.Projects {
-		if c.Remote.Projects[i].HostID == hostID && c.Remote.Projects[i].Workspace == workspace {
+		project := c.Remote.Projects[i]
+		if project.HostID == hostID && normalizeRemoteWorkspace(project.Workspace) == workspace {
 			c.Remote.Projects = append(c.Remote.Projects[:i], c.Remote.Projects[i+1:]...)
 			return true
 		}

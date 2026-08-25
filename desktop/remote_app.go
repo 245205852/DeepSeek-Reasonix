@@ -191,7 +191,6 @@ type remoteKernel interface {
 	ServeSnapshot(hostID, workspace string) (RemoteServerView, string, bool)
 	ServerLogs(ctx context.Context, hostID, workspace string, tailLines int) (string, error)
 	CheckPlatform(ctx context.Context, hostID string) error
-
 	Close() error
 }
 
@@ -370,17 +369,6 @@ func (a *App) ConnectRemoteHost(id string) error {
 		return err
 	}
 	return nil
-}
-
-// CheckRemotePlatform verifies the connected host runs a supported OS
-// (Linux/macOS). The connect wizard calls it at the connecting step, before
-// directory browsing, so unsupported hosts fail early with one message.
-func (a *App) CheckRemotePlatform(hostID string) error {
-	rt, err := a.remoteRT()
-	if err != nil {
-		return err
-	}
-	return rt.CheckPlatform(a.bootContext(), hostID)
 }
 
 func applyRemoteConnectionError(view *RemoteConnectionStatusView, err error) {
@@ -1653,26 +1641,6 @@ func (m *desktopRemoteManager) ServerLogs(ctx context.Context, hostID, workspace
 	return sb.String(), nil
 }
 
-// CheckPlatform rejects unsupported remote operating systems right after
-// connect, applying the same ParseUname gate EnsureServe uses, so the wizard
-// fails early instead of deep in serve bootstrap.
-func (m *desktopRemoteManager) CheckPlatform(ctx context.Context, hostID string) error {
-	mh := m.managed(hostID)
-	if mh == nil || mh.client == nil {
-		return fmt.Errorf("host %q is not connected", hostID)
-	}
-	opCtx, cancel := managedOperationContext(ctx, mh)
-	defer cancel()
-	res, err := mh.client.Exec(opCtx, "uname -sm")
-	if err != nil || strings.TrimSpace(string(res.Stdout)) == "" {
-		return fmt.Errorf("remote host platform check failed: cannot detect OS (supported: Linux, macOS)")
-	}
-	if _, _, perr := bootstrap.ParseUname(string(res.Stdout)); perr != nil {
-		return fmt.Errorf("remote host platform check failed: %w", perr)
-	}
-	return nil
-}
-
 // credentialProxySetup prepares local-proxy credential mode for one
 // workspace: starts the desktop key holder, registers the workspace's virtual
 // token against the model its tabs run, and opens the reverse tunnel the
@@ -1793,6 +1761,10 @@ func (m *desktopRemoteManager) reloadServeProviders(ctx context.Context, hostID,
 	type target struct{ base, token string }
 	m.mu.Lock()
 	mh := m.hosts[hostID]
+	if mh == nil {
+		m.mu.Unlock()
+		return false
+	}
 	targets := make(map[string]target, len(mh.serves)+1)
 	for ws, e := range mh.serves {
 		if e != nil && e.view.LocalURL != "" && e.token != "" {
@@ -1800,9 +1772,6 @@ func (m *desktopRemoteManager) reloadServeProviders(ctx context.Context, hostID,
 		}
 	}
 	m.mu.Unlock()
-	if mh == nil {
-		return false
-	}
 	if extraBase != "" && extraToken != "" && workspace != "" {
 		// The just-ensured serve takes precedence under its REAL workspace
 		// key; drop any registry entry pointing at the same base so it is
@@ -1840,8 +1809,10 @@ func (m *desktopRemoteManager) reloadServeProviders(ctx context.Context, hostID,
 				log.Printf("[remote] reloadServeProviders: legacy serve -> replacing host=%s ws=%s", hostID, ws)
 				go func(hostID, ws string) {
 					if err := m.StopServer(hostID, ws); err != nil {
+						log.Printf("[remote] reloadServeProviders: stop legacy serve failed host=%s ws=%s err=%v", hostID, ws, err)
 					}
 					if _, _, err := m.EnsureServer(context.Background(), hostID, ws); err != nil {
+						log.Printf("[remote] reloadServeProviders: restart legacy serve failed host=%s ws=%s err=%v", hostID, ws, err)
 					}
 				}(hostID, ws)
 			}
@@ -1879,7 +1850,6 @@ func portOfAddr(addr string) (int, bool) {
 	}
 	return port, true
 }
-
 func (m *desktopRemoteManager) Close() error {
 	m.mu.Lock()
 	hosts := m.hosts

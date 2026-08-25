@@ -94,11 +94,9 @@ console.log("\nbundle budgets");
 // its filtered count matches the assistant Sources panel. The measured build
 // is 431.509 KiB gzip; keep 0.1 KiB of explicit headroom for hash/toolchain
 // drift instead of relying on a rounded equality.
-// Remote onboarding [0/3] wizard PR: bridge/types/locales/ProjectTree wizard
-// entries and the lazy wizard styles add ~0.9 KiB gzip to the startup path and
-// ~1.0 KiB to the deferred app-shell CSS; locale chunks grow ~0.6-0.9 KiB.
-// Ratchets: initial JS 431.6 -> 432.5, app-shell CSS 114.3 -> 115.4,
-// zh 56.5 -> 57.2 / zh-TW 57.2 -> 58.0, raw startup 2353.2 -> 2364.0.
+// Remote onboarding [0.5/3] adds project-group and credential-chain wiring on
+// top of the lazy wizard. Keep the temporary merge ceiling bounded until the
+// production and test builds below provide the exact post-merge measurements.
 const initialJSBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 434.5 : 434.5;
 assertBudget("initial JavaScript gzip", initialJSGzip, initialJSBudgetKiB * 1024);
 assertBudget("largest initial JavaScript chunk gzip", largestInitialJS, 280 * 1024);

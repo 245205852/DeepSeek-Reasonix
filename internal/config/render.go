@@ -426,7 +426,7 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 	fmt.Fprintf(&b, "mcp_call_timeout_seconds = %d   # default MCP call safety cap; per-plugin/tool overrides may raise it\n\n", c.MCPCallTimeoutSeconds())
 
 	b.WriteString("[tools.background_jobs]\n")
-	fmt.Fprintf(&b, "stalled_warning_seconds = %d   # warn once per background job after this many quiet seconds; 0 disables\n\n", c.BackgroundJobStalledWarningSeconds())
+	fmt.Fprintf(&b, "stalled_warning_seconds = %d   # heads-up once per background job after this many quiet seconds; a quiet job is not necessarily stuck; 0 disables\n\n", c.BackgroundJobStalledWarningSeconds())
 
 	b.WriteString("[tools.shell]\n")
 	if c.Tools.Shell.Prefer != "" {
@@ -780,12 +780,12 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 				fmt.Fprintf(&b, "target = %q\n", f.Target)
 			}
 		}
-		for _, p := range c.Remote.Projects {
+		for _, project := range c.Remote.Projects {
 			b.WriteString("\n[[remote.projects]]\n")
-			fmt.Fprintf(&b, "host_id = %q   # referenced [[remote.hosts]] name\n", p.HostID)
-			fmt.Fprintf(&b, "workspace = %q\n", p.Workspace)
-			if p.Title != "" {
-				fmt.Fprintf(&b, "title = %q\n", p.Title)
+			fmt.Fprintf(&b, "host_id = %q   # referenced [[remote.hosts]] name\n", project.HostID)
+			fmt.Fprintf(&b, "workspace = %q\n", project.Workspace)
+			if project.Title != "" {
+				fmt.Fprintf(&b, "title = %q\n", project.Title)
 			}
 		}
 		b.WriteString("\n")

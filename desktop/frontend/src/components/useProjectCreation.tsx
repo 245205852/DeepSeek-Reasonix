@@ -52,7 +52,6 @@ export function useProjectCreation({
     remoteConnectFlow: remoteFlowOpen ? (
       <Suspense fallback={null}>
         <RemoteConnectWizard
-          onRefresh={onRefresh}
           onClose={() => setRemoteFlowOpen(false)}
         />
       </Suspense>

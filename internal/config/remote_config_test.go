@@ -17,13 +17,13 @@ func TestProjectConfigCannotOverrideRemote(t *testing.T) {
 	if err := os.MkdirAll(globalDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	globalTOML := "[remote]\n[[remote.hosts]]\nname = \"trusted\"\nhost = \"trusted.example\"\n"
+	globalTOML := "[remote]\n[[remote.hosts]]\nname = \"trusted\"\nhost = \"trusted.example\"\n[[remote.projects]]\nhost_id = \"trusted\"\nworkspace = \"~/safe\"\n"
 	if err := os.WriteFile(filepath.Join(globalDir, "config.toml"), []byte(globalTOML), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
 	project := t.TempDir()
-	projectTOML := "[remote]\n[[remote.hosts]]\nname = \"evil\"\nhost = \"attacker.example\"\nproxy_jump = \"attacker-jump\"\n"
+	projectTOML := "[remote]\n[[remote.hosts]]\nname = \"evil\"\nhost = \"attacker.example\"\nproxy_jump = \"attacker-jump\"\n[[remote.projects]]\nhost_id = \"evil\"\nworkspace = \"~/payload\"\n"
 	if err := os.WriteFile(filepath.Join(project, "reasonix.toml"), []byte(projectTOML), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -37,6 +37,9 @@ func TestProjectConfigCannotOverrideRemote(t *testing.T) {
 	}
 	if _, ok := cfg.RemoteHost("evil"); ok {
 		t.Error("project reasonix.toml injected a remote host; [remote] must stay user-global")
+	}
+	if len(cfg.Remote.Projects) != 1 || cfg.Remote.Projects[0].HostID != "trusted" {
+		t.Fatalf("remote projects = %+v, want only the user-global trusted project", cfg.Remote.Projects)
 	}
 }
 
@@ -227,11 +230,9 @@ func TestRemotePathHelpers(t *testing.T) {
 	}
 }
 
-// TestUpsertRemoteProjectRoundTripsThroughSave pins that projects written via
-// the CRUD helpers survive a full user-scope re-render (SaveTo renders the
-// whole file by hand — a missing [[remote.projects]] renderer would silently
-// drop every saved project on the next unrelated settings save).
-func TestUpsertRemoteProjectRoundTripsThroughSave(t *testing.T) {
+// TestRemoteProjectLifecycle pins the user-scope renderer, normalized-path
+// dedupe, and host/project referential integrity.
+func TestRemoteProjectLifecycle(t *testing.T) {
 	isolateUserConfigHome(t)
 	home := t.TempDir()
 	t.Setenv("REASONIX_HOME", home)
@@ -239,6 +240,7 @@ func TestUpsertRemoteProjectRoundTripsThroughSave(t *testing.T) {
 	if err := os.WriteFile(path, []byte("default_model = \"deepseek\"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+
 	cfg := LoadForEdit(path)
 	if cfg == nil {
 		t.Fatal("LoadForEdit returned nil")
@@ -246,8 +248,14 @@ func TestUpsertRemoteProjectRoundTripsThroughSave(t *testing.T) {
 	if err := cfg.UpsertRemoteHost(RemoteHostEntry{Name: "box", Host: "198.51.100.4"}); err != nil {
 		t.Fatalf("UpsertRemoteHost: %v", err)
 	}
-	if err := cfg.UpsertRemoteProject(RemoteProjectEntry{HostID: "box", Workspace: "~/app"}); err != nil {
+	if err := cfg.UpsertRemoteProject(RemoteProjectEntry{HostID: "box", Workspace: " ~/app/ "}); err != nil {
 		t.Fatalf("UpsertRemoteProject: %v", err)
+	}
+	if err := cfg.UpsertRemoteProject(RemoteProjectEntry{HostID: "box", Workspace: "~/app", Title: " App "}); err != nil {
+		t.Fatalf("normalized UpsertRemoteProject: %v", err)
+	}
+	if len(cfg.Remote.Projects) != 1 || cfg.Remote.Projects[0].Workspace != "~/app" || cfg.Remote.Projects[0].Title != "App" {
+		t.Fatalf("normalized project = %+v", cfg.Remote.Projects)
 	}
 	if err := cfg.UpsertRemoteProject(RemoteProjectEntry{HostID: "ghost", Workspace: "~/app"}); err == nil {
 		t.Fatal("UpsertRemoteProject accepted an unknown host")
@@ -263,27 +271,20 @@ func TestUpsertRemoteProjectRoundTripsThroughSave(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"[[remote.projects]]", `host_id = "box"`, `workspace = "~/app"`} {
+	for _, want := range []string{"[[remote.projects]]", `host_id = "box"`, `workspace = "~/app"`, `title = "App"`} {
 		if !strings.Contains(string(raw), want) {
 			t.Fatalf("saved config missing %q:\n%s", want, raw)
 		}
 	}
 
 	reloaded := LoadForEdit(path)
-	if _, ok := reloaded.RemoteProject("box", "~/app"); !ok {
-		t.Fatal("project lost after save/reload")
+	if _, ok := reloaded.RemoteProject("box", "~/app/"); !ok {
+		t.Fatal("project lost after save/reload or normalized lookup")
 	}
-	// Replace in place, then idempotent remove.
-	if err := reloaded.UpsertRemoteProject(RemoteProjectEntry{HostID: "box", Workspace: "~/app", Title: "App"}); err != nil {
-		t.Fatal(err)
+	if !reloaded.RemoveRemoteHost("box") {
+		t.Fatal("RemoveRemoteHost reported missing")
 	}
-	if len(reloaded.Remote.Projects) != 1 {
-		t.Fatalf("upsert did not replace in place: %+v", reloaded.Remote.Projects)
-	}
-	if !reloaded.RemoveRemoteProject("box", "~/app") {
-		t.Fatal("RemoveRemoteProject reported missing")
-	}
-	if reloaded.RemoveRemoteProject("box", "~/app") {
-		t.Fatal("second remove reported present")
+	if len(reloaded.Remote.Projects) != 0 {
+		t.Fatalf("host removal left orphan projects: %+v", reloaded.Remote.Projects)
 	}
 }

@@ -667,6 +667,7 @@ export interface AppBindings extends SessionCatalogBindings, ProjectTreeOrganiza
   AddRemoteForward(hostId: string, input: RemoteForwardInput): Promise<RemoteForwardView>;
   RemoveRemoteForward(hostId: string, forwardId: string): Promise<void>;
   OpenRemoteWorkspace(hostId: string, workspace: string): Promise<void>;
+  PickRemoteIdentityFile(): Promise<string>;
   CheckRemotePlatform(hostId: string): Promise<void>;
   StopRemoteServer(hostId: string, workspace: string): Promise<void>;
   RemoteServerStatus(hostId: string, workspace: string): Promise<RemoteServerView>;
@@ -674,7 +675,6 @@ export interface AppBindings extends SessionCatalogBindings, ProjectTreeOrganiza
   RemoteLastWorkspace(hostId: string): Promise<string>;
   ScanRemoteLegacyWorkbenchData(): Promise<RemoteLegacyWorkbenchData>;
   CleanRemoteLegacyWorkbenchData(target: "mirrors" | "trust"): Promise<void>;
-
   // ── Remote project tabs (RemoteTabBridge) ──
   AddRemoteProject(hostId: string, workspace: string): Promise<RemoteProjectView>;
   RemoveRemoteProject(hostId: string, workspace: string): Promise<void>;
@@ -704,7 +704,6 @@ export interface AppBindings extends SessionCatalogBindings, ProjectTreeOrganiza
   RemoteTabBranches(tabId: string): Promise<unknown>;
   RemoteTabSkills(tabId: string): Promise<unknown>;
 }
-
 // Compile-time drift check. Exclude<A, B> extracts keys in A that are missing
 // from B. If that set is non-empty, AssertNever<non-never> fails with
 // "Type 'X' does not satisfy the constraint 'never'".
@@ -1050,7 +1049,6 @@ export function onRemoteServer(cb: (s: RemoteServerView) => void): () => void {
   }
   return registerMockRemoteListener("server", cb as (v: unknown) => void);
 }
-
 export function onRemoteTabEvent(tabId: string, cb: (frame: unknown) => void): () => void {
   if (realApp() && typeof window !== "undefined" && window.runtime) {
     return window.runtime.EventsOn(`remote-tab:${tabId}:event`, (payload?: unknown) => cb(payload));
@@ -1092,9 +1090,6 @@ function registerMockRemoteTabListener(tabId: string, channel: MockRemoteTabChan
 export function __emitMockRemoteTab(tabId: string, channel: MockRemoteTabChannel, payload: unknown): void {
   for (const cb of mockRemoteTabListeners.get(`${tabId}:${channel}`) ?? []) cb(payload);
 }
-
-
-
 // Mock event fan-out so browser-dev and tsx tests can drive remote:* events
 // without a Wails runtime.
 type MockRemoteChannel = "status" | "forwards" | "server" | "remote-tab-opened";
@@ -5702,42 +5697,11 @@ function makeMockApp(): AppBindings {
       __emitMockRemote("status", { hostId, state: mockRemoteConn[hostId] });
     },
     async ListRemoteDir(_hostId, path) {
-      const raw = path.replace(/\/+$/, "") || "~";
-      const base = raw === "/home/dev" ? "~" : raw.replace(/^\/home\/dev(?=\/|$)/, "~");
-      const children: Record<string, Array<{ name: string; isDir: boolean; size: number }>> = {
-        "~": [
-          { name: "src", isDir: true, size: 0 },
-          { name: "docs", isDir: true, size: 0 },
-          { name: "README.md", isDir: false, size: 1024 },
-        ],
-        "~/src": [
-          { name: "app", isDir: true, size: 0 },
-          { name: "lib", isDir: true, size: 0 },
-          { name: "main.go", isDir: false, size: 2048 },
-        ],
-        "~/src/app": [
-          { name: "handlers", isDir: true, size: 0 },
-          { name: "app.go", isDir: false, size: 860 },
-        ],
-        "~/src/app/handlers": [
-          { name: "remote.go", isDir: false, size: 640 },
-        ],
-        "~/src/lib": [
-          { name: "util.go", isDir: false, size: 320 },
-        ],
-        "~/docs": [
-          { name: "guide.md", isDir: false, size: 480 },
-        ],
-      };
-      const rows = children[base] ?? [];
-      return rows.map((entry, index) => ({
-        name: entry.name,
-        path: `${base}/${entry.name}`,
-        isDir: entry.isDir,
-        size: entry.size,
-        mtimeUnix: 1_700_000_000 + index,
-        symlink: false,
-      }));
+      const base = path.replace(/\/$/, "");
+      return [
+        { name: "src", path: `${base}/src`, isDir: true, size: 0, mtimeUnix: 1_700_000_000, symlink: false },
+        { name: "README.md", path: `${base}/README.md`, isDir: false, size: 1024, mtimeUnix: 1_700_000_500, symlink: false },
+      ];
     },
     async ReadRemoteFile(_hostId, path) {
       return { path, body: `# Mock remote file\n${path}\n`, size: 40, mtimeUnix: 1_700_000_500, truncated: false, binary: false };
@@ -5762,6 +5726,7 @@ function makeMockApp(): AppBindings {
       __emitMockRemote("forwards", { hostId, forwards: mockRemoteForwards[hostId] });
     },
     async OpenRemoteWorkspace() {},
+    async PickRemoteIdentityFile() { return "~/.ssh/id_ed25519"; },
     async CheckRemotePlatform() {},
     async StopRemoteServer(hostId, workspace) {
       __emitMockRemote("server", { hostId, workspace, state: "stopped" });
@@ -6047,7 +6012,7 @@ function mockRemoteHostView(id: string, input: RemoteHostInput, previous?: Remot
     proxyJump: input.proxyJump,
     defaultWorkspace: input.defaultWorkspace,
     serveInstall: input.serveInstall,
-  credentialMode: input.credentialMode,
+    credentialMode: input.credentialMode,
     useSSHConfig: input.useSSHConfig,
     passwordSet: input.password ? true : input.clearPassword ? false : previous?.passwordSet,
     keyPassphraseSet: input.keyPassphrase ? true : input.clearPassphrase ? false : previous?.keyPassphraseSet,

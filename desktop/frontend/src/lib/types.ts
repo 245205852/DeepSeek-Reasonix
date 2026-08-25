@@ -437,7 +437,7 @@ export interface TabMeta {
   workspacePath?: string;
   gitBranch?: string;
   isolatedWorktree?: boolean;
-  /** Present ⇒ remote tab (RemoteTabBridge); absent ⇒ local tab. */
+  /** Present when this tab is backed by a remote Reasonix serve. */
   remote?: RemoteTabRefView;
   topicId: string;
   topicTitle: string;
@@ -1556,6 +1556,8 @@ export interface RemoteSessionView {
   title: string;
   turns: number;
   current?: boolean;
+  pinned?: boolean;
+  lastActivityAt?: number;
 }
 
 export type RemoteTabStateValue = "connecting" | "ready" | "reconnecting" | "serve_down" | "error";
@@ -1570,8 +1572,6 @@ export interface RemoteTabOpenOptions {
   sessionName?: string;
 }
 
-// First-cut shape; finalize against what the surface actually consumes in Task 5.5
-// (spec open item: avoid over-fetching).
 export interface RemoteTabSnapshot {
   history: unknown[];
   context?: unknown;
