@@ -26,6 +26,18 @@ func TestUseCapabilityMemoryDescriptionNamesRoutableTools(t *testing.T) {
 	if strings.Contains(description, "memory:recall") {
 		t.Fatal("description must not advertise the unregistered memory:recall route")
 	}
+	for _, contract := range []string{
+		"description+body required",
+		`activation="relevant" on create`,
+		"omit activation on update",
+		`"pinned" only if user asks`,
+		"memory:forget(name)",
+		"tool:memory(operation=search|read|list)",
+	} {
+		if !strings.Contains(description, contract) {
+			t.Errorf("description does not document %q", contract)
+		}
+	}
 
 	for id, wantTarget := range map[string]string{
 		"memory:remember": "remember",
