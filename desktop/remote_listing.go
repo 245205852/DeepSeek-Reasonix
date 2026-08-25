@@ -12,10 +12,8 @@ import (
 	"time"
 )
 
-// Listing-only slice of the remote-tab serve bridge, carried by the project
-// groups PR so the tree can render a remote project's serve sessions while
-// the full tab attach/pump pipeline lands with the sessions PR, which folds
-// this file back into remote_tab.go.
+// This listing-only bridge lets project groups show sessions before the full
+// remote-tab attach and event-pump surface lands.
 
 // serveSessionEntry mirrors one GET /sessions row from the Serve.
 type serveSessionEntry struct {
@@ -34,7 +32,6 @@ type RemoteSessionView struct {
 	Turns          int    `json:"turns,omitempty"`
 	Current        bool   `json:"current,omitempty"`
 	LastActivityAt int64  `json:"lastActivityAt,omitempty"`
-	Pinned         bool   `json:"pinned,omitempty"`
 }
 
 // serveURL joins a serve base URL and an API path.
@@ -76,7 +73,7 @@ func serveHandshake(ctx context.Context, client *http.Client, base, token string
 	if err != nil {
 		return err
 	}
-	resp, err := serveDo(ctx, client, http.MethodPost, base+"/auth/token", body)
+	resp, err := serveDo(ctx, client, http.MethodPost, serveURL(base, "/auth/token"), body)
 	if err != nil {
 		return err
 	}
@@ -90,7 +87,7 @@ func serveHandshake(ctx context.Context, client *http.Client, base, token string
 
 // serveSessions lists the serve's sessions.
 func serveSessions(ctx context.Context, client *http.Client, base string) ([]serveSessionEntry, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/sessions", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, serveURL(base, "/sessions"), nil)
 	if err != nil {
 		return nil, err
 	}

@@ -95,9 +95,9 @@ console.log("\nbundle budgets");
 // is 431.509 KiB gzip; keep 0.1 KiB of explicit headroom for hash/toolchain
 // drift instead of relying on a rounded equality.
 // Remote onboarding [0.5/3] adds project-group and credential-chain wiring on
-// top of the lazy wizard. Keep the temporary merge ceiling bounded until the
-// production and test builds below provide the exact post-merge measurements.
-const initialJSBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 434.5 : 434.5;
+// top of the lazy wizard. Production and test-channel builds both measure
+// 432.28 KiB gzip; keep 0.22 KiB for build-SHA/toolchain drift.
+const initialJSBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 432.5 : 432.5;
 assertBudget("initial JavaScript gzip", initialJSGzip, initialJSBudgetKiB * 1024);
 assertBudget("largest initial JavaScript chunk gzip", largestInitialJS, 280 * 1024);
 // Render-blocking CSS is intentionally absent: styles.css loads deferred via
@@ -114,7 +114,9 @@ if (initialCSS.length > 0) {
 // Navigation overlay styles add a bounded 0.1 KiB to the deferred shell.
 // The cleaned source panel adds 0.1 KiB gzip to the deferred shell on top of
 // the retained-transcript navigation allowance; keep the ratchet explicit.
-assertBudget("deferred app-shell CSS gzip", appShellCSSGzip, 115.8 * 1024);
+// The remote-project badge and static session rows move the shell stylesheet
+// to 114.48 KiB gzip. Keep a narrow 0.22 KiB ratchet.
+assertBudget("deferred app-shell CSS gzip", appShellCSSGzip, 114.7 * 1024);
 if (localeChunks.length !== 2) {
   throw new Error(`expected 2 on-demand Chinese locale chunks, found ${localeChunks.length}`);
 }
@@ -141,7 +143,9 @@ for (const path of localeChunks) {
   // connection, fallback, and legacy-state copy while removing protocol
   // choices from the primary UI; keep that complete guidance with a bounded
   // 0.4–0.5 KiB locale-only ratchet.
-  const budget = name.startsWith("zh-TW-") ? 58.6 * 1024 : 57.6 * 1024;
+  // Remote-project actions keep the complete localized labels at measured
+  // sizes of 57.17 KiB (zh) and 57.89 KiB (zh-TW), each with ~0.2 KiB margin.
+  const budget = name.startsWith("zh-TW-") ? 58.1 * 1024 : 57.4 * 1024;
   assertBudget(`${name} gzip`, gzipBytes(path), budget);
 }
 
@@ -154,9 +158,8 @@ const rawInitialBytes = [...initialJS, ...initialCSS, ...appShellCSS]
 // KiB and test from 2346.2 to 2348.8 KiB; the pinned heading adds 0.5 KiB raw
 // (0.021%). The workspace panel rework (change-row hover/revert, status badges,
 // More menu, completion summary) makes the latest-base merge 2353.1 KiB in
-// production and 2358.3 KiB in test: about 9.0 KiB (0.38%) over main-v2's
-// channel gates. Retain that attributable UI capacity with 0.1 KiB of build-SHA
-// headroom without widening the gzip or largest-chunk exceptions.
-const rawInitialBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 2_377.0 : 2_373.0;
+// production and test channels both measure 2357.92 KiB after project-group
+// wiring. Retain it with 0.28 KiB of build-SHA/toolchain headroom.
+const rawInitialBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 2_358.2 : 2_358.2;
 assertBudget("initial raw JavaScript and CSS", rawInitialBytes, rawInitialBudgetKiB * 1024);
 assertBudget("largest initial JavaScript chunk raw", largestInitialJSRaw, 1_000 * 1024);

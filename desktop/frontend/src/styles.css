@@ -24975,6 +24975,10 @@ body > .mermaid-diagram--fullscreen {
   background: var(--list-row-hover-bg);
 }
 
+.project-tree__topic--remote-static:hover {
+  background: transparent;
+}
+
 .project-tree__topic--active:hover {
   background: color-mix(in srgb, var(--project-accent, var(--accent)) 10%, var(--sidebar-hover));
 }

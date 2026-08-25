@@ -204,14 +204,13 @@ func TestSFTPWriteAtomicAndMkdirRenameRemove(t *testing.T) {
 	}
 }
 
-// TestSFTPListResolvesTilde: the SFTP protocol does not expand "~", so List
-// must resolve it server-side — the wizard's fresh-host start path is exactly
-// "~", and ReadDir("~") fails with "file does not exist" without this. The
-// sshtest server roots the SFTP session at the temp dir, so "~" resolves to
-// the root and the listing matches an explicit root listing.
+// TestSFTPListResolvesTilde covers both home and home-relative directories.
 func TestSFTPListResolvesTilde(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "marker.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(root, "sub"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	fsys := dialFS(t, root)
@@ -220,15 +219,20 @@ func TestSFTPListResolvesTilde(t *testing.T) {
 	if err != nil {
 		t.Fatalf("List(~): %v", err)
 	}
-	var names []string
+	names := make(map[string]bool, len(entries))
 	for _, e := range entries {
-		names = append(names, e.Name)
+		names[e.Name] = true
 	}
-	if len(names) == 0 || names[0] != "marker.txt" {
+	if !names["marker.txt"] || !names["sub"] {
 		t.Fatalf("List(~) entries = %v, want the root listing", names)
 	}
 	// Entry paths must be absolute (resolved), not "~"-prefixed.
-	if entries[0].Path == filepath.Join("~", "marker.txt") {
-		t.Fatalf("entry path kept the ~ prefix: %q", entries[0].Path)
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Path, "~/") {
+			t.Fatalf("entry path kept the ~ prefix: %q", entry.Path)
+		}
+	}
+	if nested, err := fsys.List(context.Background(), "~/sub"); err != nil || len(nested) != 0 {
+		t.Fatalf("List(~/sub) = %v, %v", nested, err)
 	}
 }

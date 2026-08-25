@@ -22,46 +22,47 @@ function ok(value: boolean, label: string) {
 console.log("\nRemote project tree wiring");
 const here = dirname(fileURLToPath(import.meta.url));
 const source = readFileSync(resolve(here, "../components/ProjectTree.tsx"), "utf8");
+const remoteSource = readFileSync(resolve(here, "../components/ProjectTreeRemoteGroups.tsx"), "utf8");
 
 ok(
-  /void openRemoteProject\(node\.remote, \{ sessionName: row\.name \}\)/.test(source),
-  "session rows open by sessionName",
+  /<div[\s\S]*?key=\{`remote-session:/.test(remoteSource) && !/sessionName: row\.name/.test(remoteSource),
+  "session rows remain non-interactive until the remote-tab surface lands",
 );
 ok(
-  /remoteRows\.map\(\(row\) =>/.test(source),
+  /rows\.map\(\(row\) =>/.test(remoteSource),
   "remote group children render from the fetched session list",
 );
 ok(
-  /app\.RemoteProjectSessions\(hostId, workspace\)/.test(source),
+  /app\.RemoteProjectSessions\(hostId, workspace\)/.test(remoteSource),
   "sessions are fetched through the bridge",
 );
 ok(
-  /state !== "connected" && state !== "degraded"[\s\S]{0,200}continue;/.test(source),
+  /state === "connected" \|\| state === "degraded"/.test(remoteSource),
   "session fetch waits for a connected host",
 );
 ok(
-  /if \(node\.remote\) \{\s*void openRemoteProject\(node\.remote, \{ newSession: true \}\);\s*return;\s*\}\s*void handleCreateTopic/.test(source),
-  "the + action on a remote group opens a remote session, never a local topic",
-);
-ok(
-  /key: "remote-new-session"[\s\S]*?key: "remote-open-window"[\s\S]*?key: "remote-stop-server"[\s\S]*?key: "remote-unpin"/.test(source),
-  "the remote context menu offers new session, remote window, stop server, and unpin",
+  /key: "remote-open-window"[\s\S]*?key: "remote-stop-server"[\s\S]*?key: "remote-unpin"/.test(remoteSource) && !/key: "remote-new-session"/.test(remoteSource),
+  "the partial-stage menu exposes only actions that have a visible surface",
 );
 ok(
   /items=\{node\.remote \? remoteProjectMenuItems :/.test(source),
   "remote groups swap out the local project menu",
 );
 ok(
-  /app\.OpenRemoteWorkspace\(node\.remote!\.hostId, node\.remote!\.workspace\)/.test(source),
-  "remote window action passes host and workspace",
+  /app\.ConnectRemoteHost\(ref\.hostId\)[\s\S]*?waitForRemoteConnection\(ref\.hostId\)[\s\S]*?app\.OpenRemoteWorkspace\(ref\.hostId, ref\.workspace\)/.test(remoteSource) && /openRemoteWindow\(node\.remote\)/.test(source),
+  "remote project reconnects before opening the supported remote window surface",
 );
 ok(
-  /app\.RemoveRemoteProject\(node\.remote!\.hostId, node\.remote!\.workspace\)/.test(source) && /void refresh\(\);/.test(source),
+  /app\.RemoveRemoteProject\(ref\.hostId, ref\.workspace\)/.test(remoteSource) && /void refresh\(\);/.test(remoteSource),
   "unpin removes the registration and refreshes the tree",
 );
 ok(
   /project-tree__remote-badge--\$\{remoteStatuses\[node\.remote\.hostId\]\?\.state/.test(source),
   "the group row badge reflects the live host status",
+);
+ok(
+  /sessionLoads\.current\.has\(key\)/.test(remoteSource) && /eligibleSessionKeys\.current\.has\(key\)/.test(remoteSource) && /filter\(\(\[key\]\) => eligible\.has\(key\)\)/.test(remoteSource),
+  "session fetches deduplicate in flight and discard disconnected or stale group results",
 );
 
 process.stdout.write(`\n${passed} passed, ${failed} failed\n`);

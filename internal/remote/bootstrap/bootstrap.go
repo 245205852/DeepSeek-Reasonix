@@ -57,11 +57,8 @@ type Options struct {
 	MinVersion     string                                                        // minimum acceptable remote version
 	Progress       func(step, detail string)                                     // optional progress callback
 	Clock          func() time.Time                                              // nil => time.Now
-	// CredentialProxy, when set, routes the serve's model calls back to the
-	// desktop over the SSH reverse tunnel: a provider entry pointing at the
-	// tunnel is installed into the remote config and the virtual token is
-	// injected into the serve environment. The real key never leaves the
-	// desktop.
+	// CredentialProxy installs a tunnel-backed provider and a scoped virtual
+	// token on the remote. The real provider key never leaves the desktop.
 	CredentialProxy *CredentialProxyOptions
 }
 
@@ -106,26 +103,9 @@ func EnsureServe(ctx context.Context, conn Conn, opts Options) (Result, error) {
 	}
 	paths := pathsFor(home, workspace)
 
-	// 0. Local-proxy credential mode: install (and heal) the provider config
-	// BEFORE the reuse check, so a live serve's config gets the materialized
-	// default_provider entry too — not only fresh launches. The write is
-	// idempotent and never touches default_model itself.
-	//
-	// A live serve that predates these launch settings (e.g. started before
-	// the host switched into local-proxy mode, so without --model <proxy>) is
-	// stopped and replaced instead of reused: its sessions resolve the remote
-	// default_model and call providers directly with remote-held keys.
-	requireLaunchArgs := []string{}
-	credentialChanged := false
-	if opts.CredentialProxy != nil {
-		opts.progress("credential_proxy", "")
-		changed, err := ensureCredentialProvider(ctx, fs, home, opts.CredentialProxy)
-		if err != nil {
-			return Result{}, err
-		}
-		credentialChanged = changed
-		requireLaunchArgs = append(requireLaunchArgs, "--model "+opts.CredentialProxy.Provider)
-		stopMismatchedServe(ctx, conn, fs, paths, workspace, requireLaunchArgs)
+	requireLaunchArgs, credentialChanged, err := prepareCredentialProxy(ctx, conn, fs, opts, home, workspace, paths)
+	if err != nil {
+		return Result{}, err
 	}
 
 	// 1. Reuse a live process if the recorded pid is still running.
@@ -220,6 +200,22 @@ func EnsureServe(ctx context.Context, conn Conn, opts Options) (Result, error) {
 	}
 	opts.progress("ready", addr)
 	return Result{State: st, Token: token}, nil
+}
+
+func prepareCredentialProxy(ctx context.Context, conn Conn, fs *sftpfs.FS, opts Options, home, workspace string, paths StatePaths) ([]string, bool, error) {
+	if opts.CredentialProxy == nil {
+		return nil, false, nil
+	}
+	opts.progress("credential_proxy", "")
+	changed, err := ensureCredentialProvider(ctx, fs, home, opts.CredentialProxy)
+	if err != nil {
+		return nil, false, err
+	}
+	required := []string{"--model " + opts.CredentialProxy.Provider}
+	if err := stopMismatchedServe(ctx, conn, fs, paths, workspace, required); err != nil {
+		return nil, false, err
+	}
+	return required, changed, nil
 }
 
 // Status reads the recorded state and reports whether the process is alive.
@@ -324,17 +320,20 @@ func tryReuse(ctx context.Context, conn Conn, fs *sftpfs.FS, paths StatePaths, w
 // stopMismatchedServe TERMs a live serve whose command line lacks the
 // required launch args: reuse would route model calls under the wrong
 // credential setup, and a plain relaunch would orphan the process.
-func stopMismatchedServe(ctx context.Context, conn Conn, fs *sftpfs.FS, paths StatePaths, workspace string, requireArgs []string) {
+func stopMismatchedServe(ctx context.Context, conn Conn, fs *sftpfs.FS, paths StatePaths, workspace string, requireArgs []string) error {
 	if len(requireArgs) == 0 {
-		return
+		return nil
 	}
 	st, err := readState(ctx, fs, paths.StateJSON)
 	if err != nil || st.PID <= 0 || !validServeAddr(st.Addr) || st.Workspace != workspace {
-		return
+		return nil
 	}
 	if pidIsServe(ctx, conn, st.PID, paths) && !pidIsServe(ctx, conn, st.PID, paths, requireArgs...) {
-		_, _ = conn.Exec(ctx, StopCommand(st.PID, paths))
+		if _, err := conn.Exec(ctx, StopCommand(st.PID, paths)); err != nil {
+			return fmt.Errorf("bootstrap: stop mismatched serve: %w", err)
+		}
 	}
+	return nil
 }
 
 // pidIsServe reports whether pid is running AND is a reasonix serve process,

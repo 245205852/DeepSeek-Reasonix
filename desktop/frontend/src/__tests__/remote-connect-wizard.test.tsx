@@ -153,12 +153,17 @@ window.go = { main: { App: {
   async OpenRemoteWorkspace(hostId: string, workspace: string) {
     tape.push(`OpenRemoteWorkspace:${hostId}:${workspace}`);
   },
+  async AddRemoteProject(hostId: string, workspace: string) {
+    tape.push(`AddRemoteProject:${hostId}:${workspace}`);
+    return { hostId, workspace };
+  },
 } as Partial<AppBindings> as AppBindings } };
 
 function WizardHarness() {
   return (
     <LocaleProvider>
       <RemoteConnectWizard
+        onRefresh={async () => { tape.push("refresh"); }}
         onClose={() => {
           tape.push("close");
         }}
@@ -370,12 +375,14 @@ ok(!document.querySelector(".remote-wizard__mkdir"), "workspace step has no crea
   });
 }
 
-// ── Finish: open through the existing remote workspace surface ──
+// ── Finish: pin, refresh, then open through the existing surface ──
 await act(async () => {
   buttonByText("Connect and open")?.click();
   await flush();
 });
 ok(tape.includes("OpenRemoteWorkspace:gpu-box:/home/dev/projects"), "finish opens the selected workspace through the available remote surface");
+ok(tape.includes("AddRemoteProject:gpu-box:/home/dev/projects"), "finish pins the selected remote workspace");
+ok(tape.indexOf("refresh") < tape.indexOf("OpenRemoteWorkspace:gpu-box:/home/dev/projects"), "the project tree refreshes before the remote window opens");
 ok(tape.includes("close"), "wizard closes after a successful finish");
 
 await act(async () => root.unmount());

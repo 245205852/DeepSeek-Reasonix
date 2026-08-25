@@ -57,8 +57,10 @@ function parentOf(path: string): string {
  */
 export function RemoteConnectWizard({
   onClose,
+  onRefresh,
 }: {
   onClose: () => void;
+  onRefresh: () => Promise<void>;
 }) {
   const t = useT();
   const hosts = useRemoteStore((s) => s.hosts);
@@ -284,6 +286,8 @@ export function RemoteConnectWizard({
     setError("");
     try {
       try {
+        await app.AddRemoteProject(hostId, target);
+        await onRefresh();
         await app.OpenRemoteWorkspace(hostId, target);
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));

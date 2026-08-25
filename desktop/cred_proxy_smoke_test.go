@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/cookiejar"
@@ -50,7 +51,7 @@ func TestCredentialProxyRealHostSmoke(t *testing.T) {
 	if err := mgr.Connect(hostID); err != nil {
 		t.Fatalf("connect: %v", err)
 	}
-	if err := waitForRemoteHost(mgr, hostID, 60*time.Second); err != nil {
+	if err := waitForRemoteHostSmoke(mgr, hostID, 60*time.Second); err != nil {
 		t.Fatalf("host never connected: %v", err)
 	}
 
@@ -84,7 +85,7 @@ func TestCredentialProxyRealHostSmoke(t *testing.T) {
 	}
 	post := func(path string, body any) (int, []byte) {
 		data, _ := json.Marshal(body)
-		req, _ := http.NewRequest("POST", base+path, strings.NewReader(string(data)))
+		req, _ := http.NewRequest(http.MethodPost, base+path, strings.NewReader(string(data)))
 		req.Header.Set("Content-Type", "application/json")
 		resp, err := client.Do(req)
 		if err != nil {
@@ -112,7 +113,7 @@ func TestCredentialProxyRealHostSmoke(t *testing.T) {
 				t.Logf("model replied through the desktop credential proxy")
 				return
 			}
-			if resp.StatusCode != 200 {
+			if resp.StatusCode != http.StatusOK {
 				t.Fatalf("/history: %d %s", resp.StatusCode, out)
 			}
 		}
@@ -120,5 +121,29 @@ func TestCredentialProxyRealHostSmoke(t *testing.T) {
 			t.Fatalf("no PROXY-OK reply within 90s (last history fetch err=%v)", err)
 		}
 		time.Sleep(2 * time.Second)
+	}
+}
+
+func waitForRemoteHostSmoke(rt remoteKernel, hostID string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for {
+		for _, status := range rt.Statuses() {
+			if status.HostID != hostID {
+				continue
+			}
+			switch status.State {
+			case "connected", "degraded":
+				return nil
+			case "stopped":
+				if status.Error != "" {
+					return fmt.Errorf("remote host %q: %s", hostID, status.Error)
+				}
+				return fmt.Errorf("remote host %q stopped", hostID)
+			}
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("remote host %q: connection timed out", hostID)
+		}
+		time.Sleep(250 * time.Millisecond)
 	}
 }

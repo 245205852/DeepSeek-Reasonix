@@ -19,9 +19,7 @@ func credProxyOpts(baseURL string) *CredentialProxyOptions {
 	}
 }
 
-// TestEnsureCredentialProviderAppendsAndIsIdempotent: a fresh remote gains the
-// provider block; a second run with the same options leaves the file
-// byte-identical; a base_url change rewrites just that line.
+// TestEnsureCredentialProviderAppendsAndIsIdempotent covers install and healing.
 func TestEnsureCredentialProviderAppendsAndIsIdempotent(t *testing.T) {
 	skipOnWindows(t)
 	root := t.TempDir()
@@ -71,10 +69,27 @@ func TestEnsureCredentialProviderAppendsAndIsIdempotent(t *testing.T) {
 	if strings.Count(string(third), "[[providers]]") != 1 {
 		t.Fatalf("port change duplicated the block:\n%s", third)
 	}
+	other := credProxyOpts("http://127.0.0.1:19000")
+	other.Provider, other.TokenEnv, other.Token = "reasonix-desktop-proxy-other", "REASONIX_PROXY_TOKEN_OTHER", "other-token"
+	if _, err := ensureCredentialProvider(ctx, fs, root, other); err != nil {
+		t.Fatalf("second workspace: %v", err)
+	}
+	cfg, _ := os.ReadFile(filepath.Join(root, ".reasonix", "config.toml"))
+	env, _ := os.ReadFile(filepath.Join(root, ".reasonix", ".env"))
+	if !strings.Contains(string(cfg), `name = "reasonix-desktop-proxy-other"`) || !strings.Contains(string(env), "REASONIX_PROXY_TOKEN=virtual-token-123") || !strings.Contains(string(env), "REASONIX_PROXY_TOKEN_OTHER=other-token") {
+		t.Fatalf("workspace credentials collided:\nconfig=%s\nenv=%s", cfg, env)
+	}
+	healed := credProxyOpts("http://127.0.0.1:20000")
+	if _, err := ensureCredentialProvider(ctx, fs, root, healed); err != nil {
+		t.Fatalf("multi-workspace port heal: %v", err)
+	}
+	cfg, _ = os.ReadFile(filepath.Join(root, ".reasonix", "config.toml"))
+	if got := strings.Count(string(cfg), `base_url = "http://127.0.0.1:20000"`); got != 2 {
+		t.Fatalf("managed workspace providers did not heal together (got %d):\n%s", got, cfg)
+	}
 }
 
-// TestEnsureCredentialProviderPreservesUserConfig: an existing user config
-// keeps its content; the block appends at the end.
+// TestEnsureCredentialProviderPreservesUserConfig keeps existing content.
 func TestEnsureCredentialProviderPreservesUserConfig(t *testing.T) {
 	skipOnWindows(t)
 	root := t.TempDir()
@@ -105,15 +120,13 @@ func TestEnsureCredentialProviderPreservesUserConfig(t *testing.T) {
 	}
 }
 
-// TestLaunchCommandCredentialInjection: the virtual token rides the
-// environment (quoted) and the serve selects the tunnel-backed provider.
+// TestLaunchCommandCredentialInjection keeps tokens out of the shell command.
 func TestLaunchCommandCredentialInjection(t *testing.T) {
 	paths := StatePaths{Dir: "/d", TokenFile: "/d/t", PortFile: "/d/p", PidFile: "/d/i", LogFile: "/d/l"}
 	cmd := LaunchCommand("/usr/bin/reasonix", "/ws", paths, &CredentialProxyOptions{
 		BaseURL: "http://127.0.0.1:18999", Token: "to'ken $x", Provider: "reasonix-desktop-proxy", Model: "m",
 	})
 	for _, want := range []string{
-		`REASONIX_PROXY_TOKEN='to'\''ken $x'`,
 		`--model 'reasonix-desktop-proxy'`,
 		`nohup '/usr/bin/reasonix' serve`,
 	} {
@@ -121,17 +134,12 @@ func TestLaunchCommandCredentialInjection(t *testing.T) {
 			t.Errorf("LaunchCommand missing %q:\n%s", want, cmd)
 		}
 	}
-	// Token must not appear unquoted anywhere else (never bare in argv).
-	if strings.Contains(cmd, " to'ken") && !strings.Contains(cmd, "REASONIX_PROXY_TOKEN=") {
-		t.Errorf("token leaked outside the env assignment:\n%s", cmd)
+	if strings.Contains(cmd, "to'ken") || strings.Contains(cmd, TokenEnvName) {
+		t.Errorf("virtual token leaked into launch command:\n%s", cmd)
 	}
 }
 
-// TestEnsureCredentialProviderMaterializesBuiltinDefault: a remote whose
-// default_model resolves only through the built-in defaults gains an explicit
-// entry for it before ours — appending ours alone would disable the builtins
-// and crash the serve at startup. default_model is never rewritten and the
-// second run is byte-stable.
+// TestEnsureCredentialProviderMaterializesBuiltinDefault keeps default_model valid.
 func TestEnsureCredentialProviderMaterializesBuiltinDefault(t *testing.T) {
 	skipOnWindows(t)
 	root := t.TempDir()
@@ -182,9 +190,7 @@ func TestEnsureCredentialProviderMaterializesBuiltinDefault(t *testing.T) {
 	}
 }
 
-// TestMaterializeDefaultProviderSkipsNonBuiltin: a default_model whose
-// provider is neither in the file nor a builtin stays untouched — the gap is
-// user-owned, not ours to invent.
+// TestMaterializeDefaultProviderSkipsNonBuiltin leaves user-owned gaps alone.
 func TestMaterializeDefaultProviderSkipsNonBuiltin(t *testing.T) {
 	before := "default_model = \"custom/pro-model\"\n"
 	after := materializeDefaultProvider(before)
@@ -199,10 +205,7 @@ func TestMaterializeDefaultProviderSkipsNonBuiltin(t *testing.T) {
 	}
 }
 
-// TestEnsureCredentialProviderRewritesKindDrift: an existing block whose kind
-// no longer matches the desktop provider behind the proxy (the desktop
-// switched from an openai-kind to an anthropic-kind provider) is rewritten
-// in place; a matching re-run stays byte-identical.
+// TestEnsureCredentialProviderRewritesKindDrift heals provider kind changes.
 func TestEnsureCredentialProviderRewritesKindDrift(t *testing.T) {
 	skipOnWindows(t)
 	root := t.TempDir()
@@ -241,5 +244,65 @@ func TestEnsureCredentialProviderRewritesKindDrift(t *testing.T) {
 	again, _ := os.ReadFile(filepath.Join(root, ".reasonix", "config.toml"))
 	if string(again) != string(rewritten) {
 		t.Fatalf("matching re-run rewrote the config:\n%s\n---\n%s", rewritten, again)
+	}
+}
+
+func TestEnsureCredentialProviderPersistsLateBuiltinMaterialization(t *testing.T) {
+	skipOnWindows(t)
+	root := t.TempDir()
+	configDir := filepath.Join(root, ".reasonix")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Simulate an older desktop: its proxy block is current, but it never
+	// materialized the builtin selected by default_model.
+	legacy := "default_model = \"deepseek-flash\"\n" + credentialProviderBlock(credProxyOpts("http://127.0.0.1:18999"))
+	if err := os.WriteFile(filepath.Join(configDir, "config.toml"), []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	conn := newFakeConn(t, root, func(string) (remote.ExecResult, error) { return ok("") })
+	fs, err := conn.SFTP()
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed, err := ensureCredentialProvider(context.Background(), fs, root, credProxyOpts("http://127.0.0.1:18999"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !changed {
+		t.Fatal("late builtin materialization was not reported as a config change")
+	}
+	got, err := os.ReadFile(filepath.Join(configDir, "config.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(got), `name = "deepseek-flash"`) {
+		t.Fatalf("materialized builtin was not persisted:\n%s", got)
+	}
+}
+
+func TestEnsureCredentialProviderRewritesModelDrift(t *testing.T) {
+	skipOnWindows(t)
+	root := t.TempDir()
+	conn := newFakeConn(t, root, func(string) (remote.ExecResult, error) { return ok("") })
+	fs, err := conn.SFTP()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if _, err := ensureCredentialProvider(ctx, fs, root, credProxyOpts("http://127.0.0.1:18999")); err != nil {
+		t.Fatal(err)
+	}
+	switched := credProxyOpts("http://127.0.0.1:18999")
+	switched.Model = "deepseek-v4-pro"
+	if _, err := ensureCredentialProvider(ctx, fs, root, switched); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filepath.Join(root, ".reasonix", "config.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(got), `model = "deepseek-v4-pro"`) || strings.Contains(string(got), `model = "deepseek-v4-flash"`) {
+		t.Fatalf("model drift not rewritten:\n%s", got)
 	}
 }

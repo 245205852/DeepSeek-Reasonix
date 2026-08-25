@@ -334,15 +334,8 @@ type App struct {
 	// connection keep running. The child deliberately skips local runtimes.
 	remoteWindows          *remoteWindowRegistry
 	remoteWindowLifecycles remoteWindowLifecycleRegistry
-	// Remote project tabs: in-app tabs bound to a remote workspace. Tracks
-	// open tabs and their connection state; project registration itself
-	// persists in the user config ([remote].projects). Task 5.5 will add
-	// persistence/restore and the submit/snapshot surface.
-	remoteTabMu        sync.Mutex
-	remoteTabs         map[string]*remoteTab
-	remoteWindowOpener func(remoteWindowLaunch) error // test-only injection
-	// Local-proxy credential mode: the desktop-side key holder for remote
-	// serves whose model calls tunnel back here. Lazily started, app-wide.
+	remoteWindowOpener     func(remoteWindowLaunch) error // test-only injection
+	// credProxy is the lazy app-wide key holder for local-proxy mode.
 	credProxyMu sync.Mutex
 	credProxy   *credentialProxy
 	// remoteWindowTicket/remoteWindowHostKey are set from argv before Wails

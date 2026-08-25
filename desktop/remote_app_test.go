@@ -515,7 +515,9 @@ func TestOpenRemoteWorkspacePersistsLastWorkspace(t *testing.T) {
 	t.Setenv("REASONIX_HOME", home)
 	t.Setenv("HOME", home)
 	a := &App{ctx: context.Background()}
-	a.saveLastRemoteWorkspace("box", "/home/dev/app")
+	if err := a.saveLastRemoteWorkspace("box", "/home/dev/app"); err != nil {
+		t.Fatal(err)
+	}
 	got := a.RemoteLastWorkspace("box")
 	if got != "/home/dev/app" {
 		t.Fatalf("last workspace = %q, want /home/dev/app", got)
