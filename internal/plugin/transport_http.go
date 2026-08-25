@@ -42,7 +42,7 @@ func validateMCPURL(name, transport, raw string) error {
 	}
 }
 
-func newMCPHTTPClient(s Spec) (*http.Client, error) {
+func newMCPHTTPClient(lifetime context.Context, s Spec) (*http.Client, error) {
 	origin, err := url.Parse(strings.TrimSpace(s.URL))
 	if err != nil || origin == nil || origin.Host == "" {
 		return nil, fmt.Errorf("invalid MCP endpoint")
@@ -52,9 +52,10 @@ func newMCPHTTPClient(s Spec) (*http.Client, error) {
 	base := http.DefaultTransport.(*http.Transport).Clone()
 	client := &http.Client{
 		Transport: &sameOriginMCPRoundTripper{
-			origin:  origin,
-			headers: headers,
-			base:    base,
+			origin:   origin,
+			headers:  headers,
+			base:     base,
+			lifetime: lifetime,
 		},
 	}
 	client.CheckRedirect = func(req *http.Request, _ []*http.Request) error {
@@ -67,16 +68,34 @@ func newMCPHTTPClient(s Spec) (*http.Client, error) {
 }
 
 type sameOriginMCPRoundTripper struct {
-	origin  *url.URL
-	headers map[string]string
-	base    http.RoundTripper
+	origin   *url.URL
+	headers  map[string]string
+	base     http.RoundTripper
+	lifetime context.Context
 }
 
 func (rt *sameOriginMCPRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	if req == nil || !sameHTTPOrigin(rt.origin, req.URL) {
 		return nil, errors.New("MCP request changed origin; configured headers were not sent")
 	}
-	request := req.Clone(req.Context())
+	requestCtx := req.Context()
+	cancelRequest := func() {}
+	stopLifetime := func() bool { return true }
+	// Keep protocol cleanup independent from the session lifetime: Close first
+	// cancels active GET/POST requests, then the SDK sends this bounded DELETE.
+	if req.Method != http.MethodDelete {
+		var cancel context.CancelFunc
+		requestCtx, cancel = context.WithCancel(req.Context())
+		cancelRequest = cancel
+		if rt.lifetime != nil {
+			stopLifetime = context.AfterFunc(rt.lifetime, cancelRequest)
+		}
+	}
+	cancelLifetimeRequest := func() {
+		stopLifetime()
+		cancelRequest()
+	}
+	request := req.Clone(requestCtx)
 	request.Header = req.Header.Clone()
 	for key, value := range rt.headers {
 		request.Header.Set(key, value)
@@ -87,12 +106,20 @@ func (rt *sameOriginMCPRoundTripper) RoundTrip(req *http.Request) (*http.Respons
 		base = http.DefaultTransport
 	}
 	if request.Method != http.MethodDelete {
-		return base.RoundTrip(request)
+		response, err := base.RoundTrip(request)
+		return responseWithCancel(response, err, cancelLifetimeRequest)
 	}
 
-	deleteCtx, cancel := context.WithTimeout(request.Context(), 2*time.Second)
+	deleteCtx, cancelDelete := context.WithTimeout(request.Context(), 2*time.Second)
 	request = request.Clone(deleteCtx)
 	response, err := base.RoundTrip(request)
+	return responseWithCancel(response, err, func() {
+		cancelDelete()
+		cancelLifetimeRequest()
+	})
+}
+
+func responseWithCancel(response *http.Response, err error, cancel func()) (*http.Response, error) {
 	if err != nil {
 		cancel()
 		return nil, err
@@ -105,9 +132,15 @@ func (rt *sameOriginMCPRoundTripper) RoundTrip(req *http.Request) (*http.Respons
 	return response, nil
 }
 
+func (rt *sameOriginMCPRoundTripper) CloseIdleConnections() {
+	if closer, ok := rt.base.(interface{ CloseIdleConnections() }); ok {
+		closer.CloseIdleConnections()
+	}
+}
+
 type cancelOnCloseBody struct {
 	io.ReadCloser
-	cancel context.CancelFunc
+	cancel func()
 }
 
 func (b *cancelOnCloseBody) Close() error {
@@ -152,7 +185,7 @@ func (t *sdkSessionTransport) newEndpoint(ctx context.Context) (sdkEndpoint, err
 			startupStderr: process.startupStderr,
 		}, nil
 	case "streamable-http":
-		client, err := newMCPHTTPClient(t.spec)
+		client, err := newMCPHTTPClient(ctx, t.spec)
 		if err != nil {
 			return sdkEndpoint{}, err
 		}
@@ -166,7 +199,7 @@ func (t *sdkSessionTransport) newEndpoint(ctx context.Context) (sdkEndpoint, err
 			close: client.CloseIdleConnections,
 		}, nil
 	case "sse":
-		client, err := newMCPHTTPClient(t.spec)
+		client, err := newMCPHTTPClient(ctx, t.spec)
 		if err != nil {
 			return sdkEndpoint{}, err
 		}
@@ -182,7 +215,7 @@ func (t *sdkSessionTransport) newEndpoint(ctx context.Context) (sdkEndpoint, err
 // do is retained as a narrow HTTP security test hook. MCP protocol traffic goes
 // through the SDK transport above.
 func (t *sdkSessionTransport) do(ctx context.Context, body []byte) (*http.Response, error) {
-	client, err := newMCPHTTPClient(t.spec)
+	client, err := newMCPHTTPClient(ctx, t.spec)
 	if err != nil {
 		return nil, err
 	}

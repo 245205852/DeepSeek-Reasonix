@@ -194,6 +194,11 @@ func (t *sdkSessionTransport) call(ctx context.Context, method string, params an
 	}
 
 	if errors.Is(err, mcpsdk.ErrSessionMissing) {
+		if managed.session.ID() == "" {
+			endpointErr := fmt.Errorf("MCP endpoint returned HTTP 404 without an established session: %w", err)
+			t.noteRuntimeError(managed, SessionErrorProtocol, endpointErr)
+			return nil, t.sanitizeError(endpointErr, managed)
+		}
 		t.noteRuntimeError(managed, SessionErrorSessionMissing, err)
 		t.invalidate(managed)
 		replacement, rebuildErr := t.acquire(ctx)
@@ -472,6 +477,16 @@ func (t *sdkSessionTransport) handleSessionEnd(managed *managedMCPSession, err e
 		return
 	}
 	t.current = nil
+	if errors.Is(err, mcpsdk.ErrSessionMissing) && managed.session.ID() == "" {
+		t.state = SessionStateFailed
+		t.lastErrorKind = SessionErrorProtocol
+		t.lastError = t.safeErrorText(fmt.Errorf("MCP endpoint returned HTTP 404 without an established session: %w", err), "")
+		t.mu.Unlock()
+		if managed.endpoint.close != nil {
+			managed.endpoint.close()
+		}
+		return
+	}
 	t.state = SessionStateReconnecting
 	t.lastErrorKind = SessionErrorStreamClosed
 	t.lastError = t.safeErrorText(err, managed.session.ID())
