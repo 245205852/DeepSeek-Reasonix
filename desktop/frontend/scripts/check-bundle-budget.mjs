@@ -156,6 +156,8 @@ const rawInitialBytes = [...initialJS, ...initialCSS, ...appShellCSS]
 // (0.021%). The workspace panel rework (change-row hover/revert, status badges,
 // More menu, completion summary) makes the latest-base merge 2353.1 KiB in
 // production and test channels measure roughly 2380 KiB with remote sessions.
+// The complete theme-token contract and shared operational-overlay recipe from
+// main remain within that measured remote-session ceiling.
 const rawInitialBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 2_380.3 : 2_380.3;
 assertBudget("initial raw JavaScript and CSS", rawInitialBytes, rawInitialBudgetKiB * 1024);
 assertBudget("largest initial JavaScript chunk raw", largestInitialJSRaw, 1_000 * 1024);

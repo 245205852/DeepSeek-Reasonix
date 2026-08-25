@@ -318,7 +318,7 @@ ok(
 );
 ok(
   /function mockProviderPresetDisplayRank\(id: string\): number \{\s*if \(id === "opencode-go-recommended"\) return -3;\s*if \(id === "deepseek-responses"\) return -2;/.test(bridgeSource),
-  "browser mock keeps the recommended OpenCode Go bundle first and DeepSeek Responses next",
+  "browser mock keeps OpenCode Go recommended first and DeepSeek Responses next",
 );
 
 const values = new Map<string, string>();

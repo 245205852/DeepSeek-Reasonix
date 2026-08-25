@@ -250,8 +250,9 @@ tabsById.set("tab-o", reboundTabOGenerationThree);
 backendActiveId = "tab-o";
 const generationThreeHistory = deferred<HistoryMessage[]>();
 heldTabOHistory = generationThreeHistory.promise;
+let generationThreeNavigation: Promise<TabMeta[] | undefined> | undefined;
 await act(async () => {
-  await controller?.openProjectTab(reboundTabOGenerationThree.workspaceRoot, reboundTabOGenerationThree.topicId || "");
+  generationThreeNavigation = controller?.openProjectTab(reboundTabOGenerationThree.workspaceRoot, reboundTabOGenerationThree.topicId || "");
   await flushPromises();
 });
 eq(controller?.state.meta?.sessionGeneration, 3, "newer same-tab navigation installs generation three identity");
@@ -266,7 +267,7 @@ eq(controller?.state.hydrating, true, "stale same-tab sync cannot cancel generat
 
 await act(async () => {
   generationThreeHistory.resolve([userMessage("history O generation 3")]);
-  await Promise.all([generationThreeHistory.promise, staleSync]);
+  await Promise.all([generationThreeHistory.promise, generationThreeNavigation, staleSync]);
   await flushPromises();
 });
 await waitFor("generation three history", () => controller?.state.items.some((item) => item.kind === "user" && item.text === "history O generation 3") ?? false);

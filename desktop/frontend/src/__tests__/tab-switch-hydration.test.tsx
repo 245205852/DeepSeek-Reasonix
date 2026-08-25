@@ -482,8 +482,7 @@ eq(historyCalls.length, historyCallsBeforeReturnToA, "cached idle tab skips hist
 
 await act(async () => {
   historyB.resolve([userMessage("late B")]);
-  await switchToB;
-  await historyB.promise;
+  await Promise.all([historyB.promise, switchToB]);
   await flushPromises();
 });
 
