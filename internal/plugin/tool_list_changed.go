@@ -164,6 +164,100 @@ func (h *Host) bindToolListChanges(c *Client) {
 		h.publishToolListChange(c, tools)
 	})
 	c.watchToolListChanges()
+	h.watchAuxiliaryListChanges(c)
+}
+
+func (h *Host) watchAuxiliaryListChanges(c *Client) {
+	t, ok := c.t.(notificationTransport)
+	if !ok {
+		return
+	}
+	c.refresh.mu.Lock()
+	ctx := c.refresh.ctx
+	closed := c.refresh.closed
+	c.refresh.mu.Unlock()
+	if closed {
+		return
+	}
+	var stops []func()
+	if c.supportsPromptListChanged {
+		stops = append(stops, t.registerNotification("notifications/prompts/list_changed", func(json.RawMessage) {
+			h.requestPromptRefresh(ctx, c)
+		}))
+	}
+	if c.supportsResourceListChanged {
+		stops = append(stops, t.registerNotification("notifications/resources/list_changed", func(json.RawMessage) {
+			h.requestResourceRefresh(ctx, c)
+		}))
+	}
+	c.surfaceStopsMu.Lock()
+	if c.closed.Load() {
+		c.surfaceStopsMu.Unlock()
+		for _, stop := range stops {
+			stop()
+		}
+		return
+	}
+	c.surfaceStops = append(c.surfaceStops, stops...)
+	c.surfaceStopsMu.Unlock()
+}
+
+func (h *Host) requestPromptRefresh(ctx context.Context, c *Client) {
+	c.promptRevision.Add(1)
+	h.startPromptRefresh(ctx, c)
+}
+
+func (h *Host) startPromptRefresh(ctx context.Context, c *Client) {
+	if !c.promptRunning.CompareAndSwap(false, true) {
+		return
+	}
+	if !h.goSurface(func() {
+		defer func() {
+			c.promptRunning.Store(false)
+			if ctx.Err() == nil && !c.closed.Load() && c.promptApplied.Load() < c.promptRevision.Load() {
+				h.startPromptRefresh(ctx, c)
+			}
+		}()
+		for ctx.Err() == nil && !c.closed.Load() {
+			target := c.promptRevision.Load()
+			h.fetchPrompts(ctx, c, nil)
+			c.promptApplied.Store(target)
+			if c.promptRevision.Load() == target {
+				return
+			}
+		}
+	}) {
+		c.promptRunning.Store(false)
+	}
+}
+
+func (h *Host) requestResourceRefresh(ctx context.Context, c *Client) {
+	c.resourceRevision.Add(1)
+	h.startResourceRefresh(ctx, c)
+}
+
+func (h *Host) startResourceRefresh(ctx context.Context, c *Client) {
+	if !c.resourceRunning.CompareAndSwap(false, true) {
+		return
+	}
+	if !h.goSurface(func() {
+		defer func() {
+			c.resourceRunning.Store(false)
+			if ctx.Err() == nil && !c.closed.Load() && c.resourceApplied.Load() < c.resourceRevision.Load() {
+				h.startResourceRefresh(ctx, c)
+			}
+		}()
+		for ctx.Err() == nil && !c.closed.Load() {
+			target := c.resourceRevision.Load()
+			h.fetchResources(ctx, c, nil)
+			c.resourceApplied.Store(target)
+			if c.resourceRevision.Load() == target {
+				return
+			}
+		}
+	}) {
+		c.resourceRunning.Store(false)
+	}
 }
 
 func (h *Host) registerStartedClient(c *Client, tools []tool.Tool) ([]tool.Tool, error) {
