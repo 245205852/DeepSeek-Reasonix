@@ -3,6 +3,7 @@ package productdocs
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -166,12 +167,7 @@ func releaseItems(release releaseRecord) []releaseItem {
 }
 
 func releaseItemHasTarget(item releaseItem, target string) bool {
-	for _, candidate := range item.Targets {
-		if candidate == target {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(item.Targets, target)
 }
 
 func releaseTargetCount(release releaseRecord, target string) int {
