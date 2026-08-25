@@ -2,7 +2,7 @@ import { lazy, Suspense, useState, type ReactNode } from "react";
 import type { ToastContextValue } from "../lib/toast";
 
 const BlankProjectFlow = lazy(() => import("./BlankProjectFlow").then((module) => ({ default: module.BlankProjectFlow })));
-const RemoteConnectWizard = lazy(() => import("./RemoteConnectWizard").then((module) => ({ default: module.RemoteConnectWizard })));
+const RemoteConnectWizard = lazy(() => import("./RemoteConnectWizardEntry").then((module) => ({ default: module.RemoteConnectWizard })));
 
 export function useProjectCreation({
   onAddProject,

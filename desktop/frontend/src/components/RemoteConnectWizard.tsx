@@ -1,7 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Check, FileText, Folder, Plus } from "lucide-react";
-import "./RemoteConnectWizard.css";
 import { app } from "../lib/bridge";
 import { useT } from "../lib/i18n";
 import { useRemoteStore, waitForRemoteConnection } from "../store/remote";

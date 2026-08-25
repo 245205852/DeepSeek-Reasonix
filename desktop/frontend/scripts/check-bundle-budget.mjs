@@ -160,6 +160,9 @@ const rawInitialBytes = [...initialJS, ...initialCSS, ...appShellCSS]
 // More menu, completion summary) makes the latest-base merge 2353.1 KiB in
 // production and test channels both measure 2357.92 KiB after project-group
 // wiring. Retain it with 0.28 KiB of build-SHA/toolchain headroom.
-const rawInitialBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 2_358.2 : 2_358.2;
+// The complete theme-token contract and one shared operational-overlay recipe
+// add 1.09 KiB raw CSS while remaining inside the existing gzip CSS ceiling.
+// Keep only 0.21 KiB of raw headroom so this remains a narrow, measured ratchet.
+const rawInitialBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 2_359.5 : 2_359.5;
 assertBudget("initial raw JavaScript and CSS", rawInitialBytes, rawInitialBudgetKiB * 1024);
 assertBudget("largest initial JavaScript chunk raw", largestInitialJSRaw, 1_000 * 1024);
