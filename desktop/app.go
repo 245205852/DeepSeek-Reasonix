@@ -475,6 +475,9 @@ func (a *App) startup(ctx context.Context) {
 			slog.Debug("desktop: repair native icon integration", "err", err)
 		}
 	})
+	a.goSafe("applyWindowIconsFromExecutable", func() {
+		applyWindowIconsFromExecutable()
+	})
 
 	if cfg, err := config.Load(); err == nil && cfg.DesktopMetrics() && version != "dev" {
 		a.metrics.Store(newMetricsAggregator(config.MemoryUserDir()))
