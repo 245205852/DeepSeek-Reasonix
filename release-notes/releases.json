@@ -3,6 +3,7 @@
   "releases": [
     {
       "version": "1.31.4",
+      "targetingVersion": 1,
       "date": "2026-08-25",
       "channel": "stable",
       "title": {
@@ -14,7 +15,9 @@
         "zh": "此版本修复了多个桌面端问题，包括损坏的会话元数据恢复、后台任务通知、模型服务删除和会话滚动。同时通过移除高成本的指标汇总提升了性能。"
       },
       "surfaces": [
-        "desktop"
+        "desktop",
+        "cli",
+        "service"
       ],
       "guides": [
         {
@@ -54,6 +57,10 @@
       "highlights": [
         {
           "kind": "fixed",
+          "targets": [
+            "desktop",
+            "cli"
+          ],
           "title": {
             "en": "Recover from corrupted session metadata",
             "zh": "从损坏的会话元数据中恢复"
@@ -68,6 +75,10 @@
         },
         {
           "kind": "improved",
+          "targets": [
+            "desktop",
+            "cli"
+          ],
           "title": {
             "en": "Clearer background job notifications",
             "zh": "更清晰的后台任务通知"
@@ -82,6 +93,9 @@
         },
         {
           "kind": "fixed",
+          "targets": [
+            "desktop"
+          ],
           "title": {
             "en": "Delete configured default providers",
             "zh": "删除已配置的默认模型服务"
@@ -96,6 +110,9 @@
         },
         {
           "kind": "fixed",
+          "targets": [
+            "desktop"
+          ],
           "title": {
             "en": "Stable transcript scrolling",
             "zh": "稳定的会话滚动"
@@ -111,6 +128,9 @@
         },
         {
           "kind": "improved",
+          "targets": [
+            "service"
+          ],
           "title": {
             "en": "Reduced database read costs",
             "zh": "降低数据库读取成本"
@@ -128,6 +148,10 @@
         "new": [],
         "improved": [
           {
+            "targets": [
+              "desktop",
+              "cli"
+            ],
             "title": {
               "en": "Better math rendering in desktop and CLI",
               "zh": "桌面端和 CLI 中更好的数学渲染"
@@ -141,6 +165,9 @@
             ]
           },
           {
+            "targets": [
+              "desktop"
+            ],
             "title": {
               "en": "Preserve sidebar activity order",
               "zh": "保持侧栏活动顺序"
@@ -154,6 +181,9 @@
             ]
           },
           {
+            "targets": [
+              "desktop"
+            ],
             "title": {
               "en": "Stop repeated session catalog reindexing",
               "zh": "停止会话目录反复重新索引"
@@ -169,6 +199,9 @@
         ],
         "fixed": [
           {
+            "targets": [
+              "desktop"
+            ],
             "title": {
               "en": "Atomic OpenCode Go group removal",
               "zh": "OpenCode Go 分组原子删除"
@@ -182,6 +215,10 @@
             ]
           },
           {
+            "targets": [
+              "desktop",
+              "cli"
+            ],
             "title": {
               "en": "Restore explicit readiness recovery",
               "zh": "恢复显式收尾恢复"
