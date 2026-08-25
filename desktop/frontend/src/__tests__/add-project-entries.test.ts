@@ -60,7 +60,7 @@ ok(
 
 // The wizard mounts through the creation hook, outside the startup bundle.
 ok(
-  /lazy\(\(\) => import\("\.\/RemoteConnectWizard"\)/.test(hookSource),
+  /lazy\(\(\) => import\("\.\/RemoteConnectWizardEntry"\)/.test(hookSource),
   "remote wizard loads lazily through useProjectCreation",
 );
 
