@@ -181,7 +181,7 @@ func TestSDKSessionWaiterCancellationDoesNotCancelSharedBuild(t *testing.T) {
 		done <- err
 	}()
 	cancelWait()
-	if err := <-done; err != context.Canceled {
+	if err := <-done; !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancelled waiter error = %v, want context.Canceled", err)
 	}
 	close(release)

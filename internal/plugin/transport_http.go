@@ -15,10 +15,6 @@ import (
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// maxHTTPBody remains the product-level bound used by OAuth and regression
-// fixtures. The SDK streams MCP responses and applies its own message limits.
-const maxHTTPBody = 16 << 20
-
 func newHTTPTransport(s Spec) (*sdkSessionTransport, error) {
 	if strings.TrimSpace(s.Type) == "" {
 		s.Type = "http"

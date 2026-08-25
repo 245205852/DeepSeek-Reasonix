@@ -112,8 +112,7 @@ func (t *controlledToolsTransport) call(ctx context.Context, method string, _ an
 	}
 }
 
-func (*controlledToolsTransport) notify(context.Context, string, any) error { return nil }
-func (*controlledToolsTransport) close()                                    {}
+func (*controlledToolsTransport) close() {}
 func (t *controlledToolsTransport) registerNotification(method string, callback func(json.RawMessage)) func() {
 	return t.notifications.registerNotification(method, callback)
 }
@@ -537,8 +536,6 @@ func TestClientIgnoresToolListChangedWithoutAdvertisedCapability(t *testing.T) {
 		t.Fatalf("notification listeners = %d, want none without tools.listChanged", listeners)
 	}
 }
-
-func (*notificationToolsTransport) notify(context.Context, string, any) error { return nil }
 
 func (t *notificationToolsTransport) registerNotification(method string, callback func(json.RawMessage)) func() {
 	return t.notifications.registerNotification(method, callback)

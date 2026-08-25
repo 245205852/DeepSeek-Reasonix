@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 )
@@ -42,7 +43,7 @@ func TestNormalizeMCPToolArguments(t *testing.T) {
 }
 
 func TestUseCapabilityNormalizesMCPArgumentsBeforeResolution(t *testing.T) {
-	proxy := NewUseCapabilityTool(nil, nil, nil, nil, nil, nil, nil)
+	proxy := NewUseCapabilityTool(context.Background(), nil, nil, nil, nil, nil, nil)
 	resolved, err := proxy.ResolveCall(t.Context(), json.RawMessage(`{
 		"action":"call",
 		"capability_id":"mcp-tool:missing/tool",

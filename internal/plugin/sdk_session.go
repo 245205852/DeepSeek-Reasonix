@@ -366,6 +366,7 @@ func (t *sdkSessionTransport) build(ctx context.Context, generation uint64) (*ma
 
 	capabilities := &mcpsdk.ClientCapabilities{}
 	if len(mcpRoots(t.spec.WorkspaceRoot)) > 0 {
+		//nolint:staticcheck // Legacy MCP servers still require roots during the SDK deprecation window.
 		capabilities.RootsV2 = &mcpsdk.RootCapabilities{ListChanged: false}
 	}
 	client := mcpsdk.NewClient(&mcpsdk.Implementation{Name: "reasonix", Version: mcpClientVersion()}, &mcpsdk.ClientOptions{
@@ -385,6 +386,7 @@ func (t *sdkSessionTransport) build(ctx context.Context, generation uint64) (*ma
 		},
 	})
 	for _, root := range mcpRoots(t.spec.WorkspaceRoot) {
+		//nolint:staticcheck // Preserve the existing workspace-root contract for legacy MCP servers.
 		client.AddRoots(&mcpsdk.Root{URI: root.URI, Name: root.Name})
 	}
 
@@ -392,6 +394,7 @@ func (t *sdkSessionTransport) build(ctx context.Context, generation uint64) (*ma
 	session, err := client.Connect(sessionCtx, endpoint.transport, nil)
 	if err != nil {
 		stopBuildCancel()
+		endpoint.close()
 		stderr := ""
 		if endpoint.startupStderr != nil {
 			stderr = endpoint.startupStderr()
@@ -401,7 +404,6 @@ func (t *sdkSessionTransport) build(ctx context.Context, generation uint64) (*ma
 			t.lastStartupStderr = stderr
 			t.mu.Unlock()
 		}
-		endpoint.close()
 		return nil, err
 	}
 	if !stopBuildCancel() || ctx.Err() != nil {
@@ -463,11 +465,9 @@ func (t *sdkSessionTransport) generationActive(generation uint64) bool {
 }
 
 func (t *sdkSessionTransport) watch(managed *managedMCPSession) {
-	t.wg.Add(1)
-	go func() {
-		defer t.wg.Done()
+	t.wg.Go(func() {
 		t.handleSessionEnd(managed, managed.session.Wait())
-	}()
+	})
 }
 
 func (t *sdkSessionTransport) handleSessionEnd(managed *managedMCPSession, err error) {

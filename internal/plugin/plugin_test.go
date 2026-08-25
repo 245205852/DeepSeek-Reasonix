@@ -41,9 +41,6 @@ func (t *countingToolsTransport) call(ctx context.Context, method string, params
 	return json.RawMessage(`{"tools":[{"name":"zed","description":"Sorted after echo.","inputSchema":{"type":"object"}},{"name":"echo","description":"Echo back the message.","inputSchema":{"type":"object","properties":{"msg":{"type":"string"}},"required":["z","msg"]},"annotations":{"readOnlyHint":true}}]}`), nil
 }
 
-func (t *countingToolsTransport) notify(ctx context.Context, method string, params any) error {
-	return nil
-}
 func (t *countingToolsTransport) close() {}
 
 func (t *countingToolsTransport) toolsListCalls() int {
@@ -75,9 +72,6 @@ func (t *sequenceToolsTransport) call(ctx context.Context, method string, params
 	return t.raws[idx], nil
 }
 
-func (t *sequenceToolsTransport) notify(ctx context.Context, method string, params any) error {
-	return nil
-}
 func (t *sequenceToolsTransport) close() {}
 
 func (t *sequenceToolsTransport) toolsListCalls() int {
@@ -113,9 +107,6 @@ func (t *deadlineRecordingTransport) call(ctx context.Context, method string, pa
 	return json.RawMessage(`{}`), nil
 }
 
-func (t *deadlineRecordingTransport) notify(ctx context.Context, method string, params any) error {
-	return nil
-}
 func (t *deadlineRecordingTransport) close() {}
 
 func (t *deadlineRecordingTransport) lastDeadline(tst *testing.T) time.Duration {

@@ -17,20 +17,6 @@ type mcpOAuthSDKRuntime struct {
 	fatalErrReturns int
 }
 
-func (c *mcpOAuthClient) authorizationHeader(ctx context.Context, forceRefresh bool) (string, bool, error) {
-	if c == nil {
-		return "", false, nil
-	}
-	token, err := c.oauthToken(ctx, forceRefresh)
-	if err != nil {
-		return "", false, err
-	}
-	if token == nil || strings.TrimSpace(token.AccessToken) == "" {
-		return "", false, nil
-	}
-	return token.Type() + " " + token.AccessToken, true, nil
-}
-
 func (c *mcpOAuthClient) oauthToken(ctx context.Context, forceRefresh bool) (*oauth2.Token, error) {
 	return c.oauthTokenAfterRejection(ctx, forceRefresh, "")
 }
