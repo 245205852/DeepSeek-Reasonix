@@ -28,7 +28,7 @@ const (
 	pendingCrashFile     = "crash-pending.json" // legacy single-report path
 	pendingCrashQueueDir = "crash-pending"
 	maxPendingCrashes    = 10
-	currentCrashSchema   = 2
+	currentCrashSchema   = 3
 	crashLedgerFile      = "crash-upload-ledger-v1.json"
 	maxCrashLedger       = 512
 	crashLedgerRetention = 180 * 24 * time.Hour
@@ -105,12 +105,31 @@ func writePendingReport(report crashReport, overwrite bool) bool {
 		_ = os.Remove(path)
 		return false
 	}
+	return prunePendingCrashQueue(path)
+}
+
+func prunePendingCrashQueue(writtenPath string) bool {
 	paths := pendingCrashQueuePaths()
 	for len(paths) > maxPendingCrashes {
-		_ = os.Remove(paths[0])
-		paths = paths[1:]
+		victim := -1
+		for index, candidate := range paths {
+			body, err := os.ReadFile(candidate)
+			var header struct {
+				SchemaVersion int `json:"schemaVersion"`
+			}
+			if err != nil || json.Unmarshal(body, &header) != nil || header.SchemaVersion <= currentCrashSchema {
+				victim = index
+				break
+			}
+		}
+		if victim < 0 {
+			break
+		}
+		_ = os.Remove(paths[victim])
+		paths = append(paths[:victim], paths[victim+1:]...)
 	}
-	return true
+	_, err := os.Stat(writtenPath)
+	return err == nil
 }
 
 type crashUploadLedger struct {

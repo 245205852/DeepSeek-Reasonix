@@ -12,6 +12,8 @@ import {
   releaseFirebaseGroupLease,
 } from "./crash_delivery";
 
+const firebaseOAuthTokenURL = "https://oauth2.googleapis.com/token";
+
 type SQLiteD1Statement = D1PreparedStatement & {
   execute(): D1Result;
 };
@@ -164,7 +166,7 @@ describe("Firebase-primary crash ingest", () => {
     const writes: Array<{ url: string; body: string }> = [];
     vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
-      if (url.includes("oauth2.googleapis.com")) {
+      if (url === firebaseOAuthTokenURL) {
         return Response.json({ access_token: "token", expires_in: 3600 });
       }
       writes.push({ url, body: String(init?.body) });
@@ -197,7 +199,7 @@ describe("Firebase-primary crash ingest", () => {
     let databaseAvailable = false;
     vi.stubGlobal("fetch", async (input: RequestInfo | URL) => {
       const url = String(input);
-      if (url.includes("oauth2.googleapis.com")) {
+      if (url === firebaseOAuthTokenURL) {
         return Response.json({ access_token: "token", expires_in: 3600 });
       }
       return databaseAvailable ? Response.json({ ok: true }) : new Response("unavailable", { status: 503 });
@@ -228,7 +230,7 @@ describe("Firebase-primary crash ingest", () => {
     let databaseWrites = 0;
     vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
-      if (url.includes("oauth2.googleapis.com")) {
+      if (url === firebaseOAuthTokenURL) {
         return Response.json({ access_token: "token", expires_in: 3600 });
       }
       databaseWrites++;
@@ -290,7 +292,7 @@ describe("Firebase-primary crash ingest", () => {
     const successfulBodies: string[] = [];
     vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
-      if (url.includes("oauth2.googleapis.com")) {
+      if (url === firebaseOAuthTokenURL) {
         return Response.json({ access_token: "token", expires_in: 3600 });
       }
       databaseWrites++;

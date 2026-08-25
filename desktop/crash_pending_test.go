@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -270,7 +271,9 @@ func TestFlushPendingCrashDeduplicatesSameVersionAndResendsAfterUpgrade(t *testi
 	report.ErrorType = "panic"
 	report.TopFrame = "main.go:12"
 	report.Message = "same crash"
-	if !writePendingReport(report, false) || !writePendingReport(report, false) {
+	firstQueued := writePendingReport(report, false)
+	secondQueued := writePendingReport(report, false)
+	if !firstQueued || !secondQueued {
 		t.Fatal("failed to queue duplicate reports")
 	}
 	NewApp().flushPendingCrash()
@@ -316,12 +319,10 @@ func TestConcurrentFlushPendingCrashUsesOneCrossProcessLedgerOwner(t *testing.T)
 	start := make(chan struct{})
 	var done sync.WaitGroup
 	for range 2 {
-		done.Add(1)
-		go func() {
-			defer done.Done()
+		done.Go(func() {
 			<-start
 			NewApp().flushPendingCrash()
-		}()
+		})
 	}
 	close(start)
 	done.Wait()
@@ -407,5 +408,70 @@ func TestFlushPendingCrashBackfillsOldIdentityAndPreservesFutureSchema(t *testin
 	body, err := os.ReadFile(futurePath)
 	if err != nil || !bytes.Contains(body, []byte(`"futureField":"keep"`)) {
 		t.Fatalf("future schema was not preserved: body=%s err=%v", body, err)
+	}
+}
+
+func TestFlushPendingCrashUploadsCurrentSchemaThree(t *testing.T) {
+	removeAllPendingCrashes()
+	oldVersion, oldEndpoint := version, crashEndpoint
+	t.Cleanup(func() {
+		version, crashEndpoint = oldVersion, oldEndpoint
+		removeAllPendingCrashes()
+	})
+	version = "v9.9.9"
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer srv.Close()
+	crashEndpoint = srv.URL
+
+	report := desktopLifecycleReport(desktopLifecycleObservation{
+		Version: "v9.9.8",
+		Phase:   "ready",
+	})
+	if report.SchemaVersion != currentCrashSchema {
+		t.Fatalf("current producer schema = %d, supported = %d", report.SchemaVersion, currentCrashSchema)
+	}
+	if !writePendingReport(report, false) {
+		t.Fatal("failed to queue current-schema report")
+	}
+	NewApp().flushPendingCrash()
+	if got := hits.Load(); got != 1 {
+		t.Fatalf("current-schema uploads = %d, want 1", got)
+	}
+	if got := len(pendingCrashPaths()); got != 0 {
+		t.Fatalf("pending reports after upload = %d, want 0", got)
+	}
+}
+
+func TestWritePendingReportPrunesKnownReportsWithoutDeletingFutureSchema(t *testing.T) {
+	removeAllPendingCrashes()
+	t.Cleanup(removeAllPendingCrashes)
+	if err := os.MkdirAll(pendingCrashDir(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	futurePath := filepath.Join(pendingCrashDir(), "000-future.json")
+	futureReport := `{"schemaVersion":99,"futureField":"keep"}`
+	if err := os.WriteFile(futurePath, []byte(futureReport), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for index := range maxPendingCrashes {
+		report := baseCrashReport("crash")
+		report.SchemaVersion = currentCrashSchema
+		report.Source = "go"
+		report.Label = fmt.Sprintf("panic-%d", index)
+		report.Message = "bounded current report"
+		if !writePendingReport(report, false) {
+			t.Fatalf("failed to queue current report %d", index)
+		}
+	}
+	body, err := os.ReadFile(futurePath)
+	if err != nil || !bytes.Contains(body, []byte(`"futureField":"keep"`)) {
+		t.Fatalf("future schema was pruned: body=%s err=%v", body, err)
+	}
+	if got := len(pendingCrashQueuePaths()); got != maxPendingCrashes {
+		t.Fatalf("pending reports = %d, want bounded queue of %d", got, maxPendingCrashes)
 	}
 }

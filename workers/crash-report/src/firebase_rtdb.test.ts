@@ -9,6 +9,9 @@ import {
   type FirebaseCrashGroupMeta,
 } from "./firebase_rtdb";
 
+const firebaseOAuthTokenURL = "https://oauth2.googleapis.com/token";
+const firebaseTestDatabaseHost = "reasonix-test.asia-southeast1.firebasedatabase.app";
+
 async function privateKeyPEM(): Promise<string> {
   const pair = await crypto.subtle.generateKey(
     { name: "RSASSA-PKCS1-v1_5", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" },
@@ -73,8 +76,8 @@ describe("Firebase Realtime Database delivery", () => {
       writeFirebaseCrashGroup(env, meta, sample, 0, true, fetcher),
       writeFirebaseCrashGroup(env, { ...meta, count: 2 }, sample, 1, false, fetcher),
     ]);
-    expect(calls.filter((call) => call.url.includes("oauth2.googleapis.com"))).toHaveLength(1);
-    const writes = calls.filter((call) => call.url.includes("firebasedatabase.app"));
+    expect(calls.filter((call) => call.url === firebaseOAuthTokenURL)).toHaveLength(1);
+    const writes = calls.filter((call) => new URL(call.url).hostname === firebaseTestDatabaseHost);
     expect(writes).toHaveLength(2);
     expect(writes[0].init?.headers).toMatchObject({ authorization: "Bearer short-lived-token" });
     const firstBody = JSON.parse(String(writes[0].init?.body));
@@ -87,7 +90,7 @@ describe("Firebase Realtime Database delivery", () => {
     let tokenRequests = 0;
     const fetcher: typeof fetch = async (input, init) => {
       const url = String(input);
-      if (url.includes("oauth2.googleapis.com")) {
+      if (url === firebaseOAuthTokenURL) {
         tokenRequests++;
         return Response.json({ access_token: `token-${tokenRequests}`, expires_in: 3600 });
       }
@@ -146,7 +149,7 @@ describe("Firebase Realtime Database delivery", () => {
     const env = { ...await firebaseEnv(), FIREBASE_DATABASE_URL: "https://example.com" } as Env;
     let databaseCalls = 0;
     const fetcher: typeof fetch = async (input) => {
-      if (String(input).includes("oauth2.googleapis.com")) {
+      if (String(input) === firebaseOAuthTokenURL) {
         return Response.json({ access_token: "token", expires_in: 3600 });
       }
       databaseCalls++;
@@ -169,7 +172,7 @@ describe("Firebase Realtime Database delivery", () => {
     const sample = { eventId: "f".repeat(32), receivedAt: meta.firstSeen, message: "sample" };
     const fetcher: typeof fetch = async (input, init) => {
       const url = String(input);
-      if (url.includes("oauth2.googleapis.com")) {
+      if (url === firebaseOAuthTokenURL) {
         return Response.json({ access_token: "dashboard-token", expires_in: 3600 });
       }
       calls.push({ url, method: init?.method ?? "GET", body: init?.body });
