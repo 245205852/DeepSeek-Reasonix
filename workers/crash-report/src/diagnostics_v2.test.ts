@@ -14,13 +14,17 @@ import {
 } from "./diagnostics_v2";
 import type { Env } from "./env";
 import diagnosticsMigrationSQL from "../migrate-diagnostics-v2.sql?raw";
+import diagnosticsReconciliationSQL from "../migrate-diagnostics-v2-reconcile.sql?raw";
 import freshSchemaSQL from "../schema.sql?raw";
 import firebaseCrashMigrationSQL from "../migrate-firebase-crash.sql?raw";
 import firebaseCrashCapacityMigrationSQL from "../migrate-firebase-crash-capacity.sql?raw";
 import {
   classifyDiagnosticsV2Schema,
+  diagnosticsV2ReconciliationEntries,
   diagnosticsV2SchemaEntries,
   diagnosticsV2SchemaQuery,
+  isKnownDiagnosticsV2Reconciliation,
+  parseDiagnosticsV2ReconciliationSQL,
   parseWranglerRows,
 } from "../scripts/apply-diagnostics-v2.mjs";
 import {
@@ -48,6 +52,51 @@ describe("diagnostics v2 compatibility and privacy", () => {
     expect(partial.state).toBe("partial");
     expect(partial.missing).toEqual([diagnosticsV2SchemaEntries[0]]);
     expect(parseWranglerRows(JSON.stringify([{ results: completeRows }]))).toEqual(completeRows);
+  });
+
+  it("recognizes only the known metric-user reconciliation state and resumable subsets", () => {
+    const knownMissing = [...diagnosticsV2ReconciliationEntries];
+    expect(isKnownDiagnosticsV2Reconciliation({ state: "partial", missing: knownMissing })).toBe(true);
+    expect(isKnownDiagnosticsV2Reconciliation({ state: "partial", missing: knownMissing.slice(1) })).toBe(true);
+    expect(isKnownDiagnosticsV2Reconciliation({
+      state: "partial",
+      missing: [knownMissing[0], "column:pings.channel"],
+    })).toBe(false);
+    expect(isKnownDiagnosticsV2Reconciliation({ state: "absent", missing: knownMissing })).toBe(false);
+    expect(isKnownDiagnosticsV2Reconciliation({ state: "complete", missing: [] })).toBe(false);
+  });
+
+  it("reconciles the known production partial schema with additive statements only", () => {
+    const legacy = `
+      CREATE TABLE reports (id INTEGER PRIMARY KEY);
+      CREATE TABLE pings (id INTEGER PRIMARY KEY, date TEXT NOT NULL, os TEXT NOT NULL);
+      CREATE TABLE cli_pings (id INTEGER PRIMARY KEY);
+      CREATE TABLE metric_users (id INTEGER PRIMARY KEY);
+      CREATE TABLE cli_metric_users (id INTEGER PRIMARY KEY);
+    `;
+    const withoutMetricUserColumns = diagnosticsMigrationSQL
+      .split("\n")
+      .filter((line) => !/^ALTER TABLE (?:cli_)?metric_users ADD COLUMN /.test(line))
+      .join("\n");
+    const db = new DatabaseSync(":memory:");
+    try {
+      db.exec(legacy);
+      db.exec(withoutMetricUserColumns);
+      const before = classifyDiagnosticsV2Schema(db.prepare(diagnosticsV2SchemaQuery).all());
+      expect(before.state).toBe("partial");
+      expect(before.missing).toEqual(diagnosticsV2ReconciliationEntries);
+      expect(isKnownDiagnosticsV2Reconciliation(before)).toBe(true);
+      db.exec(diagnosticsReconciliationSQL);
+      expect(classifyDiagnosticsV2Schema(db.prepare(diagnosticsV2SchemaQuery).all()).state).toBe("complete");
+    } finally {
+      db.close();
+    }
+    const statements = parseDiagnosticsV2ReconciliationSQL(diagnosticsReconciliationSQL);
+    expect([...statements.keys()]).toEqual(diagnosticsV2ReconciliationEntries);
+    expect(() => parseDiagnosticsV2ReconciliationSQL(
+      diagnosticsReconciliationSQL.replace("os_build INTEGER", "os_build TEXT"),
+    )).toThrow(/Unexpected diagnostics v2 reconciliation entry/);
+    expect(diagnosticsReconciliationSQL).not.toMatch(/\b(?:DROP|DELETE|UPDATE|CREATE)\b/);
   });
 
   it("accepts old reports plus Windows and Linux runtime diagnostics", () => {
