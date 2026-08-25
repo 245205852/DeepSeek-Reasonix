@@ -515,6 +515,7 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("GET /models", s.models)
 	mux.HandleFunc("POST /model", s.modelSwitch)
 	mux.HandleFunc("POST /effort", s.effortSwitch)
+	mux.HandleFunc("POST /quality-floor", s.qualityFloorSwitch)
 	mux.HandleFunc("POST /extensions/reload", s.reloadExtensionsHTTP)
 	mux.HandleFunc("GET /status", s.status)
 	mux.HandleFunc("GET /sessions", s.sessions)
@@ -1354,11 +1355,15 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 		"toolApprovalMode": s.ctl().ToolApprovalMode(),
 		"goal":             s.ctl().Goal(),
 		"goalStatus":       s.ctl().GoalStatus(),
+		"qualityFloor":     s.ctl().QualityFloor(),
 		"cwd":              s.ctl().SessionDir(),
 		"used":             used,
 		"window":           window,
 		"cacheHit":         hit,
 		"cacheMiss":        miss,
+	}
+	if path := strings.TrimSpace(s.ctl().SessionPath()); path != "" && store.IsSessionTranscriptName(filepath.Base(path)) {
+		sess["sessionName"] = strings.TrimSuffix(filepath.Base(path), ".jsonl")
 	}
 	if cfg, err := config.Load(); err == nil {
 		if entry, ok := cfg.ResolveModel(currentModelRef(s.ctl())); ok {

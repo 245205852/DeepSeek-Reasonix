@@ -1,7 +1,7 @@
 import { useCallback, useEffect, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 import { reconcileComposerProfile, type ComposerProfile, type ComposerProfilesByTab } from "./composerProfile";
 import type { GoalAction } from "./goalAction";
-import type { CollaborationMode, ToolApprovalMode } from "./types";
+import type { CollaborationMode, QualityFloor, ToolApprovalMode } from "./types";
 import type { RemoteSessionApi } from "./useRemoteSession";
 
 type RemoteProfile = RemoteSessionApi["composerProfile"];
@@ -13,10 +13,11 @@ export function useRemoteComposerProfileSync(options: {
   collaborationMode: CollaborationMode;
   toolApprovalMode: ToolApprovalMode;
   goal: string;
+  qualityFloor: QualityFloor;
   pending: ComposerProfile["pending"];
   setProfiles: Dispatch<SetStateAction<ComposerProfilesByTab>>;
 }): boolean {
-  const { activeTabId, remote, remoteProfile, collaborationMode, toolApprovalMode, goal, pending, setProfiles } = options;
+  const { activeTabId, remote, remoteProfile, collaborationMode, toolApprovalMode, goal, qualityFloor, pending, setProfiles } = options;
   useEffect(() => {
     if (!activeTabId || !remote || !remoteProfile) return;
     setProfiles((current) => {
@@ -26,7 +27,7 @@ export function useRemoteComposerProfileSync(options: {
         goalDraftMode: false,
         toolApprovalMode: remoteProfile.toolApprovalMode,
         goal: remoteProfile.goal,
-        qualityFloor: existing?.qualityFloor ?? "standard",
+        qualityFloor: remoteProfile.qualityFloor,
         pending: {},
       };
       const next = reconcileComposerProfile(existing, backend);
@@ -37,7 +38,8 @@ export function useRemoteComposerProfileSync(options: {
   return !remote || Boolean(remoteProfile
     && (pending.collaborationMode || collaborationMode === remoteProfile.collaborationMode)
     && (pending.toolApprovalMode || toolApprovalMode === remoteProfile.toolApprovalMode)
-    && (pending.goal || goal === remoteProfile.goal));
+    && (pending.goal || goal === remoteProfile.goal)
+    && (pending.qualityFloor || qualityFloor === remoteProfile.qualityFloor));
 }
 
 export function useRemoteComposerRuntimeActions(options: {

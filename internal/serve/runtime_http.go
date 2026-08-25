@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"reasonix/internal/config"
+	"reasonix/internal/control"
 )
 
 func (s *Server) modelSwitch(w http.ResponseWriter, r *http.Request) {
@@ -99,6 +100,36 @@ func (s *Server) effortSwitch(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := s.switchEffort(r.Context(), strings.TrimSpace(body.Level)); err != nil {
 		http.Error(w, err.Error(), runtimeSwitchErrorStatus(err))
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// qualityFloorSwitch updates the session-scoped delivery floor without
+// rebuilding the controller. Serialize it with turn admission so the value
+// applies wholly before or after a turn, never halfway through admission.
+func (s *Server) qualityFloorSwitch(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Floor string `json:"floor"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.Floor) == "" {
+		http.Error(w, "missing quality floor", http.StatusBadRequest)
+		return
+	}
+	normalized, err := control.NormalizeQualityFloor(body.Floor)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	s.bindMu.Lock()
+	defer s.bindMu.Unlock()
+	ctrl := s.ctl()
+	if controllerHasActiveRuntimeWork(ctrl) {
+		http.Error(w, "cannot change quality floor while active work or background jobs are running", http.StatusConflict)
+		return
+	}
+	if err := ctrl.SetQualityFloor(normalized); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

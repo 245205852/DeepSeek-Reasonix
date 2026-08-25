@@ -26,8 +26,10 @@ func TestRemoteTabCommandsForwardedToServe(t *testing.T) {
 	}{
 		{"submit", func() error { return a.SubmitRemoteTab(meta.ID, "hello") }, `POST /submit {"input":"hello"}`},
 		{"cancel", func() error { return a.CancelRemoteTab(meta.ID) }, "POST /cancel {}"},
-		{"approve", func() error { return a.ApproveRemoteTab(meta.ID, "call-1", "allow") }, `POST /approve {"allow":true,"id":"call-1"}`},
-		{"approve-deny", func() error { return a.ApproveRemoteTab(meta.ID, "call-2", "deny") }, `POST /approve {"allow":false,"id":"call-2"}`},
+		{"approve", func() error { return a.ApproveRemoteTab(meta.ID, "call-1", "allow") }, `POST /approve {"allow":true,"id":"call-1","persist":false,"session":false}`},
+		{"approve-session", func() error { return a.ApproveRemoteTab(meta.ID, "call-2", "session") }, `POST /approve {"allow":true,"id":"call-2","persist":false,"session":true}`},
+		{"approve-persist", func() error { return a.ApproveRemoteTab(meta.ID, "call-3", "persist") }, `POST /approve {"allow":true,"id":"call-3","persist":true,"session":true}`},
+		{"approve-deny", func() error { return a.ApproveRemoteTab(meta.ID, "call-4", "deny") }, `POST /approve {"allow":false,"id":"call-4","persist":false,"session":false}`},
 		{"answer", func() error {
 			return a.AnswerRemoteTab(meta.ID, "ask-1", []RemoteAskAnswer{{QuestionID: "question-1", Selected: []string{"yes"}}})
 		}, `POST /answer {"answers":[{"QuestionID":"question-1","Selected":["yes"]}],"id":"ask-1"}`},
@@ -35,6 +37,7 @@ func TestRemoteTabCommandsForwardedToServe(t *testing.T) {
 		{"approval-mode", func() error { return a.SetRemoteTabToolApprovalMode(meta.ID, "auto") }, `POST /tool-approval-mode {"mode":"auto"}`},
 		{"goal", func() error { return a.SetRemoteTabGoal(meta.ID, "ship it") }, `POST /goal {"goal":"ship it"}`},
 		{"effort", func() error { return a.SetRemoteTabEffort(meta.ID, "high") }, `POST /effort {"level":"high"}`},
+		{"quality-floor", func() error { return a.SetRemoteTabQualityFloor(meta.ID, "delivery") }, `POST /quality-floor {"floor":"delivery"}`},
 		{"pause-goal", func() error { return a.PauseRemoteTabGoal(meta.ID) }, "POST /goal/pause {}"},
 		{"resume-goal", func() error { return a.ResumeRemoteTabGoal(meta.ID) }, "POST /goal/resume {}"},
 		{"cancel-jobs", func() error { return a.CancelRemoteTabJobs(meta.ID, []string{"job-1"}) }, `POST /jobs/cancel {"ids":["job-1"]}`},

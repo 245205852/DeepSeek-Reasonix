@@ -258,7 +258,6 @@ export function buildTurnModels(
             model.user?.createdAt ?? 0,
             segmentIndex,
             segment.processItems.map((item) => [item.kind, item.id]),
-            segment.outsideItems.map((item) => [item.kind, item.id]),
           ]),
         )}`,
         processItems: segment.processItems,

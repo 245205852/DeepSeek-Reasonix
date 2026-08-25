@@ -73,6 +73,20 @@ const fixture: Item[] = [
   eq(after, before, "prepending history with a duplicate raw id preserves the mounted segment key");
 }
 
+{
+  const reasoningOnly: Item[] = [
+    { kind: "user", id: "u-late-answer", text: "question" },
+    { kind: "assistant", id: "a-late-answer", text: "", reasoning: "thinking", streaming: false },
+  ];
+  const before = buildTurnModels(reasoningOnly)[0]?.segments[0]?.key;
+  const after = buildTurnModels([
+    reasoningOnly[0],
+    reasoningOnly[1],
+    { kind: "assistant", id: "a-late-answer-visible", text: "resolved answer", reasoning: "", streaming: false },
+  ])[0]?.segments[0]?.key;
+  eq(after, before, "outside answer content does not remount the existing process segment");
+}
+
 const turnOf = new Map([
   ["u1", 0],
   ["u2", 1],

@@ -4,11 +4,10 @@ import { useT } from "../lib/i18n";
 import { app } from "../lib/bridge";
 import { Transcript } from "./Transcript";
 import { AskCard } from "./AskCard";
+import { ApprovalModal } from "./ApprovalModal";
 import type { RemoteSessionApi } from "../lib/useRemoteSession";
 export { hydrateRemoteTelemetry, loadRemoteStatusSnapshot } from "../lib/remoteTelemetry";
-import type { TabMeta, WireAsk } from "../lib/types";
-
-type RemoteApproval = { id?: string; tool?: string; subject?: string };
+import type { TabMeta, WireApproval, WireAsk } from "../lib/types";
 
 /**
  * RemoteSessionSurface renders the active remote tab's content area with
@@ -20,7 +19,7 @@ type RemoteApproval = { id?: string; tool?: string; subject?: string };
  */
 export function RemoteSessionSurface({ tab, session }: { tab: TabMeta; session: RemoteSessionApi }) {
   const t = useT();
-  const approval = session.transcript.approval as RemoteApproval | undefined;
+  const approval = session.transcript.approval as WireApproval | undefined;
   const ask = session.transcript.ask as WireAsk | undefined;
   const [actionError, setActionError] = useState("");
   useEffect(() => setActionError(""), [session.state, tab.id]);
@@ -117,20 +116,19 @@ export function RemoteSessionSurface({ tab, session }: { tab: TabMeta; session: 
       />
 
       {approval ? (
-        <div className="remote-surface__approval" role="alertdialog" aria-label={t("remoteSurface.approvalTitle")}>
-          <div className="remote-surface__approval-head">
-            <TriangleAlert size={14} aria-hidden="true" />
-            <span>{approval.tool || t("remoteSurface.approvalTitle")}</span>
-          </div>
-          {approval.subject ? <pre className="remote-surface__approval-body">{approval.subject}</pre> : null}
-          <div className="remote-surface__approval-actions">
-            <button type="button" className="btn btn--small" onClick={() => runAction(() => session.approve(approval.id ?? "", "deny"))}>
-              {t("remoteSurface.deny")}
-            </button>
-            <button type="button" className="btn btn--small btn--primary" onClick={() => runAction(() => session.approve(approval.id ?? "", "allow"))}>
-              {t("remoteSurface.allow")}
-            </button>
-          </div>
+        <div className="remote-surface__approval">
+          <ApprovalModal
+            key={`${tab.id}:${approval.id}`}
+            approval={approval}
+            cwd={tab.cwd}
+            tabId={tab.id}
+            toolApprovalMode={session.composerProfile?.toolApprovalMode}
+            onAnswer={(allow, sessionScope, persist) => runAction(() => session.approve(
+              approval.id,
+              allow ? (persist ? "persist" : sessionScope ? "session" : "allow") : "deny",
+            ))}
+            onStop={() => runAction(session.cancelTurn)}
+          />
         </div>
       ) : null}
 

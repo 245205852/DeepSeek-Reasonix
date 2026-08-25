@@ -93,6 +93,7 @@ export function createMockRemoteProjects(events: RemoteProjectMockEvents = {}): 
     },
     async CancelRemoteTab(tabId) { events.tab?.(tabId, "event", { kind: "turn_done" }); },
     async ApproveRemoteTab() {},
+    async SetRemoteTabQualityFloor() {},
     async AnswerRemoteTab() {},
     async SetRemoteTabModel(tabId, ref) {
       const tab = tabs.get(tabId);

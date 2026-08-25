@@ -88,6 +88,9 @@ type remoteTabSessionState struct {
 	newSession bool
 	name       string
 	reset      bool
+	// instanceID identifies the Serve process that owns this session. A
+	// changed id requires explicit /new or /resume re-entry before ready.
+	instanceID string
 }
 
 type remoteTabLayoutState struct {
@@ -579,7 +582,7 @@ func (a *App) bootstrapRemoteTab(tabID, hostID, workspace string) {
 	a.remoteTabMu.Unlock()
 	// ctx outlives the call: the pump derives from it, while the handshake
 	// and session entry inside run under a bounded sub-context.
-	entered, err := a.attachRemoteTabServe(ctx, tabID, view.LocalURL, token, opts)
+	entered, err := a.attachRemoteTabServe(ctx, tabID, view.LocalURL, token, view.InstanceID, opts)
 	if err != nil {
 		// Pump failures publish their own reconnecting/error state. Only a
 		// pre-attach failure should transition the original connecting shell.

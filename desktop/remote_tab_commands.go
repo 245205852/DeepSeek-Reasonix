@@ -279,7 +279,7 @@ func (a *App) SetRemoteTabModel(tabID, ref string) error {
 	meta := remoteTabMetaLocked(current)
 	a.remoteTabMu.Unlock()
 	a.saveTabsFromRemote()
-	a.activateRemoteTab(tabID, meta)
+	a.emitRemoteEvent("remote-tab:updated", meta)
 	return nil
 }
 
@@ -436,6 +436,8 @@ func (a *App) refreshRemoteTabTitle(tabID string) {
 			current.topicTitle = title
 		}
 		current.session.reset = false
+		current.session.newSession = false
+		current.session.name = entry.Name
 		meta := remoteTabMetaLocked(current)
 		a.remoteTabMu.Unlock()
 		if changed {

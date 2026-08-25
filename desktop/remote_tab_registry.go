@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -277,7 +278,19 @@ func (a *App) reattachRemoteTabOnce(tabID string) bool {
 		a.remoteTabMu.Unlock()
 		return true
 	}
+	a.remoteTabMu.Unlock()
+	tab.sessionMu.Lock()
+	defer tab.sessionMu.Unlock()
+
+	a.remoteTabMu.Lock()
+	if a.remoteTabs[tabID] != tab || tab.state != "reconnecting" {
+		a.remoteTabMu.Unlock()
+		return true
+	}
 	hostID, workspace := tab.ref.HostID, tab.ref.Workspace
+	previousInstanceID := tab.session.instanceID
+	sessionName := strings.TrimSpace(tab.session.name)
+	resetSession := tab.session.reset
 	a.remoteTabMu.Unlock()
 
 	rt, err := a.remoteRT()
@@ -304,6 +317,14 @@ func (a *App) reattachRemoteTabOnce(tabID string) bool {
 	}
 	if err := serveHandshake(callCtx, client, view.LocalURL, token); err != nil {
 		log.Printf("[remote] reattachRemoteTab: handshake FAILED tab=%s base=%q err=%v", tabID, view.LocalURL, err)
+		return false
+	}
+	relaunched := previousInstanceID != "" && view.InstanceID != "" && previousInstanceID != view.InstanceID
+	if relaunched && !resetSession && sessionName == "" {
+		// A replacement Serve starts on a blank controller. Publishing ready in
+		// that state would silently detach the tab from its conversation, so fail
+		// closed until the user explicitly chooses a session or New Topic.
+		log.Printf("[remote] reattachRemoteTab: replacement serve lacks session identity tab=%s", tabID)
 		return false
 	}
 
@@ -338,9 +359,23 @@ func (a *App) reattachRemoteTabOnce(tabID string) bool {
 		a.emitRemoteTabState(tabID, "reconnecting", "")
 		return false
 	}
+	if relaunched {
+		opts := RemoteTabOpenOptions{NewSession: resetSession, SessionName: sessionName}
+		if err := enterRemoteSession(callCtx, client, view.LocalURL, opts); err != nil {
+			log.Printf("[remote] reattachRemoteTab: session re-entry FAILED tab=%s err=%v", tabID, err)
+			a.retireRemoteTabGeneration(tabID, gen)
+			a.emitRemoteTabState(tabID, "reconnecting", "")
+			return false
+		}
+	}
 	if !a.waitRemoteTabStreamStable(callCtx, tabID, gen) {
 		return false
 	}
+	a.remoteTabMu.Lock()
+	if current := a.remoteTabs[tabID]; current == tab && current.gen == gen {
+		current.session.instanceID = view.InstanceID
+	}
+	a.remoteTabMu.Unlock()
 	if !a.transitionRemoteTabState(tabID, gen, "reconnecting", "ready", "") {
 		a.retireRemoteTabGeneration(tabID, gen)
 		return false

@@ -1780,7 +1780,7 @@ export default function App() {
   const toolApprovalMode = composerProfile.toolApprovalMode;
   const remoteComposerProfileReady = useRemoteComposerProfileSync({
     activeTabId, remote: remoteSurfaceActive, remoteProfile: remoteSession.composerProfile,
-    collaborationMode, toolApprovalMode, goal, pending: composerProfile.pending,
+    collaborationMode, toolApprovalMode, goal, qualityFloor: composerProfile.qualityFloor, pending: composerProfile.pending,
     setProfiles: setComposerProfilesByTab,
   });
   const runtimeTransitioning = navigationSurfaceIntent !== null;
@@ -1969,10 +1969,14 @@ export default function App() {
   const applyQualityFloor = useCallback(
     (floor: QualityFloor) => {
       if (!activeTabId) return;
+      if (remoteSurfaceActive) {
+        void remoteSession.setQualityFloor(floor).catch((error) => showToast(error instanceof Error ? error.message : String(error), "error"));
+        return;
+      }
       patchActiveComposerProfile({ qualityFloor: floor }, ["qualityFloor"]);
       void setControllerQualityFloor(floor);
     },
-    [activeTabId, patchActiveComposerProfile, setControllerQualityFloor],
+    [activeTabId, patchActiveComposerProfile, remoteSession, remoteSurfaceActive, setControllerQualityFloor, showToast],
   );
   const toggleYoloApprovalMode = useCallback(() => {
     if (!activeTabId) return;

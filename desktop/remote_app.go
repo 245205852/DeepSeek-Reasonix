@@ -139,12 +139,13 @@ type RemoteForwardView struct {
 }
 
 type RemoteServerView struct {
-	HostID    string `json:"hostId"`
-	Workspace string `json:"workspace"`
-	State     string `json:"state"`
-	Message   string `json:"message,omitempty"`
-	LocalURL  string `json:"localUrl,omitempty"`
-	Error     string `json:"error,omitempty"`
+	HostID     string `json:"hostId"`
+	Workspace  string `json:"workspace"`
+	State      string `json:"state"`
+	Message    string `json:"message,omitempty"`
+	LocalURL   string `json:"localUrl,omitempty"`
+	InstanceID string `json:"instanceId,omitempty"`
+	Error      string `json:"error,omitempty"`
 }
 
 // ── Kernel seam ──

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { app, onRemoteTabEvent, onRemoteTabState } from "./bridge";
 import type { CancelOutcome } from "./inboxCancel";
 import { initialState, reducer, type State } from "./useController";
-import type { CheckpointMeta, CollaborationMode, EffortInfo, GoalStatus, HistoryMessage, RemoteTabStateValue, TabMeta, ToolApprovalMode, WireEvent } from "./types";
+import type { CheckpointMeta, CollaborationMode, EffortInfo, GoalStatus, HistoryMessage, QualityFloor, RemoteTabStateValue, TabMeta, ToolApprovalMode, WireEvent } from "./types";
 import type { RemoteAskAnswer } from "./remoteTypes";
 
 const loadRemoteSurface = () => import("../components/RemoteSessionSurface");
@@ -44,6 +44,7 @@ export interface RemoteSessionApi {
     toolApprovalMode: ToolApprovalMode;
     goal: string;
     goalStatus?: GoalStatus;
+    qualityFloor: QualityFloor;
   };
   effort?: EffortInfo;
   /** Changes whenever the tab adopts a new/reconnected Serve session snapshot. */
@@ -55,6 +56,7 @@ export interface RemoteSessionApi {
   answer: (callId: string, answers: RemoteAskAnswer[]) => Promise<void>;
   rewind: (turn: number, scope: string) => Promise<void>;
   setEffort: (level: string) => Promise<void>;
+  setQualityFloor: (floor: QualityFloor) => Promise<void>;
   pauseGoal: () => Promise<void>;
   resumeGoal: () => Promise<void>;
   steer: (input: string) => Promise<void>;
@@ -77,6 +79,8 @@ type RemoteStatus = {
   balance?: unknown;
   sessionCostQuote?: unknown;
   jobs?: unknown;
+  qualityFloor?: unknown;
+  sessionName?: unknown;
 };
 
 function isAuthoritativeRemoteStatus(status: unknown): status is RemoteStatus {
@@ -97,6 +101,7 @@ function remoteComposerState(status: unknown) {
   const goalStatus: GoalStatus | undefined = rawGoalStatus === "running" || rawGoalStatus === "complete"
     || rawGoalStatus === "blocked" || rawGoalStatus === "stopped" ? rawGoalStatus : undefined;
   const effort = raw?.effort as Partial<EffortInfo> | undefined;
+  const qualityFloor: QualityFloor = raw?.qualityFloor === "delivery" ? "delivery" : "standard";
   return {
     modelLabel: typeof raw?.label === "string" ? raw.label : "",
     composerProfile: {
@@ -104,6 +109,7 @@ function remoteComposerState(status: unknown) {
       toolApprovalMode,
       goal,
       goalStatus,
+      qualityFloor,
     },
     effort: effort && typeof effort.supported === "boolean"
       ? {
@@ -196,7 +202,8 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
   const hydratedRef = useRef(false);
   const hydratingRef = useRef(false);
   const bufferedEventsRef = useRef<WireEvent[]>([]);
-  const hydrateRef = useRef<((force?: boolean) => Promise<void>) | null>(null);
+  const hydrateRef = useRef<{ tabId: string; run: (force?: boolean) => Promise<void> } | null>(null);
+  const refreshStatusRef = useRef<{ tabId: string; run: () => Promise<void> } | null>(null);
 
   const applyRemoteStatus = useCallback((status: unknown) => {
     if (!isAuthoritativeRemoteStatus(status)) return;
@@ -228,6 +235,23 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
     // ready transition triggers the first hydration instead. (initial is
     // deliberately not a dependency — only the mount-time snapshot matters.)
     const skipHydrate = start === "disconnected";
+
+    // Metadata-only commands and turn completion refresh /status without
+    // replacing history or advancing surfaceGeneration. That signal is
+    // reserved for actual session adoption/reconnects because Transcript uses
+    // it as a reveal/remount boundary.
+    const refreshStatus = async () => {
+      const status = await app.RemoteTabStatus(tabId);
+      if (cancelled) return;
+      const { hydrateRemoteTelemetry } = await loadRemoteSurface();
+      if (cancelled) return;
+      applyRemoteStatus(status);
+      setTranscript((current) => hydrateRemoteTelemetry(
+        reducer(current, remoteStatusToAction(status, Date.now())),
+        status,
+      ));
+    };
+    refreshStatusRef.current = { tabId, run: refreshStatus };
 
     // Hydrate from the snapshot; retry through the connecting window so a
     // late backend never leaves the surface empty. A forced run re-syncs
@@ -294,6 +318,7 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
             }
             return next;
           });
+          if (replay.some((event) => event.kind === "turn_done")) void refreshStatus();
           return;
         } catch (error) {
           if (!cancelled) setError(String(error));
@@ -314,7 +339,7 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
         hydratePromise = null;
       }
     };
-    hydrateRef.current = hydrate;
+    hydrateRef.current = { tabId, run: hydrate };
     if (!skipHydrate) void hydrateLoop();
 
     const offState = onRemoteTabState(tabId, (s) => {
@@ -338,12 +363,14 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
         return;
       }
       setTranscript((s) => reducer(s, { type: "event", e: event }));
+      if (event.kind === "turn_done") void refreshStatus();
     });
     return () => {
       cancelled = true;
       hydratingRef.current = false;
       bufferedEventsRef.current = [];
-      if (hydrateRef.current === hydrate) hydrateRef.current = null;
+      if (hydrateRef.current?.run === hydrate) hydrateRef.current = null;
+      if (refreshStatusRef.current?.run === refreshStatus) refreshStatusRef.current = null;
       offState();
       offEvent();
     };
@@ -356,24 +383,18 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
   // clears within one tick instead of spinning forever.
   useEffect(() => {
     if (!tabId || !hydrated || state !== "ready" || !transcript.running) return;
-    let cancelled = false;
-    const reconcile = async () => {
-      try {
-        const status = await app.RemoteTabStatus(tabId);
-        if (cancelled) return;
-        const { hydrateRemoteTelemetry } = await loadRemoteSurface();
-        applyRemoteStatus(status);
-        setTranscript((s) => hydrateRemoteTelemetry(reducer(s, remoteStatusToAction(status, Date.now())), status));
-      } catch {
+    const reconcile = () => {
+      const current = refreshStatusRef.current;
+      if (!current || current.tabId !== tabId) return;
+      void current.run().catch(() => {
         // Transient; the next tick retries.
-      }
+      });
     };
     const timer = window.setInterval(reconcile, 30_000);
     return () => {
-      cancelled = true;
       window.clearInterval(timer);
     };
-  }, [applyRemoteStatus, tabId, hydrated, state, transcript.running]);
+  }, [tabId, hydrated, state, transcript.running]);
 
   const submit = useCallback(async (text: string) => {
     if (!tabId) return;
@@ -425,20 +446,28 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
 
   const retryHydration = useCallback((): Promise<void> => {
     setError("");
-    return hydrateRef.current?.(true) ?? Promise.resolve();
-  }, []);
+    const current = hydrateRef.current;
+    if (!current || current.tabId !== tabId) return Promise.resolve();
+    return current.run(true);
+  }, [tabId]);
+
+  const refreshStatus = useCallback((): Promise<void> => {
+    const current = refreshStatusRef.current;
+    if (!current || current.tabId !== tabId) return Promise.resolve();
+    return current.run();
+  }, [tabId]);
 
   const cancelJob = useCallback(async (jobId: string) => {
     if (!tabId) return false;
     try {
       await app.CancelRemoteTabJobs(tabId, [jobId]);
-      await retryHydration();
+      await refreshStatus();
       return true;
     } catch (error) {
       setPromptError(String(error));
       return false;
     }
-  }, [retryHydration, tabId]);
+  }, [refreshStatus, tabId]);
 
   const rewind = useCallback(async (turn: number, scope: string) => {
     if (!tabId) return;
@@ -472,20 +501,26 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
   const setEffort = useCallback(async (level: string) => {
     if (!tabId) return;
     await app.SetRemoteTabEffort(tabId, level);
-    await retryHydration();
-  }, [retryHydration, tabId]);
+    await refreshStatus();
+  }, [refreshStatus, tabId]);
+
+  const setQualityFloor = useCallback(async (floor: QualityFloor) => {
+    if (!tabId) return;
+    await app.SetRemoteTabQualityFloor(tabId, floor);
+    await refreshStatus();
+  }, [refreshStatus, tabId]);
 
   const pauseGoal = useCallback(async () => {
     if (!tabId) return;
     await app.PauseRemoteTabGoal(tabId);
-    await retryHydration();
-  }, [retryHydration, tabId]);
+    await refreshStatus();
+  }, [refreshStatus, tabId]);
 
   const resumeGoal = useCallback(async () => {
     if (!tabId) return;
     await app.ResumeRemoteTabGoal(tabId);
-    await retryHydration();
-  }, [retryHydration, tabId]);
+    await refreshStatus();
+  }, [refreshStatus, tabId]);
 
   const steer = useCallback(async (input: string) => {
     if (!tabId) return;
@@ -495,7 +530,7 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
   return {
     state, error, transcript, hydrated, running: transcript.running, modelLabel,
     composerProfile, effort, surfaceGeneration, promptError, submit, cancelTurn,
-    approve, answer, rewind, setEffort, pauseGoal, resumeGoal, steer, cancelJob,
+    approve, answer, rewind, setEffort, setQualityFloor, pauseGoal, resumeGoal, steer, cancelJob,
     retryHydration,
   };
 }

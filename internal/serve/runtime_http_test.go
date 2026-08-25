@@ -47,6 +47,39 @@ func TestGoalPauseAndResumeRoutes(t *testing.T) {
 	}
 }
 
+func TestQualityFloorRouteUpdatesStatus(t *testing.T) {
+	bc := NewBroadcaster()
+	ctrl := control.New(control.Options{Sink: bc})
+	srv := httptest.NewServer(New(ctrl, bc, config.ServeConfig{}).Handler())
+	defer srv.Close()
+
+	resp := postRuntimeJSON(t, srv.URL+"/quality-floor", `{"floor":"delivery"}`)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent || ctrl.QualityFloor() != control.QualityFloorDelivery {
+		t.Fatalf("quality floor status/value = %d/%q", resp.StatusCode, ctrl.QualityFloor())
+	}
+	status, err := http.Get(srv.URL + "/status")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer status.Body.Close()
+	var payload struct {
+		QualityFloor string `json:"qualityFloor"`
+	}
+	if err := json.NewDecoder(status.Body).Decode(&payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.QualityFloor != control.QualityFloorDelivery {
+		t.Fatalf("status qualityFloor = %q", payload.QualityFloor)
+	}
+
+	bad := postRuntimeJSON(t, srv.URL+"/quality-floor", `{"floor":"turbo"}`)
+	bad.Body.Close()
+	if bad.StatusCode != http.StatusBadRequest {
+		t.Fatalf("invalid quality floor status = %d", bad.StatusCode)
+	}
+}
+
 func TestJobsCancelRouteCancelsOwnedJobs(t *testing.T) {
 	bc := NewBroadcaster()
 	manager := jobs.NewManager(bc)

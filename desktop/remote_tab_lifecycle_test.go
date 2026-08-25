@@ -145,6 +145,50 @@ func TestRemoteTabServeDownCanRetry(t *testing.T) {
 	waitForTabState(t, a, meta.ID, "ready")
 }
 
+func TestRemoteTabReplacementServeReentersLearnedSessionBeforeReady(t *testing.T) {
+	oldServe := newFakeServe(t, "s3cret", nil)
+	newServe := newFakeServe(t, "s3cret", []serveSessionEntry{{Name: "generated", Path: "/generated.jsonl", Title: "Generated"}})
+	kernel := &fakeRemoteKernel{
+		statuses:   []RemoteConnectionStatusView{{HostID: "box", State: "connected"}},
+		ensureView: RemoteServerView{HostID: "box", State: "ready", LocalURL: oldServe.server.URL, InstanceID: "serve-old"}, ensureToken: "s3cret",
+	}
+	seedBridgeTestHost(t, "box")
+	a := &App{remoteRuntime: kernel}
+	cleanupRemoteTabPumps(t, a)
+	meta := openReadyRemoteTab(t, a, RemoteTabOpenOptions{NewSession: true})
+	oldServe.mu.Lock()
+	oldServe.statusPayload = `{"running":false,"sessionName":"generated"}`
+	oldServe.mu.Unlock()
+	if _, err := a.RemoteTabStatus(meta.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	a.remoteTabMu.Lock()
+	tab := a.remoteTabs[meta.ID]
+	if tab.cancel != nil {
+		tab.cancel()
+	}
+	tab.gen++
+	tab.cancel, tab.client, tab.base, tab.token = nil, nil, "", ""
+	tab.state = "reconnecting"
+	a.remoteTabMu.Unlock()
+	kernel.ensureView = RemoteServerView{HostID: "box", State: "ready", LocalURL: newServe.server.URL, InstanceID: "serve-new"}
+
+	if !a.reattachRemoteTabOnce(meta.ID) {
+		t.Fatal("replacement serve reattach failed")
+	}
+	_, resumed, _ := newServe.snapshot()
+	if resumed != "/generated.jsonl" {
+		t.Fatalf("replacement serve resumed %q, want /generated.jsonl", resumed)
+	}
+	a.remoteTabMu.Lock()
+	state, instanceID := a.remoteTabs[meta.ID].state, a.remoteTabs[meta.ID].session.instanceID
+	a.remoteTabMu.Unlock()
+	if state != "ready" || instanceID != "serve-new" {
+		t.Fatalf("reattached state/instance = %q/%q", state, instanceID)
+	}
+}
+
 func TestRemoteTabServeDownRetryPreservesNamedSession(t *testing.T) {
 	fs := newFakeServe(t, "s3cret", []serveSessionEntry{{Name: "saved", Path: "/saved.jsonl", Title: "Saved"}})
 	kernel := &fakeRemoteKernel{

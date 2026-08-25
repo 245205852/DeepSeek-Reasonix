@@ -726,19 +726,19 @@ stubSnapshot = null;
 // A prepended turn may reuse the mounted process id while its content patches.
 const duplicateCurrent: Item[] = [
   { kind: "user", id: "u-duplicate-current", text: "current" }, { kind: "phase", id: "duplicate-process-id", text: "working" },
-  { kind: "assistant", id: "a-duplicate-current", text: "answer", reasoning: "", streaming: false },
 ];
 const duplicateOptions = { folds: EMPTY_FOLDS, foldPreference: "auto" as const, hasOlderHistory: false, creationMode: false, turnForUser: () => undefined };
 const duplicateBeforeRows = buildTranscriptRows(buildTurnModels(duplicateCurrent), duplicateOptions);
 const duplicateAfterRows = buildTranscriptRows(buildTurnModels([
   { kind: "user", id: "u-duplicate-older", text: "older" }, { kind: "phase", id: "duplicate-process-id", text: "older work" },
   { kind: "assistant", id: "a-duplicate-older", text: "older answer", reasoning: "", streaming: false }, duplicateCurrent[0],
-  { ...duplicateCurrent[1], text: "working with a late patch" } as Item, duplicateCurrent[2],
+  { ...duplicateCurrent[1], text: "working with a late patch" } as Item,
+  { kind: "assistant", id: "a-duplicate-current", text: "late outside answer", reasoning: "", streaming: false },
 ]), duplicateOptions);
 const duplicateBeforeHeader = duplicateBeforeRows.find((row) => row.kind === "process-header")!;
 const duplicateAfterHeader = duplicateAfterRows.find((row) => row.kind === "process-header" && "segment" in row
   && row.segment.processItems.some((item) => item.kind === "phase" && item.text.includes("late patch")))!;
-check(duplicateAfterHeader.key === duplicateBeforeHeader.key, "prepend plus content patch preserves the mounted duplicate-process row key");
+check(duplicateAfterHeader.key === duplicateBeforeHeader.key, "prepend plus outside-content patch preserves the mounted duplicate-process row key");
 const duplicateMeasurements = createTranscriptMeasuredSizes();
 const duplicateEnvironment = { contentWidth: 800, typographySignature: "race-test" };
 duplicateMeasurements.recordGeometry("duplicate-session", { rowKey: String(duplicateBeforeHeader.key), kind: duplicateBeforeHeader.kind,
@@ -752,10 +752,10 @@ scrollElement.scrollTop = 160; const duplicateResetKey = integrity?.resetKey;
 scrollWrites.length = 0; scrollByCalls = 0; scrollToCalls = 0; scrollToIndexCalls = 0;
 await act(async () => root.render(<Probe surfaceKey="surface-duplicate-process" rows={duplicateAfterRows} />));
 await flushFrames();
-check(integrity?.resetKey === duplicateResetKey, "prepend plus content patch keeps the Virtuoso generation mounted");
-check(scrollElement.scrollTop === 160, "prepend plus content patch preserves the reader viewport");
+check(integrity?.resetKey === duplicateResetKey, "prepend plus outside-content patch keeps the Virtuoso generation mounted");
+check(scrollElement.scrollTop === 160, "prepend plus outside-content patch preserves the reader viewport");
 check(scrollByCalls === 0 && scrollToCalls === 0 && scrollToIndexCalls === 0 && scrollWrites.length === 0,
-  "prepend plus content patch emits no recovery or direct scroll writes");
+  "prepend plus outside-content patch emits no recovery or direct scroll writes");
 // A 10,000-row generation gets only one keyed reset and one bounded probe.
 const longRows: TranscriptRow[] = Array.from({ length: 10_000 }, (_, index) => ({
   kind: "answer", key: `long-${index}`,

@@ -194,6 +194,7 @@ func (m *desktopRemoteManager) EnsureServer(ctx context.Context, hostID, workspa
 	}
 	if res.Reused && previousServer.State == "ready" && previousServer.Workspace == workspace &&
 		hasUsableServeForward(c.Forwards().List(), serveForwardName(workspace), res.State.Addr, previousServer.LocalURL) {
+		previousServer.InstanceID = remoteServeInstanceID(res.State)
 		if !m.publishServerIfCurrent(hostID, mh, previousServer, res.Token, res.State.Addr) {
 			return RemoteServerView{}, "", fmt.Errorf("host %q connection was replaced", hostID)
 		}
@@ -222,7 +223,7 @@ func (m *desktopRemoteManager) EnsureServer(ctx context.Context, hostID, workspa
 		return view, "", ferr
 	}
 	localURL := fmt.Sprintf("http://%s/", bound)
-	view := RemoteServerView{HostID: hostID, Workspace: workspace, State: "ready", LocalURL: localURL}
+	view := RemoteServerView{HostID: hostID, Workspace: workspace, State: "ready", LocalURL: localURL, InstanceID: remoteServeInstanceID(res.State)}
 	if !m.publishServerIfCurrent(hostID, mh, view, res.Token, res.State.Addr) {
 		_ = c.Forwards().Remove(serveForwardName(workspace))
 		return RemoteServerView{}, "", fmt.Errorf("host %q connection was replaced", hostID)
@@ -235,6 +236,13 @@ func (m *desktopRemoteManager) EnsureServer(ctx context.Context, hostID, workspa
 		}
 	}
 	return view, res.Token, nil
+}
+
+func remoteServeInstanceID(state bootstrap.ServeState) string {
+	if state.PID == 0 && state.StartedAt == 0 && strings.TrimSpace(state.Addr) == "" {
+		return ""
+	}
+	return fmt.Sprintf("%d:%d:%s", state.PID, state.StartedAt, strings.TrimSpace(state.Addr))
 }
 
 func configuredRemoteHost(hostID string) (config.RemoteHostEntry, error) {

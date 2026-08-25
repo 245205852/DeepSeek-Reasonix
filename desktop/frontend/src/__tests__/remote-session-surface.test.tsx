@@ -64,6 +64,8 @@ const tape: string[] = [];
 let failApproval = false;
 let failOpen = false;
 let failHydration = true;
+let statusGoalStatus: "stopped" | "complete" = "stopped";
+let statusQualityFloor: "standard" | "delivery" = "standard";
 let resolveRaceSnapshot: ((value: { history: unknown[]; status: unknown }) => void) | undefined;
 window.go = { main: { App: {
   async RemoteTabSnapshot(tabId: string) {
@@ -93,6 +95,7 @@ window.go = { main: { App: {
         toolApprovalMode: "auto",
         goal: "",
         goalStatus: "stopped",
+        qualityFloor: "standard",
         effort: { supported: true, current: "high", default: "auto", levels: ["auto", "high"] },
         used: 1200,
         window: 64000,
@@ -108,9 +111,13 @@ window.go = { main: { App: {
 	async RemoteTabStatus(tabId: string) {
 		tape.push(`status:${tabId}`);
 		if (tabId === "tab-status-fallback") {
-			return { running: false, plan: true, toolApprovalMode: "yolo", goal: "" };
+			return { running: false, plan: true, toolApprovalMode: "yolo", goal: "", qualityFloor: "standard" };
 		}
-		return { running: false, pendingPrompt: false, backgroundJobs: 0 };
+		return {
+			running: false, pendingPrompt: false, backgroundJobs: 0,
+			label: "DeepSeek · Mock", plan: true, toolApprovalMode: "auto", goal: "",
+			goalStatus: statusGoalStatus, qualityFloor: statusQualityFloor,
+		};
 	},
   async SubmitRemoteTab(tabId: string, text: string) {
     tape.push(`submit:${tabId}:${text}`);
@@ -129,6 +136,10 @@ window.go = { main: { App: {
   },
   async SetRemoteTabEffort(tabId: string, level: string) {
     tape.push(`effort:${tabId}:${level}`);
+  },
+  async SetRemoteTabQualityFloor(tabId: string, floor: string) {
+    tape.push(`quality-floor:${tabId}:${floor}`);
+    statusQualityFloor = floor === "delivery" ? "delivery" : "standard";
   },
   async PauseRemoteTabGoal(tabId: string) {
     tape.push(`pause-goal:${tabId}`);
@@ -226,8 +237,10 @@ ok(document.body.textContent?.includes("thinking hard") === true, "reasoning ren
 ok(!document.body.textContent?.includes("streaming answer"), "the re-synced snapshot replaces the old session content")
 
 await act(async () => {
+  const statusBefore = tape.filter((entry) => entry === "status:tab-remote-1").length;
   __emitMockRemoteTab("tab-remote-1", "event", { kind: "turn_done" });
   await flush();
+  ok(tape.filter((entry) => entry === "status:tab-remote-1").length > statusBefore, "turn_done refreshes remote goal/runtime status");
 });
 
 await act(async () => {
@@ -238,11 +251,18 @@ await act(async () => {
   const dialog = document.querySelector(".remote-surface__approval");
   ok(Boolean(dialog), "approval card renders");
   ok(dialog?.textContent?.includes("rm -rf /tmp/junk") === true, "approval subject renders");
+  ok(dialog?.textContent?.includes("Allow matching for this session") === true
+    && dialog?.textContent?.includes("Always allow matching operations") === true,
+  "remote approval exposes session and persistent scopes");
   await act(async () => {
-    [...document.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent?.trim() === "Allow")?.click();
+    [...dialog!.querySelectorAll<HTMLButtonElement>(".prompt-action")].find((b) => b.textContent?.includes("Allow matching for this session"))?.click();
     await flush();
   });
-  ok(tape.includes("approve:tab-remote-1:call-9:allow"), "allow click forwards ApproveRemoteTab");
+  await act(async () => {
+    dialog?.querySelector<HTMLButtonElement>(".decision-confirm-bar__confirm")?.click();
+    await new Promise((resolve) => setTimeout(resolve, 220));
+  });
+  ok(tape.includes("approve:tab-remote-1:call-9:session"), "session grant forwards its approval scope");
 	ok(!document.querySelector(".remote-surface__approval"), "approval card clears after deciding");
 }
 
@@ -253,7 +273,14 @@ await act(async () => {
 });
 {
 	await act(async () => {
-		[...document.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent?.trim() === "Allow")?.click();
+		const failedDialog = document.querySelector(".remote-surface__approval");
+		[...failedDialog!.querySelectorAll<HTMLButtonElement>(".prompt-action")].find((b) => b.textContent?.includes("Allow once"))?.click();
+		await flush();
+	});
+	await act(async () => {
+		const failedDialog = document.querySelector(".remote-surface__approval");
+		failedDialog?.querySelector<HTMLButtonElement>(".decision-confirm-bar__confirm")?.click();
+		await new Promise((resolve) => setTimeout(resolve, 220));
 		await flush();
 	});
 	ok(Boolean(document.querySelector(".remote-surface__approval")), "a failed approval command preserves the decision card");
@@ -371,6 +398,14 @@ ok(probe?.transcript.context.used === 1200 && probe.transcript.context.window ==
   && probe.transcript.balance?.display === "¥88.00" && probe.transcript.sessionCost === 0.12
   && probe.transcript.jobs[0]?.id === "job-remote" && probe.transcript.lastTurnOutputTokens === 200,
   "snapshot status hydrates remote context, usage, balance, cost, and jobs");
+const turnDoneGeneration = probe?.surfaceGeneration;
+statusGoalStatus = "complete";
+await act(async () => {
+  __emitMockRemoteTab("tab-remote-2", "event", { kind: "turn_done" });
+  await flush();
+});
+ok(probe?.composerProfile?.goalStatus === "complete" && probe.surfaceGeneration === turnDoneGeneration,
+  "turn_done refreshes goal status without replacing the transcript surface");
 await act(async () => {
   await probe?.submit("run tests");
   await flush();
@@ -384,13 +419,22 @@ await act(async () => {
   await probe?.rewind(3, "fork");
   await probe?.rewind(3, "summ-from");
   await probe?.rewind(3, "summ-upto");
+  await flush();
+});
+const metadataGeneration = probe?.surfaceGeneration;
+statusGoalStatus = "complete";
+await act(async () => {
   await probe?.setEffort("high");
+  await probe?.setQualityFloor("delivery");
   await probe?.pauseGoal();
   await probe?.resumeGoal();
   await probe?.steer("narrow the change");
   await probe?.cancelJob("job-remote");
   await flush();
 });
+ok(probe?.surfaceGeneration === metadataGeneration, "metadata-only remote commands preserve the transcript generation and viewport");
+ok(probe?.composerProfile?.goalStatus === "complete" && probe.composerProfile.qualityFloor === "delivery",
+  "status-only refresh updates goal status and quality floor");
 for (const want of [
   "submit:tab-remote-2:run tests",
   "cancel:tab-remote-2",
@@ -401,6 +445,7 @@ for (const want of [
   "summarize:tab-remote-2:3:from",
   "summarize:tab-remote-2:3:upto",
   "effort:tab-remote-2:high",
+  "quality-floor:tab-remote-2:delivery",
   "pause-goal:tab-remote-2",
   "resume-goal:tab-remote-2",
   "steer:tab-remote-2:narrow the change",

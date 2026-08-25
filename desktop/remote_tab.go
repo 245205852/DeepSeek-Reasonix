@@ -55,7 +55,7 @@ func remoteSessionTransitionBusy(err error) bool {
 // attachRemoteTabServe starts the event pump before entering the session so
 // /new or /resume frames are not missed. The caller's context owns the pump;
 // handshake and session entry use a bounded child context.
-func (a *App) attachRemoteTabServe(ctx context.Context, tabID, base, token string, opts RemoteTabOpenOptions) (bool, error) {
+func (a *App) attachRemoteTabServe(ctx context.Context, tabID, base, token, instanceID string, opts RemoteTabOpenOptions) (bool, error) {
 	callCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
@@ -125,6 +125,11 @@ func (a *App) attachRemoteTabServe(ctx context.Context, tabID, base, token strin
 	if !a.waitRemoteTabStreamStable(callCtx, tabID, gen) {
 		return false, fmt.Errorf("remote tab %q event stream closed during session attach", tabID)
 	}
+	a.remoteTabMu.Lock()
+	if current := a.remoteTabs[tabID]; current == tab && current.gen == gen {
+		current.session.instanceID = instanceID
+	}
+	a.remoteTabMu.Unlock()
 	// A 200 response is only the stream-open barrier. The stream can still die
 	// while /new or /resume is in flight; publish readiness only if its pump has
 	// not already moved this same generation into reconnecting/error.
@@ -338,9 +343,13 @@ func (a *App) remoteTabPump(ctx context.Context, tabID string, gen uint64, opene
 		}
 		a.emitRemoteEvent(fmt.Sprintf("remote-tab:%s:event", tabID), json.RawMessage(frame))
 		if kind == "turn_done" {
-			// The serve generates the session title from the finished
-			// conversation; pick it up shortly after the turn settles.
+			// Capture the durable session name immediately, closing the window
+			// where a replacement Serve could otherwise lose a just-finished
+			// conversation before the slower generated-title refresh runs.
 			a.goSafe("remoteTabTitle", func() {
+				_, _ = a.RemoteTabStatus(tabID)
+				// The serve generates the session title from the finished
+				// conversation; pick it up shortly after the turn settles.
 				time.Sleep(1500 * time.Millisecond)
 				a.refreshRemoteTabTitle(tabID)
 			})
@@ -524,8 +533,8 @@ func (a *App) CancelRemoteTab(tabID string) error {
 }
 
 // ApproveRemoteTab answers a tool-approval request. Serve takes
-// {id, allow, session, persist}; the frontend's decision string maps to the
-// allow bool ("allow" ⇒ true), session/persist stay false.
+// {id, allow, session, persist}; preserve the same once/session/persistent
+// scopes exposed by the local approval surface.
 func (a *App) ApproveRemoteTab(tabID, callID, decision string) error {
 	client, base, err := a.remoteTabCommandClient(tabID)
 	if err != nil {
@@ -533,7 +542,20 @@ func (a *App) ApproveRemoteTab(tabID, callID, decision string) error {
 	}
 	ctx, cancel := commandContext(a)
 	defer cancel()
-	body, _ := json.Marshal(map[string]any{"id": callID, "allow": strings.EqualFold(strings.TrimSpace(decision), "allow")})
+	decision = strings.ToLower(strings.TrimSpace(decision))
+	allow, session, persist := false, false, false
+	switch decision {
+	case "allow", "once":
+		allow = true
+	case "session":
+		allow, session = true, true
+	case "persist", "persistent", "project":
+		allow, session, persist = true, true, true
+	case "deny":
+	default:
+		return fmt.Errorf("invalid remote approval decision %q", decision)
+	}
+	body, _ := json.Marshal(map[string]any{"id": callID, "allow": allow, "session": session, "persist": persist})
 	if err := servePost(ctx, client, serveURL(base, "/approve"), body); err != nil {
 		return err
 	}
@@ -611,6 +633,10 @@ func (a *App) SetRemoteTabGoal(tabID, goal string) error {
 	return servePost(ctx, client, serveURL(base, "/goal"), body)
 }
 
+func (a *App) SetRemoteTabQualityFloor(tabID, floor string) error {
+	return a.remoteTabPost(tabID, "/quality-floor", map[string]any{"floor": floor})
+}
+
 // RemoteTabSnapshot mirrors the frontend shape: raw serve payloads passed
 // through verbatim so the surface decides how to consume them.
 type RemoteTabSnapshot struct {
@@ -630,6 +656,7 @@ func (a *App) RemoteTabSnapshot(tabID string) (RemoteTabSnapshot, error) {
 	if err != nil {
 		return RemoteTabSnapshot{}, err
 	}
+	gen := a.remoteTabClientGeneration(tabID, client)
 	ctx, cancel := commandContext(a)
 	defer cancel()
 	var snap RemoteTabSnapshot
@@ -666,6 +693,7 @@ func (a *App) RemoteTabSnapshot(tabID string) (RemoteTabSnapshot, error) {
 	if len(snap.History) == 0 {
 		return RemoteTabSnapshot{}, fmt.Errorf("remote tab %q: empty history", tabID)
 	}
+	a.recordRemoteTabSessionStatus(tabID, client, gen, snap.Status)
 	a.remoteTabMu.Lock()
 	if tab := a.remoteTabs[tabID]; tab != nil {
 		keys := make([]string, 0, len(tab.pendingEvents))
@@ -684,7 +712,43 @@ func (a *App) RemoteTabSnapshot(tabID string) (RemoteTabSnapshot, error) {
 // RemoteTabStatus is the small status-only binding used by watchdog and close
 // policy polling. It deliberately avoids transferring full history.
 func (a *App) RemoteTabStatus(tabID string) (json.RawMessage, error) {
-	return a.remoteTabGet(tabID, "/status")
+	client, base, err := a.remoteTabCommandClient(tabID)
+	if err != nil {
+		return nil, err
+	}
+	gen := a.remoteTabClientGeneration(tabID, client)
+	ctx, cancel := commandContext(a)
+	defer cancel()
+	status, err := serveGet(ctx, client, serveURL(base, "/status"))
+	if err == nil {
+		a.recordRemoteTabSessionStatus(tabID, client, gen, status)
+	}
+	return status, err
+}
+
+func (a *App) remoteTabClientGeneration(tabID string, client *http.Client) uint64 {
+	a.remoteTabMu.Lock()
+	defer a.remoteTabMu.Unlock()
+	if tab := a.remoteTabs[tabID]; tab != nil && tab.client == client {
+		return tab.gen
+	}
+	return 0
+}
+
+func (a *App) recordRemoteTabSessionStatus(tabID string, client *http.Client, gen uint64, status json.RawMessage) {
+	var payload struct {
+		SessionName string `json:"sessionName"`
+	}
+	if gen == 0 || json.Unmarshal(status, &payload) != nil || strings.TrimSpace(payload.SessionName) == "" {
+		return
+	}
+	a.remoteTabMu.Lock()
+	if tab := a.remoteTabs[tabID]; tab != nil && tab.client == client && tab.gen == gen {
+		tab.session.name = strings.TrimSpace(payload.SessionName)
+		tab.session.newSession = false
+		tab.session.reset = false
+	}
+	a.remoteTabMu.Unlock()
 }
 
 // listTabsWithRemote merges the remote strip entries into a local tab list.

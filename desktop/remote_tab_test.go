@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -189,7 +190,7 @@ func newFakeServe(t *testing.T, token string, sessions []serveSessionEntry) *fak
 			w.WriteHeader(http.StatusNoContent)
 		}
 	}
-	for _, path := range []string{"/submit", "/cancel", "/approve", "/answer", "/rewind", "/goal", "/goal/pause", "/goal/resume", "/jobs/cancel", "/inbox/items", "/tool-approval-mode", "/delete-session", "/model", "/effort", "/plan", "/compact", "/fork", "/summarize", "/forget"} {
+	for _, path := range []string{"/submit", "/cancel", "/approve", "/answer", "/rewind", "/goal", "/goal/pause", "/goal/resume", "/jobs/cancel", "/inbox/items", "/tool-approval-mode", "/delete-session", "/model", "/effort", "/quality-floor", "/plan", "/compact", "/fork", "/summarize", "/forget"} {
 		mux.HandleFunc("POST "+path, command(path))
 	}
 	snapshot := func(path, payload string) {
@@ -738,9 +739,13 @@ func TestSetModelForTabRemoteCredentialPostsServeModel(t *testing.T) {
 		ensureView:  RemoteServerView{HostID: "box", State: "ready", LocalURL: fs.server.URL},
 		ensureToken: "s3cret",
 	}
-	a := &App{remoteRuntime: kernel}
+	log := &eventLog{}
+	a := &App{remoteRuntime: kernel, remoteEventHook: log.add}
 	cleanupRemoteTabPumps(t, a)
 	meta := openReadyRemoteTab(t, a, RemoteTabOpenOptions{NewSession: true})
+	a.remoteTabMu.Lock()
+	a.remoteTabLayout.activeID = "other-tab"
+	a.remoteTabMu.Unlock()
 
 	if err := a.SetModelForTab(meta.ID, "remote/chat"); err != nil {
 		t.Fatalf("SetModelForTab: %v", err)
@@ -755,13 +760,19 @@ func TestSetModelForTabRemoteCredentialPostsServeModel(t *testing.T) {
 		t.Fatalf("serve never saw POST /model with the ref: %v", fs.recorded())
 	}
 	a.remoteTabMu.Lock()
-	model := ""
+	model, activeID := "", a.remoteTabLayout.activeID
 	if tab := a.remoteTabs[meta.ID]; tab != nil {
 		model = tab.model
 	}
 	a.remoteTabMu.Unlock()
 	if model != "remote/chat" {
 		t.Fatalf("tab.model = %q, want remote/chat", model)
+	}
+	if activeID != "other-tab" {
+		t.Fatalf("completed model switch reactivated %q, want other-tab to stay active", activeID)
+	}
+	if !slices.ContainsFunc(log.recorded(), func(event string) bool { return strings.HasPrefix(event, "remote-tab:updated ") }) {
+		t.Fatalf("model switch did not publish metadata update: %v", log.recorded())
 	}
 }
 
