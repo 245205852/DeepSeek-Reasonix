@@ -13,6 +13,10 @@ const PAGE_SIZE = 200;
 const MAX_PASSES = 3;
 const STORAGE_BUDGET = 700 * 1024 * 1024;
 const RESERVATIONS = { active: 640 * 1024, compacted: 128 * 1024, archived: 0 };
+// One page can contain six retained 96 KiB reports for each of 200 groups.
+// Keep the capture bounded while leaving room for Wrangler's JSON envelope
+// and escaping; Node's default child-process buffer is too small for this path.
+export const wranglerD1MaxBufferBytes = 192 * 1024 * 1024;
 export const firebaseOAuthGrantType = "urn:ietf:params:oauth:grant-type:jwt-bearer";
 
 function base64url(value) {
@@ -148,13 +152,14 @@ export function buildFirebaseGroups(groupRows, reportRows, now = new Date()) {
   return output;
 }
 
-function runWrangler(projectDir, database, query) {
+export function runWrangler(projectDir, database, query, spawn = spawnSync) {
   const executable = process.platform === "win32" ? "wrangler.cmd" : "wrangler";
   const wrangler = path.join(projectDir, "node_modules", ".bin", executable);
-  const result = spawnSync(wrangler, ["d1", "execute", database, "--remote", "--json", "--command", query], {
+  const result = spawn(wrangler, ["d1", "execute", database, "--remote", "--json", "--command", query], {
     cwd: projectDir,
     encoding: "utf8",
     env: process.env,
+    maxBuffer: wranglerD1MaxBufferBytes,
     stdio: ["ignore", "pipe", "inherit"],
   });
   if (result.error) throw result.error;

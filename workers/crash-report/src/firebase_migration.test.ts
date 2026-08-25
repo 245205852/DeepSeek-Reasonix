@@ -5,11 +5,29 @@ import {
   classifyMigrationGroup,
   contentDigest,
   firebaseOAuthGrantType,
+  runWrangler,
+  wranglerD1MaxBufferBytes,
 } from "../scripts/migrate-firebase-data.mjs";
 
 describe("Firebase retained-sample migration", () => {
   it("uses the OAuth JWT bearer grant expected by Google's token endpoint", () => {
     expect(firebaseOAuthGrantType).toBe("urn:ietf:params:oauth:grant-type:jwt-bearer");
+  });
+
+  it("captures a full retained-report page without using Node's default child-process buffer", () => {
+    let configuredMaxBuffer = 0;
+    const rows = runWrangler("/tmp/crash-worker", "reasonix-crash", "SELECT 1", (
+      _command: string,
+      _args: string[],
+      options: { maxBuffer?: number },
+    ) => {
+      configuredMaxBuffer = options.maxBuffer ?? 0;
+      return { status: 0, stdout: '[{"results":[{"value":1}]}]' };
+    });
+
+    expect(rows).toEqual([{ value: 1 }]);
+    expect(configuredMaxBuffer).toBe(wranglerD1MaxBufferBytes);
+    expect(configuredMaxBuffer).toBeGreaterThan(200 * 6 * 96 * 1024);
   });
 
   it("keeps the first sample and maps the newest five into absolute ring slots", () => {

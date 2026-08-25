@@ -1,4 +1,16 @@
 export const firebaseOAuthGrantType: string;
+export const wranglerD1MaxBufferBytes: number;
+
+export function runWrangler(
+  projectDir: string,
+  database: string,
+  query: string,
+  spawn?: (
+    command: string,
+    args: string[],
+    options: { maxBuffer: number; [key: string]: unknown },
+  ) => { error?: Error; status: number | null; stdout?: string },
+): Array<Record<string, unknown>>;
 
 export function classifyMigrationGroup(
   row: Record<string, unknown>,
