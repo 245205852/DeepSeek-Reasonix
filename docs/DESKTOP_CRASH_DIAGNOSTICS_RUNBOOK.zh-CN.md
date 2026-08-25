@@ -18,14 +18,20 @@
 4. 备份 D1，并先用 `PRAGMA table_info` 检查生产，再应用
    `workers/crash-report/migrate-diagnostics-v2.sql`。若 draft 字段已提前存在，停止发布，
    另做纯加法 reconciliation migration。
-5. 应用 `migrate-firebase-crash.sql`，验证 `firebase_crash_outbox`、
-   `firebase_crash_receipts`、`firebase_crash_group_leases` 和投递索引。outbox 上限
-   5000 条、保留 30 天；幂等回执保留 90 天。
+5. 运行 `npm run migrate:firebase-crash`。命令先记录 D1 Time Travel bookmark，再依次
+   应用第一阶段 `migrate-firebase-crash.sql` 与第二阶段
+   `migrate-firebase-crash-capacity.sql`；任一阶段部分完成时 fail closed。验证 outbox、
+   receipt、兼容 lease 表、`firebase_crash_group_state` 及全部投递/生命周期索引。旧 lease
+   表只用于滚动部署兼容。
 6. 验证 `report_daily`、`report_installations`、
    `report_event_dimensions`、`diagnostics_meta`、fingerprint/date 索引、ping
    窗口索引，以及 `installation_linked_since`。
-7. 先运行 `npm run migrate:firebase-data` dry-run，再通过 `-- --apply` 配合服务账号环境
-   变量执行导入。脚本仅迁移每组首个和最近 5 个样本，不输出报告正文或凭据。
+7. 先运行 `npm run migrate:firebase-data` dry-run。脚本按每页 200 个 fingerprint 的
+   keyset 分页，预计预留必须不超过 700 MiB。随后执行
+   `npm run migrate:firebase-data -- --apply`，收敛后立即执行
+   `npm run migrate:firebase-data -- --verify-only`。默认 checkpoint 为权限 `0600` 且已
+   gitignore 的 `.firebase-crash-migration-state.json`；可用 `--checkpoint=<path>` 改路径，
+   只有明确重跑时才用 `--reset-checkpoint`。日志只输出计数、fingerprint 前缀和摘要。
 8. Worker 先使用 `dual` 模式；用旧 Report/Ping/Metrics、legacy `webview2`、Windows/Linux
    `webRuntime` payload 做 `channel=test` smoke。
 9. 连续比较 7 个完整 UTC 日；fingerprint、计数、样本和脱敏结果一致后，才将
@@ -38,6 +44,22 @@
 12. 通过管理界面保留审计地整理历史数据：忽略 `[go panic] safe` / `v9.9.9`，将
    `72daba81` 标记为在 `desktop-v1.19.3` 解决，忽略旧
    `desktop.abnormal_exit` replay 分组。
+
+## Spark 容量、生命周期与回滚
+
+Worker 固定执行 700 MiB 预留上限：active 每组 640 KiB、compacted 128 KiB、
+archiving 32 KiB、archived 为 0。达到 80% 时复用现有 webhook 告警并在后台提示；新组或
+扩容会越过上限时，必须在创建 outbox 前返回 `503`。不得把该上限改为可配置项。
+
+只有 resolved/ignored 分组参与生命周期：30 天无新事件后，把最近 5 个样本替换为带
+fencing 的 marker，并保留当前周期首个样本；60 天后 tombstone 全部样本路径，24 小时后
+条件删除 Firebase group。D1 的计数、状态、备注、聚合和审计继续保留。archived
+fingerprint 再出现时进入新 sample epoch，累计 count 与 lifetime first-seen 不重置。管理员
+删除复用同一 tombstone 窗口，并原子删除对应 D1 分组数据。
+
+回滚只改配置：设置 `CRASH_STORAGE_MODE=d1` 并重新部署。回滚时不要删除 outbox、receipt、
+group-state 或 Firebase 数据。修复 migration/容量/ETag 问题后，重新执行 dry-run 与
+`--verify-only`，再切回 `dual`；Desktop/CLI 无需升级。
 
 ## 隐私与兼容 smoke
 

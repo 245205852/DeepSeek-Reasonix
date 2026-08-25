@@ -23,16 +23,22 @@ itself resolve a crash issue.
 4. Back up D1 and inspect `PRAGMA table_info` before applying
    `workers/crash-report/migrate-diagnostics-v2.sql`. If draft diagnostics-v2
    columns already exist, stop and create an additive reconciliation migration.
-5. Apply `migrate-firebase-crash.sql`, then verify `firebase_crash_outbox`,
-   `firebase_crash_receipts`, `firebase_crash_group_leases`, and the delivery
-   indexes. The outbox is capped at 5,000 rows and 30 days; idempotency receipts
-   are retained for 90 days.
+5. Run `npm run migrate:firebase-crash`. It records a D1 Time Travel bookmark,
+   applies phase 1 (`migrate-firebase-crash.sql`) and phase 2
+   (`migrate-firebase-crash-capacity.sql`) in order, and fails closed on a
+   partially applied phase. Verify the outbox, receipts, compatibility lease
+   table, `firebase_crash_group_state`, and all delivery/lifecycle indexes. The
+   old lease table remains only for rolling-deployment compatibility.
 6. Verify `report_daily`, `report_installations`,
    `report_event_dimensions`, `diagnostics_meta`, their fingerprint/date
    indexes, and the ping window index. Confirm `installation_linked_since`.
-7. Run `npm run migrate:firebase-data` as a dry run, then rerun with `-- --apply`
-   using service-account environment variables. It imports each group's first
-   and latest five retained samples without logging report bodies or credentials.
+7. Run `npm run migrate:firebase-data` as a dry run. It uses 200-fingerprint
+   keyset pages and must report at most 700 MiB reserved. Then run
+   `npm run migrate:firebase-data -- --apply`; after convergence run
+   `npm run migrate:firebase-data -- --verify-only`. The default checkpoint is
+   `.firebase-crash-migration-state.json` (mode `0600`, gitignored); use
+   `--checkpoint=<path>` to relocate it and `--reset-checkpoint` only to restart
+   deliberately. Logs contain only counts, fingerprint prefixes, and digests.
 8. Deploy the Worker in `dual` mode first. Smoke-test old Report/Ping/Metrics payloads, a
    legacy `webview2` payload, and Windows/Linux `webRuntime` payloads using
    `channel=test`.
@@ -48,6 +54,27 @@ itself resolve a crash issue.
 12. Use the admin UI for the audited historical cleanup: ignore the synthetic
    `[go panic] safe` / `v9.9.9` group; resolve `72daba81` in
    `desktop-v1.19.3`; ignore the legacy `desktop.abnormal_exit` replay group.
+
+## Spark capacity, lifecycle, and rollback
+
+The Worker enforces a fixed 700 MiB reservation budget: active groups reserve
+640 KiB, compacted groups 128 KiB, archiving groups 32 KiB, and archived groups
+zero. At 80% the existing alert webhook and dashboard warn; a new group or
+expansion that would cross the budget returns `503` before creating an outbox
+row. Do not make the budget configurable.
+
+Only resolved/ignored groups are eligible. After 30 inactive days the latest
+five samples become fenced markers and the retained-cycle first sample remains.
+After 60 days all sample paths are tombstoned; 24 hours later the Firebase group
+is conditionally deleted. D1 counts, status, notes, aggregates, and audit remain.
+An archived fingerprint that reappears starts a new sample epoch without
+resetting lifetime count/first-seen. Admin deletion uses the same tombstone
+window while deleting its D1 group data atomically.
+
+Rollback is configuration-only: set `CRASH_STORAGE_MODE=d1` and redeploy. Do not
+delete the outbox, receipts, group state, or Firebase data during rollback. Fix
+the migration/capacity/ETag fault, rerun dry-run and `--verify-only`, then return
+to `dual`. No Desktop or CLI update is required.
 
 ## Privacy and compatibility smoke
 
