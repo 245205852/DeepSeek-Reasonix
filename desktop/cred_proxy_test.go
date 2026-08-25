@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -10,7 +12,13 @@ import (
 	"testing"
 
 	"reasonix/internal/config"
+	"reasonix/internal/remote/bootstrap"
 )
+
+type failingRequestBody struct{}
+
+func (failingRequestBody) Read([]byte) (int, error) { return 0, errors.New("read failed") }
+func (failingRequestBody) Close() error             { return nil }
 
 func mustParseURL(t *testing.T, raw string) *url.URL {
 	t.Helper()
@@ -25,9 +33,12 @@ func mustParseURL(t *testing.T, raw string) *url.URL {
 // the registered virtual token forwards to the provider with the real key,
 // anything else is rejected without reaching the provider.
 func TestCredentialProxyAuthSwap(t *testing.T) {
-	var gotAuth string
+	var gotAuth, gotForwarded string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotAuth = r.Header.Get("Authorization")
+		for _, h := range []string{"Forwarded", "X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto", "X-Real-IP", "Via"} {
+			gotForwarded += r.Header.Get(h)
+		}
 		_, _ = w.Write([]byte("model-ok"))
 	}))
 	defer upstream.Close()
@@ -44,11 +55,14 @@ func TestCredentialProxyAuthSwap(t *testing.T) {
 	proxyURL := fmt.Sprintf("http://127.0.0.1:%d/v1/chat", port)
 
 	do := func(auth string) (int, string) {
-		req, err := http.NewRequest("POST", proxyURL, strings.NewReader("{}"))
+		req, err := http.NewRequest(http.MethodPost, proxyURL, strings.NewReader("{}"))
 		if err != nil {
 			t.Fatal(err)
 		}
 		req.Header.Set("Authorization", auth)
+		req.Header.Set("Connection", "Authorization")
+		req.Header.Set("Forwarded", "for=attacker")
+		req.Header.Set("X-Forwarded-For", "203.0.113.9")
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
 			t.Fatal(err)
@@ -64,6 +78,9 @@ func TestCredentialProxyAuthSwap(t *testing.T) {
 	}
 	if gotAuth != "Bearer sk-real-key" {
 		t.Fatalf("upstream auth = %q, want the real key", gotAuth)
+	}
+	if gotForwarded != "" {
+		t.Fatalf("forwarding identity leaked upstream: %q", gotForwarded)
 	}
 	if code, _ := do("Bearer wrong"); code != 401 {
 		t.Fatalf("wrong token: code=%d, want 401", code)
@@ -101,7 +118,7 @@ func TestCredentialProxyRewritesRequestModel(t *testing.T) {
 	const token = "virtual-tok"
 	a.credProxy.setRoute(token, mustParseURL(t, upstream.URL), "sk-real-key", "deepseek-v4-pro", "openai")
 
-	req, err := http.NewRequest("POST", fmt.Sprintf("http://127.0.0.1:%d/v1/chat/completions", port), strings.NewReader(`{"model":"deepseek-v4-flash","messages":[]}`))
+	req, err := http.NewRequest(http.MethodPost, fmt.Sprintf("http://127.0.0.1:%d/v1/chat/completions", port), strings.NewReader(`{"model":"deepseek-v4-flash","messages":[]}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,7 +129,7 @@ func TestCredentialProxyRewritesRequestModel(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != 200 {
+	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d", resp.StatusCode)
 	}
 	if !strings.Contains(gotBody, `"model":"deepseek-v4-pro"`) {
@@ -126,6 +143,34 @@ func TestCredentialProxyRewritesRequestModel(t *testing.T) {
 	}
 }
 
+func TestCredentialProxyRejectsUnreadableOrOversizeBodies(t *testing.T) {
+	upstreamCalls := 0
+	upstream := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		upstreamCalls++
+	}))
+	defer upstream.Close()
+	p := &credentialProxy{routes: map[string]*credProxyRoute{}}
+	p.setRoute("virtual-tok", mustParseURL(t, upstream.URL), "sk-real-key", "model", "openai")
+
+	request := func(body io.ReadCloser, contentLength int64) int {
+		req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/v1/chat/completions", body)
+		req.Header.Set("Authorization", "Bearer virtual-tok")
+		req.ContentLength = contentLength
+		recorder := httptest.NewRecorder()
+		p.ServeHTTP(recorder, req)
+		return recorder.Code
+	}
+	if code := request(failingRequestBody{}, -1); code != http.StatusBadRequest {
+		t.Fatalf("unreadable body status = %d, want 400", code)
+	}
+	if code := request(io.NopCloser(strings.NewReader("{}")), (64<<20)+1); code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("oversize body status = %d, want 413", code)
+	}
+	if upstreamCalls != 0 {
+		t.Fatalf("invalid bodies reached upstream %d times", upstreamCalls)
+	}
+}
+
 // TestCredentialProxyTokenStableAcrossRestarts: the virtual token derives
 // from a persisted secret, so a restarted desktop keeps the same token (a
 // reused remote serve keeps working); different hosts and different
@@ -133,11 +178,13 @@ func TestCredentialProxyRewritesRequestModel(t *testing.T) {
 func TestCredentialProxyTokenStableAcrossRestarts(t *testing.T) {
 	seedBridgeTestHost(t, "box")
 	a1 := &App{}
+	t.Cleanup(a1.closeCredentialProxy)
 	i1, err := a1.registerCredentialProxyRoute("box", "~/app")
 	if err != nil {
 		t.Fatal(err)
 	}
 	a2 := &App{}
+	t.Cleanup(a2.closeCredentialProxy)
 	i2, err := a2.registerCredentialProxyRoute("box", "~/app")
 	if err != nil {
 		t.Fatal(err)
@@ -161,21 +208,49 @@ func TestCredentialProxyTokenStableAcrossRestarts(t *testing.T) {
 	}
 }
 
-// TestCredentialProxyLegacyTokenDerivation pins the pre-split host-level
-// derivation: reused serves installed before per-workspace tokens present it,
-// so the legacy route must stay derivable and distinct from workspace tokens.
-func TestCredentialProxyLegacyTokenDerivation(t *testing.T) {
-	legacy := credentialProxyTokenFor("secret", "box", "")
-	sameLegacy := credentialProxyTokenFor("secret", "box", "")
-	ws := credentialProxyTokenFor("secret", "box", "~/app")
-	if legacy == "" || legacy != sameLegacy {
-		t.Fatalf("legacy token unstable: %q vs %q", legacy, sameLegacy)
+func TestCredentialProxyReconnectRegistersTrackedWorkspaces(t *testing.T) {
+	seedBridgeTestHost(t, "box")
+	app := &App{}
+	t.Cleanup(app.closeCredentialProxy)
+	mgr := newDesktopRemoteManager(app)
+	mgr.hosts["box"] = &managedHost{serves: map[string]*serveEntry{
+		"~/app":   {},
+		"~/other": {},
+	}}
+	info, err := mgr.registerTrackedCredentialRoutes(app, "box", "~/app")
+	if err != nil {
+		t.Fatal(err)
 	}
-	if legacy == ws {
-		t.Fatalf("legacy token collides with a workspace token: %q", legacy)
+	otherToken, err := app.credentialProxyToken("box", "~/other")
+	if err != nil {
+		t.Fatal(err)
 	}
-	if otherHost := credentialProxyTokenFor("secret", "other", ""); otherHost == legacy {
-		t.Fatalf("legacy token collides across hosts: %q", legacy)
+	app.credProxy.mu.Lock()
+	defer app.credProxy.mu.Unlock()
+	if info.token == "" || app.credProxy.routes[info.token] == nil || app.credProxy.routes[otherToken] == nil {
+		t.Fatalf("tracked routes were not registered together: current=%q count=%d", info.token, len(app.credProxy.routes))
+	}
+}
+
+func TestEnsureServerRejectsRemovedHost(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("REASONIX_HOME", home)
+	t.Setenv("HOME", home)
+	client := newLifecycleSSHClient(nil)
+	mgr := newDesktopRemoteManager(nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	mgr.hosts["removed"] = &managedHost{ctx: ctx, cancel: cancel, client: client, serves: map[string]*serveEntry{}}
+	called := false
+	mgr.ensureServe = func(context.Context, bootstrap.Conn, bootstrap.Options) (bootstrap.Result, error) {
+		called = true
+		return bootstrap.Result{}, nil
+	}
+	if _, _, err := mgr.EnsureServer(context.Background(), "removed", "~/app"); err == nil || !strings.Contains(err.Error(), "no longer configured") {
+		t.Fatalf("EnsureServer removed host error = %v", err)
+	}
+	if called {
+		t.Fatal("removed host reached remote bootstrap")
 	}
 }
 
@@ -200,7 +275,7 @@ func TestCredentialProxyAnthropicAuthShape(t *testing.T) {
 		t.Fatal(err)
 	}
 	a.credProxy.setRoute("virtual-tok", mustParseURL(t, upstream.URL), "sk-real-key", "", "anthropic")
-	req, err := http.NewRequest("POST", fmt.Sprintf("http://127.0.0.1:%d/v1/messages", port), strings.NewReader("{}"))
+	req, err := http.NewRequest(http.MethodPost, fmt.Sprintf("http://127.0.0.1:%d/v1/messages", port), strings.NewReader("{}"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -210,7 +285,7 @@ func TestCredentialProxyAnthropicAuthShape(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != 200 {
+	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d", resp.StatusCode)
 	}
 	if gotKey != "sk-real-key" {

@@ -12,34 +12,10 @@ import (
 	"reasonix/internal/remote/sftpfs"
 )
 
-// CredentialProxyOptions configures local-proxy credential mode: the remote
-// serve's model calls route back to the desktop over the SSH reverse tunnel,
-// so the real provider key never leaves the desktop. The bootstrap installs a
-// provider entry pointing at the tunnel and injects a virtual token into the
-// serve environment; the desktop-side proxy validates the token and swaps in
-// the real key.
-type CredentialProxyOptions struct {
-	// BaseURL is the loopback URL on the REMOTE host that tunnels back to the
-	// desktop's credential proxy, e.g. http://127.0.0.1:18999.
-	BaseURL string
-	// Token is the virtual token the serve presents; it travels in the
-	// process environment (root-readable only), never in argv or files.
-	Token string
-	// Provider is the provider name installed into the remote config; the
-	// serve is launched with --model <Provider> so it selects this entry.
-	Provider string
-	// Model is the model name the provider entry carries (the desktop's
-	// current default model, resolved by the caller).
-	Model string
-	// Kind is the provider kind the entry carries ("openai" or "anthropic"):
-	// the serve formats its model requests per kind, so it must match the
-	// desktop provider behind the proxy. Empty reads as "openai".
-	Kind string
-}
-
-// TokenEnvName is the environment variable the launch command sets and the
-// installed provider entry reads (api_key_env).
+// TokenEnvName is the remote .env entry read by the installed provider.
 const TokenEnvName = "REASONIX_PROXY_TOKEN"
+
+const managedProviderComment = "# managed by the Reasonix desktop credential proxy — safe to delete"
 
 // isRemoteMissing reports whether err is the SFTP "no such file" condition
 // (pkg/sftp maps it onto os.ErrNotExist; the text match covers older wraps).
@@ -85,34 +61,59 @@ func credentialProxyKind(opts *CredentialProxyOptions) string {
 	return kind
 }
 
-// credentialProviderBlock renders the provider entry appended to the remote
-// config. base_url rides the reverse tunnel; the token arrives via the
-// REASONIX_PROXY_TOKEN environment variable the launch command sets.
+func credentialProxyTokenEnv(opts *CredentialProxyOptions) string {
+	if name := strings.TrimSpace(opts.TokenEnv); name != "" {
+		return name
+	}
+	return TokenEnvName
+}
+
+// credentialProviderBlock renders the tunnel-backed remote provider entry.
 func credentialProviderBlock(opts *CredentialProxyOptions) string {
 	var b strings.Builder
 	b.WriteString("\n[[providers]]\n")
-	b.WriteString("# managed by the Reasonix desktop credential proxy — safe to delete\n")
+	b.WriteString(managedProviderComment + "\n")
 	b.WriteString("name = " + tomlString(opts.Provider) + "\n")
 	b.WriteString("kind = " + tomlString(credentialProxyKind(opts)) + "\n")
 	b.WriteString("base_url = " + tomlString(opts.BaseURL) + "\n")
 	b.WriteString("model = " + tomlString(opts.Model) + "\n")
-	b.WriteString("api_key_env = \"" + TokenEnvName + "\"\n")
+	b.WriteString("api_key_env = " + tomlString(credentialProxyTokenEnv(opts)) + "\n")
 	return b.String()
 }
 
-// ensureCredentialProvider installs (idempotently) the desktop-proxy provider
-// entry into the remote user config. A block with the provider name that
-// already points at opts.BaseURL AND carries the same kind is left untouched;
-// one pointing elsewhere or carrying a stale kind is rewritten in place so
-// port and kind changes propagate.
-// ensureCredentialProvider installs or heals the desktop-proxy provider entry
-// in the remote config. The returned bool reports whether anything was
-// rewritten: the desktop uses it to decide that RUNNING serves (whose
-// in-memory providers were built from the previous config) must reload.
+// CredentialProxyOptions configures local-proxy credential mode: the remote
+// serve's model calls route back to the desktop over the SSH reverse tunnel,
+// so the real provider key never leaves the desktop.
+type CredentialProxyOptions struct {
+	// BaseURL is the loopback URL on the REMOTE host that tunnels back to the
+	// desktop's credential proxy, e.g. http://127.0.0.1:18999.
+	BaseURL string
+	// Token is the scoped virtual token stored in the remote 0600 global .env.
+	Token string
+	// TokenEnv is its workspace-specific environment variable name.
+	TokenEnv string
+	// Provider is the provider name installed into the remote config; the
+	// serve is launched with --model <Provider> so it selects this entry.
+	Provider string
+	// Model is the model name the provider entry carries (the desktop's
+	// current default model, resolved by the caller).
+	Model string
+	// Kind is the provider kind the entry carries ("openai" or "anthropic"):
+	// the serve formats its model requests per kind, so it must match the
+	// desktop provider behind the proxy. Empty reads as "openai".
+	Kind string
+}
+
+// ensureCredentialProvider installs or heals the proxy provider and virtual
+// token. The result reports whether a running serve must reload its config.
 func ensureCredentialProvider(ctx context.Context, fs *sftpfs.FS, home string, opts *CredentialProxyOptions) (bool, error) {
 	if opts == nil || strings.TrimSpace(opts.BaseURL) == "" || strings.TrimSpace(opts.Token) == "" ||
 		strings.TrimSpace(opts.Provider) == "" || strings.TrimSpace(opts.Model) == "" {
 		return false, fmt.Errorf("bootstrap: credential proxy options are incomplete")
+	}
+	tokenEnv := credentialProxyTokenEnv(opts)
+	if !config.IsValidCredentialKey(tokenEnv) {
+		return false, fmt.Errorf("bootstrap: credential proxy token env %q is invalid", tokenEnv)
 	}
 	kind := credentialProxyKind(opts)
 	cfgPath := remoteConfigPath(home)
@@ -120,22 +121,30 @@ func ensureCredentialProvider(ctx context.Context, fs *sftpfs.FS, home string, o
 	if rerr != nil && !isRemoteMissing(rerr) {
 		return false, fmt.Errorf("bootstrap: read remote config: %w", rerr)
 	}
-	existing := string(data)
-	// Defining ANY [[providers]] in the file replaces the built-in defaults,
-	// so appending ours would leave a preset-relied default_model dangling
-	// and the serve would crash at startup. Materialize the builtin provider
-	// default_model refers to as an explicit entry first; default_model
-	// itself is never rewritten.
-	existing = materializeDefaultProvider(existing)
+	original := string(data)
+	// An explicit providers table replaces built-ins, so materialize a built-in
+	// default before appending ours without rewriting default_model itself.
+	existing := materializeDefaultProvider(original)
+	existing, _ = rewriteManagedProviderBaseURLs(existing, opts.BaseURL)
+	configChanged := existing != original
 	if idx := providerBlockIndex(existing, opts.Provider); idx >= 0 {
-		if providerBlockHasBaseURL(existing[idx:], opts.BaseURL) && providerBlockHasKind(existing[idx:], kind) {
+		if providerBlockHasBaseURL(existing[idx:], opts.BaseURL) && providerBlockHasKind(existing[idx:], kind) && providerBlockHasModel(existing[idx:], opts.Model) {
 			// Config is already current, but the .env token is healed
 			// independently — an unchanged base_url must not skip it.
-			envChanged, err := ensureCredentialToken(ctx, fs, home, opts.Token)
+			envChanged, err := ensureCredentialToken(ctx, fs, home, tokenEnv, opts.Token)
 			if err != nil {
 				return false, err
 			}
-			return envChanged, nil
+			if !configChanged {
+				return envChanged, nil
+			}
+			if err := fs.MkdirAll(ctx, path.Dir(cfgPath)); err != nil {
+				return false, err
+			}
+			if err := fs.WriteFileAtomic(ctx, cfgPath, []byte(existing), 0o600); err != nil {
+				return false, err
+			}
+			return true, nil
 		}
 		if !providerBlockHasBaseURL(existing[idx:], opts.BaseURL) {
 			updated, ok := replaceProviderBaseURL(existing, idx, opts.BaseURL)
@@ -151,6 +160,13 @@ func ensureCredentialProvider(ctx context.Context, fs *sftpfs.FS, home string, o
 			}
 			existing = updated
 		}
+		if !providerBlockHasModel(existing[idx:], opts.Model) {
+			updated, ok := replaceProviderModel(existing, idx, opts.Model)
+			if !ok {
+				return false, fmt.Errorf("bootstrap: remote config provider %q needs a manual model update", opts.Provider)
+			}
+			existing = updated
+		}
 	} else {
 		existing += credentialProviderBlock(opts)
 	}
@@ -160,26 +176,59 @@ func ensureCredentialProvider(ctx context.Context, fs *sftpfs.FS, home string, o
 	if err := fs.WriteFileAtomic(ctx, cfgPath, []byte(existing), 0o600); err != nil {
 		return false, err
 	}
-	// Runtime credential resolution reads only the global .env file — never
-	// the process environment the launch command seeds — so the virtual token
-	// must live there or every provider call sends an empty key (401).
-	if _, err := ensureCredentialToken(ctx, fs, home, opts.Token); err != nil {
+	// Runtime credential resolution reads the global .env file.
+	if _, err := ensureCredentialToken(ctx, fs, home, tokenEnv, opts.Token); err != nil {
 		return false, err
 	}
 	return true, nil
 }
 
+// rewriteManagedProviderBaseURLs heals every workspace provider that this
+// desktop installed. All of them share the host's one reverse-forward port,
+// which changes together after an SSH reconnect.
+func rewriteManagedProviderBaseURLs(text, baseURL string) (string, bool) {
+	lines := strings.Split(text, "\n")
+	inProvider, managed, changed := false, false, false
+	for index, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "[") {
+			inProvider = trimmed == "[[providers]]"
+			managed = false
+			continue
+		}
+		if !inProvider {
+			continue
+		}
+		if trimmed == managedProviderComment {
+			managed = true
+			continue
+		}
+		if managed && strings.HasPrefix(trimmed, "base_url") && strings.Contains(trimmed, "=") {
+			want := "base_url = " + tomlString(baseURL)
+			if trimmed != want {
+				indent := line[:len(line)-len(strings.TrimLeft(line, " \t"))]
+				lines[index] = indent + want
+				changed = true
+			}
+		}
+	}
+	if !changed {
+		return text, false
+	}
+	return strings.Join(lines, "\n"), true
+}
+
 // ensureCredentialToken idempotently writes the credential-proxy token into
 // the remote global .env, preserving every other line. Reports whether the
 // value was written or already current.
-func ensureCredentialToken(ctx context.Context, fs *sftpfs.FS, home, token string) (bool, error) {
+func ensureCredentialToken(ctx context.Context, fs *sftpfs.FS, home, envName, token string) (bool, error) {
 	envPath := path.Join(home, ".reasonix", ".env")
 	data, _, _, rerr := fs.ReadFile(ctx, envPath, 1<<20)
 	if rerr != nil && !isRemoteMissing(rerr) {
 		return false, fmt.Errorf("bootstrap: read remote .env: %w", rerr)
 	}
 	lines := strings.Split(string(data), "\n")
-	prefix := TokenEnvName + "="
+	prefix := envName + "="
 	for i, line := range lines {
 		if strings.HasPrefix(strings.TrimSpace(line), prefix) {
 			if strings.TrimSpace(line) == prefix+token {
@@ -224,7 +273,7 @@ func providerBlockIndex(text, provider string) int {
 // the given base_url assignment before its next table header.
 func providerBlockHasBaseURL(block, baseURL string) bool {
 	want := "base_url = " + tomlString(baseURL)
-	for _, line := range strings.Split(block, "\n") {
+	for line := range strings.SplitSeq(block, "\n") {
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "[") {
 			return false
@@ -259,7 +308,7 @@ func replaceProviderBaseURL(text string, idx int, baseURL string) (string, bool)
 // given kind assignment before its next table header.
 func providerBlockHasKind(block, kind string) bool {
 	want := "kind = " + tomlString(kind)
-	for _, line := range strings.Split(block, "\n") {
+	for line := range strings.SplitSeq(block, "\n") {
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "[") {
 			return false
@@ -290,6 +339,37 @@ func replaceProviderKind(text string, idx int, kind string) (string, bool) {
 	return text, false
 }
 
+func providerBlockHasModel(block, model string) bool {
+	want := "model = " + tomlString(model)
+	for line := range strings.SplitSeq(block, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "[") {
+			return false
+		}
+		if trimmed == want {
+			return true
+		}
+	}
+	return false
+}
+
+func replaceProviderModel(text string, idx int, model string) (string, bool) {
+	rest := text[idx:]
+	lines := strings.Split(rest, "\n")
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if i > 0 && strings.HasPrefix(trimmed, "[") {
+			break
+		}
+		if strings.HasPrefix(trimmed, "model") && strings.Contains(trimmed, "=") {
+			indent := line[:len(line)-len(strings.TrimLeft(line, " \t"))]
+			lines[i] = indent + "model = " + tomlString(model)
+			return text[:idx] + strings.Join(lines, "\n"), true
+		}
+	}
+	return text, false
+}
+
 // materializeDefaultProvider appends an explicit [[providers]] entry for the
 // provider the top-level default_model refers to when that provider currently
 // resolves only through the built-in defaults. Returns the text unchanged
@@ -314,7 +394,7 @@ func materializeDefaultProvider(existing string) string {
 // stops at the first table header — default_model is only meaningful at the
 // top of the file.
 func defaultModelProvider(text string) string {
-	for _, line := range strings.Split(text, "\n") {
+	for line := range strings.SplitSeq(text, "\n") {
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "[") {
 			return ""

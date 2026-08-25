@@ -3,6 +3,7 @@
 // render the active tab's state.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { asArray } from "./array";
+import { compactArchivedToolItems } from "./archivedToolItems";
 import { addBreadcrumb } from "./breadcrumbs";
 import { app, onEvent, onReady, onRuntimeRebuilt, onTabMeta, onTopicActivation } from "./bridge";
 import { invalidateCache } from "./composerHistory";
@@ -27,6 +28,8 @@ import { isHostRecoveryGuidance } from "./hostRecoverySteer";
 import { activeTabHydrationPlan, canAdoptUnboundLiveSurface, duplicateLiveItemIds, hasCachedLiveTurn, hasReusableCachedTranscript, hydratedHistoryApplyMode, sameSessionHydrateIdentity, sameSessionPlaceholderItems, shouldPreferResidentHistory, type HydrateSurfacePolicy } from "./hydrateHistoryApply";
 import { hydrateIdentityCurrent } from "./sessionIdentity";
 import { historyPageRequestBudget } from "./historyPaging";
+import { createUniqueItemIDAllocator } from "./historyItemIds";
+import { withRemoteProviderUnreachable, withRemoteTurnInterrupted } from "./remoteTurnState";
 import { sameStringList, sameTodoList } from "./todoVisibility";
 import { resolveSnapshotTurnStartedAt, resolveTurnStartedAt, snapshotPredatesTurnLifecycle } from "./turnTiming";
 import { useStaleTurnWatchdog } from "./useStaleTurnWatchdog";
@@ -729,40 +732,6 @@ export function isReadOnlyTool(name: string): boolean {
 
 export { isBatchedReadOnlyTool } from "./searchTranscript";
 
-const ARCHIVED_TOOL_ARG_LIMIT = 200;
-
-function archivedToolArgs(_name: string, args: string): string {
-  return args && args.length > ARCHIVED_TOOL_ARG_LIMIT ? args.slice(0, ARCHIVED_TOOL_ARG_LIMIT) + "…" : args;
-}
-
-function isCanonicalTodoTool(tool: ToolItem): boolean {
-  return tool.name === "todo_write" && !tool.parentId && tool.status === "done" && !tool.error;
-}
-
-function latestCanonicalTodoToolIndex(items: Item[]): number {
-  for (let i = items.length - 1; i >= 0; i -= 1) {
-    const item = items[i];
-    if (item.kind === "tool" && isCanonicalTodoTool(item)) return i;
-  }
-  return -1;
-}
-
-function compactArchivedToolItems(items: Item[]): Item[] {
-  const canonicalTodoIndex = latestCanonicalTodoToolIndex(items);
-  return items.map((item, index) => {
-    if (item.kind !== "tool" || item.status === "running") return item;
-    const preserveArgs = index === canonicalTodoIndex;
-    const nextArgs = preserveArgs ? item.args : archivedToolArgs(item.name, item.args);
-    if (nextArgs === item.args && item.output === undefined && item.dataArchived === true) return item;
-    return {
-      ...item,
-      args: nextArgs,
-      output: undefined,
-      dataArchived: true,
-    };
-  });
-}
-
 type Action =
   | { type: "event"; e: WireEvent }
   | { type: "stream_batch"; segments: StreamSegment[] }
@@ -836,19 +805,7 @@ export function historyMessagesToItems(messages: HistoryMessage[], idPrefix: str
   let items: Item[] = [];
   let seq = startSeq;
   const consumedToolIDs = new Set<string>();
-  const usedItemIDs = new Set<string>();
-  const uniqueItemID = (preferred: string, fallback: string): string => {
-    let id = preferred || fallback;
-    if (!usedItemIDs.has(id)) {
-      usedItemIDs.add(id);
-      return id;
-    }
-    let n = 1;
-    while (usedItemIDs.has(`${preferred || fallback}#${n}`)) n += 1;
-    id = `${preferred || fallback}#${n}`;
-    usedItemIDs.add(id);
-    return id;
-  };
+	const uniqueItemID = createUniqueItemIDAllocator();
   for (let messageIndex = 0; messageIndex < messages.length; messageIndex += 1) {
     const m = messages[messageIndex];
     if (m.role === "system") continue;
@@ -1445,14 +1402,8 @@ function applyEvent(s: State, e: WireEvent): State {
     };
   }
   if (e.kind === "provider_unreachable") {
-    // The provider endpoint could not be reached at all (typically the
-    // desktop credential tunnel died and the serve dials a dead loopback
-    // port). The sibling retrying event keeps the turn alive; this surfaces
-    // WHY in the transcript with one self-replacing notice instead of a
-    // stack of identical warnings per retry.
     const detail = typeof e.text === "string" ? e.text : "";
-    const notice: Item = { kind: "notice", id: "provider-unreachable", level: "warn", text: t("notice.remoteProviderUnreachable", { detail }) };
-    return { ...s, items: [...s.items.filter((it) => it.id !== "provider-unreachable"), notice] };
+    return withRemoteProviderUnreachable(s, detail);
   }
   if (e.kind === "stream_attempt") {
     return applyStreamAttempt(s, e);
@@ -1970,36 +1921,7 @@ export function reducer(s: State, a: Action): State {
       return { ...s, pendingUser: undefined, pendingSubmissionId: undefined, deliveryRecoveryActive: false, running: false, turnActive: false, pendingPrompt: false, cancelRequested: false, cancellable: false, live: undefined, turnLifecycleObservedAt: promptEventClock(), seq: s.seq + 1, items: [...items, notice] };
     }
     case "turn_interrupted": {
-      // The serve connection dropped mid-turn: the turn's fate cannot be
-      // observed from here, so stop the run indicator and say why. A later
-      // /status reconciliation or the reconnected history hydrate settles
-      // whatever the serve actually did with the turn.
-      if (!s.running && !s.turnActive) return s;
-      const items = s.items.map((it) => {
-        if (it.kind === "assistant" && s.live && it.id === s.live.id) return { ...it, text: s.live.text, reasoning: s.live.reasoning, streaming: false };
-        if (it.kind === "assistant" && it.streaming) return { ...it, streaming: false };
-        if (it.kind === "tool" && it.status === "running") return { ...it, status: "stopped" as const };
-        return it;
-      });
-      const notice: Item = { kind: "notice", id: `n${s.seq}`, level: "warn", text: t("notice.remoteTurnInterrupted") };
-      return {
-        ...s,
-        items: [...items, notice],
-        running: false,
-        turnActive: false,
-        pendingPrompt: false,
-        cancelRequested: false,
-        cancellable: false,
-        pendingUser: undefined,
-        pendingSubmissionId: undefined,
-        deliveryRecoveryActive: false,
-        retry: undefined,
-        approval: undefined,
-        ask: undefined,
-        live: undefined,
-        currentAssistant: undefined,
-        seq: s.seq + 1,
-      };
+      return withRemoteTurnInterrupted(s);
     }
     case "backend_status": {
       // Reject snapshots that began before newer prompt or turn lifecycle evidence.

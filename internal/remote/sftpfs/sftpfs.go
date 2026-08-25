@@ -39,11 +39,8 @@ type Entry struct {
 
 // New opens an SFTP session over an established SSH client.
 func New(cl *ssh.Client) (*FS, error) {
-	// Concurrent writes pipeline the SFTP write packets instead of waiting
-	// for each ack: on a high-RTT link the sequential default caps at
-	// ~30KB/s (measured), which turns the ~55MB binary upload into the
-	// better part of an hour. Offsets stay ordered per file; only the
-	// in-flight requests overlap.
+	// Pipeline writes so high-RTT links overlap packet acknowledgements while
+	// preserving per-file offsets.
 	c, err := sftp.NewClient(cl, sftp.UseConcurrentWrites(true))
 	if err != nil {
 		return nil, err
@@ -81,24 +78,16 @@ func run[T any](ctx context.Context, op func() (T, error)) (T, error) {
 	}
 }
 
-// List returns the entries of dir. A leading "~" is resolved server-side
-// first: the SFTP protocol does not expand it, and ReadDir("~") fails with
-// "file does not exist" — the wizard's fresh-host start path is exactly "~".
-// The resolution is verified with Stat because some servers reply with a
-// bogus absolute path instead of expanding; unverifiable ones fall back to
-// ".", the session's starting working directory (the user's home on OpenSSH).
+// List returns dir entries. "~" and "~/..." resolve from the SFTP session's
+// canonical starting directory because the protocol does not expand tildes.
 func (f *FS) List(ctx context.Context, dir string) ([]Entry, error) {
 	return run(ctx, func() ([]Entry, error) {
-		if strings.HasPrefix(dir, "~") {
-			resolved := dir
-			if r, rerr := f.client.RealPath(dir); rerr == nil {
-				resolved = r
+		if dir == "~" || strings.HasPrefix(dir, "~/") {
+			home, err := f.client.RealPath(".")
+			if err != nil {
+				return nil, err
 			}
-			if _, serr := f.client.Stat(resolved); serr == nil {
-				dir = resolved
-			} else {
-				dir = "."
-			}
+			dir = path.Join(home, strings.TrimPrefix(strings.TrimPrefix(dir, "~"), "/"))
 		}
 		infos, err := f.client.ReadDir(dir)
 		if err != nil {
@@ -220,12 +209,9 @@ func (f *FS) writeFileAtomic(ctx context.Context, p string, r io.Reader, perm fs
 		if oerr != nil {
 			return 0, oerr
 		}
-		// A large copy buffer keeps many SFTP packets in flight per Write
-		// call: with the default 32KB io.Copy buffer every Write is exactly
-		// one packet, so even concurrent writes degenerate to one
-		// round-trip per packet (~40KB/s on a 35ms link). 1MB ≈ 32
-		// pipelined packets ≈ far above the link's own bandwidth.
-		n, werr := io.CopyBuffer(fh, r, make([]byte, 1<<20))
+		// Explicitly request the client's bounded packet concurrency even when
+		// the reader cannot report its total size.
+		n, werr := fh.ReadFromWithConcurrency(r, 0)
 		if werr != nil {
 			_ = fh.Close()
 			_ = f.client.Remove(tmp)

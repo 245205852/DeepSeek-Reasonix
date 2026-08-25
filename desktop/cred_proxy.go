@@ -17,24 +17,21 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"reasonix/internal/config"
 )
 
-// Local-proxy credential mode: the remote serve's model calls route back to
-// this desktop over the SSH reverse tunnel, and this proxy swaps the virtual
-// token for the real provider key. The real key lives only in desktop memory
-// and the local .env — it never crosses the wire.
+// Local-proxy mode tunnels model calls to this desktop, which swaps a scoped
+// virtual token for the real provider key. The real key never leaves desktop.
 
 // credentialProxyProviderName is the provider entry the bootstrap installs in
 // the remote config; the serve launches with --model <name>.
 const credentialProxyProviderName = "reasonix-desktop-proxy"
 
 type credProxyRoute struct {
-	proxy  *httputil.ReverseProxy
-	apiKey string
-	model  string
-	kind   string
+	proxy *httputil.ReverseProxy
+	model string
 }
 
 // credentialProxy is the desktop-side key holder: a loopback HTTP endpoint
@@ -62,42 +59,26 @@ func (p *credentialProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	routeCount := len(p.routes)
 	p.mu.Unlock()
 	if route == nil {
-		log.Printf("[remote] credProxy: MISS %s %s tokenPrefix=%q routeCount=%d", r.Method, r.URL.Path, tokenPrefix(token), routeCount)
+		log.Printf("[remote] credProxy: rejected %s %s routeCount=%d", r.Method, r.URL.Path, routeCount)
 		http.Error(w, "invalid credential proxy token", http.StatusUnauthorized)
 		return
 	}
-	// The virtual token is the only caller-supplied auth; replace it with the
-	// real key in the shape the provider kind expects, and hide the desktop
-	// hop from the provider.
-	switch route.kind {
-	case "anthropic":
-		r.Header.Del("Authorization")
-		r.Header.Set("x-api-key", route.apiKey)
-		r.Header.Set("anthropic-version", "2023-06-01")
-	default: // openai-compatible
-		r.Header.Set("Authorization", "Bearer "+route.apiKey)
-	}
-	r.Header.Del("X-Forwarded-For")
 	if route.model != "" && r.Body != nil && (r.Method == http.MethodPost || r.Method == http.MethodPut) {
-		const rewriteLimit = 8 << 20
+		const rewriteLimit = 64 << 20
+		if r.ContentLength > rewriteLimit {
+			http.Error(w, "credential proxy request body is too large", http.StatusRequestEntityTooLarge)
+			return
+		}
 		buffered, err := io.ReadAll(io.LimitReader(r.Body, rewriteLimit+1))
 		switch {
 		case err != nil:
-			// Read failure: forward whatever arrived; the proxy cannot
-			// repair a request body that broke mid-stream.
 			_ = r.Body.Close()
-			r.Body = io.NopCloser(bytes.NewReader(buffered))
+			http.Error(w, "credential proxy could not read request body", http.StatusBadRequest)
+			return
 		case int64(len(buffered)) > rewriteLimit:
-			// Too large to buffer-and-rewrite: stream the buffered prefix
-			// plus the unread remainder through untouched instead of
-			// forwarding a truncated (corrupt) document.
-			prefix := bytes.NewReader(buffered)
-			r.Body = struct {
-				io.Reader
-				io.Closer
-			}{io.MultiReader(prefix, r.Body), r.Body}
-			r.ContentLength = -1
-			r.Header.Del("Content-Length")
+			_ = r.Body.Close()
+			http.Error(w, "credential proxy request body is too large", http.StatusRequestEntityTooLarge)
+			return
 		default:
 			_ = r.Body.Close()
 			body := rewriteJSONModel(buffered, route.model)
@@ -129,44 +110,39 @@ func rewriteJSONModel(body []byte, model string) []byte {
 }
 
 func (p *credentialProxy) setRoute(token string, upstream *url.URL, apiKey, model, kind string) {
-	proxy := httputil.NewSingleHostReverseProxy(upstream)
-	// Stream model responses (SSE) through without buffering.
-	proxy.FlushInterval = -1
-	// NewSingleHostReverseProxy's director rewrites the URL but leaves
-	// req.Host untouched, so the inbound loopback Host (127.0.0.1:<proxy
-	// port>, or the remote tunnel port) would travel to the provider as the
-	// Host header — CloudFront-fronted APIs answer a foreign Host with 403.
-	// Route by the upstream's own host instead.
-	upstreamHost := upstream.Host
-	director := proxy.Director
-	proxy.Director = func(req *http.Request) {
-		director(req)
-		req.Host = upstreamHost
-	}
 	if kind == "" {
 		kind = "openai"
 	}
+	proxy := &httputil.ReverseProxy{FlushInterval: -1}
+	proxy.Rewrite = func(req *httputil.ProxyRequest) {
+		req.SetURL(upstream)
+		for _, header := range []string{"Forwarded", "X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto", "X-Real-IP", "Via"} {
+			req.Out.Header.Del(header)
+		}
+		if kind == "anthropic" {
+			req.Out.Header.Del("Authorization")
+			req.Out.Header.Set("x-api-key", apiKey)
+			req.Out.Header.Set("anthropic-version", "2023-06-01")
+		} else {
+			req.Out.Header.Del("x-api-key")
+			req.Out.Header.Set("Authorization", "Bearer "+apiKey)
+		}
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.routes[token] = &credProxyRoute{proxy: proxy, apiKey: apiKey, model: model, kind: kind}
-}
-
-// tokenPrefix leaks only a non-reversible prefix for diagnosis.
-func tokenPrefix(t string) string {
-	if len(t) > 8 {
-		return t[:8]
-	}
-	return t
+	p.routes[token] = &credProxyRoute{proxy: proxy, model: model}
 }
 
 func (p *credentialProxy) close() {
 	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.server != nil {
-		_ = p.server.Close()
+	server, listener := p.server, p.ln
+	p.server, p.ln = nil, nil
+	p.mu.Unlock()
+	if server != nil {
+		_ = server.Close()
 	}
-	if p.ln != nil {
-		_ = p.ln.Close()
+	if listener != nil {
+		_ = listener.Close()
 	}
 }
 
@@ -191,9 +167,15 @@ func (a *App) credentialProxyPort() (int, error) {
 		return 0, fmt.Errorf("credential proxy: listen: %w", err)
 	}
 	p := &credentialProxy{ln: ln, port: ln.Addr().(*net.TCPAddr).Port, routes: map[string]*credProxyRoute{}}
-	p.server = &http.Server{Handler: p}
+	server := &http.Server{
+		Handler:           p,
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       2 * time.Minute,
+		MaxHeaderBytes:    1 << 20,
+	}
+	p.server = server
 	a.credProxy = p
-	a.goSafe("credentialProxy", func() { _ = p.server.Serve(ln) })
+	a.goSafe("credentialProxy", func() { _ = server.Serve(ln) })
 	return p.port, nil
 }
 
@@ -218,24 +200,18 @@ func (a *App) credentialProxySecret() (string, error) {
 			return "", fmt.Errorf("credential proxy: generate secret: %w", err)
 		}
 		p.CredentialProxySecret = hex.EncodeToString(buf)
-		saveRemotePrefs(p)
-		if loadRemotePrefs().CredentialProxySecret == "" {
-			return "", fmt.Errorf("credential proxy: secret did not persist")
+		if err := saveRemotePrefs(p); err != nil {
+			return "", fmt.Errorf("credential proxy: persist secret: %w", err)
 		}
 	}
 	return p.CredentialProxySecret, nil
 }
 
 // credentialProxyTokenFor derives a virtual token. Tokens are stable across
-// desktop restarts, so a reused remote serve keeps working; an empty
-// workspace derives the legacy host-level token installed by serves from
-// before the per-workspace split.
+// desktop restarts, so a reused remote serve keeps working.
 func credentialProxyTokenFor(secret, hostID, workspace string) string {
 	mac := hmac.New(sha256.New, []byte(secret))
-	mac.Write([]byte("reasonix-credential-proxy:" + hostID))
-	if workspace != "" {
-		mac.Write([]byte(":" + workspace))
-	}
+	mac.Write([]byte("reasonix-credential-proxy:" + hostID + ":" + workspace))
 	return hex.EncodeToString(mac.Sum(nil))[:32]
 }
 
@@ -286,6 +262,9 @@ func resolveProxyProvider(cfg *config.Config, ref string) (proxyUpstream, error)
 	if err != nil {
 		return proxyUpstream{}, fmt.Errorf("credential proxy: provider base_url: %w", err)
 	}
+	if (upstream.Scheme != "http" && upstream.Scheme != "https") || upstream.Host == "" || upstream.User != nil || upstream.Fragment != "" {
+		return proxyUpstream{}, fmt.Errorf("credential proxy: provider base_url must be an http(s) URL without credentials or a fragment")
+	}
 	kind := strings.TrimSpace(entry.Kind)
 	if kind == "" {
 		kind = "openai"
@@ -293,66 +272,38 @@ func resolveProxyProvider(cfg *config.Config, ref string) (proxyUpstream, error)
 	return proxyUpstream{apiKey: apiKey, url: upstream, model: entry.Model, kind: kind}, nil
 }
 
-// registerCredentialProxyRoute prepares local-proxy credential mode for one
-// workspace: starts the desktop key holder, resolves the model that
-// workspace's tabs run (falling back to the desktop default), and registers
-// the workspace's virtual token. The legacy host-level token is re-registered
-// afterwards so serves reused from before the split stay authenticated.
+// registerCredentialProxyRoute binds one workspace token to the current
+// desktop default provider without exposing its real key to the remote.
 func (a *App) registerCredentialProxyRoute(hostID, workspace string) (credentialProxyRouteInfo, error) {
 	cfg, err := config.Load()
 	if err != nil {
 		return credentialProxyRouteInfo{}, err
 	}
 	ref := strings.TrimSpace(cfg.DefaultModel)
-	if wsModel := a.desktopModelForWorkspace(hostID, workspace); wsModel != "" {
-		ref = wsModel
+	if workspaceModel := a.desktopModelForWorkspace(hostID, workspace); workspaceModel != "" {
+		ref = workspaceModel
 	}
-	info, err := a.applyCredentialProxyModel(hostID, workspace, ref)
-	if err != nil {
-		return credentialProxyRouteInfo{}, err
-	}
-	a.applyLegacyCredentialProxyRoute(hostID)
-	return info, nil
+	return a.applyCredentialProxyModel(hostID, workspace, ref)
 }
 
-// desktopModelForWorkspace deterministically picks the model to install for a
-// workspace's serve: the most recently set model among that workspace's tabs.
-// Map iteration order must never decide this.
+// desktopModelForWorkspace deterministically selects the newest tab-owned
+// model for a workspace; map iteration order must never choose a route.
 func (a *App) desktopModelForWorkspace(hostID, workspace string) string {
 	a.remoteTabMu.Lock()
 	defer a.remoteTabMu.Unlock()
-	best := ""
-	var bestSeq uint64
+	var selected string
+	var selectedSeq uint64
 	for _, tab := range a.remoteTabs {
 		if tab == nil || tab.ref.HostID != hostID || tab.ref.Workspace != workspace || strings.TrimSpace(tab.model) == "" {
 			continue
 		}
-		if tab.modelSeq >= bestSeq {
-			best, bestSeq = tab.model, tab.modelSeq
+		if tab.modelSeq >= selectedSeq {
+			selected, selectedSeq = tab.model, tab.modelSeq
 		}
 	}
-	return best
+	return selected
 }
 
-// desktopModelForHost is the host-wide variant used by the legacy token route.
-func (a *App) desktopModelForHost(hostID string) string {
-	a.remoteTabMu.Lock()
-	defer a.remoteTabMu.Unlock()
-	best := ""
-	var bestSeq uint64
-	for _, tab := range a.remoteTabs {
-		if tab == nil || tab.ref.HostID != hostID || strings.TrimSpace(tab.model) == "" {
-			continue
-		}
-		if tab.modelSeq >= bestSeq {
-			best, bestSeq = tab.model, tab.modelSeq
-		}
-	}
-	return best
-}
-
-// applyCredentialProxyModel resolves ref on the desktop, starts the proxy if
-// needed, and (re)binds the workspace's virtual token to that provider.
 func (a *App) applyCredentialProxyModel(hostID, workspace, ref string) (credentialProxyRouteInfo, error) {
 	cfg, err := config.Load()
 	if err != nil {
@@ -378,38 +329,6 @@ func (a *App) applyCredentialProxyModel(hostID, workspace, ref string) (credenti
 	}
 	proxy.setRoute(token, up.url, up.apiKey, up.model, up.kind)
 	return credentialProxyRouteInfo{token: token, model: up.model, kind: up.kind, port: port}, nil
-}
-
-// applyLegacyCredentialProxyRoute re-binds the pre-split host-level token to
-// the host's effective default model. Best effort: serves already running
-// keep their in-memory route until the next ensure re-registers it.
-func (a *App) applyLegacyCredentialProxyRoute(hostID string) {
-	cfg, err := config.Load()
-	if err != nil {
-		return
-	}
-	ref := strings.TrimSpace(cfg.DefaultModel)
-	if hostModel := a.desktopModelForHost(hostID); hostModel != "" {
-		ref = hostModel
-	}
-	if ref == "" {
-		return
-	}
-	up, err := resolveProxyProvider(cfg, ref)
-	if err != nil {
-		return
-	}
-	a.credProxyMu.Lock()
-	proxy := a.credProxy
-	a.credProxyMu.Unlock()
-	if proxy == nil {
-		return
-	}
-	token, err := a.credentialProxyToken(hostID, "")
-	if err != nil {
-		return
-	}
-	proxy.setRoute(token, up.url, up.apiKey, up.model, up.kind)
 }
 
 // credentialModeView returns the host entry's normalized credential mode for

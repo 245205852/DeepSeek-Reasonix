@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 
 	"reasonix/internal/config"
@@ -36,7 +37,7 @@ func TestSnapshotIncludesRemoteProjectGroups(t *testing.T) {
 		if node.Kind != "project" {
 			t.Fatalf("remote group kind = %q, want project", node.Kind)
 		}
-		if node.Key != "project_remote_gpu-box_/home/dev/app" {
+		if !strings.HasPrefix(node.Key, "project_remote_") {
 			t.Fatalf("remote group key = %q", node.Key)
 		}
 		if node.Root != "/home/dev/app" {
@@ -51,37 +52,28 @@ func TestSnapshotIncludesRemoteProjectGroups(t *testing.T) {
 	}
 }
 
-// TestOpenRemoteProjectTabReusesLiveTab pins the "ensure" semantics: a live
-// tab for the same host+workspace is returned as-is on repeat opens, so the
-// wizard finish followed by tree-group clicks yields exactly one tab.
-func TestOpenRemoteProjectTabReusesLiveTab(t *testing.T) {
+func TestRemoteProjectNodeKeysDoNotCollide(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("REASONIX_HOME", home)
 	t.Setenv("HOME", home)
 	if err := editUserConfig(func(c *config.Config) error {
-		return c.UpsertRemoteHost(config.RemoteHostEntry{Name: "box", Host: "127.0.0.1", User: "dev"})
+		for _, host := range []string{"a_b", "a"} {
+			if err := c.UpsertRemoteHost(config.RemoteHostEntry{Name: host, Host: "127.0.0.1"}); err != nil {
+				return err
+			}
+		}
+		if err := c.UpsertRemoteProject(config.RemoteProjectEntry{HostID: "a_b", Workspace: "c"}); err != nil {
+			return err
+		}
+		return c.UpsertRemoteProject(config.RemoteProjectEntry{HostID: "a", Workspace: "b_c"})
 	}); err != nil {
 		t.Fatal(err)
 	}
-	a := &App{remoteRuntime: &fakeRemoteKernel{}}
-	first, err := a.OpenRemoteProjectTab("box", "~/app", RemoteTabOpenOptions{NewSession: true})
+	nodes, err := (&App{}).remoteProjectNodes()
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := a.OpenRemoteProjectTab("box", "~/app", RemoteTabOpenOptions{NewSession: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if first.ID != second.ID {
-		t.Fatalf("second open created a new tab: %q vs %q", first.ID, second.ID)
-	}
-	a.remoteTabMu.Lock()
-	count := len(a.remoteTabs)
-	a.remoteTabMu.Unlock()
-	if count != 1 {
-		t.Fatalf("remoteTabs = %d entries, want 1", count)
-	}
-	if first.Remote == nil || first.Remote.HostID != "box" || first.Remote.Workspace != "~/app" {
-		t.Fatalf("meta remote ref = %+v", first.Remote)
+	if len(nodes) != 2 || nodes[0].Key == nodes[1].Key {
+		t.Fatalf("remote project keys collided: %+v", nodes)
 	}
 }

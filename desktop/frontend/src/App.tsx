@@ -28,15 +28,16 @@ import {
   TerminalSquare,
 } from "lucide-react";
 import { useToast } from "./lib/toast";
-import type { CancelOutcome } from "./lib/inboxCancel";
 import { useGoalActionHandler } from "./lib/goalAction";
 import { useWailsResizeFix } from "./lib/useWailsResizeFix";
 import { asArray } from "./lib/array";
-import { createBoundedRefreshCoordinator, sameTabMetaLists, shouldRefreshTabMetaForEvent, TAB_META_MAX_IN_FLIGHT } from "./lib/tabMetaRefresh";
+import { createBoundedRefreshCoordinator, sameTabMetaLists, seedActiveTabMetaList, shouldRefreshTabMetaForEvent, TAB_META_MAX_IN_FLIGHT } from "./lib/tabMetaRefresh";
 import { clearLegacyLangPref, normalizeLangPref, readLegacyLangPref, t, useI18n, useT, type Translator } from "./lib/i18n";
-import { useRemoteSession } from "./lib/useRemoteSession";
+import { useActiveRemoteSession } from "./lib/useRemoteSession";
+import { useRemoteTabOpened } from "./lib/useRemoteTabOpened";
+import { renameCurrentRemoteSession } from "./lib/remoteSessionActions";
 import { localizedNoticeText, useController, type Item, type LiveStream } from "./lib/useController";
-import { app, onEvent, onProjectTreeChanged, onReady, onRemoteForwards, onRemoteServer, onRemoteStatus, onRemoteTabOpened, onRuntimeRebuilt, onSessionRecovered, openExternal } from "./lib/bridge";
+import { app, onEvent, onProjectTreeChanged, onReady, onRemoteForwards, onRemoteServer, onRemoteStatus, onRuntimeRebuilt, onSessionRecovered, openExternal } from "./lib/bridge";
 import { useConfigLoadWarnings } from "./lib/useConfigLoadWarnings";
 import { generativeMusic, isGenerativeMusicEnabled } from "./lib/generative-music";
 import { clearAttentionChimeKeys, playAttentionChime, playSuccessChime, shouldPlayAttentionChimeForEvent } from "./lib/sound";
@@ -1671,14 +1672,7 @@ export default function App() {
     () => tabMetas.find((tab) => tab.id === activeTabId) ?? tabMetas.find((tab) => tab.active),
     [activeTabId, tabMetas],
   );
-  // Remote tabs share the local composer: the same Composer component stays
-  // mounted, with its send/cancel/running props fed by the remote session.
-  const remoteSurfaceActive = Boolean(activeTab?.remote);
-  const remoteSession = useRemoteSession(
-    remoteSurfaceActive && activeTab ? activeTab.id : undefined,
-    activeTab?.remoteState,
-  );
-  const remoteComposerReady = remoteSurfaceActive && remoteSession.state === "ready";
+  const { active: remoteSurfaceActive, session: remoteSession, ready: remoteComposerReady, onSend: remoteSend, onCancel: remoteCancel } = useActiveRemoteSession(activeTab, showToast);
   const activePlanRevisionInsertRequest =
     planRevisionInsertRequest &&
     planRevisionInsertRequest.tabId === activeTabId &&
@@ -2064,16 +2058,12 @@ export default function App() {
   const cycleMode = useCallback(() => {
     runGoalAction(() => applyCollaborationMode(collaborationMode === "plan" ? "normal" : "plan"));
   }, [applyCollaborationMode, collaborationMode, runGoalAction]);
-
   // Switching models rebuilds the controller, which starts in normal mode — so
   // re-apply the current mode, or the pill would say plan/YOLO while the fresh
   // controller silently uses normal gating.
   const switchModel = useCallback(
     async (name: string) => {
-      if (remoteSurfaceActive && activeTabId) {
-        await app.SetRemoteTabModel(activeTabId, name);
-        return true;
-      }
+      if (remoteSurfaceActive && activeTabId) return app.SetRemoteTabModel(activeTabId, name).then(() => true);
       const switched = await setModel(name);
       if (!switched) return false;
       if (!activeTabId) return false;
@@ -2285,27 +2275,6 @@ export default function App() {
   // custom commands, bare /model and the other read-only management verbs
   // (/skill, /hooks, /mcp) — goes straight to Submit, which the controller
   // resolves (a turn, or a listing Notice).
-  const remoteSend = useCallback(
-    async (displayText: string, submitText = displayText) => {
-      const text = (submitText || displayText).trim();
-      if (!text) return;
-      try {
-        await remoteSession.submit(text);
-      } catch (e) {
-        showToast(e instanceof Error ? e.message : String(e), "error");
-      }
-    },
-    [remoteSession, showToast],
-  );
-  // Matches Composer's onCancel shape (the inbox cancel contract); the
-  // remote turn cancel is fire-and-forget with a toast on failure, and the
-  // remote surface has no local inbox items to discard.
-  const remoteCancel = useCallback(async (_queuedItemIDs?: string[]): Promise<CancelOutcome> => {
-    void remoteSession.cancelTurn().catch((e) => {
-      showToast(e instanceof Error ? e.message : String(e), "error");
-    });
-    return { discardedItemIds: [] };
-  }, [remoteSession, showToast]);
   const handleSend = useCallback(
     async (displayText: string, submitText = displayText, requestedTabId = activeTabId, structured?: StructuredInvocationSubmit) => {
       const sourceTabId = requestedTabId || activeTabId;
@@ -2526,34 +2495,11 @@ export default function App() {
     return tabs;
   }, []);
   const seedActiveTabMeta = useCallback((tab: TabMeta): void => {
-    setTabMetas((current) => {
-      const seeded = { ...tab, active: true };
-      let found = false;
-      const next = current.map((existing) => {
-        if (existing.id === tab.id) {
-          found = true;
-          return { ...existing, ...seeded };
-        }
-        return existing.active ? { ...existing, active: false } : existing;
-      });
-      return found ? next : [...next, seeded];
-    });
+    setTabMetas((current) => seedActiveTabMetaList(current, tab));
     setTabOrderIds((current) => current.includes(tab.id) ? current : [...current, tab.id]);
   }, []);
 
-  // Remote tabs arrive as backend events: adopt the meta into the strip and
-  // switch to it. The same event fires for re-focus clicks on the tree
-  // group, so an already-open tab just becomes active.
-  useEffect(() => {
-    const off = onRemoteTabOpened((meta) => {
-      if (!meta?.id || !meta.remote) return;
-      seedActiveTabMeta(meta);
-      // Title refreshes ride the same channel; only an inactive tab needs
-      // the switch — re-switching the active one would churn the surface.
-      if (activeTabIdRef.current !== meta.id) void switchTab(meta.id, meta);
-    });
-    return off;
-  }, [seedActiveTabMeta, switchTab]);
+  useRemoteTabOpened(activeTabIdRef, seedActiveTabMeta, switchTab);
 
   useEffect(() => {
     const unsub = onEvent((e) => {
@@ -4346,18 +4292,8 @@ export default function App() {
     if (!topicId) return;
     const nextTitle = topicTitleDraft.trim();
     if (!nextTitle) return;
-    if (activeTab?.remote && topicId === activeTab.id) {
-      try {
-        const sessions = await app.RemoteProjectSessions(activeTab.remote.hostId, activeTab.remote.workspace).catch(() => []);
-        const current = sessions.find((session) => session.current);
-        if (!current) return;
-        await app.RenameRemoteProjectSession(activeTab.remote.hostId, activeTab.remote.workspace, current.name, nextTitle);
-      } catch {
-        /* a listing failure just leaves the previous title in place */
-      }
-      return;
-    }
     try {
+      if (await renameCurrentRemoteSession(activeTab, nextTitle)) return;
       await renameTopic(topicId, nextTitle);
     } catch {
       /* keep the app usable if a stale topic cannot be renamed */
@@ -4951,9 +4887,7 @@ export default function App() {
             ) : noticePreviewMockEnabled() ? (
               <NoticePreviewPanel />
             ) : activeTab?.remote ? (
-              <Suspense fallback={null}>
-                <RemoteSessionSurface tab={activeTab} session={remoteSession} />
-              </Suspense>
+              <Suspense fallback={null}><RemoteSessionSurface tab={activeTab} session={remoteSession} /></Suspense>
             ) : (
               <>
                 <div className="transcript-navigation-surface" aria-busy={runtimeTransitioning}>

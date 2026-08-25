@@ -500,9 +500,7 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("POST /fork", s.fork)
 	mux.HandleFunc("POST /summarize", s.summarize)
 	mux.HandleFunc("POST /tool-approval-mode", s.toolApprovalMode)
-	mux.HandleFunc("POST /model", s.switchModelHTTP)
 	mux.HandleFunc("POST /providers/reload", s.providersReload)
-	mux.HandleFunc("POST /effort", s.switchEffortHTTP)
 	mux.HandleFunc("POST /auto-approve-tools", s.autoApproveTools)
 	mux.HandleFunc("POST /bypass", s.bypass)
 	mux.HandleFunc("POST /goal", s.goal)
@@ -1064,54 +1062,6 @@ func (s *Server) autoApproveTools(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// switchModelHTTP switches the active model over HTTP. The desktop remote
-// tab and the web shell model picker share this route; the switch itself is
-// the same switchModel the provider-setup save path drives.
-func (s *Server) switchModelHTTP(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Ref string `json:"ref"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.Ref) == "" {
-		http.Error(w, "invalid model ref", http.StatusBadRequest)
-		return
-	}
-	if err := s.switchModel(r.Context(), req.Ref); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	writeJSON(w, map[string]string{"model": req.Ref})
-}
-
-// providersReload rebuilds the controller with the CURRENT model so provider
-// construction re-reads the on-disk config. The desktop calls this after a
-// reverse credential-tunnel rebind (the loopback port changes on every SSH
-// reconnect): a running serve otherwise keeps the base_url it was built with.
-// Busy serves answer 409 — the desktop retries on its next ensure round.
-func (s *Server) providersReload(w http.ResponseWriter, r *http.Request) {
-	ref := s.ctl().ModelRef()
-	if err := s.switchModel(r.Context(), ref); err != nil {
-		http.Error(w, err.Error(), http.StatusConflict)
-		return
-	}
-	writeJSON(w, map[string]string{"model": ref})
-}
-
-// switchEffortHTTP adjusts the active provider's reasoning-effort level.
-func (s *Server) switchEffortHTTP(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Level string `json:"level"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.Level) == "" {
-		http.Error(w, "invalid effort level", http.StatusBadRequest)
-		return
-	}
-	if err := s.switchEffort(r.Context(), req.Level); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	writeJSON(w, map[string]string{"effort": req.Level})
-}
-
 // toolApprovalMode selects ask, auto, or yolo approval behavior for interactive
 // frontends. Plan remains a separate workflow governed by the selected mode.
 func (s *Server) toolApprovalMode(w http.ResponseWriter, r *http.Request) {
@@ -1522,57 +1472,6 @@ func (s *Server) generateTitle(ctx context.Context, firstMsg string) string {
 		title = title[1 : len(title)-1]
 	}
 	return strings.TrimSpace(title)
-}
-
-// sessions lists saved session files from the session directory, enriched with
-// LLM-generated titles and turn counts.
-func (s *Server) sessions(w http.ResponseWriter, r *http.Request) {
-	dir := s.ctl().SessionDir()
-	if dir == "" {
-		writeJSON(w, []any{})
-		return
-	}
-	type sessionEntry struct {
-		Name       string `json:"name"`
-		Path       string `json:"path"`
-		Title      string `json:"title,omitempty"`
-		Turns      int    `json:"turns,omitempty"`
-		Current    bool   `json:"current,omitempty"`
-		MtimeMilli int64  `json:"mtimeMilli"`
-	}
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		writeJSON(w, []any{})
-		return
-	}
-	current := filepath.Clean(s.ctl().SessionPath())
-	var out []sessionEntry
-	for _, e := range entries {
-		if e.IsDir() || !store.IsSessionTranscriptName(e.Name()) {
-			continue
-		}
-		path := filepath.Join(dir, e.Name())
-		if agent.IsCleanupPending(path) {
-			continue
-		}
-		name := strings.TrimSuffix(e.Name(), ".jsonl")
-		entry := sessionEntry{Name: name, Path: path, Current: filepath.Clean(path) == current, MtimeMilli: agent.SessionContentModTime(path).UnixMilli()}
-		// Event-log aware: reading the .jsonl checkpoint directly would freeze
-		// turn counts and titles at the last checkpoint write.
-		if first, turns := agent.SessionPreview(path); turns > 0 {
-			entry.Turns = turns
-			entry.Title = s.sessionTitle(r.Context(), e.Name(), first, agent.SessionContentModTime(path).UnixNano())
-		}
-		out = append(out, entry)
-	}
-	// reverse so newest first
-	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
-		out[i], out[j] = out[j], out[i]
-	}
-	if out == nil {
-		out = []sessionEntry{}
-	}
-	writeJSON(w, out)
 }
 
 // deleteSession removes a saved session by the session name returned from /sessions.

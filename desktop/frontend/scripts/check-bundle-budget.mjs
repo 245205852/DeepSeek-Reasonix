@@ -94,11 +94,8 @@ console.log("\nbundle budgets");
 // its filtered count matches the assistant Sources panel. The measured build
 // is 431.509 KiB gzip; keep 0.1 KiB of explicit headroom for hash/toolchain
 // drift instead of relying on a rounded equality.
-// The remote project-onboard MVP merge lands the sidebar remote groups (store
-// wiring, remote session rows, host-form credential mode) on top of both
-// tracks; the serve-scaling wave (detach, gzip snapshots, watchdog) stays in
-// the stacked follow-up. Production rides 436.9 KiB; retain the merged
-// capacity with 0.2 KiB headroom on a shared per-channel ratchet.
+// The full remote-session surface adds the lazy transcript bridge and tab
+// lifecycle on top of [0.5/3]. Keep the measured stack's narrow ratchet.
 const initialJSBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 437.1 : 437.1;
 assertBudget("initial JavaScript gzip", initialJSGzip, initialJSBudgetKiB * 1024);
 assertBudget("largest initial JavaScript chunk gzip", largestInitialJS, 280 * 1024);
@@ -116,9 +113,7 @@ if (initialCSS.length > 0) {
 // Navigation overlay styles add a bounded 0.1 KiB to the deferred shell.
 // The cleaned source panel adds 0.1 KiB gzip to the deferred shell on top of
 // the retained-transcript navigation allowance; keep the ratchet explicit.
-// The remote project-onboard MVP merge folds the connect-wizard, remote-surface,
-// and remote-badge styles in beside main's navigation and source-panel blocks:
-// the merged stylesheet rides 115.4 KiB gzip.
+// Remote tab/surface states bring the shell to roughly 115.7 KiB gzip.
 assertBudget("deferred app-shell CSS gzip", appShellCSSGzip, 116.0 * 1024);
 if (localeChunks.length !== 2) {
   throw new Error(`expected 2 on-demand Chinese locale chunks, found ${localeChunks.length}`);
@@ -145,10 +140,8 @@ for (const path of localeChunks) {
   // platform-dependent gate. The OpenCode one-key setup adds product-level
   // connection, fallback, and legacy-state copy while removing protocol
   // choices from the primary UI; keep that complete guidance with a bounded
-  // 0.4–0.5 KiB locale-only ratchet. The remote credential work
-  // (disconnected-shell surface + host-form credential mode, three locales)
-  // adds ~1 KiB gzip on top: the merged chunks ride 58.3 KiB (zh-TW) and
-  // 57.6 KiB (zh); keep ~0.15 KiB of CI zlib headroom above each.
+  // 0.4–0.5 KiB locale-only ratchet.
+  // Remote-session actions and disconnected-shell guidance add bounded copy.
   const budget = name.startsWith("zh-TW-") ? 58.5 * 1024 : 57.8 * 1024;
   assertBudget(`${name} gzip`, gzipBytes(path), budget);
 }
@@ -162,13 +155,7 @@ const rawInitialBytes = [...initialJS, ...initialCSS, ...appShellCSS]
 // KiB and test from 2346.2 to 2348.8 KiB; the pinned heading adds 0.5 KiB raw
 // (0.021%). The workspace panel rework (change-row hover/revert, status badges,
 // More menu, completion summary) makes the latest-base merge 2353.1 KiB in
-// production and 2358.3 KiB in test: about 9.0 KiB (0.38%) over main-v2's
-// channel gates. Retain that attributable UI capacity with 0.1 KiB of build-SHA
-// headroom without widening the gzip or largest-chunk exceptions.
-// The main merge's unified geometry contract and retained-transcript
-// navigation owner plus the remote project-onboard MVP sidebar groups move
-// the merged production build to 2380.0 KiB raw; keep 0.3 KiB of build-SHA
-// headroom and share the ratchet across channels.
+// production and test channels measure roughly 2380 KiB with remote sessions.
 const rawInitialBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 2_380.3 : 2_380.3;
 assertBudget("initial raw JavaScript and CSS", rawInitialBytes, rawInitialBudgetKiB * 1024);
 assertBudget("largest initial JavaScript chunk raw", largestInitialJSRaw, 1_000 * 1024);

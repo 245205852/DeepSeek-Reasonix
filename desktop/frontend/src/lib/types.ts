@@ -4,6 +4,8 @@ import type { HistoryServerSearch } from "./searchSources";
 import type { Todo } from "./tools";
 import type { ContextBudgetInfo, ContextMaintenanceInfo, WireContextMaintenance } from "./contextMaintenanceTypes";
 import type { WireApproval } from "./approvalTypes";
+import type { RemoteTabRefView, RemoteTabStateValue } from "./remoteTypes";
+export * from "./remoteTypes";
 export type { ContextBudgetInfo, ContextMaintenanceInfo, ContextMaintenanceReceipt, WireContextMaintenance } from "./contextMaintenanceTypes";
 export type { ProjectGroupsSnapshot, ProjectRuntimeTopic, ProjectTopicKey, ProjectTopicPage, ProjectTopicPageRequest, ProjectTreeChangedV2, ProjectTreeOrganizationBindings, ProjectTreeRuntimeSnapshot, ProjectTreeSnapshot, SessionCatalogBindings, SessionCatalogStatus, SessionGroup, SessionReference } from "./sessionCatalogTypes";
 export type EventKind =
@@ -438,10 +440,7 @@ export interface TabMeta {
   workspacePath?: string;
   gitBranch?: string;
   isolatedWorktree?: boolean;
-  /** Present ⇒ remote tab (RemoteTabBridge); absent ⇒ local tab. */
   remote?: RemoteTabRefView;
-  /** Remote tab connection state from the meta — seeds the surface before
-   *  any state event arrives this run (restored disconnected shells). */
   remoteState?: RemoteTabStateValue;
   topicId: string;
   topicTitle: string;
@@ -532,12 +531,10 @@ export interface ProjectNode {
   recoveryCleanupEligibleCount?: number;
   recoveryCopyCount?: number; // folded recovery copies behind this row (badge only)
   isolatedWorktree?: boolean;
+  runtimeOnly?: boolean;
   /** Present ⇒ remote project group; drives the cloud badge on the folder row. */
   remote?: RemoteTabRefView;
-  /** Present ⇒ a remote serve session synthesized as a topic row; actions
-   *  route to the remote bindings instead of the local topic machinery. */
   remoteSession?: { hostId: string; workspace: string; name: string };
-  runtimeOnly?: boolean;
   children?: ProjectNode[];
 }
 
@@ -951,7 +948,6 @@ export interface Meta {
   goalStatus?: GoalStatus;
   goalRuntime?: GoalRuntime;
   canonicalTodos?: Todo[]; dismissedTodoBatches?: string[];
-  /** Set for remote session tabs: readiness flows through remote-tab state events instead. */
   remote?: RemoteTabRefView;
 }
 
@@ -1523,211 +1519,6 @@ export interface MemoryView {
 
 // SettingsTab is the top-level navigation item in the Settings Centre modal.
 export type SettingsTab = "general" | "models" | "providers" | "bots" | "mcp" | "remote" | "skills" | "subagents" | "plugins" | "memory" | "hooks" | "diagnostics" | "shortcuts" | "permissions" | "sandbox" | "network" | "appearance" | "storage" | "updates";
-
-// ── Remote SSH module (mirrors desktop/remote_app.go view structs) ──
-
-export type RemoteConnState =
-  | "connecting"
-  | "connected"
-  | "reconnecting"
-  | "degraded"
-  | "pending_hostkey"
-  | "pending_secret"
-  | "stopped";
-
-export type RemoteServerState =
-  | "starting"
-  | "detect"
-  | "install"
-  | "waiting_lock"
-  | "launch"
-  | "health_check"
-  | "ready"
-  | "error"
-  | "stopped"
-  | "reuse";
-
-// ── Remote project tabs (RemoteTabBridge) ──
-export interface RemoteTabRefView {
-  hostId: string;
-  workspace: string;
-}
-
-export interface RemoteProjectView {
-  hostId: string;
-  workspace: string;
-  title?: string;
-  color?: string;
-  /** Set when an overlapping pin existed: workspace is the canonical group's path. */
-  merged?: boolean;
-}
-
-export interface RemoteSessionView {
-  name: string;
-  title: string;
-  turns: number;
-  current?: boolean;
-  /** Unix ms, same unit as ProjectNode.lastActivityAt. */
-  lastActivityAt?: number;
-  pinned?: boolean;
-}
-
-export type RemoteTabStateValue = "connecting" | "ready" | "reconnecting" | "serve_down" | "error" | "disconnected";
-
-export interface RemoteTabState {
-  state: RemoteTabStateValue;
-  error?: string;
-}
-
-export interface RemoteTabOpenOptions {
-  newSession?: boolean;
-  sessionName?: string;
-}
-
-// First-cut shape; finalize against what the remote tab surface actually
-// consumes (avoid over-fetching).
-export interface RemoteTabSnapshot {
-  history: unknown[];
-  context?: unknown;
-  todos?: unknown[];
-  checkpoints?: unknown[];
-  models?: string[];
-  status?: unknown;
-}
-
-export interface RemoteHostView {
-  id: string;
-  label: string;
-  host: string;
-  port: number;
-  user: string;
-  identityFile: string;
-  proxyJump: string;
-  defaultWorkspace: string;
-  serveInstall: string;
-  credentialMode: string;
-  useSSHConfig: boolean;
-  passwordSet?: boolean;
-  keyPassphraseSet?: boolean;
-}
-
-export interface RemoteHostInput {
-  label: string;
-  host: string;
-  port: number;
-  user: string;
-  identityFile: string;
-  proxyJump: string;
-  defaultWorkspace: string;
-  serveInstall: string;
-  credentialMode: string;
-  useSSHConfig: boolean;
-  password?: string;
-  keyPassphrase?: string;
-  clearPassword?: boolean;
-  clearPassphrase?: boolean;
-  preserveExistingSettings?: boolean;
-}
-
-export interface RemoteFingerprintView {
-  hostId: string;
-  address: string;
-  keyType: string;
-  sha256: string;
-}
-
-export interface RemoteSecretPromptView {
-  promptId: string;
-  hostId: string;
-  host: string;
-  kind: "password" | "passphrase";
-  identity?: string;
-}
-
-export interface RemoteKnownHostLocation {
-  path: string;
-  line: number;
-}
-
-export interface RemoteConnectionErrorDetails {
-  code: "connection_failed" | "auth_failed" | "host_key_rejected" | "host_key_mismatch";
-  presentedSha256?: string;
-  knownHostRecords?: RemoteKnownHostLocation[];
-}
-
-export interface RemoteConnectionStatus {
-  hostId: string;
-  state: RemoteConnState;
-  error?: string;
-  errorDetails?: RemoteConnectionErrorDetails;
-  fingerprint?: RemoteFingerprintView;
-  secretPrompt?: RemoteSecretPromptView;
-  attempt?: number;
-}
-
-export interface RemoteDirEntry {
-  name: string;
-  path: string;
-  isDir: boolean;
-  size: number;
-  mtimeUnix: number;
-  symlink: boolean;
-}
-
-export interface RemoteFilePreview {
-  path: string;
-  body: string;
-  size: number;
-  mtimeUnix: number;
-  truncated: boolean;
-  binary: boolean;
-  err?: string;
-}
-
-export interface RemoteWriteResult {
-  ok: boolean;
-  conflict: boolean;
-  newMtimeUnix: number;
-}
-
-export interface RemoteForwardInput {
-  localPort: number;
-  remoteHost: string;
-  remotePort: number;
-  label: string;
-}
-
-export interface RemoteForwardView {
-  id: string;
-  hostId: string;
-  localPort: number;
-  remoteHost: string;
-  remotePort: number;
-  label: string;
-  state: string;
-  error?: string;
-}
-
-export interface RemoteServerView {
-  hostId: string;
-  workspace: string;
-  state: RemoteServerState;
-  message?: string;
-  localUrl?: string;
-  error?: string;
-}
-
-/** Path-free summary of files left behind by the removed Remote Workbench. */
-export interface RemoteLegacyWorkbenchData {
-  mirrorCount: number;
-  mirrorBytes: number;
-  trustFile: boolean;
-}
-
-export interface RemoteForwardsEvent {
-  hostId: string;
-  forwards: RemoteForwardView[];
-}
 
 /** Extension runtime doctor report from App.RuntimeDoctor. */
 export interface RuntimeDoctorReport {

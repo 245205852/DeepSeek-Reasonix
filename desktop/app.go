@@ -334,28 +334,18 @@ type App struct {
 	// connection keep running. The child deliberately skips local runtimes.
 	remoteWindows          *remoteWindowRegistry
 	remoteWindowLifecycles remoteWindowLifecycleRegistry
-	// Remote project tabs: in-app tabs bound to a remote workspace. Tracks
-	// open tabs and their connection state; project registration itself
-	// persists in the user config ([remote].projects). Open tabs persist as
-	// disconnected shells in desktop-tabs.json and restore without
-	// connecting; activation bootstraps the reconnect.
-	remoteTabMu sync.Mutex
-	remoteTabs  map[string]*remoteTab
-	// remoteTabOrder keeps the strip order of remote tab ids (guarded by
-	// remoteTabMu); ReorderTabs persists it beside the local tab order.
-	remoteTabOrder []string
-	// remoteActiveTabID holds the strip highlight while a remote tab is the
-	// visible surface; a local activation clears it. Guarded by remoteTabMu.
-	remoteActiveTabID string
-	// Local-proxy credential mode: the desktop-side key holder for remote
-	// serves whose model calls tunnel back here. Lazily started, app-wide.
+	remoteWindowOpener     func(remoteWindowLaunch) error // test-only injection
+	// Remote project tabs are in-app surfaces bound to a remote workspace.
+	// Project pins persist in user config; open tab shells persist separately
+	// and restore disconnected until the user activates them.
+	remoteTabMu     sync.Mutex
+	remoteTabs      map[string]*remoteTab
+	remoteTabLayout remoteTabLayoutState
+	// remoteEventHook observes remote events in tests; production leaves it nil.
+	remoteEventHook func(name string, payload any)
+	// credProxy is the lazy app-wide key holder for local-proxy mode.
 	credProxyMu sync.Mutex
 	credProxy   *credentialProxy
-	// remoteEventHook, when set, observes every emitRemoteEvent call.
-	// Tests use it to assert event names and payloads; production never
-	// sets it.
-	remoteEventHook    func(name string, payload any)
-	remoteWindowOpener func(remoteWindowLaunch) error // test-only injection
 	// remoteWindowTicket/remoteWindowHostKey are set from argv before Wails
 	// starts in a child process. They gate the blank-shell middleware and the
 	// startup branches so the child never initializes local runtimes.
@@ -495,6 +485,9 @@ func (a *App) startup(ctx context.Context) {
 		if err := repairDesktopIconIntegration(); err != nil {
 			slog.Debug("desktop: repair native icon integration", "err", err)
 		}
+	})
+	a.goSafe("applyWindowIconsFromExecutable", func() {
+		applyWindowIconsFromExecutable()
 	})
 
 	if cfg, err := config.Load(); err == nil && cfg.DesktopMetrics() && version != "dev" {
@@ -727,10 +720,9 @@ func (a *App) restoreOrBuildTabs() {
 	if cfgErr != nil || singleSurfaceLayoutStyle(startupCfg.DesktopLayoutStyle()) {
 		f = singleSurfaceTabsFile(f)
 	}
-	// Remote tabs restore as disconnected shells (no connect, no serve):
-	// activation or an explicit open bootstraps them later.
+	// Restore remote tabs as disconnected shells; activation performs the
+	// first network work so desktop startup remains offline-safe.
 	a.restoreRemoteTabShells(f)
-
 	if len(f.Tabs) > 0 {
 		toBuild := make([]*WorkspaceTab, 0, len(f.Tabs))
 		for _, entry := range f.Tabs {
@@ -1784,6 +1776,7 @@ func (a *App) SetComposerProfileForTab(tabID, collaborationMode, toolApprovalMod
 	collaborationMode = normalizeCollaborationMode(collaborationMode)
 	toolApprovalMode = normalizeToolApprovalMode(toolApprovalMode)
 	goal = strings.TrimSpace(goal)
+
 	tab := a.tabByID(tabID)
 	if tab == nil {
 		return []string{}, fmt.Errorf("tab is no longer available")
@@ -6594,8 +6587,8 @@ type Meta struct {
 	CanonicalTodos *[]evidence.TodoItem `json:"canonicalTodos,omitempty"`
 	// Closed completed todo fingerprints from this session and its lineage.
 	DismissedTodoBatches []string `json:"dismissedTodoBatches,omitempty"`
-	// Remote marks a remote session tab: readiness flows through remote-tab
-	// state events, so the local-tab fields above stay zero for it.
+	// Remote marks a remote session tab; its readiness is carried by the
+	// remote-tab state channel rather than a local controller.
 	Remote *RemoteTabRef `json:"remote,omitempty"`
 }
 
@@ -9331,59 +9324,6 @@ func (a *App) Models() []ModelInfo {
 	return a.ModelsForTab("")
 }
 
-func (a *App) ModelsForTab(tabID string) []ModelInfo {
-	if cur, ok := a.remoteTabCurrentModel(tabID); ok {
-		// Remote-credential hosts keep their providers and keys on the
-		// remote: offer exactly what that serve offers, and only when it is
-		// reachable — the desktop catalog would list models the remote
-		// cannot call. Local-proxy hosts own selection on the desktop.
-		if !a.remoteTabLocalProxy(tabID) {
-			if infos, err := a.remoteServeModelsForTab(tabID, cur); err == nil {
-				return infos
-			}
-			return []ModelInfo{}
-		}
-		return a.desktopModelCatalog(cur, "", nil)
-	}
-	a.mu.RLock()
-	curModel := ""
-	workspaceRoot := ""
-	var ctrl control.SessionAPI
-	if tab := a.tabByIDLocked(tabID); tab != nil {
-		curModel = tab.model
-		workspaceRoot = tab.WorkspaceRoot
-		ctrl = tab.Ctrl
-	}
-	a.mu.RUnlock()
-	return a.desktopModelCatalog(curModel, workspaceRoot, ctrl)
-}
-
-func (a *App) desktopModelCatalog(curModel, workspaceRoot string, ctrl control.SessionAPI) []ModelInfo {
-	var extensionCatalog []provider.Descriptor
-	if ctrl != nil {
-		extensionCatalog = ctrl.ProviderCatalog()
-	}
-	cfg, err := config.LoadForRoot(workspaceRoot)
-	if err != nil {
-		return []ModelInfo{}
-	}
-	if entry, ok := cfg.ResolveModel(curModel); ok {
-		curModel = entry.Name + "/" + entry.Model
-	}
-	out := []ModelInfo{}
-	for i := range cfg.Providers {
-		p := &cfg.Providers[i]
-		if !modelProviderAccessAllowed(cfg.Desktop.ProviderAccess, p.Name) || !p.Configured() {
-			continue
-		}
-		for _, m := range p.ChatModelList() {
-			ref := p.Name + "/" + m
-			out = append(out, ModelInfo{Ref: ref, Provider: p.Name, Model: m, Current: ref == curModel})
-		}
-	}
-	return mergeExtensionModelInfos(out, extensionCatalog, curModel)
-}
-
 // mergeExtensionModelInfos adds namespaced plugin models from the controller's
 // merged provider catalog. Base descriptors are already represented by out;
 // plugin refs need no provider-access gate because enabling the package grants
@@ -9731,30 +9671,7 @@ func (a *App) SetModelForTab(tabID, name string) (retErr error) {
 	}
 	timing := modelSwitchTiming{}
 	totalStarted := time.Now()
-	defer func() {
-		timing.Total = time.Since(totalStarted)
-		if retErr != nil {
-			timing.Outcome = "failed"
-		} else {
-			timing.Outcome = "ok"
-		}
-		slog.Debug(
-			"desktop: model switch timing",
-			"tab", tab.ID,
-			"outcome", timing.Outcome,
-			"total_ms", timing.Total.Milliseconds(),
-			"lock_wait_ms", timing.LockWait.Milliseconds(),
-			"prepare_ms", timing.Prepare.Milliseconds(),
-			"config_ms", timing.Config.Milliseconds(),
-			"snapshot_ms", timing.Snapshot.Milliseconds(),
-			"build_ms", timing.Build.Milliseconds(),
-			"lease_resume_ms", timing.LeaseAndResume.Milliseconds(),
-			"swap_persist_ms", timing.SwapAndPersist.Milliseconds(),
-		)
-		if a.modelSwitchTimingHook != nil {
-			a.modelSwitchTimingHook(timing)
-		}
-	}()
+	defer a.recordModelSwitchTiming(tab.ID, &timing, totalStarted, &retErr)
 	// Same build+swap shape as rebuildSetting; hold the same lock so a settings
 	// rebuild (manual or from the deferred-rebuild retry loop) and a model
 	// switch cannot interleave on one tab.

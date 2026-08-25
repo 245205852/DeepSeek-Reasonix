@@ -25,40 +25,26 @@ func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
-// LaunchCommand builds the `sh -c` script that starts a detached serve in
-// workspace, writing the port/pid files and appending output to the log. The
-// binary path and every operand are single-quote-escaped so hostile paths
-// (spaces, quotes, `; rm -rf ~`) cannot break out.
-//
-// Detachment: `setsid` fully divorces the process from any session, but it is
-// absent on stock macOS, so it is used only when present (`$SX`); `nohup` +
-// backgrounding + `</dev/null` is sufficient over a non-interactive SSH exec.
-// The log is created 0600 (umask 077 + explicit chmod) so a same-machine user
-// cannot read serve output; serve is launched with `--port-file`, which
-// suppresses its token share line, so the token never reaches the log.
-// It echoes the shell's $! so the caller can record the pid immediately.
-//
-// Credential-proxy mode (cred != nil): the virtual token rides the serve's
-// environment (root-readable /proc only — never argv, never a file) and the
-// provider flag selects the tunnel-backed provider entry.
+// LaunchCommand starts a detached serve with shell-quoted operands, 0600 log,
+// and file-based port, pid, and auth token state. It uses setsid when present
+// and falls back to nohup on stock macOS. Credential-proxy mode selects the
+// tunnel-backed provider; its scoped token remains in the remote 0600 .env
+// and never appears in this command.
 func LaunchCommand(bin, workspace string, p StatePaths, cred *CredentialProxyOptions) string {
-	envPrefix := ""
 	modelFlag := ""
 	if cred != nil {
-		envPrefix = TokenEnvName + "=" + shellQuote(cred.Token) + " "
 		modelFlag = " --model " + shellQuote(cred.Provider)
 	}
 	return fmt.Sprintf(
 		"mkdir -p %s && cd %s && rm -f %s %s && umask 077 && : >>%s && chmod 600 %s && "+
 			"SX=; command -v setsid >/dev/null 2>&1 && SX=setsid; "+
-			"%s$SX nohup %s serve --addr 127.0.0.1:0 --auth token --token-file %s --port-file %s --pid-file %s%s </dev/null >>%s 2>&1 & echo $!",
+			"$SX nohup %s serve --addr 127.0.0.1:0 --auth token --token-file %s --port-file %s --pid-file %s%s </dev/null >>%s 2>&1 & echo $!",
 		shellQuote(p.Dir),
 		shellQuote(workspace),
 		shellQuote(p.PortFile),
 		shellQuote(p.PidFile),
 		shellQuote(p.LogFile),
 		shellQuote(p.LogFile),
-		envPrefix,
 		shellQuote(bin),
 		shellQuote(p.TokenFile),
 		shellQuote(p.PortFile),
@@ -92,17 +78,19 @@ func StopCommand(pid int, p StatePaths) string {
 // launched under different settings (e.g. before the host switched credential
 // modes) is not treated as reusable.
 func ServeAliveCommand(pid int, p StatePaths, requireArgs ...string) string {
-	decls := fmt.Sprintf("T=%s; P=%s; ", shellQuote(p.TokenFile), shellQuote(p.PortFile))
-	pattern := "*reasonix*serve*\"$T\"*\"$P\"*"
+	var decls strings.Builder
+	fmt.Fprintf(&decls, "T=%s; P=%s; ", shellQuote(p.TokenFile), shellQuote(p.PortFile))
+	var pattern strings.Builder
+	pattern.WriteString("*reasonix*serve*\"$T\"*\"$P\"*")
 	for i, arg := range requireArgs {
-		decls += fmt.Sprintf("R%d=%s; ", i, shellQuote(arg))
-		pattern += fmt.Sprintf("\"$R%d\"*", i)
+		fmt.Fprintf(&decls, "R%d=%s; ", i, shellQuote(arg))
+		fmt.Fprintf(&pattern, "\"$R%d\"*", i)
 	}
 	return fmt.Sprintf(
 		"%skill -0 %d 2>/dev/null || { echo 0; exit 0; }; "+
 			"A=$(ps -p %d -o args= 2>/dev/null || ps -p %d -o command= 2>/dev/null); "+
 			"case \"$A\" in %s) echo 1;; *) echo 0;; esac",
-		decls, pid, pid, pid, pattern,
+		decls.String(), pid, pid, pid, pattern.String(),
 	)
 }
 

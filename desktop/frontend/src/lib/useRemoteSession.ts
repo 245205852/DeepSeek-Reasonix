@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { app, onRemoteTabEvent, onRemoteTabState } from "./bridge";
+import type { CancelOutcome } from "./inboxCancel";
 import { initialState, reducer, type State } from "./useController";
-import type { HistoryMessage, RemoteTabStateValue, WireEvent } from "./types";
+import type { HistoryMessage, RemoteTabStateValue, TabMeta, WireEvent } from "./types";
 
 // The remote session reuses the local transcript pipeline end to end: serve
 // frames share the agent event wire form, so they run through the same
@@ -39,6 +40,38 @@ export interface RemoteSessionApi {
   cancelTurn: () => Promise<void>;
   approve: (callId: string, decision: string) => Promise<void>;
   answer: (callId: string, value: string) => Promise<void>;
+}
+
+export function useRemoteComposer(
+  session: RemoteSessionApi,
+  showToast: (message: string, level: "error") => void,
+) {
+  const onSend = useCallback(async (displayText: string, submitText = displayText) => {
+    const text = (submitText || displayText).trim();
+    if (!text) return;
+    try {
+      await session.submit(text);
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : String(error), "error");
+    }
+  }, [session, showToast]);
+  const onCancel = useCallback(async (_queuedItemIDs?: string[]): Promise<CancelOutcome> => {
+    void session.cancelTurn().catch((error) => {
+      showToast(error instanceof Error ? error.message : String(error), "error");
+    });
+    return { discardedItemIds: [] };
+  }, [session, showToast]);
+  return { onSend, onCancel };
+}
+
+export function useActiveRemoteSession(
+  activeTab: TabMeta | undefined,
+  showToast: (message: string, level: "error") => void,
+) {
+  const active = Boolean(activeTab?.remote);
+  const session = useRemoteSession(active && activeTab ? activeTab.id : undefined, activeTab?.remoteState);
+  const composer = useRemoteComposer(session, showToast);
+  return { active, session, ready: active && session.state === "ready", ...composer };
 }
 
 export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabStateValue): RemoteSessionApi {

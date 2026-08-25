@@ -1,7 +1,7 @@
 // Run: tsx src/__tests__/remote-project-tree.test.tsx
-// Source-contract test: remote sessions ride the LOCAL tree renderer and
-// menu templates — synthesized topic nodes, remote-routed actions, and
-// structure-aligned project menus.
+// Source-contract test: the remote project group's tree behavior — session
+// rows, the + action, the remote context menu, the connection badge, and
+// the local-action guards — is wired exactly once and in the remote shape.
 
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
@@ -22,101 +22,52 @@ function ok(value: boolean, label: string) {
 console.log("\nRemote project tree wiring");
 const here = dirname(fileURLToPath(import.meta.url));
 const source = readFileSync(resolve(here, "../components/ProjectTree.tsx"), "utf8");
-const appSource = readFileSync(resolve(here, "../App.tsx"), "utf8");
-const bridgeSource = readFileSync(resolve(here, "../lib/bridge.ts"), "utf8");
+const remoteSource = readFileSync(resolve(here, "../components/ProjectTreeRemoteGroups.tsx"), "utf8");
 
 ok(
-  /const treeWithRemoteSessions = useMemo\(\(\) => \{[\s\S]*?kind: "topic" as const,[\s\S]*?remoteSession: \{ hostId: node\.remote!\.hostId/.test(source),
-  "remote sessions join the tree data as synthetic topic nodes",
+  /remoteSession: \{ hostId: node\.remote!\.hostId, workspace: node\.remote!\.workspace, name: row\.name \}/.test(remoteSource) &&
+    /openRemoteSessionNode\(remote, openRemoteProject\)/.test(source) &&
+    /void open\(remote, remote\.name \? \{ sessionName: remote\.name \} : \{ focus: true \}\)/.test(remoteSource),
+  "session rows open the matching in-app remote session",
 );
 ok(
-  /treeWithRemoteSessions\s*\.map\(filterNode\)/.test(source),
-  "the synthesized rows flow through the local filter/arrange/pinned pipeline",
+  /rows\.map\(\(row\): ProjectNode =>/.test(remoteSource) && /mergeRemoteSessionsIntoTree\(tree, remoteSessions, t\)/.test(source),
+  "remote group children render from the fetched session list",
 );
 ok(
-  /if \(remote && remote\.name\) \{[\s\S]*?\{ sessionName: remote\.name \}[\s\S]*?\} else if \(remote\) \{[\s\S]*?\{ focus: true \}/.test(source),
-  "row clicks resume named sessions and focus the blank one",
+  /app\.RemoteProjectSessions\(hostId, workspace\)/.test(remoteSource),
+  "sessions are fetched through the bridge",
 );
 ok(
-  /const remote = remoteFromTopicId\(topicId\);[\s\S]*?await app\.RenameRemoteProjectSession/.test(source),
-  "row rename routes to RenameRemoteProjectSession",
+  /state === "connected" \|\| state === "degraded"/.test(remoteSource),
+  "session fetch waits for a connected host",
 );
 ok(
-  /await app\.SetRemoteSessionPinned\(remote\.hostId, remote\.workspace, remote\.name, pinned\)/.test(source),
-  "row pin routes to SetRemoteSessionPinned",
+  /key: "remote-new-session"[\s\S]*?key: "remote-open-window"[\s\S]*?key: "remote-stop-server"[\s\S]*?key: "remote-unpin"/.test(remoteSource),
+  "the remote menu exposes new-session, browser, stop, and unpin actions",
 );
 ok(
-  /await app\.DeleteRemoteProjectSession\(remote\.hostId, remote\.workspace, remote\.name\)/.test(source),
-  "row archive routes to DeleteRemoteProjectSession",
+  /items=\{node\.remote \? remoteProjectMenuItems :/.test(source),
+  "remote groups swap out the local project menu",
 );
 ok(
-  /key: "new-session",[\s\S]*?key: "rename",[\s\S]*?key: "reveal",[\s\S]*?key: "copy-path",[\s\S]*?key: "remove",/.test(source),
-  "the remote classic menu mirrors the local structure (new/rename/reveal/copy/remove)",
+  /app\.OpenRemoteProjectTab\(ref\.hostId, ref\.workspace,[\s\S]*?newSession: true/.test(remoteSource) &&
+    /app\.ConnectRemoteHost\(ref\.hostId\)[\s\S]*?waitForRemoteConnection\(ref\.hostId\)[\s\S]*?app\.OpenRemoteWorkspace\(ref\.hostId, ref\.workspace\)/.test(remoteSource),
+  "in-app tabs use the remote-session bridge while the browser surface reconnects first",
 );
 ok(
-  /label: t\("projectTree\.revealRemoteWorkspace"\)/.test(source),
-  "reveal maps to the remote file manager entry",
+  /app\.RemoveRemoteProject\(ref\.hostId, ref\.workspace\)/.test(remoteSource) && /void refresh\(\);/.test(remoteSource),
+  "unpin removes the registration and refreshes the tree",
 );
-ok(
-  /root\.startsWith\("remote-project:"\)/.test(source) && /await app\.SetRemoteProjectTitle/.test(source),
-  "project rename routes to SetRemoteProjectTitle",
-);
-ok(
-  /disabled: aiRenamingTopic !== null \|\| Boolean\(node\.remoteSession\)/.test(source),
-  "AI rename stays disabled for remote rows (the serve owns generated titles)",
-);
-ok(
-  /!\(node\.remoteSession && !node\.remoteSession\.name\) && \(/.test(source),
-  "hover actions hide on the pending blank row",
-);
-ok(
-  /await app\.OpenRemoteProjectTab\(ref\.hostId, ref\.workspace, \{ newSession: true \}\);\s*bumpRemoteSessionsRef\.current\(\);/.test(source),
-  "a new-session open refreshes the session listing",
-);
-ok(
-  !/remoteBlankGroups|markRemoteBlank|handleRemoteNewSession/.test(source),
-  "the frontend blank state machine is gone — the listing is the only source",
-);
-ok(
-  /void openRemoteProject\(node\.remote(!)?, \{ newSession: true \}\);/.test(source),
-  "+ routes straight to the ensure-open; blank reuse is backend-decided",
-);
-
 ok(
   /project-tree__remote-badge--\$\{remoteServeBadgeState\(remoteServers\[node\.remote\.hostId\]\?\.\[node\.remote\.workspace\]\)\}/.test(source),
-  "the group row badge reflects the workspace's own serve state",
+  "the group row badge reflects the workspace-specific serve state",
 );
 ok(
-  /case "ready":\s*\n\s*return "serve-ready";/.test(source) &&
-    /case "error":\s*\n\s*return "serve-error";/.test(source) &&
-    /serve-idle/.test(source),
-  "badge states map ready/busy/error/idle per serve",
-);
-ok(
-  /onSend=\{remoteSurfaceActive \? remoteSend : handleSend\}/.test(appSource),
-  "the shared Composer sends through the remote session on remote tabs",
-);
-ok(
-  /if \(remoteSurfaceActive && activeTabId\) \{[\s\S]*?await app\.SetRemoteTabModel\(activeTabId, name\)/.test(appSource),
-  "the shared Composer model switcher posts SetRemoteTabModel on remote tabs",
-);
-ok(
-  /if \(!controllerReady \|\| !activeTabId \|\| remoteSurfaceActive\) return;/.test(appSource),
-  "composer-profile apply skips remote tabs so it cannot toast tab is no longer available",
-);
-ok(
-  /submitDisabled=\{remoteSurfaceActive \? !remoteComposerReady : !controllerReady\}/.test(appSource) &&
-    /ready=\{remoteSurfaceActive \? remoteComposerReady : controllerReady\}/.test(appSource) &&
-    /const remoteComposerReady = remoteSurfaceActive && remoteSession\.state === "ready";/.test(appSource),
-  "the shared Composer send button uses remote serve ready, not the local controller",
-);
-ok(
-  /mockRemoteProjects: RemoteProjectView\[\] = \[\s*\/\/ Demo preseed[\s\S]*?hostId: "demo"/.test(bridgeSource),
-  "the mock preseeds a demo remote project",
-);
-ok(
-  /const remoteDemoTabId = `remote-mock-demo-~\/app`\.replace\(/.test(bridgeSource) && /id: remoteDemoTabId/.test(bridgeSource),
-  "the mock preseeds a demo remote tab under the computed ensure-reuse id",
+  /sessionLoads\.current\.has\(key\)/.test(remoteSource) &&
+    /eligibleSessionKeys\.current\.has\(key\)/.test(remoteSource) &&
+    /filter\(\(\[key\]\) => connected\.has\(key\)\)/.test(remoteSource),
+  "session fetches deduplicate in flight and discard disconnected or stale group results",
 );
 
 process.stdout.write(`\n${passed} passed, ${failed} failed\n`);

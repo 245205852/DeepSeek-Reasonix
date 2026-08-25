@@ -1,0 +1,32 @@
+import type { TabMeta } from "./types";
+import type { RemoteProjectView, RemoteSessionView, RemoteTabOpenOptions, RemoteTabSnapshot } from "./remoteTypes";
+
+export interface RemoteProjectBindings {
+  AddRemoteProject(hostId: string, workspace: string): Promise<RemoteProjectView>;
+  RemoveRemoteProject(hostId: string, workspace: string): Promise<void>;
+  ListRemoteProjects(): Promise<RemoteProjectView[]>;
+  OpenRemoteProjectTab(hostId: string, workspace: string, opts?: RemoteTabOpenOptions): Promise<TabMeta>;
+  RemoteProjectSessions(hostId: string, workspace: string): Promise<RemoteSessionView[]>;
+  SetRemoteSessionPinned(hostId: string, workspace: string, name: string, pinned: boolean): Promise<void>;
+  SetRemoteProjectTitle(hostId: string, workspace: string, title: string): Promise<void>;
+  RenameRemoteProjectSession(hostId: string, workspace: string, name: string, title: string): Promise<void>;
+  DeleteRemoteProjectSession(hostId: string, workspace: string, name: string): Promise<void>;
+  CloseRemoteTab(tabId: string): Promise<void>;
+  SubmitRemoteTab(tabId: string, text: string): Promise<void>;
+  CancelRemoteTab(tabId: string): Promise<void>;
+  ApproveRemoteTab(tabId: string, callId: string, decision: string): Promise<void>;
+  AnswerRemoteTab(tabId: string, callId: string, answer: string): Promise<void>;
+  SetRemoteTabModel(tabId: string, ref: string): Promise<void>;
+  RewindRemoteTab(tabId: string, checkpointId: string): Promise<void>;
+  SetRemoteTabToolApprovalMode(tabId: string, mode: string): Promise<void>;
+  SetRemoteTabGoal(tabId: string, goal: string): Promise<void>;
+  RemoteTabSnapshot(tabId: string): Promise<RemoteTabSnapshot>;
+  SetRemoteTabEffort(tabId: string, level: string): Promise<void>;
+  SetRemoteTabPlanMode(tabId: string, on: boolean): Promise<void>;
+  CompactRemoteTab(tabId: string): Promise<void>;
+  ForkRemoteTab(tabId: string, turn: number, name: string): Promise<void>;
+  SummarizeRemoteTab(tabId: string, turn: number, mode: string): Promise<void>;
+  ForgetRemoteTab(tabId: string, name: string): Promise<void>;
+  RemoteTabBranches(tabId: string): Promise<unknown>;
+  RemoteTabSkills(tabId: string): Promise<unknown>;
+}

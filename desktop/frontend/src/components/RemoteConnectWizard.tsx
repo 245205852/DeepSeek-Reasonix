@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Check, FileText, Folder, Plus } from "lucide-react";
+import "./RemoteConnectWizard.css";
 import { app } from "../lib/bridge";
 import { useT } from "../lib/i18n";
 import { useRemoteStore, waitForRemoteConnection } from "../store/remote";
@@ -51,18 +52,16 @@ function parentOf(path: string): string {
  *      port, user, auth = password | key file, CLI download method)
  *   2. connecting (ConnectRemoteHost + waitForRemoteConnection; TOFU and
  *      secret prompts surface through the global dialogs)
- *   3. remote workspace picker (SFTP browse + free-text path); finish
- *      registers the remote project (rolled back if the tab open fails)
- *      and opens a remote tab.
+ *   3. remote workspace picker (SFTP browse + free-text path); finish pins
+ *      the canonical workspace and opens its in-app remote session tab.
  */
 export function RemoteConnectWizard({
-  onRefresh,
   onClose,
+  onRefresh,
   onMerged,
 }: {
-  onRefresh: () => Promise<void>;
   onClose: () => void;
-  /** Fired with a pre-translated notice when the chosen path merged into an existing pinned group. */
+  onRefresh: () => Promise<void>;
   onMerged?: (message: string) => void;
 }) {
   const t = useT();
@@ -87,9 +86,20 @@ export function RemoteConnectWizard({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const dialogRef = useRef<HTMLDivElement>(null);
+  const hostInputRef = useRef<HTMLInputElement>(null);
+  const restoreFocusRef = useRef<HTMLElement | null>(null);
+  const listRequestRef = useRef(0);
   const host = hosts.find((h) => h.id === hostId) ?? null;
   const pickedHost = pickedHostId ? hosts.find((h) => h.id === pickedHostId) ?? null : null;
-  const identityFileInputRef = useRef<HTMLInputElement>(null);
+
+  useLayoutEffect(() => {
+    restoreFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    hostInputRef.current?.focus();
+    return () => {
+      if (restoreFocusRef.current?.isConnected) restoreFocusRef.current.focus();
+    };
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
     void app
@@ -103,12 +113,38 @@ export function RemoteConnectWizard({
     };
   }, [setHosts]);
 
+  useEffect(() => () => {
+    listRequestRef.current += 1;
+  }, []);
+
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !busy) onClose();
+      if (event.key === "Escape" && !busy) {
+        event.preventDefault();
+        event.stopPropagation();
+        onClose();
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const focusable = Array.from(dialogRef.current?.querySelectorAll<HTMLElement>(
+        'input:not(:disabled), button:not(:disabled), [tabindex]:not([tabindex="-1"])',
+      ) ?? []);
+      if (focusable.length === 0) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (!dialogRef.current?.contains(document.activeElement)) {
+        event.preventDefault();
+        (event.shiftKey ? last : first).focus();
+      } else if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    document.addEventListener("keydown", onKey, { capture: true });
+    return () => document.removeEventListener("keydown", onKey, { capture: true });
   }, [busy, onClose]);
 
   const set = <K extends keyof RemoteHostInput>(key: K, value: RemoteHostInput[K]) =>
@@ -141,12 +177,16 @@ export function RemoteConnectWizard({
 
   const openDir = async (id: string, path: string) => {
     if (!id) return;
+    const requestId = ++listRequestRef.current;
     setWorkspace(path);
     setEntries(null);
     setListErr("");
     try {
-      setEntries(await app.ListRemoteDir(id, path));
+      const nextEntries = await app.ListRemoteDir(id, path);
+      if (requestId !== listRequestRef.current) return;
+      setEntries(nextEntries);
     } catch (e) {
+      if (requestId !== listRequestRef.current) return;
       setEntries([]);
       setListErr(e instanceof Error ? e.message : String(e));
     }
@@ -168,6 +208,7 @@ export function RemoteConnectWizard({
   // reflects the pre-save hostId on the first connect, which logged the raw
   // host id instead of user@host.
   const connect = async (id: string, startPath: string, targetHost: RemoteHostView | null) => {
+    setBusy(true);
     setConnectErr("");
     setLogLines([]);
     setStep("connecting");
@@ -188,6 +229,8 @@ export function RemoteConnectWizard({
       const message = e instanceof Error ? e.message : String(e);
       pushLog("warn", t("remoteWizard.logFailed", { error: message }));
       setConnectErr(message);
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -251,21 +294,12 @@ export function RemoteConnectWizard({
         setError(e instanceof Error ? e.message : String(e));
         return;
       }
-      // The registry collapses overlapping paths: the canonical workspace is
-      // where the tab must land, and a merge means no new pin exists to roll
-      // back — removing it would delete the user's existing group.
       const canonical = project.merged ? project.workspace : target;
-      if (project.merged) {
-        onMerged?.(t("remoteWizard.mergedProject", { path: canonical }));
-      }
+      if (project.merged) onMerged?.(t("remoteWizard.mergedProject", { path: canonical }));
       try {
         await app.OpenRemoteProjectTab(hostId, canonical, { newSession: true });
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
-        // All-or-nothing: a failed open rolls the just-registered project
-        // back so no half-applied pin survives. A merged finish added no pin,
-        // so there is nothing to remove. If the rollback itself fails, the
-        // pin is on disk — refresh so the tree stays honest.
         if (!project.merged) {
           try {
             await app.RemoveRemoteProject(hostId, target);
@@ -322,6 +356,7 @@ export function RemoteConnectWizard({
                     <label className="remote-wizard__field">
                       <span>{t("remote.host.host")}</span>
                       <input
+                        ref={hostInputRef}
                         value={form.host}
                         disabled={busy}
                         autoComplete="off"
@@ -426,22 +461,16 @@ export function RemoteConnectWizard({
                           disabled={busy}
                           aria-label={t("remoteWizard.pickIdentityFile")}
                           title={t("remoteWizard.pickIdentityFile")}
-                          onClick={() => identityFileInputRef.current?.click()}
+                          onClick={() => {
+                            void app.PickRemoteIdentityFile().then((path) => {
+                              if (path) set("identityFile", path);
+                            }).catch((e) => {
+                              setError(e instanceof Error ? e.message : String(e));
+                            });
+                          }}
                         >
                           <Plus size={14} aria-hidden="true" />
                         </button>
-                        <input
-                          ref={identityFileInputRef}
-                          type="file"
-                          className="remote-wizard__hidden-file"
-                          tabIndex={-1}
-                          aria-hidden="true"
-                          onChange={(event) => {
-                            const file = event.target.files?.[0];
-                            if (file) set("identityFile", (file as File & { path?: string }).path ?? file.name);
-                            event.target.value = "";
-                          }}
-                        />
                       </div>
                     </label>
                     <label className="remote-wizard__field">

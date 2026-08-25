@@ -89,7 +89,7 @@ func TestRemoteTabRestoreBuildsDisconnectedShells(t *testing.T) {
 			{ID: "", HostID: "box", Workspace: "~/skip"},
 			{ID: "local-1", HostID: "box", Workspace: "~/dup"},
 		},
-		RemoteTabOrder: []string{"r-1", "r-2"},
+		RemoteTabOrder: []string{"r-2", "r-1"},
 		ActiveTab:      "r-1",
 	}
 	a.restoreRemoteTabShells(f)
@@ -100,8 +100,8 @@ func TestRemoteTabRestoreBuildsDisconnectedShells(t *testing.T) {
 		t.Fatalf("restored shells = %+v", a.remoteTabs)
 	}
 	for id, tab := range a.remoteTabs {
-		if tab.state != "disconnected" || !tab.newSession {
-			t.Fatalf("shell %s = state %q newSession %v, want disconnected + newSession", id, tab.state, tab.newSession)
+		if tab.state != "disconnected" || !tab.session.newSession {
+			t.Fatalf("shell %s = state %q newSession %v, want disconnected + newSession", id, tab.state, tab.session.newSession)
 		}
 		if tab.client != nil || tab.cancel != nil {
 			t.Fatalf("shell %s connected during restore", id)
@@ -110,8 +110,11 @@ func TestRemoteTabRestoreBuildsDisconnectedShells(t *testing.T) {
 	if got := a.remoteTabs["r-1"].topicTitle; got != "Fix bug" {
 		t.Fatalf("restored title = %q, want the persisted one", got)
 	}
-	if a.remoteActiveTabID != "r-1" {
-		t.Fatalf("remoteActiveTabID = %q, want r-1", a.remoteActiveTabID)
+	if got := strings.Join(a.remoteTabLayout.order, ","); got != "r-2,r-1" {
+		t.Fatalf("restored remote order = %q, want r-2,r-1", got)
+	}
+	if a.remoteTabLayout.activeID != "r-1" {
+		t.Fatalf("remoteActiveTabID = %q, want r-1", a.remoteTabLayout.activeID)
 	}
 }
 
@@ -129,9 +132,9 @@ func TestActivateDisconnectedShellReconnects(t *testing.T) {
 	cleanupRemoteTabPumps(t, a)
 	a.remoteTabMu.Lock()
 	a.remoteTabs = map[string]*remoteTab{
-		"shell-1": {id: "shell-1", ref: RemoteTabRef{HostID: "box", Workspace: "~/app"}, state: "disconnected", newSession: true, hostLabel: "box", topicTitle: "app"},
+		"shell-1": {id: "shell-1", ref: RemoteTabRef{HostID: "box", Workspace: "~/app"}, state: "disconnected", session: remoteTabSessionState{newSession: true}, hostLabel: "box", topicTitle: "app"},
 	}
-	a.remoteTabOrder = []string{"shell-1"}
+	a.remoteTabLayout.order = []string{"shell-1"}
 	a.remoteTabMu.Unlock()
 
 	if err := a.SetActiveTab("shell-1"); err != nil {
@@ -143,10 +146,43 @@ func TestActivateDisconnectedShellReconnects(t *testing.T) {
 		t.Fatalf("POST /new called %d times, want 1 (fresh blank session)", newCalled)
 	}
 	a.remoteTabMu.Lock()
-	active := a.remoteActiveTabID
+	active := a.remoteTabLayout.activeID
 	a.remoteTabMu.Unlock()
 	if active != "shell-1" {
 		t.Fatalf("remoteActiveTabID = %q, want shell-1", active)
+	}
+}
+
+func TestSetActiveRemoteTabPersistsAndUnknownKeepsSelection(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("REASONIX_HOME", home)
+	t.Setenv("HOME", home)
+	a := &App{}
+	seedLocalTab(a, "local-1")
+	a.mu.Lock()
+	a.activeTabID = "local-1"
+	a.mu.Unlock()
+	a.remoteTabMu.Lock()
+	a.remoteTabs = map[string]*remoteTab{
+		"remote-1": {id: "remote-1", ref: RemoteTabRef{HostID: "box", Workspace: "~/app"}, state: "ready"},
+	}
+	a.remoteTabLayout.order = []string{"remote-1"}
+	a.remoteTabMu.Unlock()
+
+	if err := a.SetActiveTab("remote-1"); err != nil {
+		t.Fatal(err)
+	}
+	if got := readPersistedTabsFile(t).ActiveTab; got != "remote-1" {
+		t.Fatalf("persisted active tab = %q, want remote-1", got)
+	}
+	if err := a.SetActiveTab("missing"); err == nil {
+		t.Fatal("unknown tab activation succeeded")
+	}
+	a.remoteTabMu.Lock()
+	active := a.remoteTabLayout.activeID
+	a.remoteTabMu.Unlock()
+	if active != "remote-1" {
+		t.Fatalf("unknown activation cleared remote selection: %q", active)
 	}
 }
 
@@ -164,9 +200,9 @@ func TestOpenRemoteProjectTabRevivesShell(t *testing.T) {
 	cleanupRemoteTabPumps(t, a)
 	a.remoteTabMu.Lock()
 	a.remoteTabs = map[string]*remoteTab{
-		"shell-1": {id: "shell-1", ref: RemoteTabRef{HostID: "box", Workspace: "~/app"}, state: "disconnected", newSession: true, hostLabel: "box", topicTitle: "app"},
+		"shell-1": {id: "shell-1", ref: RemoteTabRef{HostID: "box", Workspace: "~/app"}, state: "disconnected", session: remoteTabSessionState{newSession: true}, hostLabel: "box", topicTitle: "app"},
 	}
-	a.remoteTabOrder = []string{"shell-1"}
+	a.remoteTabLayout.order = []string{"shell-1"}
 	a.remoteTabMu.Unlock()
 
 	meta, err := a.OpenRemoteProjectTab("box", "~/app", RemoteTabOpenOptions{NewSession: true})
@@ -189,7 +225,7 @@ func TestReorderTabsMixedPersistsBothOrders(t *testing.T) {
 	seedLocalTab(a, "l2")
 	a.remoteTabMu.Lock()
 	a.remoteTabs = map[string]*remoteTab{"r1": {id: "r1", ref: RemoteTabRef{HostID: "box", Workspace: "~/app"}}}
-	a.remoteTabOrder = []string{"r1"}
+	a.remoteTabLayout.order = []string{"r1"}
 	a.remoteTabMu.Unlock()
 
 	if err := a.ReorderTabs([]string{"r1", "l2", "l1"}); err != nil {
@@ -205,6 +241,9 @@ func TestReorderTabsMixedPersistsBothOrders(t *testing.T) {
 	if len(f.RemoteTabOrder) != 1 || f.RemoteTabOrder[0] != "r1" {
 		t.Fatalf("persisted remote order = %v, want [r1]", f.RemoteTabOrder)
 	}
+	if got := strings.Join(f.TabOrder, ","); got != "r1,l2,l1" {
+		t.Fatalf("persisted mixed strip order = %q, want r1,l2,l1", got)
+	}
 
 	if err := a.ReorderTabs([]string{"l1", "l2", "ghost"}); err == nil {
 		t.Fatal("reorder accepted an unknown remote id")
@@ -217,9 +256,42 @@ func TestReorderTabsMixedPersistsBothOrders(t *testing.T) {
 	}
 }
 
-// TestSingleSurfaceTabsFileCollapsesRemote: workbench/creation layouts keep at
-// most one remote shell, preferring the active one, and keep the remote id as
-// ActiveTab so restore refocuses the shell.
+func TestReconcileTabStripOrderPreservesMixedOrderAndRepairsMembership(t *testing.T) {
+	got := reconcileTabStripOrder(
+		[]string{"remote-1", "gone", "local-2", "remote-1"},
+		[]string{"local-1", "local-2"},
+		[]string{"remote-1", "remote-2"},
+	)
+	if joined := strings.Join(got, ","); joined != "remote-1,local-2,local-1,remote-2" {
+		t.Fatalf("reconciled strip order = %q", joined)
+	}
+}
+
+func TestRemoteTabMetasMarksOnlySelectedTabActive(t *testing.T) {
+	a := &App{
+		remoteTabs: map[string]*remoteTab{
+			"remote-1": {id: "remote-1", ref: RemoteTabRef{HostID: "box", Workspace: "~/one"}},
+			"remote-2": {id: "remote-2", ref: RemoteTabRef{HostID: "box", Workspace: "~/two"}},
+		},
+		remoteTabLayout: remoteTabLayoutState{
+			order:      []string{"remote-1", "remote-2"},
+			activeID:   "remote-2",
+			stripOrder: []string{"remote-1", "local-1", "remote-2"},
+		},
+	}
+	metas, active, order := a.remoteTabMetas([]string{"local-1"})
+	if active != "remote-2" || strings.Join(order, ",") != "remote-1,local-1,remote-2" {
+		t.Fatalf("active/order = %q / %v", active, order)
+	}
+	for _, meta := range metas {
+		if meta.Active != (meta.ID == "remote-2") {
+			t.Fatalf("meta %s active = %v", meta.ID, meta.Active)
+		}
+	}
+}
+
+// TestSingleSurfaceTabsFileCollapsesRemote: workbench/creation layouts keep
+// exactly one surface across local and remote tabs, preferring the active one.
 func TestSingleSurfaceTabsFileCollapsesRemote(t *testing.T) {
 	f := desktopTabsFile{
 		Tabs:       []desktopTabEntry{{ID: "l1"}, {ID: "l2"}},
@@ -227,11 +299,23 @@ func TestSingleSurfaceTabsFileCollapsesRemote(t *testing.T) {
 		ActiveTab:  "r1",
 	}
 	out := singleSurfaceTabsFile(f)
-	if len(out.Tabs) != 1 || len(out.RemoteTabs) != 1 || out.RemoteTabs[0].ID != "r1" {
+	if len(out.Tabs) != 0 || len(out.RemoteTabs) != 1 || out.RemoteTabs[0].ID != "r1" {
 		t.Fatalf("single-surface collapse = %+v", out)
 	}
 	if out.ActiveTab != "r1" {
 		t.Fatalf("collapsed ActiveTab = %q, want the remote r1", out.ActiveTab)
+	}
+}
+
+func TestSingleSurfaceTabsFilePrefersActiveLocalOverRemote(t *testing.T) {
+	f := desktopTabsFile{
+		Tabs:       []desktopTabEntry{{ID: "l1"}, {ID: "l2"}},
+		RemoteTabs: []desktopRemoteTabEntry{{ID: "r1", HostID: "h", Workspace: "~/a"}},
+		ActiveTab:  "l2",
+	}
+	out := singleSurfaceTabsFile(f)
+	if len(out.Tabs) != 1 || out.Tabs[0].ID != "l2" || len(out.RemoteTabs) != 0 || out.ActiveTab != "l2" {
+		t.Fatalf("single-surface local collapse = %+v", out)
 	}
 }
 

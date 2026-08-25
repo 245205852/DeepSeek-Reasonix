@@ -2139,56 +2139,6 @@ type wireEventTab struct {
 
 // Tab management on App
 
-// TabMeta is the frontend-facing shape of one tab.
-type TabMeta struct {
-	ID               string        `json:"id"`
-	Scope            string        `json:"scope"`
-	WorkspaceRoot    string        `json:"workspaceRoot"`
-	WorkspaceName    string        `json:"workspaceName"`
-	WorkspacePath    string        `json:"workspacePath,omitempty"`
-	GitBranch        string        `json:"gitBranch,omitempty"`
-	IsolatedWorktree bool          `json:"isolatedWorktree,omitempty"`
-	Remote           *RemoteTabRef `json:"remote,omitempty"`
-	// RemoteState carries the remote tab's connection state in metas so a
-	// restored disconnected shell renders its state before any state event
-	// has been emitted this run (remote tabs only).
-	RemoteState       string             `json:"remoteState,omitempty"`
-	TopicID           string             `json:"topicId"`
-	TopicTitle        string             `json:"topicTitle"`
-	SessionPath       string             `json:"sessionPath,omitempty"`
-	SessionRevision   int64              `json:"sessionRevision,omitempty"`
-	SessionDigest     string             `json:"sessionDigest,omitempty"`
-	SessionGeneration uint64             `json:"sessionGeneration,omitempty"`
-	ReadOnly          bool               `json:"readOnly,omitempty"`
-	ProjectColor      string             `json:"projectColor,omitempty"`
-	Label             string             `json:"label"`
-	Ready             bool               `json:"ready"`
-	Runtime           SessionRuntimeView `json:"runtime"`
-	Running           bool               `json:"running"`
-	TurnStartedAt     int64              `json:"turnStartedAt,omitempty"`
-	PendingPrompt     bool               `json:"pendingPrompt,omitempty"`
-	RemoteControlled  bool               `json:"remoteControlled,omitempty"`
-	BackgroundJobs    int                `json:"backgroundJobs,omitempty"`
-	CancelRequested   bool               `json:"cancelRequested,omitempty"`
-	Cancellable       bool               `json:"cancellable"`
-	Mode              string             `json:"mode"`
-	CollaborationMode string             `json:"collaborationMode"`
-	ToolApprovalMode  string             `json:"toolApprovalMode"`
-	TokenMode         string             `json:"tokenMode"`
-	AgentPreset       string             `json:"agentPreset,omitempty"`
-	QualityFloor      string             `json:"qualityFloor,omitempty"`
-	FloorInferred     bool               `json:"floorInferred,omitempty"`
-	Goal              string             `json:"goal,omitempty"`
-	GoalStatus        string             `json:"goalStatus,omitempty"`
-	Recovered         bool               `json:"recovered,omitempty"`
-	RecoveryReason    string             `json:"recoveryReason,omitempty"`
-	RecoveryDigest    string             `json:"recoveryDigest,omitempty"`
-	RecoveryParentID  string             `json:"recoveryParentId,omitempty"`
-	StartupErr        string             `json:"startupErr,omitempty"`
-	Active            bool               `json:"active"`
-	Cwd               string             `json:"cwd"`
-}
-
 func enrichTabMeta(meta TabMeta) TabMeta {
 	if meta.Active {
 		meta.GitBranch = workspaceGitBranchForMeta(meta.WorkspaceRoot)
@@ -3073,14 +3023,12 @@ func (a *App) indexedBlankTopicIDLocked(scope, workspaceRoot string) string {
 	return ""
 }
 
-// SetActiveTab switches the frontend's active tab. A no-op when tabID is
-// already active or unknown. Activating a restored disconnected remote shell
-// also kicks its reconnect bootstrap — the shell lands in a fresh blank
-// session; the tree's session rows switch conversations.
+// SetActiveTab switches the frontend's active tab. Restored remote shells
+// reconnect only when activated.
 func (a *App) SetActiveTab(tabID string) error {
 	a.remoteTabMu.Lock()
 	if tab, isRemote := a.remoteTabs[tabID]; isRemote {
-		a.remoteActiveTabID = tabID
+		a.remoteTabLayout.activeID = tabID
 		revive := tab.state == "disconnected"
 		if revive {
 			tab.state = "connecting"
@@ -3091,9 +3039,9 @@ func (a *App) SetActiveTab(tabID string) error {
 			a.emitRemoteTabState(tabID, "connecting", "")
 			a.goSafe("remoteTabServe", func() { a.bootstrapRemoteTab(tabID, hostID, workspace) })
 		}
+		a.saveTabsFromRemote()
 		return nil
 	}
-	a.remoteActiveTabID = ""
 	a.remoteTabMu.Unlock()
 	a.mu.RLock()
 	_, ok := a.tabs[tabID]
@@ -3102,7 +3050,11 @@ func (a *App) SetActiveTab(tabID string) error {
 	if !ok {
 		return fmt.Errorf("tab %q not found", tabID)
 	}
+	a.remoteTabMu.Lock()
+	a.remoteTabLayout.activeID = ""
+	a.remoteTabMu.Unlock()
 	if alreadyActive {
+		a.saveTabsFromRemote()
 		return nil
 	}
 	a.mu.RLock()
@@ -3147,11 +3099,8 @@ func (a *App) SetActiveTab(tabID string) error {
 	return nil
 }
 
-// ReorderTabs persists the frontend's manual tab order. The submitted order is
-// the full strip — local and remote ids interleaved — so it is partitioned:
-// the local subsequence must cover a.tabs exactly once and rewrites tabOrder;
-// the remote subsequence must cover the remote registry exactly once and
-// rewrites the persisted remote order.
+// ReorderTabs persists the full local+remote strip while keeping each
+// registry's internal order independent.
 func (a *App) ReorderTabs(tabIDs []string) error {
 	a.remoteTabMu.Lock()
 	remoteCount := len(a.remoteTabs)
@@ -3180,9 +3129,6 @@ func (a *App) ReorderTabs(tabIDs []string) error {
 		a.mu.Unlock()
 		return fmt.Errorf("tab order is missing local tabs")
 	}
-	// Validate the remote subsequence BEFORE mutating anything: a rejected
-	// order leaves both sides untouched. Brief a.mu → remoteTabMu nesting
-	// matches the save path's lock order.
 	a.remoteTabMu.Lock()
 	remoteOK := len(nextRemote) == len(a.remoteTabs)
 	if remoteOK {
@@ -3198,12 +3144,12 @@ func (a *App) ReorderTabs(tabIDs []string) error {
 		a.mu.Unlock()
 		return fmt.Errorf("tab order is missing remote tabs")
 	}
-	a.remoteTabOrder = append([]string(nil), nextRemote...)
+	a.remoteTabLayout.order = append([]string(nil), nextRemote...)
+	a.remoteTabLayout.stripOrder = append([]string(nil), tabIDs...)
 	a.remoteTabMu.Unlock()
 	a.tabOrder = next
 	dir, entries, activeID, version := a.saveTabsCollectLocked()
 	a.mu.Unlock()
-
 	a.saveTabsWrite(dir, entries, activeID, version)
 	return nil
 }
@@ -4931,76 +4877,12 @@ type desktopTabEntry struct {
 	ToolApprovalMode string  `json:"toolApprovalMode,omitempty"`
 }
 
-// desktopRemoteTabEntry persists one open remote tab as a disconnected shell:
-// no session is recorded — clicking the restored shell reconnects and lands
-// in a fresh blank session, and the tree's session rows switch conversations.
-type desktopRemoteTabEntry struct {
-	ID         string `json:"id"`
-	HostID     string `json:"hostId"`
-	Workspace  string `json:"workspace"`
-	TopicTitle string `json:"topicTitle,omitempty"`
-	Model      string `json:"model,omitempty"`
-}
-
 type desktopTabsFile struct {
-	Tabs      []desktopTabEntry `json:"tabs"`
-	ActiveTab string            `json:"activeTab"`
-	// RemoteTabs persist alongside local tabs so both survive a restart. No
-	// remote tabs in use ⇒ the keys stay absent and the file is byte-identical
-	// to the pre-remote format.
+	Tabs           []desktopTabEntry       `json:"tabs"`
+	ActiveTab      string                  `json:"activeTab"`
 	RemoteTabs     []desktopRemoteTabEntry `json:"remoteTabs,omitempty"`
 	RemoteTabOrder []string                `json:"remoteTabOrder,omitempty"`
-}
-
-func singleSurfaceLayoutStyle(style string) bool {
-	switch strings.ToLower(strings.TrimSpace(style)) {
-	case "workbench", "creation":
-		return true
-	default:
-		return false
-	}
-}
-
-func singleSurfaceTabsFile(f desktopTabsFile) desktopTabsFile {
-	if len(f.Tabs) <= 1 && len(f.RemoteTabs) <= 1 {
-		return f
-	}
-	active := strings.TrimSpace(f.ActiveTab)
-	var out desktopTabsFile
-	if len(f.Tabs) > 0 {
-		chosen := f.Tabs[0]
-		if active != "" {
-			for _, entry := range f.Tabs {
-				if entry.ID == active {
-					chosen = entry
-					break
-				}
-			}
-		}
-		out = desktopTabsFile{Tabs: []desktopTabEntry{chosen}, ActiveTab: chosen.ID}
-	} else {
-		out = desktopTabsFile{ActiveTab: active}
-	}
-	// Remote shells collapse the same way: at most one survives, the active
-	// one when the last visible surface was remote (ActiveTab then stays the
-	// remote id — restore routes it to the remote registry).
-	if len(f.RemoteTabs) > 0 {
-		remoteChosen := f.RemoteTabs[0]
-		if active != "" {
-			for _, entry := range f.RemoteTabs {
-				if entry.ID == active {
-					remoteChosen = entry
-					break
-				}
-			}
-		}
-		out.RemoteTabs = []desktopRemoteTabEntry{remoteChosen}
-		out.RemoteTabOrder = []string{remoteChosen.ID}
-		if active == remoteChosen.ID {
-			out.ActiveTab = remoteChosen.ID
-		}
-	}
-	return out
+	TabOrder       []string                `json:"tabOrder,omitempty"`
 }
 
 func desktopConfigDir() string {
@@ -5045,9 +4927,7 @@ func (a *App) saveTabsCollectLocked() (string, []desktopTabEntry, string, uint64
 
 // saveTabsWrite writes the tab-snapshot to disk. It does not require a.mu, but
 // writes must be serialized because every save uses the same destination and
-// fixed .tmp path. Remote tab entries join the snapshot here (under
-// remoteTabMu — lock order a.mu → tabsSaveMu → remoteTabMu, so no remote-tab
-// critical section may call back into the save path while held).
+// fixed .tmp path.
 func (a *App) saveTabsWrite(dir string, entries []desktopTabEntry, activeID string, version uint64) {
 	a.tabsSaveMu.Lock()
 	defer a.tabsSaveMu.Unlock()
@@ -5058,11 +4938,15 @@ func (a *App) saveTabsWrite(dir string, entries []desktopTabEntry, activeID stri
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return
 	}
-	remoteEntries, remoteOrder, remoteActive := a.remoteTabsFileEntries()
+	localIDs := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		localIDs = append(localIDs, entry.ID)
+	}
+	remoteEntries, remoteOrder, tabOrder, remoteActive := a.remoteTabsFileEntries(localIDs)
 	if remoteActive != "" {
 		activeID = remoteActive
 	}
-	f := desktopTabsFile{Tabs: entries, ActiveTab: activeID, RemoteTabs: remoteEntries, RemoteTabOrder: remoteOrder}
+	f := desktopTabsFile{Tabs: entries, ActiveTab: activeID, RemoteTabs: remoteEntries, RemoteTabOrder: remoteOrder, TabOrder: tabOrder}
 	b, err := json.MarshalIndent(f, "", "  ")
 	if err != nil {
 		return
@@ -5076,16 +4960,6 @@ func (a *App) saveTabsWrite(dir string, entries []desktopTabEntry, activeID stri
 		return
 	}
 	a.tabsLastWrittenVersion = version
-}
-
-// saveTabsFromRemote persists the tab file after a remote-tab-only change
-// (open, close, title refresh). It must be called WITHOUT remoteTabMu held:
-// the collect phase takes a.mu and the write phase re-acquires remoteTabMu.
-func (a *App) saveTabsFromRemote() {
-	a.mu.Lock()
-	dir, entries, activeID, version := a.saveTabsCollectLocked()
-	a.mu.Unlock()
-	a.saveTabsWrite(dir, entries, activeID, version)
 }
 
 func (a *App) orderedTabIDsLocked() []string {
@@ -6570,32 +6444,32 @@ func loadTelemetry(path string) tabTelemetrySnapshot {
 // ProjectNode is one node in the sidebar project tree (a project folder or a
 // topic leaf).
 type ProjectNode struct {
-	Key                          string        `json:"key"`  // stable key for React
-	Kind                         string        `json:"kind"` // "project" | "topic" | "session" | "global_folder" | "global_topic" | "global_session"
-	Label                        string        `json:"label"`
-	Root                         string        `json:"root,omitempty"` // project workspace root
-	TopicID                      string        `json:"topicId,omitempty"`
-	SessionPath                  string        `json:"sessionPath,omitempty"`
-	Preview                      string        `json:"preview,omitempty"`
-	ProjectColor                 string        `json:"projectColor,omitempty"`
-	Turns                        int           `json:"turns,omitempty"`
-	TurnsState                   string        `json:"turnsState,omitempty"`
-	Health                       string        `json:"health,omitempty"`
-	CreatedAt                    int64         `json:"createdAt,omitempty"`
-	LastActivityAt               int64         `json:"lastActivityAt,omitempty"`
-	Open                         bool          `json:"open,omitempty"`
-	Running                      bool          `json:"running,omitempty"`
-	Status                       string        `json:"status,omitempty"`
-	Pinned                       bool          `json:"pinned,omitempty"`
-	SortOrder                    int           `json:"sortOrder"` // manual topic order index (0-based); -1 when unknown
-	Recovered                    bool          `json:"recovered,omitempty"`
-	RecoveryReason               string        `json:"recoveryReason,omitempty"`
-	RecoveryDigest               string        `json:"recoveryDigest,omitempty"`
-	RecoveryParentID             string        `json:"recoveryParentId,omitempty"`
-	RecoveryState                string        `json:"recoveryState,omitempty"`
-	RecoveryBranchCount          int           `json:"recoveryBranchCount,omitempty"`
-	RecoveryUnresolvedCount      int           `json:"recoveryUnresolvedCount,omitempty"`
-	RecoveryCleanupEligibleCount int           `json:"recoveryCleanupEligibleCount,omitempty"`
+	Key                          string `json:"key"`  // stable key for React
+	Kind                         string `json:"kind"` // "project" | "topic" | "session" | "global_folder" | "global_topic" | "global_session"
+	Label                        string `json:"label"`
+	Root                         string `json:"root,omitempty"` // project workspace root
+	TopicID                      string `json:"topicId,omitempty"`
+	SessionPath                  string `json:"sessionPath,omitempty"`
+	Preview                      string `json:"preview,omitempty"`
+	ProjectColor                 string `json:"projectColor,omitempty"`
+	Turns                        int    `json:"turns,omitempty"`
+	TurnsState                   string `json:"turnsState,omitempty"`
+	Health                       string `json:"health,omitempty"`
+	CreatedAt                    int64  `json:"createdAt,omitempty"`
+	LastActivityAt               int64  `json:"lastActivityAt,omitempty"`
+	Open                         bool   `json:"open,omitempty"`
+	Running                      bool   `json:"running,omitempty"`
+	Status                       string `json:"status,omitempty"`
+	Pinned                       bool   `json:"pinned,omitempty"`
+	SortOrder                    int    `json:"sortOrder"` // manual topic order index (0-based); -1 when unknown
+	Recovered                    bool   `json:"recovered,omitempty"`
+	RecoveryReason               string `json:"recoveryReason,omitempty"`
+	RecoveryDigest               string `json:"recoveryDigest,omitempty"`
+	RecoveryParentID             string `json:"recoveryParentId,omitempty"`
+	RecoveryState                string `json:"recoveryState,omitempty"`
+	RecoveryBranchCount          int    `json:"recoveryBranchCount,omitempty"`
+	RecoveryUnresolvedCount      int    `json:"recoveryUnresolvedCount,omitempty"`
+	RecoveryCleanupEligibleCount int    `json:"recoveryCleanupEligibleCount,omitempty"`
 	// RecoveryCopyCount is the number of recovery copies folded behind this
 	// logical row (covered or diverged). The ordinary tree renders it as a
 	// muted "恢复副本" count badge; History still owns the full copy list.
