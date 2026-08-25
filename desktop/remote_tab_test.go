@@ -140,13 +140,13 @@ func newFakeServe(t *testing.T, token string, sessions []serveSessionEntry) *fak
 		fs.record(r.Method, "/sessions", "")
 		fs.mu.Lock()
 		fail := fs.failSessions
-			started, release := fs.sessionsStarted, fs.sessionsRelease
-			fs.mu.Unlock()
-			if started != nil {
-				select {
-				case started <- struct{}{}:
-				default:
-				}
+		started, release := fs.sessionsStarted, fs.sessionsRelease
+		fs.mu.Unlock()
+		if started != nil {
+			select {
+			case started <- struct{}{}:
+			default:
+			}
 		}
 		if release != nil {
 			select {
