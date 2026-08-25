@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"maps"
 	"sort"
@@ -291,26 +290,6 @@ func (r *MCPCapabilityRuntime) enabledSpec(server string) (plugin.Spec, bool) {
 		return plugin.Spec{}, false
 	}
 	return cloneMCPSpec(configured.spec), true
-}
-
-// ServerEnabled is the exported form of serverEnabled. Hosts and regression
-// tests need to assert against the real dispatch gate rather than a proxy for
-// it, because a server can connect and list tools while still being refused.
-func (r *MCPCapabilityRuntime) ServerEnabled(server string) bool {
-	return r.serverEnabled(server)
-}
-
-// serverRegistered reports whether this runtime knows the server at all,
-// independent of whether it is enabled. The two states have different causes and
-// different fixes, so they must not share one message.
-func (r *MCPCapabilityRuntime) serverRegistered(server string) bool {
-	if r == nil {
-		return false
-	}
-	r.mu.RLock()
-	_, ok := r.servers[strings.TrimSpace(server)]
-	r.mu.RUnlock()
-	return ok
 }
 
 func (r *MCPCapabilityRuntime) serverEnabled(server string) bool {
@@ -1404,7 +1383,7 @@ func (t *UseCapabilityTool) lockAuthorizedRuntimeServer(ctx context.Context, ser
 	if t.runtime == nil {
 		spec, ok := t.specFor(server)
 		if !ok {
-			return plugin.Spec{}, func() {}, errors.New(mcpServerUnregisteredMessage(server))
+			return plugin.Spec{}, func() {}, mcpServerUnregisteredError(server)
 		}
 		spec = plugin.ResolveStoredAuthorization(ctx, spec)
 		if !spec.ServerAuthorized() {
@@ -1420,11 +1399,11 @@ func (t *UseCapabilityTool) lockAuthorizedRuntimeServer(ctx context.Context, ser
 	t.runtime.mu.RUnlock()
 	if !ok {
 		unlock()
-		return plugin.Spec{}, func() {}, errors.New(mcpServerUnregisteredMessage(server))
+		return plugin.Spec{}, func() {}, mcpServerUnregisteredError(server)
 	}
 	if !configured.enabled {
 		unlock()
-		return plugin.Spec{}, func() {}, errors.New(mcpServerDisabledMessage(server))
+		return plugin.Spec{}, func() {}, mcpServerDisabledError(server)
 	}
 	spec := plugin.ResolveStoredAuthorization(ctx, cloneMCPSpec(configured.spec))
 	if !spec.ServerAuthorized() {
@@ -1468,42 +1447,6 @@ func (t *UseCapabilityTool) serverEnabled(server string) bool {
 	// Standalone proxies predate the authoritative runtime and may resolve
 	// already-registered MCP tools without carrying a duplicate spec slice.
 	return true
-}
-
-// mcpServerUnregisteredMessage is the single wording for "this session has no
-// such MCP server". Both dispatch routes reach that state — the registry-resident
-// mcp__server__tool path through lockAuthorizedRuntimeServer, and use_capability
-// through serverEnabled — so they share one spelling rather than drifting into
-// "not configured" and "not registered" for one condition.
-func mcpServerUnregisteredMessage(server string) string {
-	return fmt.Sprintf("MCP server %q is not registered in this session", server)
-}
-
-// mcpServerDisabledMessage is the counterpart for a server this session knows
-// but the user turned off. Distinct from the above on purpose: the two have
-// different causes and different fixes.
-func mcpServerDisabledMessage(server string) string {
-	return fmt.Sprintf("MCP server %q is disabled in this session", server)
-}
-
-func (t *UseCapabilityTool) serverRegistered(server string) bool {
-	if t.runtime != nil {
-		return t.runtime.serverRegistered(server)
-	}
-	// Mirrors serverEnabled's standalone branch: without a runtime there is no
-	// registry to be absent from.
-	return true
-}
-
-// serverUnavailableReason explains why dispatch was refused. A server the
-// runtime never registered is not a server the user disabled, and saying
-// "disabled" for the first case sends people hunting for a toggle that does not
-// exist.
-func (t *UseCapabilityTool) serverUnavailableReason(server string) string {
-	if !t.serverRegistered(server) {
-		return mcpServerUnregisteredMessage(server)
-	}
-	return mcpServerDisabledMessage(server)
 }
 
 func (t *UseCapabilityTool) configuredServers() []mcpRuntimeServer {

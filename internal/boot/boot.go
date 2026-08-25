@@ -785,17 +785,6 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 		}
 		applyMCPIsolation(&extraSpecs[i], root, pluginSpecOptions)
 	}
-	// Host-session servers arrive through an explicit host action (ACP
-	// session/new mcpServers), so they are authoritative for use_capability
-	// dispatch exactly like an auto-started config plugin. Without this they
-	// connect and list their tools, but every mcp-tool:<server>/<tool> call is
-	// refused: enabledMCPNames is otherwise built only from config
-	// autoStartEntries, so a host-session name is never marked enabled.
-	for i := range extraSpecs {
-		if name := strings.TrimSpace(extraSpecs[i].Name); name != "" {
-			enabledMCPNames[name] = true
-		}
-	}
 	// Auto-demote: any eager plugin that has been chronically slow (recent
 	// samples repeatedly hit the blocking startup budget) drops to background
 	// for this session. The user keeps eager intent, just doesn't pay for it
@@ -1561,11 +1550,7 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 	// without inheriting dynamic mcp__* schemas.
 	var capLedger *capability.Ledger
 	var capAudit *capability.Audit
-	capEntries, capSpecs := mergeHostSessionCapabilitySpecs(
-		cfg.Plugins,
-		PluginSpecsForRootWithOptions(cfg.Plugins, root, pluginSpecOptions),
-		extraSpecs,
-	)
+	capEntries, capSpecs := capabilityServerInventory(cfg.Plugins, root, pluginSpecOptions, extraSpecs, enabledMCPNames)
 	cachedTools, cacheKeyOK := capability.LoadCachedToolsForSpecs(capSpecs)
 	skillStore.ConfigureToolBindings(func(sk skill.Skill) []tool.MCPBinding {
 		return skillMCPBindings(sk, reg, capSpecs, cachedTools, cacheKeyOK)
@@ -2097,53 +2082,6 @@ func applyUnifiedProviderToolSurface(reg *tool.Registry) {
 		}
 	}
 	reg.SetProviderVisibleTools(allow)
-}
-
-// mergeHostSessionCapabilitySpecs builds the inventory the capability runtime
-// dispatches against: the config servers, plus the host-session servers an ACP
-// client supplied through session/new.mcpServers.
-//
-// Host-session specs must be here at all — they already reach pluginHost through
-// eagerSpecs, so they connect and their tools appear in the catalog, but the
-// capability runtime is a separate registry seeded only from cfg.Plugins, and
-// use_capability resolves mcp-server:/mcp-tool: ids against that registry.
-//
-// On a name collision the host-session server wins, matching the choice the
-// registration tier already makes (see the extraNames filter before
-// registerEnabledMCP): the client asked for that endpoint in this session, and it
-// is the spec pluginHost connected and registered tools for. The shadowed config
-// spec and its entry are dropped explicitly rather than left to slice order plus
-// ConfigureServers' map-overwrite, so the rule is stated where it is decided.
-// Dropping the entry matters too: ConfigureServers pairs an entry with a spec by
-// name, so a surviving config entry would pair auto_start = false with the live
-// host-session spec and report one server as simultaneously not-auto-start and
-// not-disabled.
-func mergeHostSessionCapabilitySpecs(configEntries []config.PluginEntry, configSpecs, hostSession []plugin.Spec) ([]config.PluginEntry, []plugin.Spec) {
-	if len(hostSession) == 0 {
-		return configEntries, configSpecs
-	}
-	shadowed := make(map[string]bool, len(hostSession))
-	for _, spec := range hostSession {
-		if name := strings.TrimSpace(spec.Name); name != "" {
-			shadowed[name] = true
-		}
-	}
-	specs := make([]plugin.Spec, 0, len(configSpecs)+len(hostSession))
-	for _, spec := range configSpecs {
-		if shadowed[strings.TrimSpace(spec.Name)] {
-			continue
-		}
-		specs = append(specs, spec)
-	}
-	specs = append(specs, hostSession...)
-	entries := make([]config.PluginEntry, 0, len(configEntries))
-	for _, entry := range configEntries {
-		if shadowed[strings.TrimSpace(entry.Name)] {
-			continue
-		}
-		entries = append(entries, entry)
-	}
-	return entries, specs
 }
 
 // effectivePlannerModel centralizes planner precedence. Every role setting

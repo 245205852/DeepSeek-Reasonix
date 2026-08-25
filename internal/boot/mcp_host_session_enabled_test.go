@@ -3,19 +3,24 @@ package boot
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync/atomic"
 	"testing"
 
+	"reasonix/internal/agent/testutil"
 	"reasonix/internal/config"
 	"reasonix/internal/event"
 	"reasonix/internal/plugin"
+	"reasonix/internal/provider"
 )
 
 // mcpHostSessionStub is a minimal Streamable-HTTP MCP server: enough to complete
 // initialize + tools/list so the spec reaches pluginHost exactly as a real
 // host-session server would.
-func mcpHostSessionStub(t *testing.T, name string) *httptest.Server {
+func mcpHostSessionStub(t *testing.T, name string, calls *atomic.Int32) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
@@ -41,6 +46,14 @@ func mcpHostSessionStub(t *testing.T, name string) *httptest.Server {
 				"description": "probe tool",
 				"inputSchema": map[string]any{"type": "object"},
 			}}}
+		case "tools/call":
+			if calls != nil {
+				calls.Add(1)
+			}
+			result = map[string]any{"content": []map[string]any{{
+				"type": "text",
+				"text": "pong:" + name,
+			}}}
 		default:
 			http.Error(w, "unsupported method", http.StatusBadRequest)
 			return
@@ -48,6 +61,66 @@ func mcpHostSessionStub(t *testing.T, name string) *httptest.Server {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": *req.ID, "result": result})
 	}))
+}
+
+const mcpCapabilityTestProviderConfig = `
+default_model = "test-model"
+
+[agent]
+system_prompt = "BASE"
+
+[[providers]]
+name = "test-model"
+kind = "boot-token-profile-test"
+model = "x"
+`
+
+func runUseCapabilityCalls(t *testing.T, opts Options, capabilityIDs ...string) string {
+	t.Helper()
+	registerBootTokenProfileTestProvider()
+	turns := make([]testutil.Turn, 0, len(capabilityIDs)+1)
+	for i, id := range capabilityIDs {
+		args, err := json.Marshal(map[string]any{
+			"action":        "call",
+			"capability_id": id,
+			"arguments":     map[string]any{},
+		})
+		if err != nil {
+			t.Fatalf("marshal use_capability call: %v", err)
+		}
+		turns = append(turns, testutil.Turn{ToolCalls: []provider.ToolCall{{
+			ID:        fmt.Sprintf("mcp-%d", i),
+			Name:      "use_capability",
+			Arguments: string(args),
+		}}})
+	}
+	turns = append(turns, testutil.Turn{Text: "done"})
+	prov := testutil.NewMock("mcp-host-session", turns...)
+	setBootTokenProfileTestProvider(t, prov)
+
+	ctrl, err := Build(context.Background(), opts)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	defer ctrl.Close()
+	if err := ctrl.Run(context.Background(), "call the requested MCP capability"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	for _, req := range prov.Requests() {
+		for _, name := range toolSchemaNames(req.Tools) {
+			if strings.HasPrefix(name, "mcp__") {
+				t.Fatalf("dynamic MCP tool leaked into provider-visible schemas: %v", toolSchemaNames(req.Tools))
+			}
+		}
+	}
+
+	var out strings.Builder
+	for _, msg := range ctrl.History() {
+		if msg.Role == provider.RoleTool {
+			out.WriteString(msg.Content)
+		}
+	}
+	return out.String()
 }
 
 // A host-session MCP server (ACP session/new mcpServers) arrives as
@@ -59,12 +132,15 @@ func mcpHostSessionStub(t *testing.T, name string) *httptest.Server {
 // tool mid-turn.
 func TestBuildEnablesHostSessionMCPForCapabilityDispatch(t *testing.T) {
 	isolateConfigHome(t)
-	t.Chdir(robustTempDir(t))
+	dir := robustTempDir(t)
+	t.Chdir(dir)
+	writeFile(t, dir, "reasonix.toml", mcpCapabilityTestProviderConfig)
 
-	srv := mcpHostSessionStub(t, "acp-extra")
+	var calls atomic.Int32
+	srv := mcpHostSessionStub(t, "acp-extra", &calls)
 	defer srv.Close()
 
-	ctrl, err := Build(context.Background(), Options{
+	out := runUseCapabilityCalls(t, Options{
 		Sink: event.Discard,
 		ExtraPlugins: []plugin.Spec{{
 			Name:       "acp-extra",
@@ -72,15 +148,9 @@ func TestBuildEnablesHostSessionMCPForCapabilityDispatch(t *testing.T) {
 			URL:        srv.URL,
 			Authorized: true,
 		}},
-	})
-	if err != nil {
-		t.Fatalf("Build: %v", err)
-	}
-	defer ctrl.Close()
-
-	if !ctrl.CapabilityServerEnabled("acp-extra") {
-		t.Fatal("host-supplied MCP server is not dispatchable through use_capability; " +
-			"session/new mcpServers would connect and list tools but refuse every call")
+	}, "mcp-tool:acp-extra/ping")
+	if calls.Load() != 1 || !strings.Contains(out, "pong:acp-extra") {
+		t.Fatalf("host-session dispatch calls=%d output=%q, want one successful tools/call", calls.Load(), out)
 	}
 }
 
@@ -94,12 +164,14 @@ func TestBuildLeavesDisabledConfigMCPUndispatchableAlongsideHostSession(t *testi
 	dir := robustTempDir(t)
 	t.Chdir(dir)
 
-	cfgSrv := mcpHostSessionStub(t, "config-off")
+	var cfgCalls atomic.Int32
+	cfgSrv := mcpHostSessionStub(t, "config-off", &cfgCalls)
 	defer cfgSrv.Close()
-	extraSrv := mcpHostSessionStub(t, "acp-extra")
+	var extraCalls atomic.Int32
+	extraSrv := mcpHostSessionStub(t, "acp-extra", &extraCalls)
 	defer extraSrv.Close()
 
-	writeFile(t, dir, "reasonix.toml", `
+	writeFile(t, dir, "reasonix.toml", mcpCapabilityTestProviderConfig+`
 [[plugins]]
 name = "config-off"
 type = "http"
@@ -107,7 +179,7 @@ url = "`+cfgSrv.URL+`"
 auto_start = false
 `)
 
-	ctrl, err := Build(context.Background(), Options{
+	out := runUseCapabilityCalls(t, Options{
 		Sink: event.Discard,
 		ExtraPlugins: []plugin.Spec{{
 			Name:       "acp-extra",
@@ -115,18 +187,12 @@ auto_start = false
 			URL:        extraSrv.URL,
 			Authorized: true,
 		}},
-	})
-	if err != nil {
-		t.Fatalf("Build: %v", err)
+	}, "mcp-tool:acp-extra/ping", "mcp-tool:config-off/ping")
+	if extraCalls.Load() != 1 || !strings.Contains(out, "pong:acp-extra") {
+		t.Errorf("host-session dispatch calls=%d output=%q, want success", extraCalls.Load(), out)
 	}
-	defer ctrl.Close()
-
-	if !ctrl.CapabilityServerEnabled("acp-extra") {
-		t.Error("the host-session server should be dispatchable")
-	}
-	if ctrl.CapabilityServerEnabled("config-off") {
-		t.Error("a config server with auto_start = false must stay undispatchable; " +
-			"enabling host-session servers must not enable anything else")
+	if cfgCalls.Load() != 0 || !strings.Contains(out, `MCP server "config-off" is disabled in this session`) {
+		t.Errorf("disabled config dispatch calls=%d output=%q, want refusal without tools/call", cfgCalls.Load(), out)
 	}
 }
 
@@ -203,15 +269,12 @@ func TestMergeHostSessionCapabilitySpecsIsIdentityWithoutHostSession(t *testing.
 // satisfied by defaulting unknown servers to enabled.
 func TestBuildLeavesUnknownMCPServerUndispatchable(t *testing.T) {
 	isolateConfigHome(t)
-	t.Chdir(robustTempDir(t))
+	dir := robustTempDir(t)
+	t.Chdir(dir)
+	writeFile(t, dir, "reasonix.toml", mcpCapabilityTestProviderConfig)
 
-	ctrl, err := Build(context.Background(), Options{Sink: event.Discard})
-	if err != nil {
-		t.Fatalf("Build: %v", err)
-	}
-	defer ctrl.Close()
-
-	if ctrl.CapabilityServerEnabled("never-configured") {
-		t.Fatal("an unconfigured MCP server must not be dispatchable")
+	out := runUseCapabilityCalls(t, Options{Sink: event.Discard}, "mcp-tool:never-configured/ping")
+	if !strings.Contains(out, `MCP server "never-configured" is not registered in this session`) {
+		t.Fatalf("unknown server output=%q, want an unregistered refusal", out)
 	}
 }
