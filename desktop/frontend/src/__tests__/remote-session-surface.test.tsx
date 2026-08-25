@@ -62,19 +62,44 @@ Object.defineProperty(elementProto, "detachEvent", { configurable: true, value: 
 
 const tape: string[] = [];
 let failApproval = false;
+let failOpen = false;
 let resolveRaceSnapshot: ((value: { history: unknown[]; status: unknown }) => void) | undefined;
 window.go = { main: { App: {
   async RemoteTabSnapshot(tabId: string) {
     tape.push(`snapshot:${tabId}`);
+		if (tabId === "tab-pending-model") return new Promise(() => {});
 		if (tabId === "tab-race") return new Promise<{ history: unknown[]; status: unknown }>((resolve) => { resolveRaceSnapshot = resolve; });
 		if (tabId === "tab-replay") return {
-			history: [], status: { label: "Replay" },
+			history: [], status: { label: "Replay", plan: false, toolApprovalMode: "ask", goal: "" },
 			pendingEvents: [{ kind: "approval_request", approval: { id: "replayed-approval", tool: "bash", subject: "pending while inactive" } }],
 		};
-    return { history: [], status: { label: "DeepSeek · Mock" } };
+    if (tabId === "tab-status-fallback") return { history: [] };
+    return {
+      history: [],
+      checkpoints: [{
+        turn: 3,
+        prompt: "checkpoint",
+        files: ["src/main.ts"],
+        fileCount: 2,
+        time: 1,
+        canCode: true,
+        canConversation: true,
+      }],
+      status: {
+        label: "DeepSeek · Mock",
+        plan: true,
+        toolApprovalMode: "auto",
+        goal: "",
+        goalStatus: "stopped",
+        effort: { supported: true, current: "high", default: "auto", levels: ["auto", "high"] },
+      },
+    };
   },
 	async RemoteTabStatus(tabId: string) {
 		tape.push(`status:${tabId}`);
+		if (tabId === "tab-status-fallback") {
+			return { running: false, plan: true, toolApprovalMode: "yolo", goal: "" };
+		}
 		return { running: false, pendingPrompt: false, backgroundJobs: 0 };
 	},
   async SubmitRemoteTab(tabId: string, text: string) {
@@ -82,6 +107,27 @@ window.go = { main: { App: {
   },
   async CancelRemoteTab(tabId: string) {
     tape.push(`cancel:${tabId}`);
+  },
+  async RewindRemoteTab(tabId: string, checkpointId: string, scope: string) {
+    tape.push(`rewind:${tabId}:${checkpointId}:${scope}`);
+  },
+  async ForkRemoteTab(tabId: string, turn: number, name: string) {
+    tape.push(`fork:${tabId}:${turn}:${name}`);
+  },
+  async SummarizeRemoteTab(tabId: string, turn: number, mode: string) {
+    tape.push(`summarize:${tabId}:${turn}:${mode}`);
+  },
+  async SetRemoteTabEffort(tabId: string, level: string) {
+    tape.push(`effort:${tabId}:${level}`);
+  },
+  async PauseRemoteTabGoal(tabId: string) {
+    tape.push(`pause-goal:${tabId}`);
+  },
+  async ResumeRemoteTabGoal(tabId: string) {
+    tape.push(`resume-goal:${tabId}`);
+  },
+  async SteerRemoteTab(tabId: string, input: string) {
+    tape.push(`steer:${tabId}:${input}`);
   },
   async ApproveRemoteTab(tabId: string, callId: string, decision: string) {
     tape.push(`approve:${tabId}:${callId}:${decision}`);
@@ -92,6 +138,7 @@ window.go = { main: { App: {
   },
   async OpenRemoteProjectTab(hostId: string, workspace: string, opts?: { newSession?: boolean }) {
     tape.push(`open:${hostId}:${workspace}:${opts?.newSession ? "new" : ""}`);
+    if (failOpen) throw new Error("reconnect failed");
     return { ...remoteTab, remote: { hostId, workspace } };
   },
 } as Partial<AppBindings> as AppBindings } };
@@ -206,7 +253,7 @@ await act(async () => {
   await flush();
 });
 {
-  const dialog = document.querySelector(".remote-surface__ask");
+  const dialog = document.querySelector(".prompt-shelf--ask");
   ok(Boolean(dialog), "ask card renders");
   ok(dialog?.textContent?.includes("Deploy now?") === true, "ask prompt renders");
 	await act(async () => {
@@ -222,6 +269,29 @@ await act(async () => {
 }
 
 await act(async () => {
+  __emitMockRemoteTab("tab-remote-1", "event", { kind: "ask_request", ask: { id: "ask-custom", questions: [{ id: "q-custom", prompt: "Where?", options: [{ label: "staging" }] }] } });
+  await flush();
+});
+await act(async () => {
+  [...document.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent?.trim() === "Other answer")?.click();
+  await flush();
+});
+await act(async () => {
+  const input = document.querySelector<HTMLInputElement>(".ask-shelf__custom");
+  if (input) {
+    Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, "value")?.set?.call(input, "canary");
+    input.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+  }
+  await flush();
+});
+await act(async () => {
+  [...document.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent?.trim() === "Submit")?.click();
+  await flush();
+});
+ok(tape.includes('answer:tab-remote-1:ask-custom:[{"QuestionID":"q-custom","Selected":["canary"]}]'),
+  "custom AskCard text serializes as the remote question selection");
+
+await act(async () => {
   __emitMockRemoteTab("tab-remote-1", "state", { state: "serve_down", error: "tunnel closed" });
   await flush();
 });
@@ -234,6 +304,13 @@ await act(async () => {
     await flush();
   });
   ok(tape.includes("open:gpu-box:~/app:"), "serve_down retry preserves the backend's parked session target");
+  failOpen = true;
+  await act(async () => {
+    warning?.querySelector<HTMLButtonElement>("button")?.click();
+    await flush();
+  });
+  ok(warning?.textContent?.includes("reconnect failed") === true, "serve_down retry failures render on the surface");
+  failOpen = false;
 }
 
 // ── Restored shell: the disconnected state renders a reconnect affordance
@@ -258,8 +335,8 @@ await act(async () => root.unmount());
 
 // ── Hook: optimistic user bubble + command forwarding ──
 let probe: RemoteSessionApi | undefined;
-function HookProbe() {
-  probe = useRemoteSession("tab-remote-2");
+function HookProbe({ tabId = "tab-remote-2" }: { tabId?: string }) {
+  probe = useRemoteSession(tabId);
   return null;
 }
 const probeRoot = createRoot(document.createElement("div"));
@@ -272,6 +349,11 @@ await act(async () => {
 });
 await act(async () => flush());
 ok(probe?.state === "connecting" || probe?.state === "ready", "hook exposes the tab state");
+ok(probe?.composerProfile?.collaborationMode === "plan" && probe?.composerProfile?.toolApprovalMode === "auto",
+  "snapshot status hydrates the authoritative remote composer profile");
+ok(probe?.effort?.current === "high" && probe?.transcript.checkpoints[0]?.turn === 3
+  && probe?.transcript.checkpoints[0]?.fileCount === 2 && probe?.transcript.checkpoints[0]?.files.length === 1,
+  "snapshot status hydrates effort and rewind checkpoints");
 await act(async () => {
   await probe?.submit("run tests");
   await flush();
@@ -280,7 +362,15 @@ ok(Boolean(probe?.transcript.items.some((item) => item.kind === "user" && item.t
 await act(async () => {
   await probe?.cancelTurn();
   await probe?.approve("call-1", "allow");
-	await probe?.answer("ask-1", [{ QuestionID: "q1", Selected: ["yes"] }]);
+  await probe?.answer("ask-1", [{ QuestionID: "q1", Selected: ["yes"] }]);
+  await probe?.rewind(3, "code");
+  await probe?.rewind(3, "fork");
+  await probe?.rewind(3, "summ-from");
+  await probe?.rewind(3, "summ-upto");
+  await probe?.setEffort("high");
+  await probe?.pauseGoal();
+  await probe?.resumeGoal();
+  await probe?.steer("narrow the change");
   await flush();
 });
 for (const want of [
@@ -288,11 +378,41 @@ for (const want of [
   "cancel:tab-remote-2",
   "approve:tab-remote-2:call-1:allow",
 	'answer:tab-remote-2:ask-1:[{"QuestionID":"q1","Selected":["yes"]}]',
+  "rewind:tab-remote-2:3:code",
+  "fork:tab-remote-2:3:",
+  "summarize:tab-remote-2:3:from",
+  "summarize:tab-remote-2:3:upto",
+  "effort:tab-remote-2:high",
+  "pause-goal:tab-remote-2",
+  "resume-goal:tab-remote-2",
+  "steer:tab-remote-2:narrow the change",
 ]) {
   ok(tape.includes(want), `command forwarded: ${want}`);
 }
 
+await act(async () => {
+  probeRoot.render(<LocaleProvider><HookProbe tabId="tab-pending-model" /></LocaleProvider>);
+  await Promise.resolve();
+});
+ok(probe?.modelLabel === "", "switching remote tabs clears the previous model label before hydration");
+
 await act(async () => probeRoot.unmount());
+
+let fallbackProbe: RemoteSessionApi | undefined;
+function FallbackProbe() {
+  fallbackProbe = useRemoteSession("tab-status-fallback");
+  return null;
+}
+const fallbackRoot = createRoot(document.createElement("div"));
+await act(async () => {
+  fallbackRoot.render(<LocaleProvider><FallbackProbe /></LocaleProvider>);
+  await flush();
+});
+ok(fallbackProbe?.hydrated === true && fallbackProbe.composerProfile?.collaborationMode === "plan"
+  && fallbackProbe.composerProfile.toolApprovalMode === "yolo"
+  && tape.includes("status:tab-status-fallback"),
+  "missing aggregate status is fetched before the remote composer becomes ready");
+await act(async () => fallbackRoot.unmount());
 
 // ── Hydration fence: an SSE event delivered while the snapshot is in flight
 // is replayed after history instead of being overwritten by it. ──
@@ -309,7 +429,10 @@ await act(async () => {
 await act(async () => {
 	__emitMockRemoteTab("tab-race", "event", { kind: "turn_started" });
 	__emitMockRemoteTab("tab-race", "event", { kind: "text", text: "arrived during hydration" });
-	resolveRaceSnapshot?.({ history: [], status: { running: true, label: "Race" } });
+	resolveRaceSnapshot?.({
+		history: [],
+		status: { running: true, label: "Race", plan: false, toolApprovalMode: "ask", goal: "" },
+	});
 	await flush();
 });
 ok(raceProbe?.transcript.live.text === "arrived during hydration", "hydration replays concurrently delivered remote events");

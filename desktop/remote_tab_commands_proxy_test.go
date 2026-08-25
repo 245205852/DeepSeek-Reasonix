@@ -31,10 +31,14 @@ func TestRemoteTabCommandsForwardedToServe(t *testing.T) {
 		{"answer", func() error {
 			return a.AnswerRemoteTab(meta.ID, "ask-1", []RemoteAskAnswer{{QuestionID: "question-1", Selected: []string{"yes"}}})
 		}, `POST /answer {"answers":[{"QuestionID":"question-1","Selected":["yes"]}],"id":"ask-1"}`},
-		{"rewind", func() error { return a.RewindRemoteTab(meta.ID, "3") }, `POST /rewind {"scope":"both","turn":3}`},
+		{"rewind", func() error { return a.RewindRemoteTab(meta.ID, "3", "code") }, `POST /rewind {"scope":"code","turn":3}`},
 		{"approval-mode", func() error { return a.SetRemoteTabToolApprovalMode(meta.ID, "auto") }, `POST /tool-approval-mode {"mode":"auto"}`},
 		{"goal", func() error { return a.SetRemoteTabGoal(meta.ID, "ship it") }, `POST /goal {"goal":"ship it"}`},
 		{"effort", func() error { return a.SetRemoteTabEffort(meta.ID, "high") }, `POST /effort {"level":"high"}`},
+		{"pause-goal", func() error { return a.PauseRemoteTabGoal(meta.ID) }, "POST /goal/pause {}"},
+		{"resume-goal", func() error { return a.ResumeRemoteTabGoal(meta.ID) }, "POST /goal/resume {}"},
+		{"cancel-jobs", func() error { return a.CancelRemoteTabJobs(meta.ID, []string{"job-1"}) }, `POST /jobs/cancel {"ids":["job-1"]}`},
+		{"steer", func() error { return a.SteerRemoteTab(meta.ID, "keep it narrow") }, `POST /inbox/items {"input":"keep it narrow","intent":"steer"}`},
 		{"plan-on", func() error { return a.SetRemoteTabPlanMode(meta.ID, true) }, `POST /plan {"on":true}`},
 		{"compact", func() error { return a.CompactRemoteTab(meta.ID) }, "POST /compact {}"},
 		{"fork", func() error { return a.ForkRemoteTab(meta.ID, 2, "try-auth") }, `POST /fork {"name":"try-auth","turn":2}`},

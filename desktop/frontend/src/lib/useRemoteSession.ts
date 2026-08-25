@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { app, onRemoteTabEvent, onRemoteTabState } from "./bridge";
 import type { CancelOutcome } from "./inboxCancel";
 import { initialState, reducer, type State } from "./useController";
-import type { HistoryMessage, RemoteTabStateValue, TabMeta, WireEvent } from "./types";
+import type { CheckpointMeta, CollaborationMode, EffortInfo, GoalStatus, HistoryMessage, RemoteTabStateValue, TabMeta, ToolApprovalMode, WireEvent } from "./types";
 import type { RemoteAskAnswer } from "./remoteTypes";
 
 // The remote session reuses the local transcript pipeline end to end: serve
@@ -37,6 +37,13 @@ export interface RemoteSessionApi {
   running: boolean;
   /** The serve's label for the active model, for the composer capsule. */
   modelLabel: string;
+  composerProfile?: {
+    collaborationMode: CollaborationMode;
+    toolApprovalMode: ToolApprovalMode;
+    goal: string;
+    goalStatus?: GoalStatus;
+  };
+  effort?: EffortInfo;
   /** Changes whenever the tab adopts a new/reconnected Serve session snapshot. */
   surfaceGeneration: number;
   promptError: string;
@@ -44,6 +51,92 @@ export interface RemoteSessionApi {
   cancelTurn: () => Promise<void>;
   approve: (callId: string, decision: string) => Promise<void>;
   answer: (callId: string, answers: RemoteAskAnswer[]) => Promise<void>;
+  rewind: (turn: number, scope: string) => Promise<void>;
+  setEffort: (level: string) => Promise<void>;
+  pauseGoal: () => Promise<void>;
+  resumeGoal: () => Promise<void>;
+  steer: (input: string) => Promise<void>;
+}
+
+type RemoteStatus = {
+  label?: unknown;
+  plan?: unknown;
+  toolApprovalMode?: unknown;
+  goal?: unknown;
+  goalStatus?: unknown;
+  effort?: unknown;
+};
+
+function isAuthoritativeRemoteStatus(status: unknown): status is RemoteStatus {
+  if (!status || typeof status !== "object" || Array.isArray(status)) return false;
+  const raw = status as RemoteStatus;
+  return typeof raw.plan === "boolean"
+    && (raw.toolApprovalMode === "ask" || raw.toolApprovalMode === "auto" || raw.toolApprovalMode === "yolo")
+    && typeof raw.goal === "string";
+}
+
+function remoteComposerState(status: unknown) {
+  const raw = (status ?? null) as RemoteStatus | null;
+  const goal = typeof raw?.goal === "string" ? raw.goal.trim() : "";
+  const toolApprovalMode: ToolApprovalMode = raw?.toolApprovalMode === "auto" || raw?.toolApprovalMode === "yolo"
+    ? raw.toolApprovalMode
+    : "ask";
+  const rawGoalStatus = raw?.goalStatus;
+  const goalStatus: GoalStatus | undefined = rawGoalStatus === "running" || rawGoalStatus === "complete"
+    || rawGoalStatus === "blocked" || rawGoalStatus === "stopped" ? rawGoalStatus : undefined;
+  const effort = raw?.effort as Partial<EffortInfo> | undefined;
+  return {
+    modelLabel: typeof raw?.label === "string" ? raw.label : "",
+    composerProfile: {
+      collaborationMode: goal ? "goal" as const : raw?.plan === true ? "plan" as const : "normal" as const,
+      toolApprovalMode,
+      goal,
+      goalStatus,
+    },
+    effort: effort && typeof effort.supported === "boolean"
+      ? {
+          supported: effort.supported,
+          current: typeof effort.current === "string" ? effort.current : "auto",
+          default: typeof effort.default === "string" ? effort.default : "",
+          levels: Array.isArray(effort.levels) ? effort.levels.filter((level): level is string => typeof level === "string") : [],
+        }
+      : undefined,
+  };
+}
+
+function remoteCheckpoints(value: unknown): CheckpointMeta[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((entry) => {
+    const raw = (entry ?? null) as Record<string, unknown> | null;
+    if (!raw || typeof raw.turn !== "number" || !Number.isFinite(raw.turn)) return [];
+    const files = Array.isArray(raw.files)
+      ? raw.files.filter((path): path is string => typeof path === "string")
+      : [];
+    const numericFileCount = typeof raw.files === "number" ? raw.files : raw.fileCount;
+    const fileCount = typeof numericFileCount === "number" && Number.isFinite(numericFileCount)
+      ? Math.max(0, numericFileCount)
+      : files.length;
+    return [{
+      turn: raw.turn,
+      prompt: typeof raw.prompt === "string" ? raw.prompt : "",
+      files,
+      fileCount,
+      filesTruncated: raw.filesTruncated === true,
+      turnFileCount: typeof raw.turnFileCount === "number" ? raw.turnFileCount : undefined,
+      time: typeof raw.time === "number" ? raw.time : 0,
+      canCode: raw.canCode === true,
+      canConversation: raw.canConversation === true,
+      coverage: typeof raw.coverage === "string" ? raw.coverage : undefined,
+      coverageGaps: Array.isArray(raw.coverageGaps)
+        ? raw.coverageGaps.filter((gap): gap is string => typeof gap === "string")
+        : undefined,
+      expiredFilePayload: raw.expiredFilePayload === true,
+      activeWriters: typeof raw.activeWriters === "number" ? raw.activeWriters : undefined,
+      legacy: raw.legacy === true,
+      canUndoFiles: raw.canUndoFiles === true,
+      disabledReason: typeof raw.disabledReason === "string" ? raw.disabledReason : undefined,
+    }];
+  });
 }
 
 export function useRemoteComposer(
@@ -75,7 +168,7 @@ export function useActiveRemoteSession(
   const active = Boolean(activeTab?.remote);
   const session = useRemoteSession(active && activeTab ? activeTab.id : undefined, activeTab?.remoteState);
   const composer = useRemoteComposer(session, showToast);
-  return { active, session, ready: active && session.state === "ready", ...composer };
+  return { active, session, ready: active && session.state === "ready" && session.hydrated && Boolean(session.composerProfile), ...composer };
 }
 
 export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabStateValue): RemoteSessionApi {
@@ -83,12 +176,23 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
   const [error, setError] = useState("");
   const [transcript, setTranscript] = useState<State>(initialState);
   const [modelLabel, setModelLabel] = useState("");
+  const [composerProfile, setComposerProfile] = useState<RemoteSessionApi["composerProfile"]>();
+  const [effort, setEffortInfo] = useState<EffortInfo>();
   const [surfaceGeneration, setSurfaceGeneration] = useState(0);
   const [promptError, setPromptError] = useState("");
   const [hydrated, setHydrated] = useState(false);
   const hydratedRef = useRef(false);
   const hydratingRef = useRef(false);
   const bufferedEventsRef = useRef<WireEvent[]>([]);
+  const hydrateRef = useRef<((force?: boolean) => Promise<void>) | null>(null);
+
+  const applyRemoteStatus = useCallback((status: unknown) => {
+    if (!isAuthoritativeRemoteStatus(status)) return;
+    const next = remoteComposerState(status);
+    setModelLabel(next.modelLabel);
+    setComposerProfile(next.composerProfile);
+    setEffortInfo(next.effort);
+  }, []);
 
   useEffect(() => {
     if (!tabId) return;
@@ -99,6 +203,9 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
     setError("");
     setPromptError("");
     setTranscript(initialState);
+    setModelLabel("");
+    setComposerProfile(undefined);
+    setEffortInfo(undefined);
     hydratedRef.current = false;
     hydratingRef.current = false;
     bufferedEventsRef.current = [];
@@ -130,11 +237,18 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
             const snap = await app.RemoteTabSnapshot(tabId);
             if (cancelled) return;
             const messages = Array.isArray(snap.history) ? (snap.history as HistoryMessage[]) : [];
+            // /status is optional in the aggregate snapshot for non-composer
+            // consumers, but the remote composer must not submit with guessed
+            // plan/approval/goal settings. Fetch it explicitly if the optional
+            // member missed; a failure keeps hydration in the retry loop.
+            const status = snap.status ?? await app.RemoteTabStatus(tabId);
+            if (cancelled) return;
+            if (!isAuthoritativeRemoteStatus(status)) throw new Error("remote status is incomplete");
             hydratedRef.current = true;
             setHydrated(true);
             setSurfaceGeneration((generation) => generation + 1);
-            const status = (snap.status ?? null) as { label?: unknown } | null;
-            setModelLabel(typeof status?.label === "string" ? status.label : "");
+            applyRemoteStatus(status);
+            const checkpoints = remoteCheckpoints(snap.checkpoints);
             const replay = [
               ...(Array.isArray(snap.pendingEvents) ? snap.pendingEvents : []),
               ...bufferedEventsRef.current,
@@ -143,10 +257,11 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
             hydratingRef.current = false;
             setTranscript((s) => {
               let next = reducer(s, { type: "history", messages });
+              next = reducer(next, { type: "checkpoints", checkpoints });
               // Hydrate doubles as the post-reconnect running reconciliation:
               // whatever the serve reports about its current state lands now,
               // not only after the next watchdog tick.
-              next = reducer(next, remoteStatusToAction(snap.status, Date.now()));
+              next = reducer(next, remoteStatusToAction(status, Date.now()));
               const seenPrompts = new Set<string>();
               for (const event of replay) {
                 const promptId = event.kind === "approval_request"
@@ -181,6 +296,7 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
         hydratePromise = null;
       }
     };
+    hydrateRef.current = hydrate;
     if (!skipHydrate) void hydrateLoop();
 
     const offState = onRemoteTabState(tabId, (s) => {
@@ -209,10 +325,11 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
       cancelled = true;
       hydratingRef.current = false;
       bufferedEventsRef.current = [];
+      if (hydrateRef.current === hydrate) hydrateRef.current = null;
       offState();
       offEvent();
     };
-  }, [tabId]);
+  }, [applyRemoteStatus, tabId]);
 
   // Running-state watchdog: while the pill claims a turn is running, poll the
   // serve's /status and feed it through the shared backend_status reducer.
@@ -226,6 +343,7 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
       try {
         const status = await app.RemoteTabStatus(tabId);
         if (cancelled) return;
+        applyRemoteStatus(status);
         setTranscript((s) => reducer(s, remoteStatusToAction(status, Date.now())));
       } catch {
         // Transient; the next tick retries.
@@ -236,7 +354,7 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [tabId, hydrated, state, transcript.running]);
+  }, [applyRemoteStatus, tabId, hydrated, state, transcript.running]);
 
   const submit = useCallback(async (text: string) => {
     if (!tabId) return;
@@ -286,5 +404,65 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
     }
   }, [tabId]);
 
-  return { state, error, transcript, hydrated, running: transcript.running, modelLabel, surfaceGeneration, promptError, submit, cancelTurn, approve, answer };
+  const refreshSnapshot = useCallback(async () => {
+    await hydrateRef.current?.(true);
+  }, []);
+
+  const rewind = useCallback(async (turn: number, scope: string) => {
+    if (!tabId) return;
+    setPromptError("");
+    try {
+      switch (scope) {
+        case "fork":
+          await app.ForkRemoteTab(tabId, turn, "");
+          break;
+        case "summ-from":
+          await app.SummarizeRemoteTab(tabId, turn, "from");
+          break;
+        case "summ-upto":
+          await app.SummarizeRemoteTab(tabId, turn, "upto");
+          break;
+        case "code":
+        case "conversation":
+        case "both":
+          await app.RewindRemoteTab(tabId, String(turn), scope);
+          break;
+        default:
+          throw new Error(`Unsupported remote rewind scope: ${scope}`);
+      }
+      await refreshSnapshot();
+    } catch (error) {
+      setPromptError(error instanceof Error ? error.message : String(error));
+      throw error;
+    }
+  }, [refreshSnapshot, tabId]);
+
+  const setEffort = useCallback(async (level: string) => {
+    if (!tabId) return;
+    await app.SetRemoteTabEffort(tabId, level);
+    await refreshSnapshot();
+  }, [refreshSnapshot, tabId]);
+
+  const pauseGoal = useCallback(async () => {
+    if (!tabId) return;
+    await app.PauseRemoteTabGoal(tabId);
+    await refreshSnapshot();
+  }, [refreshSnapshot, tabId]);
+
+  const resumeGoal = useCallback(async () => {
+    if (!tabId) return;
+    await app.ResumeRemoteTabGoal(tabId);
+    await refreshSnapshot();
+  }, [refreshSnapshot, tabId]);
+
+  const steer = useCallback(async (input: string) => {
+    if (!tabId) return;
+    await app.SteerRemoteTab(tabId, input);
+  }, [tabId]);
+
+  return {
+    state, error, transcript, hydrated, running: transcript.running, modelLabel,
+    composerProfile, effort, surfaceGeneration, promptError, submit, cancelTurn,
+    approve, answer, rewind, setEffort, pauseGoal, resumeGoal, steer,
+  };
 }

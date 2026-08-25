@@ -1,13 +1,13 @@
 import { CloudOff, Loader2, RotateCw, TriangleAlert } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { useT } from "../lib/i18n";
 import { app } from "../lib/bridge";
 import { Transcript } from "./Transcript";
+import { AskCard } from "./AskCard";
 import type { RemoteSessionApi } from "../lib/useRemoteSession";
-import type { TabMeta } from "../lib/types";
+import type { TabMeta, WireAsk } from "../lib/types";
 
 type RemoteApproval = { id?: string; tool?: string; subject?: string };
-type RemoteAskQuestion = { id?: string; prompt?: string; multi?: boolean; options?: Array<{ label?: string; description?: string }> };
 
 /**
  * RemoteSessionSurface renders the active remote tab's content area with
@@ -20,29 +20,27 @@ type RemoteAskQuestion = { id?: string; prompt?: string; multi?: boolean; option
 export function RemoteSessionSurface({ tab, session }: { tab: TabMeta; session: RemoteSessionApi }) {
   const t = useT();
   const approval = session.transcript.approval as RemoteApproval | undefined;
-  const ask = session.transcript.ask as { id?: string; questions?: RemoteAskQuestion[] } | undefined;
-  const [askSelections, setAskSelections] = useState<Record<string, string[]>>({});
-  useEffect(() => setAskSelections({}), [ask?.id]);
-  const askAnswers = useMemo(() => (ask?.questions ?? []).flatMap((question) => {
-    const questionId = question.id?.trim() ?? "";
-    return questionId ? [{ QuestionID: questionId, Selected: askSelections[questionId] ?? [] }] : [];
-  }), [ask?.questions, askSelections]);
-  const askComplete = Boolean(ask?.id && ask?.questions?.length)
-    && askAnswers.length === ask?.questions?.length
-    && askAnswers.every((answer) => answer.Selected.length > 0);
+  const ask = session.transcript.ask as WireAsk | undefined;
+  const [actionError, setActionError] = useState("");
+  useEffect(() => setActionError(""), [session.state, tab.id]);
+  const runAction = (action: () => Promise<unknown>) => {
+    setActionError("");
+    void action().catch((error) => setActionError(error instanceof Error ? error.message : String(error)));
+  };
   if (!tab.remote) return null;
 
   if (session.state === "disconnected") {
     // A restored shell: reconnect lands in a fresh blank session; past
     // conversations are picked from the tree group's session rows.
     const reconnect = () => {
-      void app.OpenRemoteProjectTab(tab.remote!.hostId, tab.remote!.workspace, { newSession: true }).catch(() => undefined);
+      runAction(() => app.OpenRemoteProjectTab(tab.remote!.hostId, tab.remote!.workspace, { newSession: true }));
     };
     return (
       <div className="remote-surface remote-surface--disconnected" role="status">
         <CloudOff size={18} aria-hidden="true" />
         <span>{t("remoteSurface.disconnected")}</span>
         <span className="remote-surface__detail">{t("remoteSurface.disconnectedHint")}</span>
+        {actionError ? <span className="remote-surface__detail" role="alert">{actionError}</span> : null}
         <button type="button" className="btn btn--ghost" onClick={reconnect}>
           <RotateCw size={14} aria-hidden="true" />
           {t("remoteSurface.reconnect")}
@@ -55,13 +53,13 @@ export function RemoteSessionSurface({ tab, session }: { tab: TabMeta; session: 
     const retry = () => {
       // With no explicit target, the backend preserves the parked tab's
       // current named/fresh-session intent instead of silently starting over.
-      void app.OpenRemoteProjectTab(tab.remote!.hostId, tab.remote!.workspace, {}).catch(() => undefined);
+      runAction(() => app.OpenRemoteProjectTab(tab.remote!.hostId, tab.remote!.workspace, {}));
     };
     return (
       <div className="remote-surface remote-surface--warning" role="alert">
         <TriangleAlert size={18} aria-hidden="true" />
         <span>{t("remoteSurface.serveDown")}</span>
-        {session.error ? <span className="remote-surface__detail">{session.error}</span> : null}
+        {actionError || session.error ? <span className="remote-surface__detail">{actionError || session.error}</span> : null}
         <button type="button" className="btn btn--ghost" onClick={retry}>
           <RotateCw size={14} aria-hidden="true" />
           {t("remoteSurface.reconnect")}
@@ -98,8 +96,9 @@ export function RemoteSessionSurface({ tab, session }: { tab: TabMeta; session: 
         revealSignal={session.surfaceGeneration}
         running={session.transcript.running}
         checkpoints={session.transcript.checkpoints}
-        onPrompt={(prompt) => { void session.submit(prompt).catch(() => undefined); }}
-        rewindDisabled
+        onPrompt={(prompt) => runAction(() => session.submit(prompt))}
+        onRewind={(turn, scope) => runAction(() => session.rewind(turn, scope))}
+        rewindDisabled={session.running || !session.hydrated}
       />
 
       {approval ? (
@@ -110,10 +109,10 @@ export function RemoteSessionSurface({ tab, session }: { tab: TabMeta; session: 
           </div>
           {approval.subject ? <pre className="remote-surface__approval-body">{approval.subject}</pre> : null}
           <div className="remote-surface__approval-actions">
-            <button type="button" className="btn btn--small" onClick={() => void session.approve(approval.id ?? "", "deny").catch(() => undefined)}>
+            <button type="button" className="btn btn--small" onClick={() => runAction(() => session.approve(approval.id ?? "", "deny"))}>
               {t("remoteSurface.deny")}
             </button>
-            <button type="button" className="btn btn--small btn--primary" onClick={() => void session.approve(approval.id ?? "", "allow").catch(() => undefined)}>
+            <button type="button" className="btn btn--small btn--primary" onClick={() => runAction(() => session.approve(approval.id ?? "", "allow"))}>
               {t("remoteSurface.allow")}
             </button>
           </div>
@@ -121,52 +120,19 @@ export function RemoteSessionSurface({ tab, session }: { tab: TabMeta; session: 
       ) : null}
 
       {ask?.questions?.length ? (
-        <div className="remote-surface__ask" role="alertdialog" aria-label={t("remoteSurface.askTitle")}>
-          {ask.questions.map((question, questionIndex) => {
-            const questionId = question.id ?? "";
-            const selected = askSelections[questionId] ?? [];
-            return (
-              <div key={questionId || questionIndex} className="remote-surface__ask-question">
-                <div className="remote-surface__ask-prompt">{question.prompt}</div>
-                <div className="remote-surface__ask-options">
-                  {(question.options ?? []).map((option, optionIndex) => (
-                    <button
-                      key={option.label ?? optionIndex}
-                      type="button"
-                      className={`btn btn--small${selected.includes(option.label ?? "") ? " btn--primary" : ""}`}
-                      title={option.description}
-                      aria-pressed={selected.includes(option.label ?? "")}
-                      onClick={() => {
-                        const label = option.label ?? "";
-                        if (!questionId || !label) return;
-                        setAskSelections((current) => {
-                          const existing = current[questionId] ?? [];
-                          const next = question.multi
-                            ? existing.includes(label) ? existing.filter((value) => value !== label) : [...existing, label]
-                            : [label];
-                          return { ...current, [questionId]: next };
-                        });
-                      }}
-                    >
-                      {option.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            );
-          })}
-          <button
-            type="button"
-            className="btn btn--small btn--primary"
-            disabled={!askComplete}
-            onClick={() => void session.answer(ask.id ?? "", askAnswers).catch(() => undefined)}
-          >
-            {t("common.submit")}
-          </button>
-        </div>
+        <AskCard
+          key={`${tab.id}:${ask.id}`}
+          ask={ask}
+          onAnswer={(id, answers) => runAction(() => session.answer(id, answers.map((answer) => ({
+            QuestionID: answer.questionId,
+            Selected: answer.selected,
+          }))))}
+          onDismiss={() => runAction(() => session.answer(ask.id, []))}
+          onStop={() => runAction(() => session.cancelTurn())}
+        />
       ) : null}
-      {session.promptError || (session.state === "ready" && session.error) ? (
-        <div className="remote-surface__detail" role="alert">{session.promptError || session.error}</div>
+      {actionError || session.promptError || (session.state === "ready" && session.error) ? (
+        <div className="remote-surface__detail" role="alert">{actionError || session.promptError || session.error}</div>
       ) : null}
     </div>
   );

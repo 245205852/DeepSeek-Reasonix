@@ -96,7 +96,12 @@ console.log("\nbundle budgets");
 // drift instead of relying on a rounded equality.
 // The full remote-session surface adds the lazy transcript bridge and tab
 // lifecycle on top of [0.5/3]. Keep the measured stack's narrow ratchet.
-const initialJSBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 437.1 : 437.1;
+// Remote approval hardening adds authoritative composer-profile hydration,
+// scoped rewind dispatch, and attachment/inbox fences to the always-mounted
+// remote hook. The measured production path is 438.38 KiB gzip after keeping
+// the integration modules below repolint's ownership ceilings; retain 0.12 KiB
+// toolchain headroom with a bounded 1.4 KiB ratchet.
+const initialJSBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 438.5 : 438.5;
 assertBudget("initial JavaScript gzip", initialJSGzip, initialJSBudgetKiB * 1024);
 assertBudget("largest initial JavaScript chunk gzip", largestInitialJS, 280 * 1024);
 // Render-blocking CSS is intentionally absent: styles.css loads deferred via
@@ -157,7 +162,9 @@ const rawInitialBytes = [...initialJS, ...initialCSS, ...appShellCSS]
 // More menu, completion summary) makes the latest-base merge 2353.1 KiB in
 // production and test channels measure roughly 2380 KiB with remote sessions.
 // The complete theme-token contract and shared operational-overlay recipe from
-// main remain within that measured remote-session ceiling.
-const rawInitialBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 2_380.3 : 2_380.3;
+// main remain within that measured remote-session ceiling. The remote approval
+// fences and extracted ownership modules add 0.1 KiB beyond the old rounded
+// gate; retain 0.2 KiB of bounded raw/toolchain headroom.
+const rawInitialBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 2_380.6 : 2_380.6;
 assertBudget("initial raw JavaScript and CSS", rawInitialBytes, rawInitialBudgetKiB * 1024);
 assertBudget("largest initial JavaScript chunk raw", largestInitialJSRaw, 1_000 * 1024);

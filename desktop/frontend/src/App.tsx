@@ -137,6 +137,7 @@ import {
   type RestorableToolApprovalMode,
 } from "./lib/toolApprovalMode";
 import { useComposerModeActions } from "./lib/useComposerModeActions";
+import { useRemoteComposerProfileSync, useRemoteComposerRuntimeActions } from "./lib/useRemoteComposerIntegration";
 import {
   CREATION_RIGHT_DOCK_MIN_RENDER_WIDTH,
   CREATION_RIGHT_DOCK_TREE_MIN_WIDTH,
@@ -1776,6 +1777,11 @@ export default function App() {
   const goal = composerProfile.goal;
   const collaborationMode = displayedComposerProfileCollaborationMode(composerProfile);
   const toolApprovalMode = composerProfile.toolApprovalMode;
+  const remoteComposerProfileReady = useRemoteComposerProfileSync({
+    activeTabId, remote: remoteSurfaceActive, remoteProfile: remoteSession.composerProfile,
+    collaborationMode, toolApprovalMode, goal, pending: composerProfile.pending,
+    setProfiles: setComposerProfilesByTab,
+  });
   const runtimeTransitioning = navigationSurfaceIntent !== null;
   const controllerReady =
     state.meta?.ready === true &&
@@ -2125,19 +2131,23 @@ export default function App() {
   }, [activeTabId, scopedTodoKey, todoBatch]);
 
   const sessionTitle = topicTitle(activeTab);
-  const sessionHasContent = state.items.length > 0 || Boolean(state.live?.text || state.live?.reasoning);
+  const exportItems = remoteSurfaceActive ? remoteSession.transcript.items : state.items;
+  const exportLive = remoteSurfaceActive
+    ? remoteSession.transcript.live
+    : liveStore.getSnapshot(activeTabId) ?? state.live;
+  const sessionHasContent = exportItems.length > 0 || Boolean(exportLive?.text || exportLive?.reasoning);
 
   // Theme pack scene: home when the session is empty, task once content exists.
   useEffect(() => {
     applyThemeScene(sessionHasContent ? "task" : "home");
   }, [sessionHasContent]);
   const getSessionMarkdown = useCallback(
-    () => sessionItemsToMarkdown(sessionTitle, state.items, liveStore.getSnapshot(activeTabId) ?? state.live),
-    [activeTabId, liveStore, sessionTitle, state.items, state.live],
+    () => sessionItemsToMarkdown(sessionTitle, exportItems, exportLive),
+    [exportItems, exportLive, sessionTitle],
   );
   const getSessionJson = useCallback(
-    () => sessionItemsToJson(sessionTitle, state.items, liveStore.getSnapshot(activeTabId) ?? state.live),
-    [activeTabId, liveStore, sessionTitle, state.items, state.live],
+    () => sessionItemsToJson(sessionTitle, exportItems, exportLive),
+    [exportItems, exportLive, sessionTitle],
   );
 
   useEffect(() => {
@@ -2423,8 +2433,12 @@ export default function App() {
   const handleSteer = useCallback(async (text: string, requestedTabId = activeTabId) => {
     const sourceTabId = requestedTabId || activeTabId;
     if (!sourceTabId) throw new Error(t("composer.workspaceStarting"));
+    if (tabMetas.some((tab) => tab.id === sourceTabId && tab.remote)) {
+      await app.SteerRemoteTab(sourceTabId, text.trim());
+      return;
+    }
     await steerForTab(sourceTabId, text.trim());
-  }, [activeTabId, steerForTab, t]);
+  }, [activeTabId, steerForTab, t, tabMetas]);
 
   const setCollaborationModeFromUi = useCallback((mode: CollaborationMode) => {
     runGoalAction(() => applyCollaborationMode(mode));
@@ -2432,18 +2446,11 @@ export default function App() {
   const clearGoalFromUi = useCallback(() => {
     runGoalAction(() => applyGoal(""));
   }, [applyGoal, runGoalAction]);
-  const pauseGoalFromUi = useCallback(() => {
-    runGoalAction(async () => {
-      if (!activeTabIdRef.current) return;
-      await pauseControllerGoalForTab(activeTabIdRef.current);
-    });
-  }, [pauseControllerGoalForTab, runGoalAction]);
-  const resumeGoalFromUi = useCallback(() => {
-    runGoalAction(async () => {
-      if (!activeTabIdRef.current) return;
-      await resumeControllerGoalForTab(activeTabIdRef.current);
-    });
-  }, [resumeControllerGoalForTab, runGoalAction]);
+  const { pauseGoal: pauseGoalFromUi, resumeGoal: resumeGoalFromUi, setEffort: setEffortFromUi } = useRemoteComposerRuntimeActions({
+    activeTabIdRef, remote: remoteSurfaceActive, session: remoteSession, runGoalAction,
+    pauseLocal: pauseControllerGoalForTab, resumeLocal: resumeControllerGoalForTab,
+    setLocalEffort: setEffort, showError: (message) => showToast(message, "error"),
+  });
   const switchModelFromUi = useCallback(async (name: string): Promise<boolean> => {
     try {
       return await switchModel(name);
@@ -5118,17 +5125,19 @@ export default function App() {
               onSetQualityFloor={applyQualityFloor}
               turnPhase={state.turnPhase}
               goal={goal}
-              goalStatus={state.meta?.goalStatus}
+              goalStatus={remoteSurfaceActive ? remoteSession.composerProfile?.goalStatus : state.meta?.goalStatus}
               goalRuntime={state.meta?.goalRuntime}
               cwd={state.meta?.cwd}
               modelLabel={remoteSurfaceActive ? remoteSession.modelLabel || activeTab?.label || t("status.connecting") : state.meta?.label ?? t("status.connecting")}
-              imageInputEnabled={state.meta?.imageInputEnabled !== false}
+              imageInputEnabled={!remoteSurfaceActive && state.meta?.imageInputEnabled !== false}
               imageUnderstandingEnabled={state.meta?.visionFallbackEnabled === true}
+              attachmentInputEnabled={!remoteSurfaceActive}
               tabId={activeTabId}
-              effort={state.effort}
+              effort={remoteSurfaceActive ? remoteSession.effort : state.effort}
               onSend={remoteSurfaceActive ? remoteComposerSend : handleSend}
               onInvocationMetadataChange={handleInvocationMetadataChange}
               onSteer={handleSteer}
+              localDurableGuidance={!remoteSurfaceActive}
               onCancel={remoteSurfaceActive ? remoteCancel : cancel}
               onCycleMode={cycleMode}
               onSetMode={applyMode}
@@ -5139,14 +5148,14 @@ export default function App() {
               onPauseGoal={pauseGoalFromUi}
               onResumeGoal={resumeGoalFromUi}
               onSwitchModel={switchModelFromUi}
-              onSetEffort={setEffort}
+              onSetEffort={setEffortFromUi}
               insertRequest={composerInsertRequest}
               selectedTextRequest={selectedTextRequest}
               readOnly={Boolean(activeTab?.readOnly)}
               disabled={runtimeTransitioning || rewindCommitting || state.messageAction != null || Boolean(decisionSurface)}
-              submitDisabled={remoteSurfaceActive ? !remoteComposerReady : !controllerReady}
+              submitDisabled={remoteSurfaceActive ? !remoteComposerReady || !remoteComposerProfileReady : !controllerReady}
               decisionPending={rewindCommitting || state.messageAction != null || Boolean(decisionSurface)}
-              ready={remoteSurfaceActive ? remoteComposerReady : controllerReady}
+              ready={remoteSurfaceActive ? remoteComposerReady && remoteComposerProfileReady : controllerReady}
               turnStartAt={state.turnStartAt}
               turnWaitAccumMs={state.turnWaitAccumMs}
               promptWaitStartedAt={state.promptWaitStartedAt}

@@ -25,6 +25,9 @@ const source = readFileSync(resolve(here, "../components/ProjectTree.tsx"), "utf
 const remoteSource = readFileSync(resolve(here, "../components/ProjectTreeRemoteGroups.tsx"), "utf8");
 const appSource = readFileSync(resolve(here, "../App.tsx"), "utf8");
 const modeActionsSource = readFileSync(resolve(here, "../lib/useComposerModeActions.ts"), "utf8");
+const composerSource = readFileSync(resolve(here, "../components/Composer.tsx"), "utf8");
+const contentMenuSource = readFileSync(resolve(here, "../components/ComposerContentMenuActions.tsx"), "utf8");
+const remoteIntegrationSource = readFileSync(resolve(here, "../lib/useRemoteComposerIntegration.ts"), "utf8");
 
 ok(
   /remoteSession: \{ hostId: node\.remote!\.hostId, workspace: node\.remote!\.workspace, name: row\.name \}/.test(remoteSource) &&
@@ -80,6 +83,37 @@ ok(
   /tab\.id === tabId && tab\.remote[\s\S]*?SetRemoteTabGoal\(tabId, trimmed\)/.test(appSource) &&
     /onSend=\{remoteSurfaceActive \? remoteComposerSend : handleSend\}/.test(appSource),
   "remote goal activation and goal-draft submission stay on the remote controller",
+);
+ok(
+  /onRemoteTabUpdated\(\(meta\)/.test(remoteSource) &&
+    /RemoteProjectSessions\(meta\.remote\.hostId, meta\.remote\.workspace\)/.test(remoteSource),
+  "remote tab metadata updates refresh the affected session group",
+);
+ok(
+  /attachmentInputEnabled=\{!remoteSurfaceActive\}/.test(appSource) &&
+    /if \(!attachmentInputEnabled\) return;/.test(composerSource) &&
+    /disabled=\{!attachmentInputEnabled\}/.test(composerSource) &&
+    /attachmentInputEnabled \?/.test(contentMenuSource),
+  "remote composer disables local attachment input and native file paths",
+);
+ok(
+  /localDurableGuidance=\{!remoteSurfaceActive\}/.test(appSource) &&
+    /if \(!localDurableGuidance && onSteer\)[\s\S]*?await onSteer\(guidanceSubmitText, submitTabId\)/.test(composerSource) &&
+    /app\.SteerRemoteTab\(sourceTabId, text\.trim\(\)\)/.test(appSource),
+  "running remote guidance uses the Serve inbox instead of the local durable inbox",
+);
+ok(
+  /remoteSurfaceActive \? remoteSession\.transcript\.items : state\.items/.test(appSource) &&
+    /sessionItemsToMarkdown\(sessionTitle, exportItems, exportLive\)/.test(appSource),
+  "remote exports use the visible remote transcript",
+);
+ok(
+  /session\.pauseGoal\(\)/.test(remoteIntegrationSource) && /session\.resumeGoal\(\)/.test(remoteIntegrationSource),
+  "remote Goal pause and resume actions route to the remote session",
+);
+ok(
+  /Promise\.allSettled\(\[[\s\S]*?SetRemoteTabGoal\(activeTabId, goal\)[\s\S]*?SetRemoteTabPlanMode\(activeTabId, collaborationMode === "plan"\)/.test(modeActionsSource),
+  "a failed remote collaboration-mode transition rolls Goal and plan state back",
 );
 
 process.stdout.write(`\n${passed} passed, ${failed} failed\n`);

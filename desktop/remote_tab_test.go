@@ -34,6 +34,7 @@ type fakeServe struct {
 	failEnter         string   // non-empty ⇒ next /new or /resume replies 409
 	enterDelay        time.Duration
 	failHistory       bool // /history replies 500 when set
+	failSessions      bool // /sessions replies 500 when set
 	eventsConns       int  // /events connections opened
 	eventsStatus      int  // non-zero makes /events fail before opening
 	eventsCloseEarly  bool // return immediately after the initial 200 frames
@@ -137,6 +138,13 @@ func newFakeServe(t *testing.T, token string, sessions []serveSessionEntry) *fak
 	})
 	mux.HandleFunc("GET /sessions", func(w http.ResponseWriter, r *http.Request) {
 		fs.record(r.Method, "/sessions", "")
+		fs.mu.Lock()
+		fail := fs.failSessions
+		fs.mu.Unlock()
+		if fail {
+			http.Error(w, "sessions unavailable", http.StatusInternalServerError)
+			return
+		}
 		writeTestJSON(w, fs.sessions)
 	})
 	mux.HandleFunc("GET /events", func(w http.ResponseWriter, r *http.Request) {
@@ -181,7 +189,7 @@ func newFakeServe(t *testing.T, token string, sessions []serveSessionEntry) *fak
 			w.WriteHeader(http.StatusNoContent)
 		}
 	}
-	for _, path := range []string{"/submit", "/cancel", "/approve", "/answer", "/rewind", "/goal", "/tool-approval-mode", "/delete-session", "/model", "/effort", "/plan", "/compact", "/fork", "/summarize", "/forget"} {
+	for _, path := range []string{"/submit", "/cancel", "/approve", "/answer", "/rewind", "/goal", "/goal/pause", "/goal/resume", "/jobs/cancel", "/inbox/items", "/tool-approval-mode", "/delete-session", "/model", "/effort", "/plan", "/compact", "/fork", "/summarize", "/forget"} {
 		mux.HandleFunc("POST "+path, command(path))
 	}
 	snapshot := func(path, payload string) {

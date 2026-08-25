@@ -6533,6 +6533,12 @@ func (a *App) CancelJobForTab(tabID, jobID string) (bool, error) {
 		return false, fmt.Errorf("job id is required")
 	}
 	if tabID != "" {
+		if a.isRemoteTab(tabID) {
+			if err := a.CancelRemoteTabJobs(tabID, []string{jobID}); err != nil {
+				return false, err
+			}
+			return true, nil
+		}
 		ctrl := a.ctrlForRuntimeTabID(tabID)
 		if ctrl != nil {
 			return cancelJobForController(ctrl, jobID)

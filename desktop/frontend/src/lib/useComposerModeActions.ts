@@ -76,10 +76,18 @@ export function useComposerModeActions(options: ComposerModeActionsOptions) {
         patchProfile({ collaborationMode: "normal", goalDraftMode: true, goal: "" }, ["collaborationMode", "goal"]);
         return;
       }
-      if (goal.trim()) await app.SetRemoteTabGoal(activeTabId, "");
-      await app.SetRemoteTabPlanMode(activeTabId, mode === "plan");
-      rememberPlanMode(mode === "plan");
-      patchProfile({ collaborationMode: mode, goalDraftMode: false, goal: "" }, ["collaborationMode", "goal"]);
+      try {
+        if (goal.trim()) await app.SetRemoteTabGoal(activeTabId, "");
+        await app.SetRemoteTabPlanMode(activeTabId, mode === "plan");
+        rememberPlanMode(mode === "plan");
+        patchProfile({ collaborationMode: mode, goalDraftMode: false, goal: "" }, ["collaborationMode", "goal"]);
+      } catch (error) {
+        await Promise.allSettled([
+          app.SetRemoteTabGoal(activeTabId, goal),
+          app.SetRemoteTabPlanMode(activeTabId, collaborationMode === "plan"),
+        ]);
+        throw error;
+      }
       return;
     }
     if (mode === "goal") {
@@ -91,7 +99,7 @@ export function useComposerModeActions(options: ComposerModeActionsOptions) {
     await setControllerCollaborationMode(mode);
     rememberPlanMode(mode === "plan");
     patchProfile({ collaborationMode: mode, goalDraftMode: false, goal: "" }, ["collaborationMode", "goal"]);
-  }, [activeTabId, clearControllerGoal, goal, patchProfile, rememberPlanMode, remote, setControllerCollaborationMode]);
+  }, [activeTabId, clearControllerGoal, collaborationMode, goal, patchProfile, rememberPlanMode, remote, setControllerCollaborationMode]);
 
   const applyToolApprovalMode = useCallback((mode: ToolApprovalMode) => {
     if (!activeTabId) return;

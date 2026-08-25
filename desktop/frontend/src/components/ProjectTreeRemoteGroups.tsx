@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import { Plus, Server, Square, XCircle } from "lucide-react";
 
-import { app, onRemoteTabOpened } from "../lib/bridge";
+import { app, onRemoteTabOpened, onRemoteTabUpdated } from "../lib/bridge";
 import type { Translator } from "../lib/i18n";
 import type { ProjectNode, RemoteServerView, RemoteSessionView, RemoteTabRefView } from "../lib/types";
 import type { ToastContextValue } from "../lib/toast";
@@ -146,6 +146,24 @@ export function useRemoteProjectGroups(
   }, [showToast, statuses]);
 
   useEffect(() => onRemoteTabOpened(() => setRevision((current) => current + 1)), []);
+
+  useEffect(() => onRemoteTabUpdated((meta) => {
+    if (!meta.remote) return;
+    const key = remoteProjectKey(meta.remote);
+    if (!groupKeys.includes(key) || !eligibleSessionKeys.current.has(key)) return;
+    const load = ++nextLoad.current;
+    sessionLoads.current.set(key, load);
+    void app.RemoteProjectSessions(meta.remote.hostId, meta.remote.workspace)
+      .then((rows) => {
+        if (sessionLoads.current.get(key) === load && eligibleSessionKeys.current.has(key)) {
+          setSessions((current) => ({ ...current, [key]: rows }));
+        }
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (sessionLoads.current.get(key) === load) sessionLoads.current.delete(key);
+      });
+  }), [groupKeys]);
 
   useEffect(() => {
     void app.RemoteConnectionStatuses()

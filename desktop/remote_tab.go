@@ -560,7 +560,7 @@ func (a *App) AnswerRemoteTab(tabID, callID string, answers []RemoteAskAnswer) e
 
 // RewindRemoteTab rewinds to a checkpoint. Serve identifies checkpoints by
 // TURN index and takes {turn, scope}; the checkpointID string is that turn.
-func (a *App) RewindRemoteTab(tabID, checkpointID string) error {
+func (a *App) RewindRemoteTab(tabID, checkpointID, scope string) error {
 	client, base, err := a.remoteTabCommandClient(tabID)
 	if err != nil {
 		return err
@@ -571,7 +571,13 @@ func (a *App) RewindRemoteTab(tabID, checkpointID string) error {
 	if convErr != nil {
 		return fmt.Errorf("invalid checkpoint id %q: want the turn index", checkpointID)
 	}
-	body, _ := json.Marshal(map[string]any{"turn": turn, "scope": "both"})
+	scope = strings.TrimSpace(scope)
+	switch scope {
+	case "code", "conversation", "both":
+	default:
+		return fmt.Errorf("invalid rewind scope %q", scope)
+	}
+	body, _ := json.Marshal(map[string]any{"turn": turn, "scope": scope})
 	return servePost(ctx, client, serveURL(base, "/rewind"), body)
 }
 

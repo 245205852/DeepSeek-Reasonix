@@ -99,13 +99,26 @@ func (a *App) remoteActiveWorkForTab(tabID string) (ActiveWorkView, error) {
 		PendingPrompt  bool `json:"pendingPrompt"`
 		BackgroundJobs int  `json:"backgroundJobs"`
 		Cancellable    bool `json:"cancellable"`
+		Jobs           []struct {
+			ID        string `json:"id"`
+			Kind      string `json:"kind"`
+			Label     string `json:"label"`
+			Status    string `json:"status"`
+			StartedAt int64  `json:"startedAt"`
+		} `json:"jobs"`
 	}
 	if err := json.Unmarshal(raw, &status); err != nil {
 		return view, err
 	}
-	view.Running = status.Running || status.BackgroundJobs > 0
+	view.Running = status.Running || status.BackgroundJobs > 0 || len(status.Jobs) > 0
 	view.PendingPrompt = status.PendingPrompt
-	view.Cancellable = status.Cancellable || status.Running || status.PendingPrompt || status.BackgroundJobs > 0
+	view.Cancellable = status.Cancellable || status.Running || status.PendingPrompt || status.BackgroundJobs > 0 || len(status.Jobs) > 0
+	for _, job := range status.Jobs {
+		view.Jobs = append(view.Jobs, JobView{
+			ID: job.ID, Kind: job.Kind, Label: job.Label,
+			Status: job.Status, StartedAt: job.StartedAt,
+		})
+	}
 	return view, nil
 }
 
@@ -359,6 +372,15 @@ func (a *App) CloseTabWithPolicy(tabID, policy string) error {
 			}
 			if err := a.CancelRemoteTab(tabID); err != nil {
 				return err
+			}
+			ids := make([]string, 0, len(work.Jobs))
+			for _, job := range work.Jobs {
+				ids = append(ids, job.ID)
+			}
+			if len(ids) > 0 {
+				if err := a.CancelRemoteTabJobs(tabID, ids); err != nil {
+					return err
+				}
 			}
 			deadline := time.NewTimer(stopAndCloseGrace)
 			defer deadline.Stop()

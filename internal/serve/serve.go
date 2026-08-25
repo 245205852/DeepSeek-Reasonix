@@ -504,6 +504,9 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("POST /auto-approve-tools", s.autoApproveTools)
 	mux.HandleFunc("POST /bypass", s.bypass)
 	mux.HandleFunc("POST /goal", s.goal)
+	mux.HandleFunc("POST /goal/pause", s.goalPause)
+	mux.HandleFunc("POST /goal/resume", s.goalResume)
+	mux.HandleFunc("POST /jobs/cancel", s.jobsCancel)
 	mux.HandleFunc("POST /answer", s.answer)
 	mux.HandleFunc("POST /resume", s.resume)
 	mux.HandleFunc("POST /forget", s.forget)
@@ -1226,21 +1229,6 @@ func (s *Server) forget(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// checkpoints returns the session's checkpoint list for the rewind picker.
-func (s *Server) checkpoints(w http.ResponseWriter, _ *http.Request) {
-	type cp struct {
-		Turn   int    `json:"turn"`
-		Prompt string `json:"prompt"`
-		Files  int    `json:"files"`
-	}
-	raw := s.ctl().Checkpoints()
-	out := make([]cp, len(raw))
-	for i, c := range raw {
-		out[i] = cp{Turn: c.Turn, Prompt: c.Prompt, Files: len(c.Paths)}
-	}
-	writeJSON(w, out)
-}
-
 // branches returns the branch list and tree text.
 func (s *Server) branches(w http.ResponseWriter, _ *http.Request) {
 	branches, err := s.ctl().Branches()
@@ -1379,6 +1367,21 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 		"window":           window,
 		"cacheHit":         hit,
 		"cacheMiss":        miss,
+	}
+	if cfg, err := config.Load(); err == nil {
+		if entry, ok := cfg.ResolveModel(currentModelRef(s.ctl())); ok {
+			capability := config.EffortCapabilityForEntry(entry)
+			levels := capability.Levels
+			if levels == nil {
+				levels = []string{}
+			}
+			sess["effort"] = map[string]any{
+				"supported": capability.Supported,
+				"current":   config.EffortDisplay(entry),
+				"default":   capability.Default,
+				"levels":    levels,
+			}
+		}
 	}
 	// Runtime reconciliation fields for desktop running-state watchdogs: the
 	// remote tab surface polls /status and maps these onto the same

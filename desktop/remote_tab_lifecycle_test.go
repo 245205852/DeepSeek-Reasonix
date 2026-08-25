@@ -193,7 +193,7 @@ func TestRemoteResumeBusyKeepsCurrentSessionReady(t *testing.T) {
 func TestRemoteStopAndCloseCancelsBeforeRemovingTab(t *testing.T) {
 	fs := newFakeServe(t, "s3cret", nil)
 	fs.mu.Lock()
-	fs.statusPayload = `{"running":true,"pendingPrompt":false,"backgroundJobs":1,"cancellable":true}`
+	fs.statusPayload = `{"running":true,"pendingPrompt":false,"backgroundJobs":1,"cancellable":true,"jobs":[{"id":"job-remote","kind":"task","label":"verify","status":"running","startedAt":1}]}`
 	fs.statusAfterCancel = `{"running":false,"pendingPrompt":false,"backgroundJobs":0,"cancellable":false}`
 	fs.mu.Unlock()
 	kernel := &fakeRemoteKernel{
@@ -214,10 +214,35 @@ func TestRemoteStopAndCloseCancelsBeforeRemovingTab(t *testing.T) {
 	if !slices.ContainsFunc(fs.recorded(), func(call string) bool { return strings.HasPrefix(call, "POST /cancel") }) {
 		t.Fatalf("stop-and-close did not cancel remote work: %v", fs.recorded())
 	}
+	if !slices.Contains(fs.recorded(), `POST /jobs/cancel {"ids":["job-remote"]}`) {
+		t.Fatalf("stop-and-close did not cancel remote background jobs: %v", fs.recorded())
+	}
 	a.remoteTabMu.Lock()
 	_, present := a.remoteTabs[meta.ID]
 	a.remoteTabMu.Unlock()
 	if present {
 		t.Fatal("remote tab remained after work became idle")
+	}
+}
+
+func TestRemoteResumeListFailureKeepsCurrentAttachmentReady(t *testing.T) {
+	fs := newFakeServe(t, "s3cret", []serveSessionEntry{{Name: "saved", Path: "/saved.jsonl", Title: "Saved"}})
+	kernel := &fakeRemoteKernel{
+		statuses:   []RemoteConnectionStatusView{{HostID: "box", State: "connected"}},
+		ensureView: RemoteServerView{HostID: "box", State: "ready", LocalURL: fs.server.URL}, ensureToken: "s3cret",
+	}
+	seedBridgeTestHost(t, "box")
+	a := &App{remoteRuntime: kernel}
+	cleanupRemoteTabPumps(t, a)
+	meta := openReadyRemoteTab(t, a, RemoteTabOpenOptions{NewSession: true})
+	fs.mu.Lock()
+	fs.failSessions = true
+	fs.mu.Unlock()
+	a.resumeRemoteTabSession(meta.ID, "saved")
+	a.remoteTabMu.Lock()
+	state, message := a.remoteTabs[meta.ID].state, a.remoteTabs[meta.ID].err
+	a.remoteTabMu.Unlock()
+	if state != "ready" || !strings.Contains(message, "Could not open remote session") {
+		t.Fatalf("list failure state/error = %q/%q, want ready non-terminal notice", state, message)
 	}
 }

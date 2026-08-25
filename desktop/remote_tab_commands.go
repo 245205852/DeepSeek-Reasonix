@@ -114,6 +114,7 @@ func (a *App) resumeRemoteTabSession(tabID, name string) {
 	defer cancel()
 	entries, err := serveSessions(ctx, client, base)
 	if err != nil {
+		a.emitRemoteTabState(tabID, "ready", fmt.Sprintf("Could not open remote session %q: %v", name, err))
 		return
 	}
 	for _, entry := range entries {
@@ -320,6 +321,26 @@ func (a *App) remoteServeModelsForTab(tabID, current string) ([]ModelInfo, error
 
 func (a *App) SetRemoteTabEffort(tabID, level string) error {
 	return a.remoteTabPost(tabID, "/effort", map[string]any{"level": level})
+}
+
+func (a *App) PauseRemoteTabGoal(tabID string) error {
+	return a.remoteTabPost(tabID, "/goal/pause", nil)
+}
+
+func (a *App) ResumeRemoteTabGoal(tabID string) error {
+	return a.remoteTabPost(tabID, "/goal/resume", nil)
+}
+
+func (a *App) CancelRemoteTabJobs(tabID string, jobIDs []string) error {
+	return a.remoteTabPost(tabID, "/jobs/cancel", map[string]any{"ids": jobIDs})
+}
+
+func (a *App) SteerRemoteTab(tabID, input string) error {
+	input = strings.TrimSpace(input)
+	if input == "" {
+		return fmt.Errorf("guidance is required")
+	}
+	return a.remoteTabPost(tabID, "/inbox/items", map[string]any{"input": input, "intent": "steer"})
 }
 
 func (a *App) SetRemoteTabPlanMode(tabID string, on bool) error {

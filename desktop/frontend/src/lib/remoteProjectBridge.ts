@@ -17,12 +17,16 @@ export interface RemoteProjectBindings {
   ApproveRemoteTab(tabId: string, callId: string, decision: string): Promise<void>;
   AnswerRemoteTab(tabId: string, callId: string, answers: RemoteAskAnswer[]): Promise<void>;
   SetRemoteTabModel(tabId: string, ref: string): Promise<void>;
-  RewindRemoteTab(tabId: string, checkpointId: string): Promise<void>;
+  RewindRemoteTab(tabId: string, checkpointId: string, scope: string): Promise<void>;
   SetRemoteTabToolApprovalMode(tabId: string, mode: string): Promise<void>;
   SetRemoteTabGoal(tabId: string, goal: string): Promise<void>;
   RemoteTabSnapshot(tabId: string): Promise<RemoteTabSnapshot>;
   RemoteTabStatus(tabId: string): Promise<unknown>;
   SetRemoteTabEffort(tabId: string, level: string): Promise<void>;
+  PauseRemoteTabGoal(tabId: string): Promise<void>;
+  ResumeRemoteTabGoal(tabId: string): Promise<void>;
+  CancelRemoteTabJobs(tabId: string, jobIds: string[]): Promise<void>;
+  SteerRemoteTab(tabId: string, input: string): Promise<void>;
   SetRemoteTabPlanMode(tabId: string, on: boolean): Promise<void>;
   CompactRemoteTab(tabId: string): Promise<void>;
   ForkRemoteTab(tabId: string, turn: number, name: string): Promise<void>;
