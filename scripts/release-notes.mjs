@@ -14,6 +14,7 @@ const releaseChannels = new Set(["stable", "prerelease"]);
 const releaseStatuses = new Set(["reviewed", "published"]);
 const releaseTargetOrder = ["desktop", "cli", "site", "service"];
 const releaseTargets = new Set(releaseTargetOrder);
+const releaseTargetingRequiredFrom = "1.31.4";
 
 function invariant(condition, message) {
   if (!condition) throw new Error(message);
@@ -70,6 +71,15 @@ function semverParts(version) {
   const match = String(version).match(/^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$/);
   invariant(match, `invalid version ${version}`);
   return [Number(match[1]), Number(match[2]), Number(match[3]), match[4] || ""];
+}
+
+function isCoreVersionAtLeast(version, minimum) {
+  const current = semverParts(version);
+  const floor = semverParts(minimum);
+  for (let index = 0; index < 3; index += 1) {
+    if (current[index] !== floor[index]) return current[index] > floor[index];
+  }
+  return true;
 }
 
 export function compareVersionsDesc(a, b) {
@@ -149,7 +159,13 @@ export function validateCatalog(catalog) {
         );
       }
     }
-    if (release.targetingVersion !== undefined) {
+    const targetingRequiredByVersion = isCoreVersionAtLeast(release.version, releaseTargetingRequiredFrom);
+    if (targetingRequiredByVersion) {
+      invariant(
+        release.targetingVersion === 1,
+        `${path}.targetingVersion must be 1 for v${releaseTargetingRequiredFrom} and newer`,
+      );
+    } else if (release.targetingVersion !== undefined) {
       invariant(release.targetingVersion === 1, `${path}.targetingVersion is invalid`);
     }
     const targetsRequired = release.targetingVersion === 1;

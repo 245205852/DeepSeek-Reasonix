@@ -87,6 +87,41 @@ test("targeted release validation requires canonical item targets and matching s
   );
 });
 
+test("targeting adoption boundary preserves historical releases and rejects future legacy records", () => {
+  const release = {
+    version: "1.31.3",
+    date: "2026-01-01",
+    channel: "stable",
+    title: { en: "Legacy", zh: "旧版" },
+    summary: { en: "Summary", zh: "摘要" },
+    surfaces: ["desktop"],
+    guides: [],
+    highlights: [{
+      kind: "fixed",
+      title: { en: "Legacy fix", zh: "旧版修复" },
+      body: { en: "A historical fix.", zh: "一项历史修复。" },
+      refs: [1],
+    }],
+    changes: { new: [], improved: [], fixed: [] },
+    upgrade: [],
+    risks: [],
+    contributors: [],
+    links: {
+      github: "https://example.com/release",
+      compare: "https://example.com/compare",
+      download: "https://example.com/download",
+    },
+  };
+
+  assert.doesNotThrow(() => validateCatalog({ schemaVersion: 1, releases: [release] }));
+  for (const version of ["1.31.4", "1.32.0", "2.0.0-preview.1"]) {
+    assert.throws(
+      () => validateCatalog({ schemaVersion: 1, releases: [{ ...release, version }] }),
+      /targetingVersion must be 1 for v1\.31\.4 and newer/,
+    );
+  }
+});
+
 test("release target hints prefer explicit product labels and identify shared or service paths", () => {
   assert.deepEqual(inferPullTargetHints(["desktop"], ["internal/sessioncatalog/catalog.go"]), ["desktop"]);
   assert.deepEqual(inferPullTargetHints(["desktop", "tui"], ["desktop/app.go", "internal/cli/cli.go"]), ["desktop", "cli"]);
