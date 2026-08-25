@@ -21,10 +21,9 @@ itself resolve a crash issue.
    Desktop artifact.
 3. Freeze one candidate SHA. Do not move or recreate a published tag.
 4. Back up D1 and run `npm run migrate:diagnostics-v2`. The command inspects the
-   complete schema and records a fresh Time Travel bookmark before writing. It
-   repairs only the known partial state where the 24 `metric_users` and
-   `cli_metric_users` attribution columns are missing (including interrupted
-   retries); every other partial state fails closed.
+   complete schema and records a fresh Time Travel bookmark before writing. The
+   retired `metric_users` and `cli_metric_users` tables are intentionally not
+   required; any partial state among the active diagnostics tables fails closed.
 5. Run `npm run migrate:firebase-crash`. It records a D1 Time Travel bookmark,
    applies phase 1 (`migrate-firebase-crash.sql`) and phase 2
    (`migrate-firebase-crash-capacity.sql`) in order, and fails closed on a

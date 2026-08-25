@@ -16,9 +16,8 @@
    权限。不得使用 Web Firebase 配置，也不得在 Desktop 产物中包含 Firebase SDK 或配置。
 3. 冻结唯一候选 SHA，已发布 tag 不得移动或重建。
 4. 备份 D1，并运行 `npm run migrate:diagnostics-v2`。命令会先检查完整 schema，写入前
-   记录新的 Time Travel bookmark。它只修复已知的 partial 状态：`metric_users` 和
-   `cli_metric_users` 缺少 24 个归因字段（包括中断后的重试子集）；其他 partial 状态仍
-   fail closed。
+   记录新的 Time Travel bookmark。已退休的 `metric_users` 和 `cli_metric_users` 不再
+   是必需表；活跃 diagnostics 表出现任何 partial 状态时仍然 fail closed。
 5. 运行 `npm run migrate:firebase-crash`。命令先记录 D1 Time Travel bookmark，再依次
    应用第一阶段 `migrate-firebase-crash.sql` 与第二阶段
    `migrate-firebase-crash-capacity.sql`；任一阶段部分完成时 fail closed。验证 outbox、
