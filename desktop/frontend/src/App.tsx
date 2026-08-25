@@ -1,5 +1,4 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from "react";
-import { flushSync } from "react-dom";
 import { ShellExpandProvider, useShellExpand } from "./lib/shellExpand";
 import {
   Activity,
@@ -33,7 +32,7 @@ import { useWailsResizeFix } from "./lib/useWailsResizeFix";
 import { asArray } from "./lib/array";
 import { createBoundedRefreshCoordinator, sameTabMetaLists, shouldRefreshTabMetaForEvent, TAB_META_MAX_IN_FLIGHT } from "./lib/tabMetaRefresh";
 import { clearLegacyLangPref, normalizeLangPref, readLegacyLangPref, t, useI18n, useT, type Translator } from "./lib/i18n";
-import { localizedNoticeText, useController, type Item, type LiveStream } from "./lib/useController";
+import { localizedNoticeText, useController, type HistoryLoadTrigger, type Item, type LiveStream } from "./lib/useController";
 import { app, onEvent, onProjectTreeChanged, onReady, onRemoteForwards, onRemoteServer, onRemoteStatus, onRuntimeRebuilt, onSessionRecovered, openExternal } from "./lib/bridge";
 import { useConfigLoadWarnings } from "./lib/useConfigLoadWarnings";
 import { generativeMusic, isGenerativeMusicEnabled } from "./lib/generative-music";
@@ -172,7 +171,10 @@ import { recordFrontendDiagnostic } from "./lib/frontendDiagnosticBridge";
 import { DEFAULT_STATUS_BAR_ITEMS, normalizeStatusBarItems, type StatusBarItemId } from "./lib/statusBarItems";
 import { paletteSessionDisplayTitle, paletteSessionHint, paletteSessionKeywords, sessionActivityTime } from "./lib/session";
 import { enqueueNavigationRequest, type PendingNavigationRequest } from "./lib/openTopicCoalescing";
-import { guardBackendNavigationResult, settleNavigationSurfaceIntent } from "./lib/navigationSurfaceTransition";
+import {
+  guardBackendNavigationResult,
+} from "./lib/navigationSurfaceTransition";
+import { useNavigationSurface } from "./lib/useNavigationSurface";
 import {
   applyTheme,
   clearLegacyThemePreference,
@@ -1109,6 +1111,7 @@ export default function App() {
     syncActiveTab,
     ensureBlankTab,
     ensureBlankSurface,
+    commitSingleSurfaceNavigation,
   } = useController();
   const { locale, setPref: setLocalePref } = useI18n();
   const t = useT();
@@ -1117,34 +1120,12 @@ export default function App() {
   const userPlanModeByTabRef = useRef<UserPlanModeIntents>({});
   const [tabMetas, setTabMetas] = useState<TabMeta[]>([]);
   const [tabOrderIds, setTabOrderIds] = useState<string[]>([]);
-  const [navigationSurfaceIntent, setNavigationSurfaceIntent] = useState<number | null>(null);
-  type PreservedTranscriptSurface = {
-    tabId?: string;
-    items: Item[];
-    geometrySessionKey?: string;
-  };
-  const [preservedTranscriptSurface, setPreservedTranscriptSurface] = useState<PreservedTranscriptSurface | null>(null);
-  const renderedTranscriptSurfaceRef = useRef<PreservedTranscriptSurface | null>(null);
-  const beginNavigationSurface = useCallback((intent: number) => {
-    recordFrontendDiagnostic("navigation", "navigation.begin", { phase: "begin" });
-    const rendered = renderedTranscriptSurfaceRef.current;
-    flushSync(() => {
-      if (rendered && rendered.items.length > 0) {
-        setPreservedTranscriptSurface(rendered);
-      } else {
-        setPreservedTranscriptSurface(null);
-      }
-      setNavigationSurfaceIntent(intent);
-    });
-  }, []);
-  const settleNavigationSurface = useCallback((intent: number) => {
-    recordFrontendDiagnostic("navigation", "navigation.settle", { phase: "settle" });
-    setNavigationSurfaceIntent((current) => {
-      const next = settleNavigationSurfaceIntent(current, intent);
-      if (next === null) setPreservedTranscriptSurface(null);
-      return next;
-    });
-  }, []);
+  const {
+    surface: navigationSurface, intent: navigationSurfaceIntent, transitioning: runtimeTransitioning, dataReady: navigationTargetDataReady,
+    preserved: preservedTranscriptSurface, renderedRef: renderedTranscriptSurfaceRef, begin: beginNavigationSurface, maskTarget: settleNavigationSurface, commitPaint: commitNavigationSurfacePaint,
+  } = useNavigationSurface({
+    activeTabId, ready: state.meta?.ready === true, backendActivationPending: Boolean(state.backendActivationPending), hydrating: Boolean(state.hydrating), hydrateError: state.hydrateError,
+  });
   const [tabRevealSignal, setTabRevealSignal] = useState(0);
   const [transcriptRevealSignal, setTranscriptRevealSignal] = useState(0);
   const startupSplashVisible = useOverlayStore((s) => s.startupSplashVisible);
@@ -1772,7 +1753,6 @@ export default function App() {
   const goal = composerProfile.goal;
   const collaborationMode = displayedComposerProfileCollaborationMode(composerProfile);
   const toolApprovalMode = composerProfile.toolApprovalMode;
-  const runtimeTransitioning = navigationSurfaceIntent !== null;
   const controllerReady =
     state.meta?.ready === true &&
     (!state.meta.runtime || state.meta.runtime.phase === "ready") &&
@@ -1802,7 +1782,7 @@ export default function App() {
     if (clearContextPending) return "clear_context";
     return null;
   }, [clearContextPending, pendingClose, state.approval, state.ask, state.extensionForm, workspaceConflict]);
-  const visibleDecisionSurface = runtimeTransitioning ? null : decisionSurface;
+  const visibleDecisionSurface = decisionSurface;
   const composerSurfaceHidden = runtimeTransitioning || Boolean(decisionSurface);
   decisionSurfaceRef.current = decisionSurface;
   useEffect(() => {
@@ -3485,9 +3465,9 @@ export default function App() {
     !transcriptHydrating &&
     !hydratePlaceholderActive;
   const transcriptItems = hydratePlaceholderActive ? state.hydratePlaceholderItems! : state.items;
-  const handleLoadOlderHistory = useCallback((targetTurn?: number) => (
-    activeTabId ? loadOlderHistory(activeTabId, targetTurn) : Promise.resolve(false)
-  ), [activeTabId, loadOlderHistory]);
+  const handleLoadOlderHistory = useCallback((targetTurn?: number, trigger: HistoryLoadTrigger = "retry") => {
+    return activeTabId ? loadOlderHistory(activeTabId, targetTurn, trigger) : Promise.resolve(false);
+  }, [activeTabId, loadOlderHistory]);
 
   // Display items: backend history is authoritative after immediate commit.
   // rewindState only drives the undo banner, not optimistic truncation.
@@ -3503,12 +3483,23 @@ export default function App() {
       geometrySessionKey: transcriptGeometrySessionKey,
     };
   }
-  const visibleTranscriptSurface = runtimeTransitioning && preservedTranscriptSurface
+  const visibleTranscriptSurface = runtimeTransitioning && !navigationTargetDataReady && preservedTranscriptSurface
     ? preservedTranscriptSurface
     : null;
   const visibleTranscriptItems = visibleTranscriptSurface?.items ?? displayItems;
   const visibleTranscriptTabId = visibleTranscriptSurface?.tabId ?? activeTabId;
   const visibleTranscriptGeometryKey = visibleTranscriptSurface?.geometrySessionKey ?? transcriptGeometrySessionKey;
+  const surfaceCommitToken = navigationTargetDataReady && navigationSurfaceIntent !== null
+    ? `navigation-${navigationSurfaceIntent}-${activeTabId ?? "blank"}`
+    : undefined;
+  const handleSurfacePaintReady = useCallback((token: string, outcome: "ready" | "degraded") => {
+    const match = /^navigation-(\d+)-/.exec(token);
+    if (!match) return;
+    const intent = Number(match[1]);
+    if (navigationSurface?.intent !== intent) return;
+    if (singleSurfaceLayout && activeTabId) commitSingleSurfaceNavigation(activeTabId);
+    commitNavigationSurfacePaint(intent, outcome);
+  }, [activeTabId, commitNavigationSurfacePaint, commitSingleSurfaceNavigation, navigationSurface?.intent, singleSurfaceLayout]);
   const latestGuidanceConsumed = useMemo(() => {
     for (let i = state.items.length - 1; i >= 0; i--) {
       const item = state.items[i];
@@ -4919,12 +4910,13 @@ export default function App() {
                       running={state.running || rewindCommitting}
                       turnStartAt={state.turnStartAt}
                       contentRevision={state.historyLayoutRevision}
+                      historyMutation={state.historyMutation}
                       welcomeVariant={sidebarCreation ? "creation" : "default"}
                       creationMode={sidebarCreation}
                       actionHoverMenus={sidebarCreation && !hydratePlaceholderActive && !runtimeTransitioning}
                       rewindSignal={rewindSignal}
                       revealSignal={transcriptRevealSignal}
-                      hydrating={runtimeTransitioning || transcriptHydrating}
+                      hydrating={transcriptHydrating || (runtimeTransitioning && !navigationTargetDataReady)}
                       hasOlderHistory={!runtimeTransitioning && state.historyHasOlder && !rewindState}
                       historyStartTurn={state.historyStartTurn}
                       historyTotalTurns={state.historyTotalTurns}
@@ -4932,6 +4924,8 @@ export default function App() {
                       olderHistoryError={state.historyOlderError}
                       onLoadOlderHistory={handleLoadOlderHistory}
                       invocationMetadata={visibleTranscriptTabId ? invocationMetadataByTab[visibleTranscriptTabId] : undefined}
+                      surfaceCommitToken={surfaceCommitToken}
+                      onSurfacePaintReady={handleSurfacePaintReady}
                     />
                   </div>
                   {runtimeTransitioning ? (
@@ -4947,8 +4941,10 @@ export default function App() {
           </main>
 
           {!sidebarImDetailConnection && (
-          <footer className={["footer", terminalPanelOpen && !sidebarCreation ? "footer--compact" : "", visibleDecisionSurface ? "footer--decision" : ""].filter(Boolean).join(" ")} ref={footerRef}>
-            {!runtimeTransitioning && showTodos && (
+          <footer
+            className={["footer", terminalPanelOpen && !sidebarCreation ? "footer--compact" : "", visibleDecisionSurface ? "footer--decision" : "", runtimeTransitioning ? "footer--navigation-hidden" : ""].filter(Boolean).join(" ")} ref={footerRef} style={navigationSurface?.phase === "source-retained" && footerHeight > 0 ? { height: footerHeight, minHeight: footerHeight, boxSizing: "border-box" } : undefined} inert={runtimeTransitioning || undefined} aria-hidden={runtimeTransitioning || undefined}
+          >
+            {showTodos && (
               <TodoPanel
                 key={scopedTodoBatch}
                 stateKey={scopedTodoBatch}
@@ -4956,7 +4952,7 @@ export default function App() {
                 onDismiss={dismissTodos}
               />
             )}
-            {!runtimeTransitioning && rewindState && (
+            {rewindState && (
               <Suspense fallback={null}><UndoRewindBanner
                 meta={{
                   turns: rewindState.turnDiff,
@@ -5115,10 +5111,14 @@ export default function App() {
             <div
               className={[
                 "composer-decision-host",
-                composerSurfaceHidden ? "composer-decision-host--hidden" : "",
+                runtimeTransitioning
+                  ? "composer-decision-host--footprint-hidden"
+                  : composerSurfaceHidden
+                    ? "composer-decision-host--hidden"
+                    : "",
                 creationEmptyHero ? "composer-decision-host--creation-hero" : "",
               ].filter(Boolean).join(" ")}
-              hidden={composerSurfaceHidden || undefined}
+              hidden={Boolean(decisionSurface) || undefined}
               inert={composerSurfaceHidden ? true : undefined}
               aria-hidden={composerSurfaceHidden ? true : undefined}
             >

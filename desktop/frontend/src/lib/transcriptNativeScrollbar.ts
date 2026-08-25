@@ -32,10 +32,10 @@ export function measureTranscriptVirtuosoItem(
   freeze: boolean,
 ): number {
   if (freeze) {
-    const transcriptEstimate = Number.parseFloat(element.dataset.transcriptEstimate ?? "");
-    if (Number.isFinite(transcriptEstimate) && transcriptEstimate > 0) return transcriptEstimate;
     const knownSize = Number.parseFloat(element.dataset.knownSize ?? "");
     if (Number.isFinite(knownSize) && knownSize > 0) return knownSize;
+    const transcriptEstimate = Number.parseFloat(element.dataset.transcriptEstimate ?? "");
+    if (Number.isFinite(transcriptEstimate) && transcriptEstimate > 0) return transcriptEstimate;
     const staticEstimate = Number.parseFloat(element.dataset.staticEstimate ?? "");
     if (Number.isFinite(staticEstimate) && staticEstimate > 0) return staticEstimate;
   }

@@ -500,10 +500,10 @@ ok(
   "rewind previews warn on incomplete coverage and only authorize file overwrite after a conflict confirmation",
 );
 
-ok(
-  /const transcriptHydrating = state\.hydrating && !state\.hydrateHistoryLoaded;/.test(appSource) &&
-    /hydrating=\{runtimeTransitioning \|\| transcriptHydrating\}/.test(appSource),
-  "Welcome is suppressed only until transcript history has loaded",
+ok(/const transcriptHydrating = state\.hydrating && !state\.hydrateHistoryLoaded;/.test(appSource) &&
+    /hydrating=\{transcriptHydrating \|\| \(runtimeTransitioning && !navigationTargetDataReady\)\}/.test(appSource) &&
+    /surfaceCommitToken=\{surfaceCommitToken\}/.test(appSource) && /onSurfacePaintReady=\{handleSurfacePaintReady\}/.test(appSource),
+  "Welcome stays suppressed through target data commit and navigation settles only after paint readiness",
 );
 
 ok(

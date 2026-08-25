@@ -3486,7 +3486,7 @@ a[href] {
   justify-content: center;
   gap: 10px;
   color: var(--fg);
-  background: color-mix(in srgb, var(--chat-bg, var(--bg)) 88%, transparent);
+  background: var(--chat-bg, var(--bg));
   pointer-events: auto;
   user-select: none;
   cursor: progress;
@@ -9069,6 +9069,14 @@ body > .mermaid-diagram--fullscreen {
 .composer-decision-host--hidden,
 .composer-decision-host[hidden] {
   display: none !important;
+}
+.composer-decision-host--footprint-hidden {
+  visibility: hidden;
+  pointer-events: none;
+}
+.footer--navigation-hidden {
+  visibility: hidden;
+  pointer-events: none;
 }
 .prompt-shelf__card {
   display: grid;

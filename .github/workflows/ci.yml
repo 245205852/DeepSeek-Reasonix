@@ -394,7 +394,7 @@ jobs:
           pnpm --dir frontend test:motion-browser
           pnpm --dir frontend test:composer
           pnpm --dir frontend test:transcript
-          pnpm --dir frontend test:transcript-browser
+          xvfb-run -a env REASONIX_TRANSCRIPT_NATIVE_THUMB=1 pnpm --dir frontend test:transcript-browser
 
       - name: Test usage statistics frontend
         run: pnpm --dir frontend test:usage-stats
