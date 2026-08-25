@@ -1149,6 +1149,10 @@ export interface ServerView {
   /** @deprecated derived from enabled */
   startIntent?: "off" | "automatic" | string;
   runtimeState?: "idle" | "connecting" | "ready" | "issue" | string;
+  protocolVersion?: string;
+  sessionState?: "connecting" | "listening" | "ready" | "reconnecting" | "failed" | "closed" | string;
+  reconnectAttempts?: number;
+  errorKind?: "auth_required" | "session_missing" | "stream_closed" | "timeout" | "protocol" | "transport" | string;
   /** Product availability: available_on_demand | starting | connected | auth_required | project_auth_changed | start_failed | disabled */
   availability?: string;
   enabled?: boolean;

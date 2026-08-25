@@ -562,17 +562,10 @@ func (*UseCapabilityTool) Schema() json.RawMessage {
 // ResolveCall implements tool.CallResolver so the agent can run permission,
 // hooks, and evidence against the real MCP target before execution.
 func (t *UseCapabilityTool) ResolveCall(ctx context.Context, args json.RawMessage) (tool.ResolvedCall, error) {
-	var p struct {
-		Action       string          `json:"action"`
-		CapabilityID string          `json:"capability_id"`
-		Arguments    json.RawMessage `json:"arguments"`
-		Reason       string          `json:"reason"`
+	p, action, id, err := parseUseCapabilityArgs(args)
+	if err != nil {
+		return tool.ResolvedCall{}, err
 	}
-	if err := json.Unmarshal(args, &p); err != nil {
-		return tool.ResolvedCall{}, fmt.Errorf("invalid args: %w", err)
-	}
-	action := strings.ToLower(strings.TrimSpace(p.Action))
-	id := strings.TrimSpace(p.CapabilityID)
 	base := tool.ResolvedCall{
 		DisplayName:  "use_capability",
 		ProxyAction:  action,
