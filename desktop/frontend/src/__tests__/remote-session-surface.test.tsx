@@ -74,12 +74,21 @@ let releaseApproval: (() => void) | undefined;
 let blockAnswer = false;
 let releaseAnswer: (() => void) | undefined;
 let resolveRaceSnapshot: ((value: { history: unknown[]; status: unknown }) => void) | undefined;
+let resolveStateRaceSnapshot: ((value: { history: unknown[]; status: unknown }) => void) | undefined;
 window.go = { main: { App: {
   async RemoteTabSnapshot(tabId: string) {
     tape.push(`snapshot:${tabId}`);
 		if (tabId === "tab-hydration-failure" && failHydration) throw new Error("history exceeds bridge limit");
 		if (tabId === "tab-pending-model") return new Promise(() => {});
 		if (tabId === "tab-race") return new Promise<{ history: unknown[]; status: unknown }>((resolve) => { resolveRaceSnapshot = resolve; });
+		if (tabId === "tab-state-race") return new Promise<{ history: unknown[]; status: unknown }>((resolve) => { resolveStateRaceSnapshot = resolve; });
+		if (tabId === "tab-tool-history") return {
+			history: [
+				{ role: "assistant", content: "", toolCalls: [{ id: "remote-tool", name: "bash", arguments: "{\"command\":\"go test ./...\"}" }] },
+				{ role: "tool", content: "remote tool output", toolCallId: "remote-tool", toolName: "bash" },
+			],
+			status: { running: false, label: "Tools", plan: false, toolApprovalMode: "ask", goal: "" },
+		};
 		if (tabId === "tab-replay") return {
 			history: [], status: { label: "Replay", plan: false, toolApprovalMode: "ask", goal: "" },
 			pendingEvents: [{ kind: "approval_request", approval: { id: "replayed-approval", tool: "bash", subject: "pending while inactive" } }],
@@ -404,7 +413,7 @@ await act(async () => {
   );
 });
 await act(async () => flush());
-ok(probe?.state === "connecting" || probe?.state === "ready", "hook exposes the tab state");
+ok(probe?.state === "ready", "a successful fenced snapshot recovers a ready event missed before listener mount");
 ok(probe?.composerProfile?.collaborationMode === "plan" && probe?.composerProfile?.toolApprovalMode === "auto",
   "snapshot status hydrates the authoritative remote composer profile");
 ok(probe?.effort?.current === "high" && probe?.transcript.checkpoints[0]?.turn === 3
@@ -538,6 +547,22 @@ ok(fallbackProbe?.hydrated === true && fallbackProbe.composerProfile?.collaborat
   "missing aggregate status is fetched before the remote composer becomes ready");
 await act(async () => fallbackRoot.unmount());
 
+let toolProbe: RemoteSessionApi | undefined;
+function ToolProbe() {
+  toolProbe = useRemoteSession("tab-tool-history");
+  return null;
+}
+const toolRoot = createRoot(document.createElement("div"));
+await act(async () => {
+  toolRoot.render(<LocaleProvider><ToolProbe /></LocaleProvider>);
+  await flush();
+});
+const remoteTool = toolProbe?.transcript.items.find((item) => item.kind === "tool" && item.id === "remote-tool");
+ok(remoteTool?.kind === "tool" && remoteTool.args.includes("go test ./...")
+  && remoteTool.output === "remote tool output" && remoteTool.dataArchived !== true,
+  "remote history retains expandable tool args and output without a local rehydrate endpoint");
+await act(async () => toolRoot.unmount());
+
 let failureProbe: RemoteSessionApi | undefined;
 function FailureProbe() {
   failureProbe = useRemoteSession("tab-hydration-failure", "ready");
@@ -583,6 +608,28 @@ await act(async () => {
 });
 ok(raceProbe?.transcript.live.text === "arrived during hydration", "hydration replays concurrently delivered remote events");
 await act(async () => raceRoot.unmount());
+
+let stateRaceProbe: RemoteSessionApi | undefined;
+function StateRaceProbe() {
+	stateRaceProbe = useRemoteSession("tab-state-race");
+	return null;
+}
+const stateRaceRoot = createRoot(document.createElement("div"));
+await act(async () => {
+	stateRaceRoot.render(<LocaleProvider><StateRaceProbe /></LocaleProvider>);
+	await Promise.resolve();
+});
+await act(async () => {
+	__emitMockRemoteTab("tab-state-race", "state", { state: "reconnecting" });
+	resolveStateRaceSnapshot?.({
+		history: [],
+		status: { running: false, label: "Stale", plan: false, toolApprovalMode: "ask", goal: "" },
+	});
+	await flush();
+});
+ok(stateRaceProbe?.state === "reconnecting" && stateRaceProbe.hydrated === false,
+	"a stale snapshot cannot overwrite a newer non-ready connection generation");
+await act(async () => stateRaceRoot.unmount());
 
 // Pending prompt frames retained by Desktop are replayed by the next snapshot,
 // which restores decisions missed while the tab had no frontend listener.

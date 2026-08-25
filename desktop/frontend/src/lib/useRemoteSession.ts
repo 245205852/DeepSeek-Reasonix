@@ -239,6 +239,7 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
     let cancelled = false;
     let hydratePromise: Promise<void> | null = null;
     let historyReconcilePromise: Promise<void> | null = null;
+    let connectionGeneration = 0;
     // Never start the snapshot retry loop on a shell with no connection: the
     // ready transition triggers the first hydration instead. (initial is
     // deliberately not a dependency — only the mount-time snapshot matters.)
@@ -256,7 +257,7 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
         const messages = Array.isArray(snap.history) ? (snap.history as HistoryMessage[]) : [];
         const checkpoints = remoteCheckpoints(snap.checkpoints);
         setTranscript((current) => {
-          let next = reducer(current, { type: "history", messages });
+          let next = reducer(current, { type: "history", messages, remote: true });
           next = reducer(next, { type: "checkpoints", checkpoints });
           return next;
         });
@@ -303,6 +304,7 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
       if (hydratePromise) return hydratePromise;
       hydratingRef.current = true;
       hydratePromise = (async () => {
+        const expectedConnectionGeneration = connectionGeneration;
         // A tab already reported ready has no connection bootstrap left to wait
         // for, so surface a retry affordance promptly. Connecting tabs retain the
         // longer window for slow remote installs and tunnels.
@@ -319,9 +321,14 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
             isAuthoritativeRemoteStatus,
           );
           if (!loaded || cancelled) return;
+          if (connectionGeneration !== expectedConnectionGeneration) {
+            hydratingRef.current = false;
+            return;
+          }
           const [snap, status] = loaded;
           const messages = Array.isArray(snap.history) ? (snap.history as HistoryMessage[]) : [];
           hydratedRef.current = true;
+          setState("ready");
           setHydrated(true);
           setError("");
           setSurfaceGeneration((generation) => generation + 1);
@@ -334,7 +341,7 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
           bufferedEventsRef.current = [];
           hydratingRef.current = false;
           setTranscript((s) => {
-            let next = reducer(s, { type: "history", messages });
+            let next = reducer(s, { type: "history", messages, remote: true });
             next = reducer(next, { type: "checkpoints", checkpoints });
             // Hydrate doubles as the post-reconnect running reconciliation:
             // whatever the serve reports about its current state lands now,
@@ -349,7 +356,7 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
               const promptKey = promptId ? `${event.kind}:${promptId}` : "";
               if (promptKey && seenPrompts.has(promptKey)) continue;
               if (promptKey) seenPrompts.add(promptKey);
-              next = reducer(next, { type: "event", e: event });
+              next = reducer(next, { type: "event", e: event, remote: true });
             }
             return next;
           });
@@ -366,7 +373,7 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
           const buffered = bufferedEventsRef.current;
           bufferedEventsRef.current = [];
           setTranscript((current) => buffered.reduce(
-            (next, event) => reducer(next, { type: "event", e: event }),
+            (next, event) => reducer(next, { type: "event", e: event, remote: true }),
             current,
           ));
         }
@@ -382,6 +389,7 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
 
     const offState = onRemoteTabState(tabId, (s) => {
       if (cancelled) return;
+      if (s.state !== "ready") connectionGeneration += 1;
       setState(s.state);
       setError(s.error ?? "");
       if (s.state === "ready") {
@@ -400,7 +408,7 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
         bufferedEventsRef.current.push(event);
         return;
       }
-      setTranscript((s) => reducer(s, { type: "event", e: event }));
+      setTranscript((s) => reducer(s, { type: "event", e: event, remote: true }));
       if (event.kind === "turn_done") {
         void refreshStatus();
         void reconcileHistory().catch(() => undefined);

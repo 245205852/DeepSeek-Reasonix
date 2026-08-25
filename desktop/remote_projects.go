@@ -350,12 +350,12 @@ func (a *App) OpenRemoteProjectTab(hostID, workspace string, opts RemoteTabOpenO
 		cancel()
 	}
 	if registration.reuseID != "" {
-		meta, ok := a.remoteTabMetaSnapshot(registration.reuseID)
+		_, ok := a.remoteTabMetaSnapshot(registration.reuseID)
 		if !ok {
 			return TabMeta{}, fmt.Errorf("remote tab %q closed while opening", registration.reuseID)
 		}
 		if singleSurface {
-			meta, err = a.keepOnlyRemoteVisibleTab(registration.reuseID)
+			_, err = a.keepOnlyRemoteVisibleTab(registration.reuseID)
 			if err != nil {
 				return TabMeta{}, err
 			}
@@ -376,7 +376,7 @@ func (a *App) OpenRemoteProjectTab(hostID, workspace string, opts RemoteTabOpenO
 				a.resetRemoteTabSession(registration.reuseID)
 			}
 		}
-		meta, ok = a.remoteTabMetaSnapshot(registration.reuseID)
+		meta, ok := a.remoteTabMetaSnapshot(registration.reuseID)
 		if !ok {
 			return TabMeta{}, fmt.Errorf("remote tab %q closed while opening", registration.reuseID)
 		}
@@ -393,7 +393,7 @@ func (a *App) OpenRemoteProjectTab(hostID, workspace string, opts RemoteTabOpenO
 	if singleSurface {
 		meta, err = a.keepOnlyRemoteVisibleTab(tabID)
 		if err != nil {
-			_ = a.CloseRemoteTab(tabID)
+			_ = a.closeRemoteTabRegistration(tabID, true)
 			return TabMeta{}, err
 		}
 	}

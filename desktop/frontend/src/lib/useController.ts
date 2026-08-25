@@ -734,7 +734,7 @@ export function isReadOnlyTool(name: string): boolean {
 export { isBatchedReadOnlyTool } from "./searchTranscript";
 
 type Action =
-  | { type: "event"; e: WireEvent }
+  | { type: "event"; e: WireEvent; remote?: boolean }
   | { type: "stream_batch"; segments: StreamSegment[] }
   | { type: "user"; text: string; submitText?: string; seq: number; submissionId: string; deliveryRecovery?: boolean }
   | { type: "unsend" }
@@ -757,7 +757,7 @@ type Action =
   | { type: "backend_activation_done" }
   | { type: "message_action_start"; action: MessageActionState }
   | { type: "message_action_done" }
-  | { type: "history"; messages: HistoryMessage[] }
+  | { type: "history"; messages: HistoryMessage[]; remote?: boolean }
   | { type: "history_page"; page: HistoryPage; mode: "replace" | "prepend" }
   // TranscriptStore-driven history actions (windowed HistorySliceForTab flow).
   // Items carry stable entryId-derived ids; prepend also lists existing item
@@ -1356,7 +1356,7 @@ function applyExtensionNotification(s: State, surface: WireExtensionSurface): St
   return { ...s, seq: s.seq + 1, extensionNotifications: [...s.extensionNotifications, entry] };
 }
 
-function applyEvent(s: State, e: WireEvent): State {
+function applyEvent(s: State, e: WireEvent, preserveToolPayloads = false): State {
   if (s.discardTurn) {
     if (e.kind === "turn_done") {
       return {
@@ -1626,7 +1626,8 @@ function applyEvent(s: State, e: WireEvent): State {
       }
       // A nested result refreshes its sub-agent parent's recent activity.
       if (t.parentId) touchSubagentParent(next, t.parentId);
-      return attachWebSearchOutput({ ...s, items: compactArchivedToolItems(next) }, t.name, t.output, t.err, idx >= 0 && next[idx]?.kind === "tool" ? next[idx].id : t.id);
+      const items = preserveToolPayloads ? next : compactArchivedToolItems(next);
+      return attachWebSearchOutput({ ...s, items }, t.name, t.output, t.err, idx >= 0 && next[idx]?.kind === "tool" ? next[idx].id : t.id);
     }
     case "tool_progress": {
       const t = e.tool;
@@ -2046,7 +2047,8 @@ export function reducer(s: State, a: Action): State {
     case "message_action_done": return { ...s, messageAction: undefined };
     case "history": {
       const { items, seq } = historyMessagesToItems(a.messages, "h", s.seq);
-      return { ...s, items: compactArchivedToolItems(items), pendingSubmissionId: undefined, seq, hydrateHistoryLoaded: true, hydratePlaceholderItems: undefined, historyStartTurn: 0, historyTotalTurns: 0, historyHasOlder: false, historyOlderLoading: false, historyOlderError: undefined, historyRevision: undefined, historyDigest: undefined };
+      // Remote cards have no local ToolResultForTab fallback; retain expansion data.
+      return { ...s, items: a.remote ? items : compactArchivedToolItems(items), pendingSubmissionId: undefined, seq, hydrateHistoryLoaded: true, hydratePlaceholderItems: undefined, historyStartTurn: 0, historyTotalTurns: 0, historyHasOlder: false, historyOlderLoading: false, historyOlderError: undefined, historyRevision: undefined, historyDigest: undefined };
     }
     case "history_page": {
       const { items, seq, firstTurn } = historyPageItems(a.page);
@@ -2172,7 +2174,7 @@ export function reducer(s: State, a: Action): State {
       };
     case "reset": return { ...initialState, meta: metaWithoutCanonicalTodos(s.meta), context: { used: 0, window: s.context.window, sessionTokens: 0, compactRatio: s.context.compactRatio }, balance: s.balance, effort: s.effort, jobs: s.jobs, hydrating: s.hydrating, hydrateReason: s.hydrateReason, hydrateError: s.hydrateError, hydrateHistoryLoaded: s.hydrateHistoryLoaded, hydratePlaceholderItems: s.hydratePlaceholderItems, backendActivationPending: s.backendActivationPending, sessionGen: s.sessionGen + 1, promptEpoch: s.promptEpoch + 1 };
     case "context_panel_refresh": return { ...s, contextPanelSeq: s.contextPanelSeq + 1 };
-    case "event": return applyEvent(s, a.e);
+    case "event": return applyEvent(s, a.e, a.remote);
     case "stream_batch": return applyStreamBatch(s, a.segments);
     default: return s;
   }

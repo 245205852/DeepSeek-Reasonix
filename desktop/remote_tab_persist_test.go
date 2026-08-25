@@ -10,6 +10,13 @@ import (
 	"reasonix/internal/config"
 )
 
+func seedClassicBridgeTestHost(t *testing.T, hostID string) {
+	seedBridgeTestHost(t, hostID)
+	if err := editUserConfig(func(c *config.Config) error { return c.SetDesktopLayoutStyle("classic") }); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func readPersistedTabsFile(t *testing.T) desktopTabsFile {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join(config.ReasonixHomeDir(), tabsFileName))
@@ -42,7 +49,7 @@ func TestRemoteTabOpenPersistRoundTrip(t *testing.T) {
 		ensureView:  RemoteServerView{HostID: "box", State: "ready", LocalURL: fs.server.URL},
 		ensureToken: "s3cret",
 	}
-	seedBridgeTestHost(t, "box")
+	seedClassicBridgeTestHost(t, "box")
 	a := &App{remoteRuntime: kernel}
 	cleanupRemoteTabPumps(t, a)
 
@@ -335,6 +342,15 @@ func TestOpenRemoteProjectTabAppliesSingleSurfacePolicy(t *testing.T) {
 	a.remoteTabMu.Unlock()
 	if localCount != 0 || remoteCount != 1 {
 		t.Fatalf("single-surface registry counts local=%d remote=%d", localCount, remoteCount)
+	}
+	if err := a.CloseRemoteTab(second.ID); err == nil || !strings.Contains(err.Error(), "cannot close the last tab") {
+		t.Fatalf("close final remote surface error = %v", err)
+	}
+	a.remoteTabMu.Lock()
+	_, stillVisible := a.remoteTabs[second.ID]
+	a.remoteTabMu.Unlock()
+	if !stillVisible {
+		t.Fatal("failed final-surface close removed the remote tab")
 	}
 }
 

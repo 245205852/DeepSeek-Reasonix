@@ -325,7 +325,7 @@ func TestCloseRemoteTabIsIdempotent(t *testing.T) {
 		ensureView:  RemoteServerView{HostID: "box", State: "ready", LocalURL: fs.server.URL},
 		ensureToken: "s3cret",
 	}
-	seedBridgeTestHost(t, "box")
+	seedClassicBridgeTestHost(t, "box")
 	a := &App{remoteRuntime: kernel}
 	cleanupRemoteTabPumps(t, a)
 	meta := openReadyRemoteTab(t, a, RemoteTabOpenOptions{NewSession: true})
@@ -451,7 +451,7 @@ func TestListTabsIncludesRemoteEntries(t *testing.T) {
 		ensureView:  RemoteServerView{HostID: "box", State: "ready", LocalURL: fs.server.URL},
 		ensureToken: "s3cret",
 	}
-	seedBridgeTestHost(t, "box")
+	seedClassicBridgeTestHost(t, "box")
 	a := &App{remoteRuntime: kernel}
 	cleanupRemoteTabPumps(t, a)
 	meta := openReadyRemoteTab(t, a, RemoteTabOpenOptions{NewSession: true})

@@ -108,7 +108,10 @@ console.log("\nbundle budgets");
 // session quality-floor routing, dropped-frame reconciliation, and remote
 // runtime-command dispatch. The measured initial path is 439.60 KiB;
 // retain 0.10 KiB of bounded toolchain headroom.
-const initialJSBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 439.7 : 439.7;
+// Closing the remaining review gaps adds generation-fenced hydration plus
+// remote-only tool payload, Todo, and terminal isolation. The measured path is
+// 439.74 KiB; retain 0.06 KiB of headroom with a 0.1 KiB ratchet.
+const initialJSBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 439.8 : 439.8;
 assertBudget("initial JavaScript gzip", initialJSGzip, initialJSBudgetKiB * 1024);
 assertBudget("largest initial JavaScript chunk gzip", largestInitialJS, 280 * 1024);
 // Render-blocking CSS is intentionally absent: styles.css loads deferred via
@@ -173,7 +176,8 @@ const rawInitialBytes = [...initialJS, ...initialCSS, ...appShellCSS]
 // fences, extracted ownership modules, and remote status-bar isolation bring
 // the measured initial payload to 2380.9 KiB; retain 0.1 KiB of bounded
 // raw/toolchain headroom. Scoped remote approvals, status reconciliation, and
-// runtime command dispatch bring the measured payload to 2382.9 KiB.
-const rawInitialBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 2_383.0 : 2_383.0;
+// runtime command dispatch bring the measured payload to 2382.9 KiB. The
+// remaining review fences measure 2383.2 KiB; retain 0.1 KiB of headroom.
+const rawInitialBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 2_383.3 : 2_383.3;
 assertBudget("initial raw JavaScript and CSS", rawInitialBytes, rawInitialBudgetKiB * 1024);
 assertBudget("largest initial JavaScript chunk raw", largestInitialJSRaw, 1_000 * 1024);

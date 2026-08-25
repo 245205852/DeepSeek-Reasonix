@@ -25,31 +25,28 @@ type fakeServe struct {
 	token  string
 	server *httptest.Server
 
-	mu                sync.Mutex
-	newCalled         int
-	resumePath        string
-	cookieOnNew       bool
-	sessions          []serveSessionEntry
-	calls             []string // "METHOD /path body" per command request
-	failNext          string   // non-empty ⇒ next command endpoint replies 409 with this text
-	failEnter         string   // non-empty ⇒ next /new or /resume replies 409
-	enterDelay        time.Duration
-	failHistory       bool // /history replies 500 when set
-	failSessions      bool // /sessions replies 500 when set
-	sessionsStarted   chan struct{}
-	sessionsRelease   chan struct{}
-	eventsConns       int  // /events connections opened
-	eventsStatus      int  // non-zero makes /events fail before opening
-	eventsCloseEarly  bool // return immediately after the initial 200 frames
-	statusPayload     string
-	statusAfterCancel string
+	mu                             sync.Mutex
+	newCalled                      int
+	resumePath                     string
+	cookieOnNew                    bool
+	sessions                       []serveSessionEntry
+	calls                          []string // "METHOD /path body" per command request
+	failNext                       string   // non-empty ⇒ next command endpoint replies 409 with this text
+	failEnter                      string   // non-empty ⇒ next /new or /resume replies 409
+	enterDelay                     time.Duration
+	failHistory                    bool // /history replies 500 when set
+	historyStarted, historyRelease chan struct{}
+	failSessions                   bool // /sessions replies 500 when set
+	sessionsStarted                chan struct{}
+	sessionsRelease                chan struct{}
+	eventsConns                    int  // /events connections opened
+	eventsStatus                   int  // non-zero makes /events fail before opening
+	eventsCloseEarly               bool // return immediately after the initial 200 frames
+	statusPayload                  string
+	statusAfterCancel              string
 }
 
-func (fs *fakeServe) eventsCount() int {
-	fs.mu.Lock()
-	defer fs.mu.Unlock()
-	return fs.eventsConns
-}
+func (fs *fakeServe) eventsCount() int { fs.mu.Lock(); defer fs.mu.Unlock(); return fs.eventsConns }
 
 func (fs *fakeServe) recorded() []string {
 	fs.mu.Lock()
@@ -143,13 +140,13 @@ func newFakeServe(t *testing.T, token string, sessions []serveSessionEntry) *fak
 		fs.record(r.Method, "/sessions", "")
 		fs.mu.Lock()
 		fail := fs.failSessions
-		started, release := fs.sessionsStarted, fs.sessionsRelease
-		fs.mu.Unlock()
-		if started != nil {
-			select {
-			case started <- struct{}{}:
-			default:
-			}
+			started, release := fs.sessionsStarted, fs.sessionsRelease
+			fs.mu.Unlock()
+			if started != nil {
+				select {
+				case started <- struct{}{}:
+				default:
+				}
 		}
 		if release != nil {
 			select {
@@ -215,7 +212,18 @@ func newFakeServe(t *testing.T, token string, sessions []serveSessionEntry) *fak
 			if path == "/history" {
 				fs.mu.Lock()
 				fail := fs.failHistory
+				started, release := fs.historyStarted, fs.historyRelease
 				fs.mu.Unlock()
+				if started != nil {
+					started <- struct{}{}
+				}
+				if release != nil {
+					select {
+					case <-release:
+					case <-r.Context().Done():
+						return
+					}
+				}
 				if fail {
 					http.Error(w, "gone", http.StatusInternalServerError)
 					return
@@ -366,13 +374,11 @@ func TestRemoteTabBridgeEntersNewSessionAndStreams(t *testing.T) {
 	log := &eventLog{}
 	a := &App{remoteRuntime: kernel, remoteEventHook: log.add}
 	cleanupRemoteTabPumps(t, a)
-
 	meta, err := a.OpenRemoteProjectTab("box", "~/app", RemoteTabOpenOptions{NewSession: true})
 	if err != nil {
 		t.Fatal(err)
 	}
 	waitForTabState(t, a, meta.ID, "ready")
-
 	newCalled, _, cookieOnNew := fs.snapshot()
 	if newCalled != 1 {
 		t.Fatalf("POST /new called %d times, want 1", newCalled)
@@ -414,7 +420,6 @@ func TestConcurrentRemoteProjectOpenReusesOneTab(t *testing.T) {
 	seedBridgeTestHost(t, "box")
 	a := &App{remoteRuntime: kernel}
 	cleanupRemoteTabPumps(t, a)
-
 	start := make(chan struct{})
 	results := make(chan TabMeta, 2)
 	errs := make(chan error, 2)
@@ -460,7 +465,6 @@ func TestRemoteTabBridgeToleratesTrailingSlashBase(t *testing.T) {
 	seedBridgeTestHost(t, "box")
 	a := &App{remoteRuntime: kernel}
 	cleanupRemoteTabPumps(t, a)
-
 	meta, err := a.OpenRemoteProjectTab("box", "~/app", RemoteTabOpenOptions{NewSession: true})
 	if err != nil {
 		t.Fatal(err)
@@ -487,7 +491,6 @@ func TestRemoteTabBusyAttachKeepsCurrentSessionMetadata(t *testing.T) {
 	seedBridgeTestHost(t, "box")
 	a := &App{remoteRuntime: kernel}
 	cleanupRemoteTabPumps(t, a)
-
 	meta := openReadyRemoteTab(t, a, RemoteTabOpenOptions{NewSession: true})
 	a.remoteTabMu.Lock()
 	tab := a.remoteTabs[meta.ID]

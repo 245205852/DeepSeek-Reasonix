@@ -55,7 +55,8 @@ func remoteSessionTransitionBusy(err error) bool {
 		return false
 	}
 	message := err.Error()
-	return strings.Contains(message, "status 409") || strings.Contains(message, "while a turn is running")
+	return strings.Contains(message, "while a turn is running") ||
+		strings.Contains(message, "while another session change is in progress")
 }
 
 // attachRemoteTabServe starts the event pump before entering the session so
@@ -699,19 +700,22 @@ func (a *App) RemoteTabSnapshot(tabID string) (RemoteTabSnapshot, error) {
 	if len(snap.History) == 0 {
 		return RemoteTabSnapshot{}, fmt.Errorf("remote tab %q: empty history", tabID)
 	}
-	a.recordRemoteTabSessionStatus(tabID, client, gen, snap.Status)
 	a.remoteTabMu.Lock()
-	if tab := a.remoteTabs[tabID]; tab != nil {
-		keys := make([]string, 0, len(tab.pendingEvents))
-		for key := range tab.pendingEvents {
-			keys = append(keys, key)
-		}
-		sort.Strings(keys)
-		for _, key := range keys {
-			snap.PendingEvents = append(snap.PendingEvents, append(json.RawMessage(nil), tab.pendingEvents[key]...))
-		}
+	tab := a.remoteTabs[tabID]
+	if tab == nil || tab.client != client || tab.gen != gen || tab.state != "ready" {
+		a.remoteTabMu.Unlock()
+		return RemoteTabSnapshot{}, fmt.Errorf("remote tab %q changed while loading snapshot", tabID)
+	}
+	keys := make([]string, 0, len(tab.pendingEvents))
+	for key := range tab.pendingEvents {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		snap.PendingEvents = append(snap.PendingEvents, append(json.RawMessage(nil), tab.pendingEvents[key]...))
 	}
 	a.remoteTabMu.Unlock()
+	a.recordRemoteTabSessionStatus(tabID, client, gen, snap.Status)
 	return snap, nil
 }
 

@@ -114,7 +114,31 @@ func (a *App) remoteTabsFileEntries(localIDs []string) ([]desktopRemoteTabEntry,
 // registry entry goes away. The remote serve and the SSH connection stay
 // untouched — other tabs on the same host keep running.
 func (a *App) CloseRemoteTab(tabID string) error {
-	a.remoteTabMu.Lock()
+	protectLastSurface := a.singleSurfaceLayoutEnabled()
+	if protectLastSurface {
+		a.singleSurfaceMu.Lock()
+		defer a.singleSurfaceMu.Unlock()
+	}
+	return a.closeRemoteTabRegistration(tabID, !protectLastSurface)
+}
+
+// closeRemoteTabRegistration performs the registry mutation. Callers that
+// already hold singleSurfaceMu use allowEmpty only to roll back a tab whose
+// open transaction failed before it became a usable surface.
+func (a *App) closeRemoteTabRegistration(tabID string, allowEmpty bool) error {
+	if !allowEmpty {
+		a.mu.RLock()
+		localCount := len(a.tabs)
+		a.remoteTabMu.Lock()
+		if localCount == 0 && len(a.remoteTabs) == 1 && a.remoteTabs[tabID] != nil {
+			a.remoteTabMu.Unlock()
+			a.mu.RUnlock()
+			return fmt.Errorf("cannot close the last tab")
+		}
+		a.mu.RUnlock()
+	} else {
+		a.remoteTabMu.Lock()
+	}
 	tab := a.remoteTabs[tabID]
 	closingActive := a.remoteTabLayout.activeID == tabID
 	nextLocalID := ""

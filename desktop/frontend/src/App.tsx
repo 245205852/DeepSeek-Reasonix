@@ -1674,6 +1674,7 @@ export default function App() {
   );
   const { active: remoteSurfaceActive, session: remoteSession, ready: remoteComposerReady, onSend: remoteSend, onCancel: remoteCancel } = useActiveRemoteSession(activeTab, showToast);
   const visibleRuntimeState = remoteSurfaceActive ? remoteSession.transcript : state;
+  const terminalSurfaceOpen = terminalPanelOpen && !remoteSurfaceActive;
   const activePlanRevisionInsertRequest =
     planRevisionInsertRequest &&
     planRevisionInsertRequest.tabId === activeTabId &&
@@ -2097,16 +2098,16 @@ export default function App() {
   // ignores status so progress in the same list is not a new batch. Dismissal
   // is scoped per session/topic/tab and also persisted on the session sidecar.
   const todoEntry = useMemo(() => {
-    for (let i = state.items.length - 1; i >= 0; i--) {
-      const it = state.items[i];
+    for (let i = visibleRuntimeState.items.length - 1; i >= 0; i--) {
+      const it = visibleRuntimeState.items[i];
       if (it.kind === "tool" && it.name === "todo_write" && !it.parentId && it.status === "done" && !it.error) {
         return { item: it, index: i };
       }
     }
     return null;
-  }, [state.items]);
+  }, [visibleRuntimeState.items]);
   const todoItem = todoEntry?.item ?? null;
-  const metaTodos = state.meta?.canonicalTodos;
+  const metaTodos = remoteSurfaceActive ? undefined : state.meta?.canonicalTodos;
   const todos = useMemo(
     () => resolveTodoPanelTodos(metaTodos, todoItem ? parseTodos(todoItem.args) : undefined),
     [metaTodos, todoItem],
@@ -2115,8 +2116,8 @@ export default function App() {
   const todoKey = useMemo(() => todoDismissalKey(todos), [todos]);
   const todoBatch = useMemo(() => todoBatchKey(todos), [todos]);
   const todoScope = useMemo(
-    () => todoPanelScope({ activeTab, activeTabId, eventChannel: state.meta?.eventChannel }),
-    [activeTab, activeTabId, state.meta?.eventChannel],
+    () => todoPanelScope({ activeTab, activeTabId, eventChannel: remoteSurfaceActive ? undefined : state.meta?.eventChannel }),
+    [activeTab, activeTabId, remoteSurfaceActive, state.meta?.eventChannel],
   );
   const dismissedTodo = useMemo(
     () => dismissedTodoKeyForScope(todoScope, dismissedTodoKeys, todoKey),
@@ -2124,7 +2125,7 @@ export default function App() {
   );
   const scopedTodoKey = useMemo(() => scopedTodoDismissalKey(todoScope, todoKey), [todoKey, todoScope]);
   const scopedTodoBatch = useMemo(() => scopedTodoBatchKey(todoScope, todoBatch), [todoBatch, todoScope]);
-  const showTodos = shouldShowTodoPanel(todoKey, dismissedTodo, todos, { batchKey: todoBatch, batches: state.meta?.sessionPath === activeTab?.sessionPath ? state.meta?.dismissedTodoBatches : undefined });
+  const showTodos = shouldShowTodoPanel(todoKey, dismissedTodo, todos, { batchKey: todoBatch, batches: !remoteSurfaceActive && state.meta?.sessionPath === activeTab?.sessionPath ? state.meta?.dismissedTodoBatches : undefined });
   const dismissTodos = useCallback(() => {
     if (!scopedTodoKey) return;
     setDismissedTodoKeys((current) => {
@@ -2134,8 +2135,8 @@ export default function App() {
       saveDismissedTodoKeys(next);
       return next;
     });
-    if (activeTabId && todoBatch) void app.DismissTodoBatchForTab(activeTabId, todoBatch).catch(() => undefined);
-  }, [activeTabId, scopedTodoKey, todoBatch]);
+    if (!remoteSurfaceActive && activeTabId && todoBatch) void app.DismissTodoBatchForTab(activeTabId, todoBatch).catch(() => undefined);
+  }, [activeTabId, remoteSurfaceActive, scopedTodoKey, todoBatch]);
 
   const sessionTitle = topicTitle(activeTab);
   const exportItems = remoteSurfaceActive ? remoteSession.transcript.items : state.items;
@@ -3006,33 +3007,32 @@ export default function App() {
 
   useEffect(() => { setVerificationRevealRequest(null); }, [activeTabId, state.completionSummary, state.turnStartAt]);
 
-  const toggleTerminalPanel = useCallback(() => {
+  const toggleTerminalPanel = useCallback(() => { if (remoteSurfaceActive) return;
     setTerminalPanelOpen((prev) => {
       const next = !prev;
       saveTerminalPanelOpen(next);
       return next;
     });
-  }, [setTerminalPanelOpen]);
+  }, [remoteSurfaceActive, setTerminalPanelOpen]);
 
   const openTerminalForPath = useCallback(
-    (path = ".") => {
+    (path = ".") => { if (remoteSurfaceActive) return;
       setTerminalPanelOpen(true);
       saveTerminalPanelOpen(true);
       if (!activeTabId) return;
       void useTerminalStore.getState().createSession(activeTabId, path || ".", "default").catch(() => {});
     },
-    [activeTabId, setTerminalPanelOpen],
+    [activeTabId, remoteSurfaceActive, setTerminalPanelOpen],
   );
 
   useGlobalShortcut("terminal.toggle", () => {
     toggleTerminalPanel();
   }, [toggleTerminalPanel]);
   useGlobalShortcut("terminal.newSession", () => {
-    if (!activeTabId) return;
-    setTerminalPanelOpen(true);
-    saveTerminalPanelOpen(true);
+    if (!activeTabId || remoteSurfaceActive) return;
+    setTerminalPanelOpen(true); saveTerminalPanelOpen(true);
     void useTerminalStore.getState().createSession(activeTabId, ".", "default").catch(() => {});
-  }, [activeTabId, setTerminalPanelOpen]);
+  }, [activeTabId, remoteSurfaceActive, setTerminalPanelOpen]);
 
   useEffect(() => {
     if (!remoteExplorerOpen) return;
@@ -3128,9 +3128,9 @@ export default function App() {
         "--chat-min-width": `${chatReservedWidth}px`,
         "--workspace-width": `${workspacePanelRenderWidth}px`,
         "--workspace-resizer-width": `${WORKSPACE_RESIZER_WIDTH}px`,
-        "--terminal-height": `${liveTerminalHeight ?? (terminalPanelOpen ? terminalRenderHeight : 0)}px`,
+        "--terminal-height": `${terminalSurfaceOpen ? liveTerminalHeight ?? terminalRenderHeight : 0}px`,
       }) as CSSProperties,
-    [chatReservedWidth, liveTerminalHeight, sidebarRenderWidth, terminalPanelOpen, terminalRenderHeight, workspacePanelRenderWidth],
+    [chatReservedWidth, liveTerminalHeight, sidebarRenderWidth, terminalRenderHeight, terminalSurfaceOpen, workspacePanelRenderWidth],
   );
 
   const setWorkspacePanel = useCallback((open: boolean) => {
@@ -4126,8 +4126,8 @@ export default function App() {
           .catch((err) => showToast(err instanceof Error ? err.message : String(err), "error"));
       },
     }));
-    return [...cmds, ...extensionItems, ...remoteItems, ...sessionItems];
-  }, [t, paletteSessions, paletteExtensionActions, remoteHosts, remoteStatuses, activeTab?.id, handleNewTab, openTrash, onResumeSession, openRemoteWorkspaceFromStatus, connectAndOpenRemoteWorkspace, openRightDockMode, showToast]);
+    return [...(remoteSurfaceActive ? cmds.filter((item) => item.id !== "cmd-terminal") : cmds), ...extensionItems, ...remoteItems, ...sessionItems];
+  }, [t, paletteSessions, paletteExtensionActions, remoteHosts, remoteStatuses, activeTab?.id, handleNewTab, openTrash, onResumeSession, openRemoteWorkspaceFromStatus, connectAndOpenRemoteWorkspace, openRightDockMode, remoteSurfaceActive, showToast]);
   // Delete / rename act on disk, then re-fetch so the panel reflects the change.
   const onDeleteSession = useCallback(
     async (path: string) => {
@@ -4409,7 +4409,7 @@ export default function App() {
           effectiveWorkspacePanelGridOpen ? "layout--workspace-open" : "",
           workspacePanelOverlay ? "layout--workspace-overlay" : "",
           "layout--terminal-drawer-open",
-          terminalPanelOpen ? "layout--terminal-drawer-expanded" : "",
+          terminalSurfaceOpen ? "layout--terminal-drawer-expanded" : "",
           terminalResizing ? "layout--terminal-resizing" : "",
           workspacePanelOpen && workspacePanelMaximized ? "layout--workspace-maximized" : "",
           workspacePanelResizing ? "layout--resizing layout--workspace-resizing" : "",
@@ -4789,7 +4789,7 @@ export default function App() {
                   getSessionMarkdown={getSessionMarkdown}
                   exportSession={(format) => void exportSession(format)}
                   openChangedDock={() => openRightDockMode("changed")}
-                  toggleTerminal={toggleTerminalPanel}
+                  toggleTerminal={toggleTerminalPanel} terminalEnabled={!remoteSurfaceActive}
                   prefetchTerminal={prefetchTerminalPanel}
                   openSessionSummary={() => setTasksOpen((open) => open ? false : "session")}
                   tasksOpen={Boolean(tasksOpen)}
@@ -4945,7 +4945,7 @@ export default function App() {
           </main>
 
           {!sidebarImDetailConnection && (
-          <footer className={["footer", terminalPanelOpen && !sidebarCreation ? "footer--compact" : "", visibleDecisionSurface ? "footer--decision" : ""].filter(Boolean).join(" ")} ref={footerRef}>
+          <footer className={["footer", terminalSurfaceOpen && !sidebarCreation ? "footer--compact" : "", visibleDecisionSurface ? "footer--decision" : ""].filter(Boolean).join(" ")} ref={footerRef}>
             {!runtimeTransitioning && showTodos && (
               <TodoPanel
                 key={scopedTodoBatch}
@@ -5322,7 +5322,7 @@ export default function App() {
                     onRequestPanelWidth={ensureWorkspacePanelWidth}
                     onFileTreeRefresh={refreshComposerFileRefs}
                     onSessionRevertCommitted={handleSessionRevertCommitted}
-                    onOpenInTerminal={openTerminalForPath}
+                    onOpenInTerminal={remoteSurfaceActive ? undefined : openTerminalForPath}
                     initialViewMode={rightDockMode === "changed" ? "changed" : "files"}
                     completionSummary={state.completionSummary}
                     turnStartAt={state.turnStartAt}
@@ -5340,15 +5340,15 @@ export default function App() {
           <aside
             className="terminal-drawer"
             aria-label={t("terminal.title")}
-            aria-hidden={!terminalPanelOpen} inert={!terminalPanelOpen ? true : undefined}
+            aria-hidden={!terminalSurfaceOpen} inert={!terminalSurfaceOpen ? true : undefined}
           >
-            {terminalContentVisible && (
+            {!remoteSurfaceActive && terminalContentVisible && (
               <Suspense fallback={<div className="terminal-empty"><span className="terminal-empty__spinner" />{t("terminal.loading")}</div>}>
                 <TerminalPanel
                   tabId={activeTabId ?? ""}
                   cwd={state.meta?.cwd}
                   readOnly={Boolean(activeTab?.readOnly)}
-                  open={terminalPanelOpen} fitEnabled={terminalFitEnabled}
+                  open={terminalSurfaceOpen} fitEnabled={terminalFitEnabled}
                   onClose={() => {
                     setTerminalPanelOpen(false);
                     saveTerminalPanelOpen(false);
@@ -5368,8 +5368,8 @@ export default function App() {
             aria-valuemin={TERMINAL_MIN_HEIGHT}
             aria-valuemax={terminalResizeMaxHeight}
             aria-valuenow={liveTerminalHeight ?? terminalRenderHeight}
-            aria-hidden={!terminalPanelOpen}
-            tabIndex={terminalPanelOpen ? 0 : -1}
+            aria-hidden={!terminalSurfaceOpen}
+            tabIndex={terminalSurfaceOpen ? 0 : -1}
             onPointerDown={startTerminalResize}
             onKeyDown={resizeTerminalWithKeyboard}
             onDoubleClick={() => {

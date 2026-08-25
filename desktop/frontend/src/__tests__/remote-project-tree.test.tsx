@@ -28,6 +28,7 @@ const modeActionsSource = readFileSync(resolve(here, "../lib/useComposerModeActi
 const composerSource = readFileSync(resolve(here, "../components/Composer.tsx"), "utf8");
 const contentMenuSource = readFileSync(resolve(here, "../components/ComposerContentMenuActions.tsx"), "utf8");
 const remoteIntegrationSource = readFileSync(resolve(here, "../lib/useRemoteComposerIntegration.ts"), "utf8");
+const topicbarMenuSource = readFileSync(resolve(here, "../components/TopicbarMoreMenuContent.tsx"), "utf8");
 
 ok(
   /remoteSession: \{ hostId: node\.remote!\.hostId, workspace: node\.remote!\.workspace, name: row\.name \}/.test(remoteSource) &&
@@ -127,6 +128,17 @@ ok(
 ok(
   /session\.pauseGoal\(\)/.test(remoteIntegrationSource) && /session\.resumeGoal\(\)/.test(remoteIntegrationSource),
   "remote Goal pause and resume actions route to the remote session",
+);
+ok(
+  /for \(let i = visibleRuntimeState\.items\.length - 1/.test(appSource) &&
+    /!remoteSurfaceActive && activeTabId && todoBatch/.test(appSource),
+  "remote todo shelf projects the visible transcript without calling the local dismissal backend",
+);
+ok(
+  /if \(remoteSurfaceActive\) return;[\s\S]*?setTerminalPanelOpen/.test(appSource) &&
+    /!remoteSurfaceActive && terminalContentVisible/.test(appSource) &&
+    /disabled=\{!terminalEnabled\}/.test(topicbarMenuSource),
+  "remote surfaces disable terminal shortcuts, mounting, and menu actions",
 );
 ok(
   /Promise\.allSettled\(\[[\s\S]*?SetRemoteTabGoal\(activeTabId, goal\)[\s\S]*?SetRemoteTabPlanMode\(activeTabId, collaborationMode === "plan"\)/.test(modeActionsSource),

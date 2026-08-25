@@ -283,6 +283,59 @@ func TestRemoteResumeBusyKeepsCurrentSessionReady(t *testing.T) {
 	}
 }
 
+func TestRemoteResumeLeaseConflictFailsAttach(t *testing.T) {
+	fs := newFakeServe(t, "s3cret", []serveSessionEntry{{Name: "saved", Path: "/saved.jsonl", Title: "Saved"}})
+	fs.mu.Lock()
+	fs.failEnter = "this session is in use by another Reasonix window or process"
+	fs.mu.Unlock()
+	kernel := &fakeRemoteKernel{
+		statuses:   []RemoteConnectionStatusView{{HostID: "box", State: "connected"}},
+		ensureView: RemoteServerView{HostID: "box", State: "ready", LocalURL: fs.server.URL}, ensureToken: "s3cret",
+	}
+	seedBridgeTestHost(t, "box")
+	a := &App{remoteRuntime: kernel}
+	cleanupRemoteTabPumps(t, a)
+	meta, err := a.OpenRemoteProjectTab("box", "~/app", RemoteTabOpenOptions{SessionName: "saved"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForTabState(t, a, meta.ID, "error")
+	a.remoteTabMu.Lock()
+	state, message, client := a.remoteTabs[meta.ID].state, a.remoteTabs[meta.ID].err, a.remoteTabs[meta.ID].client
+	a.remoteTabMu.Unlock()
+	if state != "error" || !strings.Contains(message, "session is in use") || client != nil {
+		t.Fatalf("lease-conflict attach state/error/client = %q/%q/%v", state, message, client)
+	}
+}
+
+func TestRemoteSnapshotRejectsChangedGeneration(t *testing.T) {
+	fs := newFakeServe(t, "s3cret", nil)
+	kernel := &fakeRemoteKernel{
+		statuses:   []RemoteConnectionStatusView{{HostID: "box", State: "connected"}},
+		ensureView: RemoteServerView{HostID: "box", State: "ready", LocalURL: fs.server.URL}, ensureToken: "s3cret",
+	}
+	seedBridgeTestHost(t, "box")
+	a := &App{remoteRuntime: kernel}
+	cleanupRemoteTabPumps(t, a)
+	meta := openReadyRemoteTab(t, a, RemoteTabOpenOptions{NewSession: true})
+	fs.mu.Lock()
+	fs.historyStarted = make(chan struct{}, 1)
+	fs.historyRelease = make(chan struct{})
+	started, release := fs.historyStarted, fs.historyRelease
+	fs.mu.Unlock()
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := a.RemoteTabSnapshot(meta.ID)
+		errCh <- err
+	}()
+	<-started
+	a.suspendRemoteTabPumps("box", "reconnecting", "")
+	close(release)
+	if err := <-errCh; err == nil || !strings.Contains(err.Error(), "changed while loading snapshot") {
+		t.Fatalf("snapshot error = %v, want generation fence", err)
+	}
+}
+
 func TestRemoteStopAndCloseCancelsBeforeRemovingTab(t *testing.T) {
 	fs := newFakeServe(t, "s3cret", nil)
 	fs.mu.Lock()
@@ -293,7 +346,7 @@ func TestRemoteStopAndCloseCancelsBeforeRemovingTab(t *testing.T) {
 		statuses:   []RemoteConnectionStatusView{{HostID: "box", State: "connected"}},
 		ensureView: RemoteServerView{HostID: "box", State: "ready", LocalURL: fs.server.URL}, ensureToken: "s3cret",
 	}
-	seedBridgeTestHost(t, "box")
+	seedClassicBridgeTestHost(t, "box")
 	a := &App{remoteRuntime: kernel}
 	cleanupRemoteTabPumps(t, a)
 	meta := openReadyRemoteTab(t, a, RemoteTabOpenOptions{NewSession: true})
