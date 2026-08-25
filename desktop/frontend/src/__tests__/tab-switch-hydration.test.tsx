@@ -466,7 +466,6 @@ eq(newSessionTargets.join(","), "tab-b", "newSession keeps the selected tab as i
 
 await act(async () => {
   setActiveBGate.resolve();
-  await switchToB;
   await newSessionWhileSwitching;
   await flushPromises();
 });
@@ -483,6 +482,7 @@ eq(historyCalls.length, historyCallsBeforeReturnToA, "cached idle tab skips hist
 
 await act(async () => {
   historyB.resolve([userMessage("late B")]);
+  await switchToB;
   await historyB.promise;
   await flushPromises();
 });
