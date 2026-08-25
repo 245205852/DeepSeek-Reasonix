@@ -358,9 +358,15 @@ Remote-side state lives under the remote host's `~/.reasonix/remote/`:
 `serve-<slug>.token` (0600; the auth token, passed to serve via `--token-file`
 so it never appears in `ps`), and `serve-<slug>.log`.
 
-In the desktop app, manage hosts under **Settings -> Remote SSH**, then use the
-status-bar chip or the host row's **Remote explorer** button to browse and edit
-files over SFTP, manage port forwards, and start/open the remote workspace.
+In the desktop app, manage hosts under **Settings -> Remote SSH**. To add a
+remote project from the project tree, open the add-project menu and choose
+**Remote connection**. The three-step wizard saves or reuses an SSH host,
+connects and verifies that the remote OS is supported, then lets you browse and
+choose a workspace before opening it in the existing remote window. The key-file
+button uses the native file picker so the saved identity is always an absolute
+desktop path. You can also use the status-bar chip or the host row's **Remote
+explorer** button to browse and edit files over SFTP, manage port forwards, and
+start/open the remote workspace.
 Opening a workspace creates a separate native Reasonix window, similar to a
 VS Code Remote SSH window. The primary window owns the SSH tunnel; the remote
 window is an isolated, lightweight shell and does not restore or acquire local
