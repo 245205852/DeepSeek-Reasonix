@@ -191,6 +191,20 @@ export function projectTreeFolderKeyForTopic(tree: ProjectNode[], topicId: strin
   return "";
 }
 
+export function projectTreeFolderKeyForSession(tree: ProjectNode[], sessionPath: string): string {
+  const path = sessionPath.trim();
+  if (!path) return "";
+  const containsSession = (nodes: ProjectNode[]): boolean => nodes.some((node) =>
+    (isRuntimeSessionNode(node) && node.sessionPath?.trim() === path)
+    || containsSession(asArray(node.children)),
+  );
+  for (const node of tree) {
+    if (node.kind !== "project" && node.kind !== "global_folder") continue;
+    if (containsSession(asArray(node.children))) return node.key;
+  }
+  return "";
+}
+
 export function invalidateProjectTreeTopicLoads(sequences: Record<string, number>, keys: Iterable<string>): void {
   for (const key of keys) sequences[key] = (sequences[key] ?? 0) + 1;
 }

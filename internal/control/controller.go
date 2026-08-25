@@ -2125,16 +2125,7 @@ func (c *Controller) RuntimeStatus() RuntimeStatus {
 	canceling := c.canceling
 	c.mu.Unlock()
 	pending := c.approval.hasPending()
-	backgroundJobs := 0
-	for _, job := range c.Jobs() {
-		// An interrupted background job is already stopped. It must not keep a
-		// session permanently blocked from close/archive; the durable tombstone
-		// can be cleaned up separately.
-		if job.Status == string(jobs.Interrupted) {
-			continue
-		}
-		backgroundJobs++
-	}
+	backgroundJobs := len(c.Jobs())
 	return RuntimeStatus{
 		Running:         active,
 		PendingPrompt:   pending,

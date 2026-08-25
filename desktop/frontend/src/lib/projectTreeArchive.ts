@@ -1,6 +1,6 @@
 import { useCallback, useRef, useState } from "react";
 import { app } from "./bridge";
-import { invalidateProjectTreeTopicLoads, projectTreeFolderKeyForTopic } from "./projectTreeTopic";
+import { invalidateProjectTreeTopicLoads, projectTreeFolderKeyForSession, projectTreeFolderKeyForTopic } from "./projectTreeTopic";
 import type { ToastContextValue } from "./toast";
 import type { ProjectNode } from "./types";
 
@@ -30,6 +30,18 @@ export async function reloadProjectTreeTopics(
 
 export function enqueueProjectTreeArchive(previous: Promise<void>, work: () => Promise<void>): Promise<void> {
   return previous.catch(() => undefined).then(work);
+}
+
+export function projectTreeTopicArchiveTargetKey(
+  scope: "global" | "project",
+  workspaceRoot: string,
+  topicId: string,
+): string {
+  return JSON.stringify(["topic", scope, workspaceRoot.trim(), topicId.trim()]);
+}
+
+export function projectTreeSessionArchiveTargetKey(sessionPath: string): string {
+  return JSON.stringify(["session", sessionPath.trim()]);
 }
 
 export async function runProjectTreeArchiveJob({
@@ -128,6 +140,8 @@ export function useProjectTreeArchiveController({
     releaseArchiveTombstone,
     currentArchiveTombstones,
   } = useProjectTreeArchiveState();
+  const sessionTrashingRef = useRef<Set<string>>(new Set());
+  const [trashingSessions, setTrashingSessions] = useState<Set<string>>(new Set());
   const archiveQueueRef = useRef<Promise<void>>(Promise.resolve());
 
   const trashTopic = useCallback(async (topicId: string) => {
@@ -174,5 +188,34 @@ export function useProjectTreeArchiveController({
     await queued;
   }, [beginTrashingTopic, closeMenu, endTrashingTopic, onTopicsChanged, optimisticallyRemoveTopic, refreshRef, releaseArchiveTombstone, showToast, topicLoadSeqRef, topicPageStateRef, treeRef, updateTopicPageState]);
 
-  return { trashingTopics, currentArchiveTombstones, trashTopic };
+  const trashSession = useCallback(async (rawSessionPath: string) => {
+    const sessionPath = rawSessionPath.trim();
+    if (!sessionPath || sessionTrashingRef.current.has(sessionPath)) return;
+    const folderKey = projectTreeFolderKeyForSession(treeRef.current, sessionPath);
+    const reloadOptions: ProjectTreeRefreshOptions = {
+      reloadTopicKeys: folderKey ? [folderKey] : undefined,
+      reloadAllTopics: !folderKey,
+    };
+    sessionTrashingRef.current = projectTreeTrashingTopics(sessionTrashingRef.current, sessionPath, true);
+    setTrashingSessions(sessionTrashingRef.current);
+    closeMenu();
+
+    const queued = enqueueProjectTreeArchive(archiveQueueRef.current, async () => {
+      try {
+        await app.DeleteSession(sessionPath);
+        await refreshRef.current(reloadOptions);
+        await Promise.resolve(onTopicsChanged?.()).catch(() => undefined);
+      } catch (err) {
+        showToast(err instanceof Error ? err.message : String(err), "error");
+        await refreshRef.current(reloadOptions).catch(() => undefined);
+      } finally {
+        sessionTrashingRef.current = projectTreeTrashingTopics(sessionTrashingRef.current, sessionPath, false);
+        setTrashingSessions(sessionTrashingRef.current);
+      }
+    });
+    archiveQueueRef.current = queued;
+    await queued;
+  }, [closeMenu, onTopicsChanged, refreshRef, showToast, treeRef]);
+
+  return { trashingTopics, trashingSessions, currentArchiveTombstones, trashTopic, trashSession };
 }

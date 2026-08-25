@@ -1,11 +1,14 @@
 import assert from "node:assert/strict";
 import {
   enqueueProjectTreeArchive,
+  projectTreeSessionArchiveTargetKey,
+  projectTreeTopicArchiveTargetKey,
   projectTreeTrashingTopics,
   runProjectTreeArchiveJob,
 } from "../lib/projectTreeArchive";
 import {
   invalidateProjectTreeTopicLoads,
+  projectTreeFolderKeyForSession,
   projectTreeWithoutTopics,
 } from "../lib/projectTreeTopic";
 import type { ProjectNode } from "../lib/types";
@@ -131,6 +134,40 @@ async function testFailedArchiveRestoresVisibilityBeforeRecoveryReload() {
   assert.equal(recoveryObservedPending, false);
 }
 
+function testArchiveTargetsDoNotCollideAcrossRows() {
+  assert.notEqual(
+    projectTreeTopicArchiveTargetKey("project", "/a", "shared"),
+    projectTreeTopicArchiveTargetKey("project", "/b", "shared"),
+    "same-id topics in different projects keep independent confirmations",
+  );
+  assert.notEqual(
+    projectTreeSessionArchiveTargetKey("/a/one.jsonl"),
+    projectTreeSessionArchiveTargetKey("/a/two.jsonl"),
+    "sessions in one topic keep independent confirmations",
+  );
+}
+
+function testSessionArchiveReloadsItsOwningFolder() {
+  const tree: ProjectNode[] = [{
+    key: "project-a",
+    kind: "project",
+    label: "Project A",
+    children: [{
+      key: "topic-a",
+      kind: "topic",
+      label: "Topic A",
+      children: [{
+        key: "session-a",
+        kind: "session",
+        label: "Session A",
+        sessionPath: " /sessions/a.jsonl ",
+      }],
+    }],
+  }];
+  assert.equal(projectTreeFolderKeyForSession(tree, "/sessions/a.jsonl"), "project-a");
+  assert.equal(projectTreeFolderKeyForSession(tree, "/sessions/missing.jsonl"), "");
+}
+
 function testProjectTreeWiresEveryRaceGuard() {
   const source = readFileSync(
     join(dirname(fileURLToPath(import.meta.url)), "../components/ProjectTree.tsx"),
@@ -140,12 +177,21 @@ function testProjectTreeWiresEveryRaceGuard() {
     join(dirname(fileURLToPath(import.meta.url)), "../lib/projectTreeArchive.ts"),
     "utf8",
   );
+  const sessionMenuSource = readFileSync(
+    join(dirname(fileURLToPath(import.meta.url)), "../components/ProjectTreeSessionArchiveMenu.tsx"),
+    "utf8",
+  );
   assert.match(archiveSource, /invalidateProjectTreeTopicLoads[\s\S]*optimisticallyRemoveTopic\(topicId\)/);
   assert.match(source, /projectTreeWithoutTopics\(asArray\(page\.items\), currentArchiveTombstones\(\)\)/);
   assert.match(archiveSource, /archiveQueueRef\.current\.catch[\s\S]*\.then\(async \(\) =>/);
   assert.match(archiveSource, /pendingLoads = targets\.map[\s\S]*onReloadStarted[\s\S]*await Promise\.all\(pendingLoads\)/);
   assert.match(archiveSource, /onReloadStarted: \(\) => releaseArchiveTombstone\(topicId\)/);
   assert.match(archiveSource, /await refreshRef\.current\(reloadOptions\)[\s\S]*finally \{[\s\S]*endTrashingTopic\(topicId\)/);
+  assert.match(source, /const topicMenuOpen = menuNodeKey === key/);
+  assert.match(source, /node\.sessionPath \?\? ""/);
+  assert.match(sessionMenuSource, /disabled: !sessionPath \|\| blocked \|\| busy/);
+  assert.match(source, /void trashSession\(sessionPath\)/);
+  assert.match(archiveSource, /projectTreeFolderKeyForSession\(treeRef\.current, sessionPath\)[\s\S]*refreshRef\.current\(reloadOptions\)/);
 }
 
 await testLatePreArchivePageCannotReinsertTopic();
@@ -154,5 +200,7 @@ await testPostCommitRestoreCanWinWhilePendingIndicatorFinishes();
 await testConcurrentArchivesReachBackendSerially();
 await testPendingEndsOnlyAfterCanonicalReload();
 await testFailedArchiveRestoresVisibilityBeforeRecoveryReload();
+testArchiveTargetsDoNotCollideAcrossRows();
+testSessionArchiveReloadsItsOwningFolder();
 testProjectTreeWiresEveryRaceGuard();
-console.log("project tree archive race: 7 passed");
+console.log("project tree archive race: 9 passed");
