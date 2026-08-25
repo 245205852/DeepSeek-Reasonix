@@ -1,13 +1,44 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
+	"log"
 	"strings"
 	"testing"
 	"time"
 
 	"reasonix/internal/config"
 )
+
+func TestRemoteTabReconnectDoesNotLogEnsureServerSecrets(t *testing.T) {
+	const secret = "sk-sensitive-reconnect-error"
+	kernel := &fakeRemoteKernel{ensureErr: errors.New("remote bootstrap failed: " + secret)}
+	a := &App{
+		remoteRuntime: kernel,
+		remoteTabs: map[string]*remoteTab{
+			"remote-1": {
+				id:    "remote-1",
+				ref:   RemoteTabRef{HostID: "box", Workspace: "~/app"},
+				state: "reconnecting",
+			},
+		},
+	}
+
+	var logs bytes.Buffer
+	previousWriter := log.Writer()
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(previousWriter) })
+
+	a.reattachRemoteTab("remote-1")
+	if strings.Contains(logs.String(), secret) {
+		t.Fatalf("reconnect log exposed EnsureServer error: %q", logs.String())
+	}
+	if !strings.Contains(logs.String(), "EnsureServer NOT-READY") {
+		t.Fatalf("reconnect failure was not logged structurally: %q", logs.String())
+	}
+}
 
 func TestSetRemoteTabModelFailureKeepsPreviousModel(t *testing.T) {
 	isolateDesktopUserDirs(t)

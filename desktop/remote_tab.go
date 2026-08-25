@@ -680,7 +680,10 @@ func (a *App) reattachRemoteTab(tabID string) {
 	}
 	view, token, err := rt.EnsureServer(ctx, hostID, workspace)
 	if err != nil || view.State != "ready" || view.LocalURL == "" {
-		log.Printf("[remote] reattachRemoteTab: EnsureServer NOT-READY tab=%s err=%v state=%s localURL=%q", tabID, err, view.State, view.LocalURL)
+		// EnsureServer errors can include remote process output, including
+		// provider credentials forwarded during bootstrap. Keep reconnect
+		// diagnostics structural so secrets can never reach desktop logs.
+		log.Printf("[remote] reattachRemoteTab: EnsureServer NOT-READY tab=%s state=%s localURL=%q", tabID, view.State, view.LocalURL)
 		return
 	}
 	callCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
