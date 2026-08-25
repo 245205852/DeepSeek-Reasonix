@@ -24975,6 +24975,10 @@ body > .mermaid-diagram--fullscreen {
   background: var(--list-row-hover-bg);
 }
 
+.project-tree__topic--remote-static:hover {
+  background: transparent;
+}
+
 .project-tree__topic--active:hover {
   background: color-mix(in srgb, var(--project-accent, var(--accent)) 10%, var(--sidebar-hover));
 }
@@ -39243,4 +39247,43 @@ body > .mermaid-diagram--fullscreen {
   :root:not([data-theme]) .topicbar {
     background: #f5f6f9 !important;
   }
+}
+/* ── Remote project group extras (badge + session rows) ───────────────── */
+.project-tree__remote-badge {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-left: 6px;
+  border-radius: 50%;
+  background: var(--fg-faint);
+  vertical-align: middle;
+}
+.project-tree__remote-badge--connected,
+.project-tree__remote-badge--degraded {
+  background: var(--ok);
+}
+.project-tree__remote-badge--connecting,
+.project-tree__remote-badge--reconnecting,
+.project-tree__remote-badge--pending_hostkey {
+  background: var(--warn, var(--fg));
+}
+.project-tree__remote-badge--stopped,
+.project-tree__remote-badge--disconnected {
+  background: var(--fg-faint);
+}
+.project-tree__remote-badge--error {
+  background: var(--danger, var(--fg));
+}
+/* Per-workspace serve state: green only when that group's serve is ready. */
+.project-tree__remote-badge--serve-ready {
+  background: var(--ok);
+}
+.project-tree__remote-badge--serve-busy {
+  background: var(--warn, var(--fg));
+}
+.project-tree__remote-badge--serve-error {
+  background: var(--danger, var(--fg));
+}
+.project-tree__remote-badge--serve-idle {
+  background: var(--fg-faint);
 }

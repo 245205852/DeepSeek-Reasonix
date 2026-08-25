@@ -15,18 +15,20 @@ import (
 
 // fakeRemoteKernel implements remoteKernel for binding-layer tests.
 type fakeRemoteKernel struct {
-	hosts           []RemoteHostView
-	statuses        []RemoteConnectionStatusView
-	writeResult     RemoteWriteResult
-	ensureView      RemoteServerView
-	ensureToken     string
-	ensureErr       error
-	platformErr     error
-	platformChecks  []string
-	resolveCalls    []bool
-	secretCalls     []remoteSecretAnswer
-	secretPromptIDs []string
-	closed          bool
+	hosts             []RemoteHostView
+	statuses          []RemoteConnectionStatusView
+	writeResult       RemoteWriteResult
+	ensureView        RemoteServerView
+	ensureToken       string
+	ensureErr         error
+	ensureCalls       int
+	platformErr       error
+	platformChecks    []string
+	stoppedWorkspaces []string
+	resolveCalls      []bool
+	secretCalls       []remoteSecretAnswer
+	secretPromptIDs   []string
+	closed            bool
 }
 
 func TestRemoteConnectionErrorDetailsPreserveHostKeyMismatch(t *testing.T) {
@@ -104,11 +106,21 @@ func (f *fakeRemoteKernel) AddForward(string, RemoteForwardInput) (RemoteForward
 }
 func (f *fakeRemoteKernel) RemoveForward(string, string) error { return nil }
 func (f *fakeRemoteKernel) EnsureServer(context.Context, string, string) (RemoteServerView, string, error) {
+	f.ensureCalls++
 	return f.ensureView, f.ensureToken, f.ensureErr
 }
-func (f *fakeRemoteKernel) StopServer(string) error              { return nil }
-func (f *fakeRemoteKernel) ServerStatus(string) RemoteServerView { return f.ensureView }
-func (f *fakeRemoteKernel) ServerLogs(context.Context, string, int) (string, error) {
+func (f *fakeRemoteKernel) StopServer(_ string, workspace string) error {
+	f.stoppedWorkspaces = append(f.stoppedWorkspaces, workspace)
+	return nil
+}
+func (f *fakeRemoteKernel) ServeSnapshot(string, string) (RemoteServerView, string, bool) {
+	if f.ensureErr != nil || f.ensureView.State != "ready" || f.ensureView.LocalURL == "" || f.ensureToken == "" {
+		return RemoteServerView{}, "", false
+	}
+	return f.ensureView, f.ensureToken, true
+}
+func (f *fakeRemoteKernel) ServerStatus(string, string) RemoteServerView { return f.ensureView }
+func (f *fakeRemoteKernel) ServerLogs(context.Context, string, string, int) (string, error) {
 	return "log line", nil
 }
 
@@ -503,7 +515,9 @@ func TestOpenRemoteWorkspacePersistsLastWorkspace(t *testing.T) {
 	t.Setenv("REASONIX_HOME", home)
 	t.Setenv("HOME", home)
 	a := &App{ctx: context.Background()}
-	a.saveLastRemoteWorkspace("box", "/home/dev/app")
+	if err := a.saveLastRemoteWorkspace("box", "/home/dev/app"); err != nil {
+		t.Fatal(err)
+	}
 	got := a.RemoteLastWorkspace("box")
 	if got != "/home/dev/app" {
 		t.Fatalf("last workspace = %q, want /home/dev/app", got)

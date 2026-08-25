@@ -1,7 +1,7 @@
 // Run: tsx src/__tests__/remote-connect-wizard.test.tsx
 
-import { JSDOM } from "jsdom";
 import React from "react";
+import { JSDOM } from "jsdom";
 import { act } from "react";
 
 import type { AppBindings } from "../lib/bridge";
@@ -44,8 +44,8 @@ const [{ createRoot }, { RemoteConnectWizard }, { LocaleProvider }, { useRemoteS
 // Bridge call tape: every remote method appends "<name>:<detail>".
 const tape: string[] = [];
 const savedHosts: RemoteHostView[] = [
-  { id: "gpu-box", label: "gpu-box", host: "192.168.1.10", port: 22, user: "dev", identityFile: "~/.ssh/id_ed25519", proxyJump: "", defaultWorkspace: "", serveInstall: "auto", useSSHConfig: false },
-  { id: "pw-box", label: "pw-box", host: "10.0.0.8", port: 22, user: "ops", identityFile: "", proxyJump: "", defaultWorkspace: "", serveInstall: "auto", useSSHConfig: false, passwordSet: true },
+  { id: "gpu-box", label: "gpu-box", host: "192.168.1.10", port: 22, user: "dev", identityFile: "~/.ssh/id_ed25519", proxyJump: "", defaultWorkspace: "", serveInstall: "auto", credentialMode: "remote", useSSHConfig: false },
+  { id: "pw-box", label: "pw-box", host: "10.0.0.8", port: 22, user: "ops", identityFile: "", proxyJump: "", defaultWorkspace: "", serveInstall: "auto", credentialMode: "remote", useSSHConfig: false, passwordSet: true },
 ];
 let hostCount = 0;
 
@@ -67,9 +67,7 @@ async function flush(ticks = 20) {
 // Real-time wait: the ConnectRemoteHost mock holds the connecting step for a
 // 20ms macrotask so the log panel renders; microtask flushes cannot cover it.
 function delay(ms: number): Promise<void> {
-  const { promise, resolve } = Promise.withResolvers<void>();
-  setTimeout(resolve, ms);
-  return promise;
+  return new Promise<void>((resolve) => setTimeout(resolve, ms));
 }
 
 const dirs: Record<string, Array<{ name: string; path: string; isDir: boolean }>> = {
@@ -88,15 +86,18 @@ let connectAttempts = 0;
 // Platform-gate attempt counter: the first check models a Windows SSH host
 // (uname reports MINGW64); later checks pass.
 let platformAttempts = 0;
+// Last AddRemoteHost payload, for credential-mode assertions.
+let lastAddInput: RemoteHostInput | undefined;
 window.go = { main: { App: {
   async RemoteHosts() {
     tape.push("RemoteHosts");
     return savedHosts.slice();
   },
   async AddRemoteHost(input: RemoteHostView & { label?: string; host?: string }) {
-    tape.push(`AddRemoteHost:${input.label}:${input.host}`);
+    lastAddInput = input as unknown as RemoteHostInput;
+    tape.push(`AddRemoteHost:${input.label}:${input.host}:${(input as RemoteHostInput).credentialMode ?? ""}`);
     hostCount += 1;
-    const view = { id: `new-${hostCount}`, label: String(input.label), host: String(input.host), port: 22, user: "", identityFile: "", proxyJump: "", defaultWorkspace: "", serveInstall: "npm", useSSHConfig: false } as RemoteHostView;
+    const view = { id: `new-${hostCount}`, label: String(input.label), host: String(input.host), port: 22, user: "", identityFile: "", proxyJump: "", defaultWorkspace: "", serveInstall: "npm", credentialMode: "remote", useSSHConfig: false } as RemoteHostView;
     savedHosts.push(view);
     return view;
   },
@@ -126,9 +127,7 @@ window.go = { main: { App: {
     // per attempt: first stopped+error → waitForRemoteConnection rejects
     // immediately and the wizard stays on the connecting step; later
     // attempts connected → the flow proceeds to the platform check.
-    const { promise, resolve } = Promise.withResolvers<void>();
-    setTimeout(resolve, 60);
-    await promise;
+    await new Promise<void>((resolve) => setTimeout(resolve, 60));
     connectAttempts += 1;
     if (connectAttempts === 1) {
       useRemoteStore.getState().applyStatus({ hostId, state: "stopped", error: "ssh: handshake failed" });
@@ -154,12 +153,17 @@ window.go = { main: { App: {
   async OpenRemoteWorkspace(hostId: string, workspace: string) {
     tape.push(`OpenRemoteWorkspace:${hostId}:${workspace}`);
   },
+  async AddRemoteProject(hostId: string, workspace: string) {
+    tape.push(`AddRemoteProject:${hostId}:${workspace}`);
+    return { hostId, workspace };
+  },
 } as Partial<AppBindings> as AppBindings } };
 
 function WizardHarness() {
   return (
     <LocaleProvider>
       <RemoteConnectWizard
+        onRefresh={async () => { tape.push("refresh"); }}
         onClose={() => {
           tape.push("close");
         }}
@@ -181,7 +185,7 @@ const railItems = () => [...document.querySelectorAll(".remote-wizard__rail-item
 ok(railItems().length === 3, "stepper rail lists all three steps");
 ok(railItems()[0]?.className.includes("--current") === true, "step 1 is current on open");
 ok(railItems().every((item) => !item.className.includes("--done")), "no step is done on open");
-ok(document.querySelectorAll(".remote-wizard__seg").length === 2, "auth and download use segmented sliders");
+ok(document.querySelectorAll(".remote-wizard__seg").length === 3, "auth, download, and credential mode use segmented sliders");
 const hostInput = document.querySelector<HTMLInputElement>(".remote-wizard__suggest input");
 ok(Boolean(hostInput), "config step shows the host input");
 ok(document.activeElement === hostInput, "opening the dialog focuses the first field");
@@ -371,12 +375,14 @@ ok(!document.querySelector(".remote-wizard__mkdir"), "workspace step has no crea
   });
 }
 
-// ── Finish: open through the existing remote workspace surface ──
+// ── Finish: pin, refresh, then open through the existing surface ──
 await act(async () => {
   buttonByText("Connect and open")?.click();
   await flush();
 });
 ok(tape.includes("OpenRemoteWorkspace:gpu-box:/home/dev/projects"), "finish opens the selected workspace through the available remote surface");
+ok(tape.includes("AddRemoteProject:gpu-box:/home/dev/projects"), "finish pins the selected remote workspace");
+ok(tape.indexOf("refresh") < tape.indexOf("OpenRemoteWorkspace:gpu-box:/home/dev/projects"), "the project tree refreshes before the remote window opens");
 ok(tape.includes("close"), "wizard closes after a successful finish");
 
 await act(async () => root.unmount());
@@ -401,11 +407,24 @@ await act(async () => {
   if (newPasswordInput) setInput(newPasswordInput, "s3cret");
   await Promise.resolve();
 });
+{
+  // Credential mode: a segmented control mirroring the download method;
+  // picking local-proxy must ride the AddRemoteHost payload.
+  const segButtons = Array.from(document.querySelectorAll<HTMLButtonElement>(".remote-wizard__field .provider-add-segmented__item"));
+  const localProxy = segButtons.find((b) => b.textContent?.includes("本机") || b.textContent?.includes("this computer"));
+  ok(Boolean(localProxy), "wizard host form offers the credential-mode segmented control");
+  await act(async () => {
+    localProxy?.click();
+    await Promise.resolve();
+  });
+  ok(localProxy?.className.includes("--active") === true, "local-proxy segment highlights when selected");
+}
 await act(async () => {
   buttonByText("Next")?.click();
   await flush();
 });
 ok(tape.some((entry) => entry.startsWith("AddRemoteHost:10.9.8.7:10.9.8.7")), "a new host is added (label defaults to the host)");
+ok(lastAddInput?.credentialMode === "local-proxy", `AddRemoteHost carries the chosen credential mode (got ${lastAddInput?.credentialMode})`);
 
 await act(async () => secondRoot.unmount());
 dom.window.close();

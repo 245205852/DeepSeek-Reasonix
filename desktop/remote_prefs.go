@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -19,6 +20,9 @@ type remotePrefs struct {
 	LastHostID          string            `json:"lastHostId,omitempty"`
 	LastWorkspaceByHost map[string]string `json:"lastWorkspaceByHost,omitempty"`
 	ExplorerTab         string            `json:"explorerTab,omitempty"`
+	// CredentialProxySecret is the random root of the per-host virtual tokens
+	// used by local-proxy credential mode. Rotating it revokes every token.
+	CredentialProxySecret string `json:"credentialProxySecret,omitempty"`
 }
 
 func remotePrefsPath() string {
@@ -46,19 +50,19 @@ func loadRemotePrefs() remotePrefs {
 	return p
 }
 
-func saveRemotePrefs(p remotePrefs) {
+func saveRemotePrefs(p remotePrefs) error {
 	path := remotePrefsPath()
 	if path == "" {
-		return
+		return fmt.Errorf("remote prefs: no user dir")
 	}
 	data, err := json.MarshalIndent(p, "", "  ")
 	if err != nil {
-		return
+		return fmt.Errorf("remote prefs: encode: %w", err)
 	}
-	_ = fileutil.AtomicWriteFile(path, data, 0o600)
+	return fileutil.AtomicWriteFile(path, data, 0o600)
 }
 
-func (a *App) saveLastRemoteWorkspace(hostID, workspace string) {
+func (a *App) saveLastRemoteWorkspace(hostID, workspace string) error {
 	remotePrefsMu.Lock()
 	defer remotePrefsMu.Unlock()
 	p := loadRemotePrefs()
@@ -67,7 +71,7 @@ func (a *App) saveLastRemoteWorkspace(hostID, workspace string) {
 	}
 	p.LastHostID = hostID
 	p.LastWorkspaceByHost[hostID] = workspace
-	saveRemotePrefs(p)
+	return saveRemotePrefs(p)
 }
 
 // RemoteLastWorkspace returns the last opened workspace for hostID (bound so

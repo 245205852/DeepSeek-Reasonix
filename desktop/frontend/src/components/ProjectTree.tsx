@@ -5,7 +5,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { CSSProperties, DragEvent as ReactDragEvent, KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent } from "react";
-import { Archive, ArrowDown, Pencil, Plus, Folder, FolderPlus, Search, BriefcaseBusiness, Copy, FolderOpen, XCircle, Check, ListCollapse, ListRestart, MessageSquare, Clock, Pin, MoreHorizontal, Minimize2, Maximize2, GitBranch, Sparkles } from "lucide-react";
+import { Archive, ArrowDown, Pencil, Plus, Folder, FolderPlus, Search, BriefcaseBusiness, Copy, FolderOpen, XCircle, Check, ListCollapse, ListRestart, MessageSquare, Clock, Pin, MoreHorizontal, Minimize2, Maximize2, GitBranch, Sparkles, Cloud } from "lucide-react";
 import { asArray } from "../lib/array";
 import { useToast } from "../lib/toast";
 import { app } from "../lib/bridge";
@@ -30,7 +30,7 @@ import { useProjectTreeFrontendDiagnostics, type ProjectTreeDiagnosticSnapshot }
 import { summarizeProjectTreeSessions } from "../lib/projectTreeDiagnostics";
 import { GLOBAL_PROJECT_ORDER_KEY, ProjectTreeFolderActivity, ProjectTreeGroupRows, applyProjectOrder, projectTreeProjectRoots, reorderedProjectRoots, useProjectTreeOrganization, type ProjectDropPosition } from "./ProjectTreeOrganization";
 import { ProjectTreeHeaderAddControl, ProjectTreeRemoteAction, projectTreeHeaderAddItems } from "./ProjectTreeAddControls";
-
+import { buildRemoteProjectMenuItems, remoteProjectKey, RemoteProjectSessionRows, useRemoteProjectGroups } from "./ProjectTreeRemoteGroups";
 interface ProjectTreeProps {
   activeScope?: string;
   activeWorkspaceRoot?: string;
@@ -463,6 +463,7 @@ export function ProjectTree({
     }
   }, [applyRuntimeProjection]);
   refreshRef.current = refresh;
+  const { openRemoteWindow, remoteSessions, setRemoteSessions, remoteStatuses } = useRemoteProjectGroups(tree, showToast);
 
   const { addingProject, handleAddProject, openBlankProjectFlow, blankProjectFlow, openRemoteConnectFlow, remoteConnectFlow } = useProjectCreation({
     onAddProject,
@@ -1100,8 +1101,10 @@ export function ProjectTree({
     if (!node) return null;
     const key = projectNodeKey(node, depth);
     const children = asArray(node.children);
+    const remoteGroupKey = node.remote ? remoteProjectKey(node.remote) : null;
+    const remoteRows = remoteGroupKey != null ? remoteSessions[remoteGroupKey] ?? [] : [];
     const isExpanded = query.trim() ? true : expanded.has(key);
-    const hasChildren = children.length > 0;
+    const hasChildren = children.length > 0 || remoteRows.length > 0;
     // Snapshot rows are shells with no children until the first page is loaded,
     // so every project folder must remain expandable while indexing.
     const folderDisclosure = projectTreeFolderDisclosure(hasChildren, isExpanded, true);
@@ -1495,6 +1498,7 @@ export function ProjectTree({
           onSelect: () => { void handleCreateIsolatedWorktree(projectRoot); },
         }]
       : [];
+    const remoteProjectMenuItems = node.remote ? buildRemoteProjectMenuItems({ ref: node.remote, t, closeMenu, openRemoteWindow, setRemoteSessions, refresh, showToast }) : [];
     const projectMenuItems: ContextMenuItem[] = [
       {
         key: "new-group",
@@ -1662,6 +1666,7 @@ export function ProjectTree({
       return (
         <div className={`project-tree__children${isExpanded ? " project-tree__children--expanded" : ""}`}>
           <div className="project-tree__children-inner">
+            {node.remote ? <RemoteProjectSessionRows rows={remoteRows} depth={depth} /> : null}
             <ProjectTreeGroupRows folder={node} children={windowedChildren} depth={depth + 1} section={section} visible={isVisible && isExpanded} organization={organization} renderNode={renderNode} t={t} />
             {windowToggleVisible && (
               <button
@@ -1734,6 +1739,7 @@ export function ProjectTree({
             className="project-tree__folder-main"
             style={{ paddingLeft: 8 + depth * 16 }}
             onClick={() => {
+              if (node.remote && !folderDisclosure.canExpand) return void openRemoteWindow(node.remote);
               if (folderDisclosure.canExpand) toggleExpand(key, node);
             }}
             onKeyDown={(event) => {
@@ -1744,12 +1750,13 @@ export function ProjectTree({
             aria-expanded={folderDisclosure.ariaExpanded}
           >
             <span className={folderDisclosure.iconStackClassName}>
-              {folderDisclosure.isOpen ? <FolderOpen size={14} className="project-tree__folder-icon" /> : <Folder size={14} className="project-tree__folder-icon" />}
+              {node.remote ? <Cloud size={14} className="project-tree__folder-icon" /> : folderDisclosure.isOpen ? <FolderOpen size={14} className="project-tree__folder-icon" /> : <Folder size={14} className="project-tree__folder-icon" />}
             </span>
             <span className="project-tree__folder-color" aria-hidden="true" />
             <span className={`project-tree__folder-label${!hasChildren ? " project-tree__folder-label--empty" : ""}`}>
               {projectLabel}
               {node.isolatedWorktree && <WorktreeBadge size={11} />}
+              {node.remote ? <span className={`project-tree__remote-badge project-tree__remote-badge--${remoteStatuses[node.remote.hostId]?.state ?? "disconnected"}`} aria-hidden="true" /> : null}
             </span>
             <ProjectTreeFolderActivity folder={node} />
           </button>
@@ -1769,7 +1776,7 @@ export function ProjectTree({
               </button>
             </Tooltip>
           )}
-          <Tooltip label={t("projectTree.newTopicTooltip")} className={compactTopics ? "project-tree__folder-action-slot" : "project-tree__action-slot"}>
+          {!node.remote && <Tooltip label={t("projectTree.newTopicTooltip")} className={compactTopics ? "project-tree__folder-action-slot" : "project-tree__action-slot"}>
             <button
               type="button"
               className={compactTopics
@@ -1784,11 +1791,11 @@ export function ProjectTree({
             >
               {compactTopics ? <Plus size={15} aria-hidden="true" /> : <Plus size={12} aria-hidden="true" />}
             </button>
-          </Tooltip>
+          </Tooltip>}
           <ContextMenu
             open={projectMenuOpen}
             point={menuPoint}
-            items={compactTopics ? workbenchProjectMenuItems : projectMenuItems}
+            items={node.remote ? remoteProjectMenuItems : compactTopics ? workbenchProjectMenuItems : projectMenuItems}
             minWidth={compactTopics ? 206 : 212}
             ariaLabel={t("projectTree.projectActions")}
             onClose={closeMenu}
