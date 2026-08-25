@@ -1673,6 +1673,7 @@ export default function App() {
     [activeTabId, tabMetas],
   );
   const { active: remoteSurfaceActive, session: remoteSession, ready: remoteComposerReady, onSend: remoteSend, onCancel: remoteCancel } = useActiveRemoteSession(activeTab, showToast);
+  const visibleRuntimeState = remoteSurfaceActive ? remoteSession.transcript : state;
   const activePlanRevisionInsertRequest =
     planRevisionInsertRequest &&
     planRevisionInsertRequest.tabId === activeTabId &&
@@ -1755,10 +1756,10 @@ export default function App() {
     };
   }, [activeTab?.scope, activeTab?.topicId, activeTab?.workspaceRoot, projectRevision]);
   const sessionTurns = useMemo(() => {
-    const visibleUserTurns = state.items.reduce((count, item) => (item.kind === "user" ? count + 1 : count), 0);
-    const currentTabTurns = Math.max(state.checkpoints.length, visibleUserTurns);
-    return currentTabTurns > 0 ? currentTabTurns : activeTopicTurns ?? 0;
-  }, [activeTopicTurns, state.checkpoints.length, state.items]);
+    const visibleUserTurns = visibleRuntimeState.items.reduce((count, item) => (item.kind === "user" ? count + 1 : count), 0);
+    const currentTabTurns = Math.max(visibleRuntimeState.checkpoints.length, visibleUserTurns);
+    return currentTabTurns > 0 ? currentTabTurns : remoteSurfaceActive ? 0 : activeTopicTurns ?? 0;
+  }, [activeTopicTurns, remoteSurfaceActive, visibleRuntimeState.checkpoints.length, visibleRuntimeState.items]);
   const startupSplashHold = !activeTabId && state.meta?.ready !== true && !state.meta?.startupErr;
   const activeComposerProfile = activeTabId ? composerProfilesByTab[activeTabId] : undefined;
   const backendActiveComposerProfile = useMemo(() => {
@@ -5274,20 +5275,20 @@ export default function App() {
               ) : rightDockMode === "context" && desktopLayoutStyle !== "creation" ? (
                 <Suspense fallback={null}>
                   <ContextPanel
-                    tabId={activeTabId}
-                    context={state.context}
-                    usage={state.usage}
-                    sessionTokens={state.sessionTokens}
-                    sessionCost={state.sessionCost}
-                    sessionCurrency={state.sessionCurrency}
+                    tabId={remoteSurfaceActive ? undefined : activeTabId}
+                    context={visibleRuntimeState.context}
+                    usage={visibleRuntimeState.usage}
+                    sessionTokens={visibleRuntimeState.sessionTokens}
+                    sessionCost={visibleRuntimeState.sessionCost}
+                    sessionCurrency={visibleRuntimeState.sessionCurrency}
                     sessionTurns={sessionTurns}
-                    turnTokens={state.turnTotalTokens}
-                    turnCost={state.turnCost}
-                    turnRateBand={state.turnRateBand}
-                    balance={state.balance}
-                    sessionGen={state.sessionGen}
-                    refreshKey={dockRefreshKey + state.contextPanelSeq}
-                    usageSeq={state.usageSeq}
+                    turnTokens={visibleRuntimeState.turnTotalTokens}
+                    turnCost={visibleRuntimeState.turnCost}
+                    turnRateBand={visibleRuntimeState.turnRateBand}
+                    balance={visibleRuntimeState.balance}
+                    sessionGen={visibleRuntimeState.sessionGen}
+                    refreshKey={dockRefreshKey + visibleRuntimeState.contextPanelSeq}
+                    usageSeq={visibleRuntimeState.usageSeq}
                   />
                 </Suspense>
               ) : (
@@ -5373,33 +5374,33 @@ export default function App() {
 
         {!sidebarImDetailConnection && (
           <StatusBar
-            context={state.context}
-            usage={state.usage}
-            balance={state.balance}
-            running={state.running || rewindCommitting}
-            jobs={state.jobs}
-            onCancelJob={cancelJob}
-            backgroundRuntimes={backgroundRuntimes}
+            context={visibleRuntimeState.context}
+            usage={visibleRuntimeState.usage}
+            balance={visibleRuntimeState.balance}
+            running={visibleRuntimeState.running || (!remoteSurfaceActive && rewindCommitting)}
+            jobs={visibleRuntimeState.jobs}
+            onCancelJob={remoteSurfaceActive ? remoteSession.cancelJob : cancelJob}
+            backgroundRuntimes={remoteSurfaceActive ? [] : backgroundRuntimes}
             onCancelRuntimeJob={cancelRuntimeJob}
             onRevealRuntime={revealBackgroundRuntime}
             sessionTurns={sessionTurns}
-            sessionTokens={state.sessionTokens}
-            turnTokens={state.turnTotalTokens}
-            lastTurnOutputTokens={state.lastTurnOutputTokens}
-            lastTurnModelMs={state.lastTurnModelMs}
-            lastTurnOutputEstimated={state.lastTurnOutputEstimated}
-            lastRequestTps={state.lastRequestTps}
-            turnCost={state.turnCost}
-            turnRateBand={state.turnRateBand}
-            cost={state.sessionCost}
-            currency={state.sessionCurrency}
-            modelLabel={state.meta?.label}
+            sessionTokens={visibleRuntimeState.sessionTokens}
+            turnTokens={visibleRuntimeState.turnTotalTokens}
+            lastTurnOutputTokens={visibleRuntimeState.lastTurnOutputTokens}
+            lastTurnModelMs={visibleRuntimeState.lastTurnModelMs}
+            lastTurnOutputEstimated={visibleRuntimeState.lastTurnOutputEstimated}
+            lastRequestTps={visibleRuntimeState.lastRequestTps}
+            turnCost={visibleRuntimeState.turnCost}
+            turnRateBand={visibleRuntimeState.turnRateBand}
+            cost={visibleRuntimeState.sessionCost}
+            currency={visibleRuntimeState.sessionCurrency}
+            modelLabel={remoteSurfaceActive ? remoteSession.modelLabel || activeTab?.label : state.meta?.label}
             labelStyle={statusBarStyle}
             items={statusBarItems}
             extensionStatuses={extensionStatusList}
-            workspacePath={state.meta?.workspacePath || state.meta?.workspaceRoot || state.meta?.cwd}
-            workspaceName={state.meta?.workspaceName}
-            gitBranch={state.meta?.gitBranch}
+            workspacePath={remoteSurfaceActive ? activeTab?.remote?.workspace : state.meta?.workspacePath || state.meta?.workspaceRoot || state.meta?.cwd}
+            workspaceName={remoteSurfaceActive ? activeTab?.workspaceName : state.meta?.workspaceName}
+            gitBranch={remoteSurfaceActive ? undefined : state.meta?.gitBranch}
             onConnectRemote={connectAndOpenRemoteWorkspace}
             onDisconnectRemote={(hostId) => void app.DisconnectRemoteHost(hostId).catch(() => {})}
             onManageRemote={() => setSettingsTarget("remote")}

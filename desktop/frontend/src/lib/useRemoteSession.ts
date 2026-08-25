@@ -5,6 +5,8 @@ import { initialState, reducer, type State } from "./useController";
 import type { CheckpointMeta, CollaborationMode, EffortInfo, GoalStatus, HistoryMessage, RemoteTabStateValue, TabMeta, ToolApprovalMode, WireEvent } from "./types";
 import type { RemoteAskAnswer } from "./remoteTypes";
 
+const loadRemoteSurface = () => import("../components/RemoteSessionSurface");
+
 // The remote session reuses the local transcript pipeline end to end: serve
 // frames share the agent event wire form, so they run through the same
 // reducer that drives local tabs, and /history hydrates through the same
@@ -56,6 +58,8 @@ export interface RemoteSessionApi {
   pauseGoal: () => Promise<void>;
   resumeGoal: () => Promise<void>;
   steer: (input: string) => Promise<void>;
+  cancelJob: (jobId: string) => Promise<boolean>;
+  retryHydration: () => Promise<void>;
 }
 
 type RemoteStatus = {
@@ -65,6 +69,14 @@ type RemoteStatus = {
   goal?: unknown;
   goalStatus?: unknown;
   effort?: unknown;
+  used?: unknown;
+  window?: unknown;
+  cacheHit?: unknown;
+  cacheMiss?: unknown;
+  lastUsage?: unknown;
+  balance?: unknown;
+  sessionCostQuote?: unknown;
+  jobs?: unknown;
 };
 
 function isAuthoritativeRemoteStatus(status: unknown): status is RemoteStatus {
@@ -232,53 +244,59 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
       if (hydratePromise) return hydratePromise;
       hydratingRef.current = true;
       hydratePromise = (async () => {
-        for (let attempt = 0; attempt < 60 && !cancelled && !hydratedRef.current; attempt++) {
-          try {
-            const snap = await app.RemoteTabSnapshot(tabId);
-            if (cancelled) return;
-            const messages = Array.isArray(snap.history) ? (snap.history as HistoryMessage[]) : [];
-            // /status is optional in the aggregate snapshot for non-composer
-            // consumers, but the remote composer must not submit with guessed
-            // plan/approval/goal settings. Fetch it explicitly if the optional
-            // member missed; a failure keeps hydration in the retry loop.
-            const status = snap.status ?? await app.RemoteTabStatus(tabId);
-            if (cancelled) return;
-            if (!isAuthoritativeRemoteStatus(status)) throw new Error("remote status is incomplete");
-            hydratedRef.current = true;
-            setHydrated(true);
-            setSurfaceGeneration((generation) => generation + 1);
-            applyRemoteStatus(status);
-            const checkpoints = remoteCheckpoints(snap.checkpoints);
-            const replay = [
-              ...(Array.isArray(snap.pendingEvents) ? snap.pendingEvents : []),
-              ...bufferedEventsRef.current,
-            ] as WireEvent[];
-            bufferedEventsRef.current = [];
-            hydratingRef.current = false;
-            setTranscript((s) => {
-              let next = reducer(s, { type: "history", messages });
-              next = reducer(next, { type: "checkpoints", checkpoints });
-              // Hydrate doubles as the post-reconnect running reconciliation:
-              // whatever the serve reports about its current state lands now,
-              // not only after the next watchdog tick.
-              next = reducer(next, remoteStatusToAction(status, Date.now()));
-              const seenPrompts = new Set<string>();
-              for (const event of replay) {
-                const promptId = event.kind === "approval_request"
-                  ? event.approval?.id
-                  : event.kind === "ask_request" ? event.ask?.id : undefined;
-                const promptKey = promptId ? `${event.kind}:${promptId}` : "";
-                if (promptKey && seenPrompts.has(promptKey)) continue;
-                if (promptKey) seenPrompts.add(promptKey);
-                next = reducer(next, { type: "event", e: event });
-              }
-              return next;
-            });
-            return;
-          } catch {
-            // Executor form: the src tsconfig lib predates Promise.withResolvers.
-            await new Promise<void>((resolve) => setTimeout(resolve, 500));
-          }
+        // A tab already reported ready has no connection bootstrap left to wait
+        // for, so surface a retry affordance promptly. Connecting tabs retain the
+        // longer window for slow remote installs and tunnels.
+        try {
+          const { hydrateRemoteTelemetry, loadRemoteStatusSnapshot } = await loadRemoteSurface();
+          // /status is optional in the aggregate snapshot for non-composer
+          // consumers, but the remote composer must not submit with guessed
+          // plan/approval/goal settings. Fetch it explicitly if the optional
+          // member missed; a failure keeps hydration in the retry loop.
+          const loaded = await loadRemoteStatusSnapshot(
+            tabId,
+            start === "ready" ? 3 : 60,
+            () => cancelled || hydratedRef.current,
+            isAuthoritativeRemoteStatus,
+          );
+          if (!loaded || cancelled) return;
+          const [snap, status] = loaded;
+          const messages = Array.isArray(snap.history) ? (snap.history as HistoryMessage[]) : [];
+          hydratedRef.current = true;
+          setHydrated(true);
+          setError("");
+          setSurfaceGeneration((generation) => generation + 1);
+          applyRemoteStatus(status);
+          const checkpoints = remoteCheckpoints(snap.checkpoints);
+          const replay = [
+            ...(Array.isArray(snap.pendingEvents) ? snap.pendingEvents : []),
+            ...bufferedEventsRef.current,
+          ] as WireEvent[];
+          bufferedEventsRef.current = [];
+          hydratingRef.current = false;
+          setTranscript((s) => {
+            let next = reducer(s, { type: "history", messages });
+            next = reducer(next, { type: "checkpoints", checkpoints });
+            // Hydrate doubles as the post-reconnect running reconciliation:
+            // whatever the serve reports about its current state lands now,
+            // not only after the next watchdog tick.
+            next = reducer(next, remoteStatusToAction(status, Date.now()));
+            next = hydrateRemoteTelemetry(next, status);
+            const seenPrompts = new Set<string>();
+            for (const event of replay) {
+              const promptId = event.kind === "approval_request"
+                ? event.approval?.id
+                : event.kind === "ask_request" ? event.ask?.id : undefined;
+              const promptKey = promptId ? `${event.kind}:${promptId}` : "";
+              if (promptKey && seenPrompts.has(promptKey)) continue;
+              if (promptKey) seenPrompts.add(promptKey);
+              next = reducer(next, { type: "event", e: event });
+            }
+            return next;
+          });
+          return;
+        } catch (error) {
+          if (!cancelled) setError(String(error));
         }
         hydratingRef.current = false;
         if (bufferedEventsRef.current.length > 0) {
@@ -343,8 +361,9 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
       try {
         const status = await app.RemoteTabStatus(tabId);
         if (cancelled) return;
+        const { hydrateRemoteTelemetry } = await loadRemoteSurface();
         applyRemoteStatus(status);
-        setTranscript((s) => reducer(s, remoteStatusToAction(status, Date.now())));
+        setTranscript((s) => hydrateRemoteTelemetry(reducer(s, remoteStatusToAction(status, Date.now())), status));
       } catch {
         // Transient; the next tick retries.
       }
@@ -404,9 +423,22 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
     }
   }, [tabId]);
 
-  const refreshSnapshot = useCallback(async () => {
-    await hydrateRef.current?.(true);
+  const retryHydration = useCallback((): Promise<void> => {
+    setError("");
+    return hydrateRef.current?.(true) ?? Promise.resolve();
   }, []);
+
+  const cancelJob = useCallback(async (jobId: string) => {
+    if (!tabId) return false;
+    try {
+      await app.CancelRemoteTabJobs(tabId, [jobId]);
+      await retryHydration();
+      return true;
+    } catch (error) {
+      setPromptError(String(error));
+      return false;
+    }
+  }, [retryHydration, tabId]);
 
   const rewind = useCallback(async (turn: number, scope: string) => {
     if (!tabId) return;
@@ -430,30 +462,30 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
         default:
           throw new Error(`Unsupported remote rewind scope: ${scope}`);
       }
-      await refreshSnapshot();
+      await retryHydration();
     } catch (error) {
       setPromptError(error instanceof Error ? error.message : String(error));
       throw error;
     }
-  }, [refreshSnapshot, tabId]);
+  }, [retryHydration, tabId]);
 
   const setEffort = useCallback(async (level: string) => {
     if (!tabId) return;
     await app.SetRemoteTabEffort(tabId, level);
-    await refreshSnapshot();
-  }, [refreshSnapshot, tabId]);
+    await retryHydration();
+  }, [retryHydration, tabId]);
 
   const pauseGoal = useCallback(async () => {
     if (!tabId) return;
     await app.PauseRemoteTabGoal(tabId);
-    await refreshSnapshot();
-  }, [refreshSnapshot, tabId]);
+    await retryHydration();
+  }, [retryHydration, tabId]);
 
   const resumeGoal = useCallback(async () => {
     if (!tabId) return;
     await app.ResumeRemoteTabGoal(tabId);
-    await refreshSnapshot();
-  }, [refreshSnapshot, tabId]);
+    await retryHydration();
+  }, [retryHydration, tabId]);
 
   const steer = useCallback(async (input: string) => {
     if (!tabId) return;
@@ -463,6 +495,7 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
   return {
     state, error, transcript, hydrated, running: transcript.running, modelLabel,
     composerProfile, effort, surfaceGeneration, promptError, submit, cancelTurn,
-    approve, answer, rewind, setEffort, pauseGoal, resumeGoal, steer,
+    approve, answer, rewind, setEffort, pauseGoal, resumeGoal, steer, cancelJob,
+    retryHydration,
   };
 }

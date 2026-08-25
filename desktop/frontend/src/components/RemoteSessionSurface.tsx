@@ -5,6 +5,7 @@ import { app } from "../lib/bridge";
 import { Transcript } from "./Transcript";
 import { AskCard } from "./AskCard";
 import type { RemoteSessionApi } from "../lib/useRemoteSession";
+export { hydrateRemoteTelemetry, loadRemoteStatusSnapshot } from "../lib/remoteTelemetry";
 import type { TabMeta, WireAsk } from "../lib/types";
 
 type RemoteApproval = { id?: string; tool?: string; subject?: string };
@@ -74,6 +75,20 @@ export function RemoteSessionSurface({ tab, session }: { tab: TabMeta; session: 
         <CloudOff size={18} aria-hidden="true" />
         <span>{t("remoteSurface.error")}</span>
         {session.error ? <span className="remote-surface__detail">{session.error}</span> : null}
+      </div>
+    );
+  }
+
+  if (!session.hydrated && session.error) {
+    return (
+      <div className="remote-surface remote-surface--error" role="alert">
+        <TriangleAlert size={18} aria-hidden="true" />
+        <span>{t("remoteSurface.error")}</span>
+        <span className="remote-surface__detail">{session.error}</span>
+        <button type="button" className="btn btn--ghost" onClick={() => runAction(session.retryHydration)}>
+          <RotateCw size={14} aria-hidden="true" />
+          {t("common.retry")}
+        </button>
       </div>
     );
   }

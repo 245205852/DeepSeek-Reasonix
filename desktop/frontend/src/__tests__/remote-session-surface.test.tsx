@@ -63,10 +63,12 @@ Object.defineProperty(elementProto, "detachEvent", { configurable: true, value: 
 const tape: string[] = [];
 let failApproval = false;
 let failOpen = false;
+let failHydration = true;
 let resolveRaceSnapshot: ((value: { history: unknown[]; status: unknown }) => void) | undefined;
 window.go = { main: { App: {
   async RemoteTabSnapshot(tabId: string) {
     tape.push(`snapshot:${tabId}`);
+		if (tabId === "tab-hydration-failure" && failHydration) throw new Error("history exceeds bridge limit");
 		if (tabId === "tab-pending-model") return new Promise(() => {});
 		if (tabId === "tab-race") return new Promise<{ history: unknown[]; status: unknown }>((resolve) => { resolveRaceSnapshot = resolve; });
 		if (tabId === "tab-replay") return {
@@ -92,6 +94,14 @@ window.go = { main: { App: {
         goal: "",
         goalStatus: "stopped",
         effort: { supported: true, current: "high", default: "auto", levels: ["auto", "high"] },
+        used: 1200,
+        window: 64000,
+        cacheHit: 800,
+        cacheMiss: 400,
+        lastUsage: { promptTokens: 1000, completionTokens: 200, totalTokens: 1200, cacheHitTokens: 800, cacheMissTokens: 200 },
+        balance: { available: true, display: "¥88.00" },
+        sessionCostQuote: { original: { amount: "0.12", currency: "CNY" }, selected: { amount: "0.12", currency: "CNY" }, estimated: false, costComplete: true, displayComplete: true, complete: true },
+        jobs: [{ id: "job-remote", kind: "bash", label: "tests", status: "running", startedAt: 1 }],
       },
     };
   },
@@ -128,6 +138,9 @@ window.go = { main: { App: {
   },
   async SteerRemoteTab(tabId: string, input: string) {
     tape.push(`steer:${tabId}:${input}`);
+  },
+  async CancelRemoteTabJobs(tabId: string, jobIds: string[]) {
+    tape.push(`cancel-jobs:${tabId}:${jobIds.join(",")}`);
   },
   async ApproveRemoteTab(tabId: string, callId: string, decision: string) {
     tape.push(`approve:${tabId}:${callId}:${decision}`);
@@ -354,6 +367,10 @@ ok(probe?.composerProfile?.collaborationMode === "plan" && probe?.composerProfil
 ok(probe?.effort?.current === "high" && probe?.transcript.checkpoints[0]?.turn === 3
   && probe?.transcript.checkpoints[0]?.fileCount === 2 && probe?.transcript.checkpoints[0]?.files.length === 1,
   "snapshot status hydrates effort and rewind checkpoints");
+ok(probe?.transcript.context.used === 1200 && probe.transcript.context.window === 64000
+  && probe.transcript.balance?.display === "¥88.00" && probe.transcript.sessionCost === 0.12
+  && probe.transcript.jobs[0]?.id === "job-remote" && probe.transcript.lastTurnOutputTokens === 200,
+  "snapshot status hydrates remote context, usage, balance, cost, and jobs");
 await act(async () => {
   await probe?.submit("run tests");
   await flush();
@@ -371,6 +388,7 @@ await act(async () => {
   await probe?.pauseGoal();
   await probe?.resumeGoal();
   await probe?.steer("narrow the change");
+  await probe?.cancelJob("job-remote");
   await flush();
 });
 for (const want of [
@@ -386,6 +404,7 @@ for (const want of [
   "pause-goal:tab-remote-2",
   "resume-goal:tab-remote-2",
   "steer:tab-remote-2:narrow the change",
+	"cancel-jobs:tab-remote-2:job-remote",
 ]) {
   ok(tape.includes(want), `command forwarded: ${want}`);
 }
@@ -413,6 +432,28 @@ ok(fallbackProbe?.hydrated === true && fallbackProbe.composerProfile?.collaborat
   && tape.includes("status:tab-status-fallback"),
   "missing aggregate status is fetched before the remote composer becomes ready");
 await act(async () => fallbackRoot.unmount());
+
+let failureProbe: RemoteSessionApi | undefined;
+function FailureProbe() {
+  failureProbe = useRemoteSession("tab-hydration-failure", "ready");
+  return null;
+}
+const failureRoot = createRoot(document.createElement("div"));
+await act(async () => {
+  failureRoot.render(<LocaleProvider><FailureProbe /></LocaleProvider>);
+});
+await act(async () => {
+  await new Promise((resolve) => setTimeout(resolve, 2200));
+});
+ok(failureProbe?.hydrated === false && failureProbe.error.includes("history exceeds bridge limit"),
+  "exhausted ready-session hydration exposes a retryable error");
+failHydration = false;
+await act(async () => {
+  await failureProbe?.retryHydration();
+  await flush();
+});
+ok(failureProbe?.hydrated === true && failureProbe.error === "", "explicit hydration retry recovers the surface");
+await act(async () => failureRoot.unmount());
 
 // ── Hydration fence: an SSE event delivered while the snapshot is in flight
 // is replayed after history instead of being overwritten by it. ──

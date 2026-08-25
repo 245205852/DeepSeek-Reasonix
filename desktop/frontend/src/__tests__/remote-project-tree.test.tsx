@@ -108,6 +108,13 @@ ok(
   "remote exports use the visible remote transcript",
 );
 ok(
+  /const visibleRuntimeState = remoteSurfaceActive \? remoteSession\.transcript : state/.test(appSource) &&
+    /tabId=\{remoteSurfaceActive \? undefined : activeTabId\}/.test(appSource) &&
+    /onCancelJob=\{remoteSurfaceActive \? remoteSession\.cancelJob : cancelJob\}/.test(appSource) &&
+    /backgroundRuntimes=\{remoteSurfaceActive \? \[\] : backgroundRuntimes\}/.test(appSource),
+  "remote status and context chrome never fall back to local session telemetry",
+);
+ok(
   /session\.pauseGoal\(\)/.test(remoteIntegrationSource) && /session\.resumeGoal\(\)/.test(remoteIntegrationSource),
   "remote Goal pause and resume actions route to the remote session",
 );

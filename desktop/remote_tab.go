@@ -334,11 +334,7 @@ func (a *App) remoteTabPump(ctx context.Context, tabID string, gen uint64, opene
 		case "approval_request", "ask_request":
 			a.cacheRemotePendingEvent(tabID, gen, kind, json.RawMessage(frame))
 		case "turn_done":
-			a.remoteTabMu.Lock()
-			if tab := a.remoteTabs[tabID]; tab != nil && tab.gen == gen {
-				tab.pendingEvents = nil
-			}
-			a.remoteTabMu.Unlock()
+			a.completeRemoteTabTurn(tabID, gen)
 		}
 		a.emitRemoteEvent(fmt.Sprintf("remote-tab:%s:event", tabID), json.RawMessage(frame))
 		if kind == "turn_done" {
@@ -359,6 +355,18 @@ func (a *App) remoteTabPump(ctx context.Context, tabID string, gen uint64, opene
 		if startRetry := a.reconnectRemoteTabGeneration(tabID, gen); startRetry {
 			a.goSafe("remoteTabReattach", func() { a.reattachRemoteTab(tabID) })
 		}
+	}
+}
+
+func (a *App) completeRemoteTabTurn(tabID string, gen uint64) {
+	a.remoteTabMu.Lock()
+	defer a.remoteTabMu.Unlock()
+	if tab := a.remoteTabs[tabID]; tab != nil && tab.gen == gen {
+		tab.pendingEvents = nil
+		// A completed turn makes the fresh session non-blank even when the
+		// best-effort /sessions title lookup fails. New Topic must never reuse
+		// a conversation that already has a completed turn.
+		tab.session.reset = false
 	}
 }
 

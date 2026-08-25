@@ -641,8 +641,9 @@ func TestModelsForTabRemoteUsesDesktopCatalog(t *testing.T) {
 	}
 }
 
-// TestSetModelForTabRemoteOwnsModelOnDesktop: picking a model on a remote
-// tab stores it on the desktop tab and does not POST /model to the serve.
+// TestSetModelForTabRemoteOwnsModelOnDesktop: picking a model on a remote tab
+// delegates the failure-atomic switch to the kernel before committing desktop
+// tab metadata; the binding itself must not issue a second Serve request.
 func TestSetModelForTabRemoteOwnsModelOnDesktop(t *testing.T) {
 	isolateDesktopUserDirs(t)
 	setDesktopTestCredential(t, "DEEPSEEK_API_KEY", "sk-test")
@@ -673,9 +674,12 @@ func TestSetModelForTabRemoteOwnsModelOnDesktop(t *testing.T) {
 	if err := a.SetModelForTab(meta.ID, "deepseek/deepseek-v4-pro"); err != nil {
 		t.Fatalf("SetModelForTab: %v", err)
 	}
+	if len(kernel.switchProxyCalls) != 1 || kernel.switchProxyCalls[0] != [4]string{"box", "~/app", "deepseek/deepseek-v4-flash", "deepseek/deepseek-v4-pro"} {
+		t.Fatalf("credential proxy switch calls = %+v", kernel.switchProxyCalls)
+	}
 	for _, c := range fs.recorded() {
 		if strings.HasPrefix(c, "POST /model") {
-			t.Fatalf("serve saw %v, desktop-owned switch must not POST /model", fs.recorded())
+			t.Fatalf("serve saw %v, binding duplicated the kernel-owned switch", fs.recorded())
 		}
 	}
 	var current string

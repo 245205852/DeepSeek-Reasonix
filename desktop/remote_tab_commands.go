@@ -208,6 +208,8 @@ func (a *App) SetRemoteTabModel(tabID, ref string) error {
 	if ref == "" {
 		return nil
 	}
+	a.remoteTabModelMu.Lock()
+	defer a.remoteTabModelMu.Unlock()
 	a.remoteTabMu.Lock()
 	tab := a.remoteTabs[tabID]
 	if tab == nil {
@@ -225,6 +227,9 @@ func (a *App) SetRemoteTabModel(tabID, ref string) error {
 		cfg, err := config.Load()
 		if err != nil {
 			return err
+		}
+		if strings.TrimSpace(currentModel) == "" {
+			currentModel = strings.TrimSpace(cfg.DefaultModel)
 		}
 		entry, ok := cfg.ResolveModel(ref)
 		if !ok {
@@ -246,7 +251,16 @@ func (a *App) SetRemoteTabModel(tabID, ref string) error {
 			return fmt.Errorf("model %q uses %s protocol; this remote session is running %s and must be restarted to change protocol", ref, nextKind, currentKind)
 		}
 		canonical := entry.Name + "/" + entry.Model
-		if _, err := a.applyCredentialProxyModel(hostID, workspace, canonical); err != nil {
+		if _, err := resolveProxyProvider(cfg, canonical); err != nil {
+			return err
+		}
+		rt, err := a.remoteRT()
+		if err != nil {
+			return err
+		}
+		ctx, cancel := commandContext(a)
+		defer cancel()
+		if err := rt.SwitchCredentialProxyModel(ctx, hostID, workspace, currentModel, canonical); err != nil {
 			return err
 		}
 		next = canonical
@@ -400,11 +414,16 @@ func (a *App) refreshRemoteTabTitle(tabID string) {
 			continue
 		}
 		title := strings.TrimSpace(entry.Title)
+		// A manual rename made while the row was the synthetic blank is
+		// keyed by an empty session name. Once Serve exposes the durable
+		// name, move that preference before choosing the displayed title.
+		if override, migrateErr := migrateRemoteSessionTitleOverride(tab.ref.HostID, tab.ref.Workspace, entry.Name); migrateErr == nil && override != "" {
+			title = override
+		} else if override := remoteSessionTitleOverride(tab.ref.HostID, tab.ref.Workspace, entry.Name); override != "" {
+			title = override
+		}
 		if title == "" {
 			return
-		}
-		if override := remoteSessionTitleOverride(tab.ref.HostID, tab.ref.Workspace, entry.Name); override != "" {
-			title = override
 		}
 		a.remoteTabMu.Lock()
 		current := a.remoteTabs[tabID]

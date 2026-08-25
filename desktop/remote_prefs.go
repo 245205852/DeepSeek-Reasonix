@@ -38,7 +38,10 @@ func remotePrefsPath() string {
 }
 
 func loadRemotePrefs() remotePrefs {
-	var p remotePrefs
+	p := remotePrefs{
+		LastWorkspaceByHost: map[string]string{},
+		SessionTitles:       map[string]string{},
+	}
 	path := remotePrefsPath()
 	if path == "" {
 		return p
@@ -106,6 +109,35 @@ func setRemoteSessionTitleOverride(hostID, workspace, name, title string) error 
 		p.SessionTitles[key] = title
 	}
 	return saveRemotePrefs(p)
+}
+
+// migrateRemoteSessionTitleOverride moves a title assigned to the synthetic
+// blank row onto the durable Serve session name created by its first turn.
+// Keeping this as one locked preference update prevents a listing refresh from
+// observing the title under neither identity.
+func migrateRemoteSessionTitleOverride(hostID, workspace, name string) (string, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "", nil
+	}
+	remotePrefsMu.Lock()
+	defer remotePrefsMu.Unlock()
+	p := loadRemotePrefs()
+	blankKey := remoteSessionPrefKey(hostID, workspace, "")
+	namedKey := remoteSessionPrefKey(hostID, workspace, name)
+	if named := strings.TrimSpace(p.SessionTitles[namedKey]); named != "" {
+		return named, nil
+	}
+	blank := strings.TrimSpace(p.SessionTitles[blankKey])
+	if blank == "" {
+		return "", nil
+	}
+	p.SessionTitles[namedKey] = blank
+	delete(p.SessionTitles, blankKey)
+	if err := saveRemotePrefs(p); err != nil {
+		return "", err
+	}
+	return blank, nil
 }
 
 func saveRemotePrefs(p remotePrefs) error {

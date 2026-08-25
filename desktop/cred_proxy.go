@@ -207,20 +207,22 @@ func (a *App) credentialProxySecret() (string, error) {
 	return p.CredentialProxySecret, nil
 }
 
-// credentialProxyTokenFor derives a virtual token. Tokens are stable across
-// desktop restarts, so a reused remote serve keeps working.
-func credentialProxyTokenFor(secret, hostID, workspace string) string {
+// credentialProxyModelTokenFor gives each staged model an immutable route.
+// A controller already running with the previous virtual token therefore keeps
+// its old upstream for the whole turn while Serve builds and publishes the new
+// controller. This is the cross-process half of failure-atomic model switches.
+func credentialProxyModelTokenFor(secret, hostID, workspace, modelRef string) string {
 	mac := hmac.New(sha256.New, []byte(secret))
-	mac.Write([]byte("reasonix-credential-proxy:" + hostID + ":" + workspace))
+	mac.Write([]byte("reasonix-credential-proxy-model:" + hostID + ":" + workspace + ":" + modelRef))
 	return hex.EncodeToString(mac.Sum(nil))[:32]
 }
 
-func (a *App) credentialProxyToken(hostID, workspace string) (string, error) {
+func (a *App) credentialProxyModelToken(hostID, workspace, modelRef string) (string, error) {
 	secret, err := a.credentialProxySecret()
 	if err != nil {
 		return "", err
 	}
-	return credentialProxyTokenFor(secret, hostID, workspace), nil
+	return credentialProxyModelTokenFor(secret, hostID, workspace, modelRef), nil
 }
 
 // credentialProxyRouteInfo is everything a serve bootstrap needs to install
@@ -323,7 +325,9 @@ func (a *App) applyCredentialProxyModel(hostID, workspace, ref string) (credenti
 	if proxy == nil {
 		return credentialProxyRouteInfo{}, fmt.Errorf("credential proxy: not running")
 	}
-	token, err := a.credentialProxyToken(hostID, workspace)
+	// Route tokens include the canonical desktop model ref. Never mutate the
+	// route held by an in-flight controller during a model switch.
+	token, err := a.credentialProxyModelToken(hostID, workspace, ref)
 	if err != nil {
 		return credentialProxyRouteInfo{}, err
 	}

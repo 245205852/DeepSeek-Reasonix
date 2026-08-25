@@ -47,6 +47,45 @@ func TestRemoteTabReconnectDoesNotLogEnsureServerSecrets(t *testing.T) {
 	}
 }
 
+func TestCompleteRemoteTabTurnMakesFreshSessionNonReusable(t *testing.T) {
+	a := &App{remoteTabs: map[string]*remoteTab{
+		"remote": {
+			id:            "remote",
+			gen:           7,
+			session:       remoteTabSessionState{reset: true},
+			pendingEvents: map[string]json.RawMessage{"approval_request:1": json.RawMessage(`{"kind":"approval_request"}`)},
+		},
+	}}
+	a.completeRemoteTabTurn("remote", 6)
+	if !a.remoteTabs["remote"].session.reset {
+		t.Fatal("a stale stream generation cleared the reusable blank marker")
+	}
+	a.completeRemoteTabTurn("remote", 7)
+	if a.remoteTabs["remote"].session.reset {
+		t.Fatal("a completed turn remained eligible for blank-session reuse")
+	}
+	if len(a.remoteTabs["remote"].pendingEvents) != 0 {
+		t.Fatal("turn completion did not clear pending prompt replay")
+	}
+}
+
+func TestMigrateBlankRemoteSessionTitleOverride(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	if err := setRemoteSessionTitleOverride("box", "~/app", "", "My first topic"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := migrateRemoteSessionTitleOverride("box", "~/app", "session-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "My first topic" || remoteSessionTitleOverride("box", "~/app", "session-1") != got {
+		t.Fatalf("migrated title = %q, named preference = %q", got, remoteSessionTitleOverride("box", "~/app", "session-1"))
+	}
+	if blank := remoteSessionTitleOverride("box", "~/app", ""); blank != "" {
+		t.Fatalf("blank preference survived migration: %q", blank)
+	}
+}
+
 func TestSetRemoteTabModelFailureKeepsPreviousModel(t *testing.T) {
 	isolateDesktopUserDirs(t)
 	setDesktopTestCredential(t, "DEEPSEEK_API_KEY", "sk-test")

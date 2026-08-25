@@ -344,6 +344,10 @@ type App struct {
 	remoteTabMu     sync.Mutex
 	remoteTabs      map[string]*remoteTab
 	remoteTabLayout remoteTabLayoutState
+	// remoteTabModelMu makes the caller's current-model snapshot, the remote
+	// Serve rebuild, and the tab metadata commit one transaction. Without it,
+	// overlapping switches could roll remote config back to a stale model.
+	remoteTabModelMu sync.Mutex
 	// remoteEventHook observes remote events in tests; production leaves it nil.
 	remoteEventHook func(name string, payload any)
 	// credProxy is the lazy app-wide key holder for local-proxy mode.

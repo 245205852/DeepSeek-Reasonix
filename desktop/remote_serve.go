@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -22,6 +23,92 @@ import (
 	"reasonix/internal/remote/forward"
 	"reasonix/internal/store"
 )
+
+// SwitchCredentialProxyModel stages an immutable desktop proxy route and a
+// matching remote provider credential, then asks Serve to perform its ordinary
+// active-work-gated controller switch. The outgoing controller keeps its old
+// virtual token and route throughout; if Serve refuses or cannot rebuild, the
+// on-disk provider is rolled back and the live controller remains coherent.
+func (m *desktopRemoteManager) SwitchCredentialProxyModel(ctx context.Context, hostID, workspace, currentRef, nextRef string) error {
+	hostID, workspace = strings.TrimSpace(hostID), strings.TrimSpace(workspace)
+	currentRef, nextRef = strings.TrimSpace(currentRef), strings.TrimSpace(nextRef)
+	if hostID == "" || workspace == "" || currentRef == "" || nextRef == "" {
+		return fmt.Errorf("credential proxy model switch: host, workspace, current model, and next model are required")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	mh := m.managed(hostID)
+	if mh == nil || mh.client == nil {
+		return fmt.Errorf("host %q is not connected", hostID)
+	}
+	mh.serveMu.Lock()
+	defer mh.serveMu.Unlock()
+	if !m.isCurrent(hostID, mh) {
+		return fmt.Errorf("host %q connection was replaced", hostID)
+	}
+	m.mu.Lock()
+	serve := mh.serves[workspace]
+	m.mu.Unlock()
+	if serve == nil || serve.view.State != "ready" || serve.view.LocalURL == "" || serve.token == "" {
+		return fmt.Errorf("workspace %q has no ready Reasonix Serve", workspace)
+	}
+	app, ok := m.sink.(*App)
+	if !ok || app == nil {
+		return fmt.Errorf("credential proxy: app unavailable")
+	}
+	oldRoute, err := app.applyCredentialProxyModel(hostID, workspace, currentRef)
+	if err != nil {
+		return err
+	}
+	newRoute, err := app.applyCredentialProxyModel(hostID, workspace, nextRef)
+	if err != nil {
+		return err
+	}
+	remotePort, err := ensureCredentialProxyForward(mh.client, hostID, newRoute.port)
+	if err != nil {
+		return fmt.Errorf("credential proxy: reverse tunnel: %w", err)
+	}
+	oldOptions := credentialProxyBootstrapOptions(workspace, remotePort, oldRoute)
+	newOptions := credentialProxyBootstrapOptions(workspace, remotePort, newRoute)
+	if _, err := bootstrap.EnsureCredentialProvider(ctx, mh.client, newOptions); err != nil {
+		return err
+	}
+	rollback := func(cause error) error {
+		rollbackCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		_, rollbackErr := bootstrap.EnsureCredentialProvider(rollbackCtx, mh.client, oldOptions)
+		if rollbackErr != nil {
+			return errors.Join(cause, fmt.Errorf("restore previous credential proxy model: %w", rollbackErr))
+		}
+		return cause
+	}
+	client, err := newServeHTTPClient(serve.view.LocalURL)
+	if err != nil {
+		return rollback(err)
+	}
+	if err := serveHandshake(ctx, client, serve.view.LocalURL, serve.token); err != nil {
+		return rollback(err)
+	}
+	body, _ := json.Marshal(map[string]string{"ref": newOptions.Provider + "/" + newOptions.Model})
+	if err := servePost(ctx, client, serveURL(serve.view.LocalURL, "/model"), body); err != nil {
+		return rollback(err)
+	}
+	return nil
+}
+
+func credentialProxyBootstrapOptions(workspace string, remotePort int, info credentialProxyRouteInfo) *bootstrap.CredentialProxyOptions {
+	slug := store.RemoteWorkspaceSlug(workspace)
+	suffix := slug[len(slug)-16:]
+	return &bootstrap.CredentialProxyOptions{
+		BaseURL:  fmt.Sprintf("http://127.0.0.1:%d", remotePort),
+		Token:    info.token,
+		TokenEnv: "REASONIX_PROXY_TOKEN_" + strings.ToUpper(suffix),
+		Provider: credentialProxyProviderName + "-" + suffix,
+		Model:    info.model,
+		Kind:     info.kind,
+	}
+}
 
 // serveForwardName derives the per-workspace local tunnel name from the same
 // collision-proof slug the remote state files use (store.RemoteWorkspaceSlug),

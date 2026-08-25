@@ -101,7 +101,10 @@ console.log("\nbundle budgets");
 // remote hook. The measured production path is 438.38 KiB gzip after keeping
 // the integration modules below repolint's ownership ceilings; retain 0.12 KiB
 // toolchain headroom with a bounded 1.4 KiB ratchet.
-const initialJSBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 438.5 : 438.5;
+// Remote status isolation keeps the always-mounted status bar on the active
+// remote transcript and routes job cancellation to that host. Parsers and
+// retry policy remain lazy; the measured selector adds under 0.1 KiB gzip.
+const initialJSBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 438.6 : 438.6;
 assertBudget("initial JavaScript gzip", initialJSGzip, initialJSBudgetKiB * 1024);
 assertBudget("largest initial JavaScript chunk gzip", largestInitialJS, 280 * 1024);
 // Render-blocking CSS is intentionally absent: styles.css loads deferred via
@@ -163,8 +166,9 @@ const rawInitialBytes = [...initialJS, ...initialCSS, ...appShellCSS]
 // production and test channels measure roughly 2380 KiB with remote sessions.
 // The complete theme-token contract and shared operational-overlay recipe from
 // main remain within that measured remote-session ceiling. The remote approval
-// fences and extracted ownership modules add 0.1 KiB beyond the old rounded
-// gate; retain 0.2 KiB of bounded raw/toolchain headroom.
-const rawInitialBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 2_380.6 : 2_380.6;
+// fences, extracted ownership modules, and remote status-bar isolation bring
+// the measured initial payload to 2380.9 KiB; retain 0.1 KiB of bounded
+// raw/toolchain headroom.
+const rawInitialBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 2_381.0 : 2_381.0;
 assertBudget("initial raw JavaScript and CSS", rawInitialBytes, rawInitialBudgetKiB * 1024);
 assertBudget("largest initial JavaScript chunk raw", largestInitialJSRaw, 1_000 * 1024);
