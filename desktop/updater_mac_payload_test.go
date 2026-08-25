@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 
@@ -143,7 +144,7 @@ func TestMacUpdateRenameFallbackDoesNotReplaceExisting(t *testing.T) {
 	}
 	if err := macRenameNoReplace(func(string, string) error { return syscall.ENOTSUP }, source, destination); err == nil {
 		t.Fatal("fallback renamed over an existing destination")
-	} else if !errors.Is(err, os.ErrExist) {
+	} else if !errors.Is(err, os.ErrExist) || !strings.Contains(err.Error(), "best-effort under Reasonix mutation lock") {
 		t.Fatalf("fallback err = %v, want ErrExist", err)
 	}
 	for path, want := range map[string]string{source: "source", destination: "destination"} {

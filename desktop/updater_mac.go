@@ -631,8 +631,13 @@ func retainMacHandoffNode(path, suffix string) (string, error) {
 
 var macUpdateCleanupAfterRename = func(string, string) {}
 
-// macUpdateRenameNoReplace uses RENAME_EXCL, then a best-effort existence
-// check on volumes such as exFAT that reject the exclusive flag.
+// macUpdateRenameNoReplace prefers RENAME_EXCL. On volumes such as exFAT that
+// reject the exclusive flag, it falls back to an existence check followed by
+// os.Rename. That fallback is intentionally best-effort: callers must hold
+// Reasonix's mutation locks, and an uncooperative external writer can still
+// race between the check and the rename. An os.ErrExist result means that the
+// destination was observed before the fallback; it is not an atomic
+// no-replace guarantee.
 func macUpdateRenameNoReplace(oldPath, newPath string) error {
 	return macRenameNoReplace(macExclusiveRename, oldPath, newPath)
 }
@@ -647,11 +652,14 @@ func macRenameNoReplace(exclusive func(string, string) error, oldPath, newPath s
 		return err
 	}
 	if _, statErr := os.Lstat(newPath); statErr == nil {
-		return os.ErrExist
+		return fmt.Errorf("macOS update rename target already exists (best-effort under Reasonix mutation lock): %w", os.ErrExist)
 	} else if !os.IsNotExist(statErr) {
 		return statErr
 	}
-	return os.Rename(oldPath, newPath)
+	if err := os.Rename(oldPath, newPath); err != nil {
+		return fmt.Errorf("macOS update rename (best-effort under Reasonix mutation lock): %w", err)
+	}
+	return nil
 }
 
 func cleanupOwnedMacUpdateDirectory(path string, owner os.FileInfo) error {
