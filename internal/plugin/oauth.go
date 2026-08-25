@@ -16,10 +16,8 @@ import (
 	"os"
 	"slices"
 	"strings"
-	"sync"
 	"time"
 
-	"golang.org/x/oauth2"
 	"reasonix/internal/mcpdiag"
 	"reasonix/internal/secrets"
 )
@@ -85,12 +83,10 @@ type oauthTokenResponse struct {
 }
 
 type mcpOAuthClient struct {
-	stateDir        string
-	state           mcpOAuthState
-	client          *http.Client
-	mu              sync.Mutex
-	fatalErr        error
-	fatalErrReturns int
+	stateDir string
+	state    mcpOAuthState
+	client   *http.Client
+	runtime  mcpOAuthSDKRuntime
 }
 
 // AuthorizeHTTPMCP performs the user-initiated OAuth authorization-code flow
@@ -284,118 +280,6 @@ func newMCPOAuthClient(stateDir string, httpClient *http.Client) (*mcpOAuthClien
 		return nil, nil
 	}
 	return &mcpOAuthClient{stateDir: stateDir, state: state, client: newOAuthHTTPClient(httpClient)}, nil
-}
-
-func (c *mcpOAuthClient) authorizationHeader(ctx context.Context, forceRefresh bool) (string, bool, error) {
-	if c == nil {
-		return "", false, nil
-	}
-	token, err := c.oauthToken(ctx, forceRefresh)
-	if err != nil {
-		return "", false, err
-	}
-	if token == nil || strings.TrimSpace(token.AccessToken) == "" {
-		return "", false, nil
-	}
-	return token.Type() + " " + token.AccessToken, true, nil
-}
-
-func (c *mcpOAuthClient) oauthToken(ctx context.Context, forceRefresh bool) (*oauth2.Token, error) {
-	return c.oauthTokenAfterRejection(ctx, forceRefresh, "")
-}
-
-func (c *mcpOAuthClient) oauthTokenAfterRejection(ctx context.Context, forceRefresh bool, rejectedAccessToken string) (*oauth2.Token, error) {
-	if c == nil {
-		return nil, nil
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.fatalErr != nil {
-		err := c.fatalErr
-		c.fatalErrReturns--
-		if c.fatalErrReturns <= 0 {
-			c.fatalErr = nil
-		}
-		return nil, err
-	}
-	if forceRefresh && rejectedAccessToken == "" {
-		rejectedAccessToken = c.state.AccessToken
-	}
-	if forceRefresh && rejectedAccessToken != "" && c.state.AccessToken != rejectedAccessToken && oauthAccessTokenUsable(c.state, time.Now()) {
-		forceRefresh = false
-	}
-	needsRefresh := forceRefresh || (strings.TrimSpace(c.state.RefreshToken) != "" && !c.state.Expiry.IsZero() && time.Now().Add(30*time.Second).After(c.state.Expiry))
-	if needsRefresh {
-		if err := c.refresh(ctx, forceRefresh, rejectedAccessToken); err != nil {
-			c.fatalErr = err
-			c.fatalErrReturns = 1
-			return nil, err
-		}
-	}
-	if strings.TrimSpace(c.state.AccessToken) == "" {
-		return nil, nil
-	}
-	tokenType := strings.TrimSpace(c.state.TokenType)
-	if tokenType == "" {
-		tokenType = "Bearer"
-	}
-	if !strings.EqualFold(tokenType, "Bearer") {
-		return nil, fmt.Errorf("MCP OAuth: unsupported token type %q", tokenType)
-	}
-	return &oauth2.Token{
-		AccessToken:  c.state.AccessToken,
-		TokenType:    tokenType,
-		RefreshToken: c.state.RefreshToken,
-		Expiry:       c.state.Expiry,
-	}, nil
-}
-
-func (c *mcpOAuthClient) canRefresh() bool {
-	return c != nil && strings.TrimSpace(c.state.RefreshToken) != "" && strings.TrimSpace(c.state.TokenEndpoint) != ""
-}
-
-type mcpOAuthTokenSource struct {
-	ctx    context.Context
-	client *mcpOAuthClient
-}
-
-func (s *mcpOAuthTokenSource) Token() (*oauth2.Token, error) {
-	return s.client.oauthToken(s.ctx, false)
-}
-
-// TokenSource implements auth.OAuthHandler for the official MCP Go SDK.
-func (c *mcpOAuthClient) TokenSource(ctx context.Context) (oauth2.TokenSource, error) {
-	if c == nil {
-		return nil, nil
-	}
-	return &mcpOAuthTokenSource{ctx: ctx, client: c}, nil
-}
-
-// Authorize handles the SDK's single retry after a 401/403. Reasonix never
-// starts an interactive browser flow from a background tool call: an existing
-// refresh token may be used, otherwise the UI must run AuthorizeHTTPMCP.
-func (c *mcpOAuthClient) Authorize(ctx context.Context, request *http.Request, response *http.Response) error {
-	if response != nil && response.Body != nil {
-		_ = response.Body.Close()
-	}
-	if c == nil {
-		return fmt.Errorf("MCP OAuth authorization is required")
-	}
-	c.mu.Lock()
-	canRefresh := c.canRefresh()
-	c.mu.Unlock()
-	if !canRefresh {
-		return fmt.Errorf("MCP OAuth authorization is required; authorize this MCP server")
-	}
-	rejectedAccessToken := ""
-	if request != nil {
-		scheme, token, ok := strings.Cut(strings.TrimSpace(request.Header.Get("Authorization")), " ")
-		if ok && strings.EqualFold(scheme, "Bearer") {
-			rejectedAccessToken = strings.TrimSpace(token)
-		}
-	}
-	_, err := c.oauthTokenAfterRejection(ctx, true, rejectedAccessToken)
-	return err
 }
 
 func discoverProtectedResource(ctx context.Context, client *http.Client, endpoint *url.URL) (protectedResourceMetadata, string, error) {

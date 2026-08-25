@@ -415,11 +415,11 @@ func TestClientListToolsRetriesAdvertisedEmptyToolList(t *testing.T) {
 		json.RawMessage(`{"tools":[{"name":"echo","description":"Echo back the message.","inputSchema":{"type":"object"}}]}`),
 	}}
 	c := &Client{
-		name:      "race",
-		t:         tr,
-		spec:      Spec{Name: "race"},
-		transport: "stdio",
-		hasTools:  true,
+		name:         "race",
+		t:            tr,
+		spec:         Spec{Name: "race"},
+		transport:    "stdio",
+		capabilities: clientCapabilities{tools: true},
 	}
 
 	tools, err := c.listTools(ctx)
@@ -1401,15 +1401,6 @@ func readHelperCounter(t *testing.T, path string) int {
 		t.Fatalf("parse helper counter %q: %v", body, err)
 	}
 	return value
-}
-
-func findToolByName(tools []tool.Tool, name string) tool.Tool {
-	for _, candidate := range tools {
-		if candidate.Name() == name {
-			return candidate
-		}
-	}
-	return nil
 }
 
 func TestStdioWriterPreservesPersistentProcessByDefault(t *testing.T) {

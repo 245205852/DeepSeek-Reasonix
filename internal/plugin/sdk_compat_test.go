@@ -69,8 +69,8 @@ func TestSDKPromptAndResourceListChangesRefreshSharedSession(t *testing.T) {
 	if err := client.initialize(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	if !client.supportsPromptListChanged || !client.supportsResourceListChanged {
-		t.Fatalf("list-changed capabilities = prompts:%v resources:%v", client.supportsPromptListChanged, client.supportsResourceListChanged)
+	if !client.capabilities.promptsListChanged || !client.capabilities.resourcesListChanged {
+		t.Fatalf("list-changed capabilities = prompts:%v resources:%v", client.capabilities.promptsListChanged, client.capabilities.resourcesListChanged)
 	}
 	host := NewHost()
 	host.bindToolListChanges(client)

@@ -399,9 +399,9 @@ func Start(ctx context.Context, specs []Spec, p StartPolicy) (*Host, []tool.Tool
 					_ = SaveCachedSchema(spec.Name, CachedSchema{
 						CacheKey: SchemaCacheKey(spec),
 						Capabilities: map[string]bool{
-							"tools":     c.hasTools,
-							"prompts":   c.hasPrompts,
-							"resources": c.hasResources,
+							"tools":     c.capabilities.tools,
+							"prompts":   c.capabilities.prompts,
+							"resources": c.capabilities.resources,
 						},
 						Tools: cacheableToolsOf(ts),
 					})
@@ -531,10 +531,10 @@ func (h *Host) StartPhaseB(ctx context.Context, sink event.Sink) {
 	clients := append([]*Client(nil), h.clients...)
 	h.mu.RUnlock()
 	for _, c := range clients {
-		if c.hasPrompts {
+		if c.capabilities.prompts {
 			h.goSurface(func() { h.fetchPrompts(ctx, c, sink) })
 		}
-		if c.hasResources {
+		if c.capabilities.resources {
 			h.goSurface(func() { h.fetchResources(ctx, c, sink) })
 		}
 	}
@@ -633,18 +633,9 @@ type Client struct {
 	registrationClaims    map[uint64]struct{}
 	registrationCommitted bool
 
-	// Capabilities advertised by the server at initialize. prompts/list and
-	// resources/list are only called when advertised, so we never provoke a
-	// "method not found" on a tools-only server.
-	hasTools     bool
-	hasPrompts   bool
-	hasResources bool
-	// supportsToolListChanged is true only when initialize explicitly advertises
-	// tools.listChanged. Servers that omit the capability are not allowed to
-	// drive background tools/list traffic with unsolicited notifications.
-	supportsToolListChanged     bool
-	supportsPromptListChanged   bool
-	supportsResourceListChanged bool
+	// Advertised surface and list-changed capabilities are kept together so
+	// initialization publishes one coherent capability snapshot.
+	capabilities clientCapabilities
 
 	transport string // declared transport type, for /mcp status ("stdio"/"http")
 
@@ -668,12 +659,7 @@ type Client struct {
 	refresh           toolListRefreshState
 	surfaceStopsMu    sync.Mutex
 	surfaceStops      []func()
-	promptRevision    atomic.Uint64
-	promptApplied     atomic.Uint64
-	promptRunning     atomic.Bool
-	resourceRevision  atomic.Uint64
-	resourceApplied   atomic.Uint64
-	resourceRunning   atomic.Bool
+	auxiliaryRefresh  auxiliaryListRefreshState
 	progressID        atomic.Uint64
 }
 
@@ -799,7 +785,7 @@ func (h *Host) Servers() []ServerStatus {
 			Transport:    c.transport,
 			ConfigSource: strings.TrimSpace(c.spec.ConfigSource),
 			Tools:        len(c.toolCatalog.adapters),
-			HasTools:     c.hasTools,
+			HasTools:     c.capabilities.tools,
 		}
 		s.ToolList = append([]ToolInfo(nil), c.toolCatalog.infos...)
 		c.toolsMu.RUnlock()
@@ -1347,10 +1333,10 @@ func (h *Host) addConnectedWithLifecycle(lifeCtx, callCtx context.Context, s Spe
 	// uses the session-scoped PluginCtx, not a per-turn ctx), so the slow list
 	// calls cannot starve a /mcp add of its return value. nil sink keeps hot-add
 	// quiet — the chat UI re-queries Host.Prompts()/Resources() on demand.
-	if c.hasPrompts {
+	if c.capabilities.prompts {
 		h.goSurface(func() { h.fetchPrompts(lifeCtx, c, nil) })
 	}
-	if c.hasResources {
+	if c.capabilities.resources {
 		h.goSurface(func() { h.fetchResources(lifeCtx, c, nil) })
 	}
 	return ts, nil
@@ -1649,8 +1635,8 @@ func (c *Client) initialize(ctx context.Context) error {
 		slog.Warn("plugin: parse initialize capabilities", "server", c.name, "err", err)
 	}
 	toolsCapability, hasTools := ir.Capabilities["tools"]
-	c.hasTools = hasTools
-	c.supportsToolListChanged = false
+	c.capabilities.tools = hasTools
+	c.capabilities.toolsListChanged = false
 	if hasTools && len(toolsCapability) > 0 {
 		var advertised struct {
 			ListChanged bool `json:"listChanged"`
@@ -1658,15 +1644,15 @@ func (c *Client) initialize(ctx context.Context) error {
 		if err := json.Unmarshal(toolsCapability, &advertised); err != nil {
 			slog.Warn("plugin: parse tools capability", "server", c.name, "err", err)
 		} else {
-			c.supportsToolListChanged = advertised.ListChanged
+			c.capabilities.toolsListChanged = advertised.ListChanged
 		}
 	}
 	promptsCapability, hasPrompts := ir.Capabilities["prompts"]
-	c.hasPrompts = hasPrompts
-	c.supportsPromptListChanged = capabilityListChanged(promptsCapability)
+	c.capabilities.prompts = hasPrompts
+	c.capabilities.promptsListChanged = capabilityListChanged(promptsCapability)
 	resourcesCapability, hasResources := ir.Capabilities["resources"]
-	c.hasResources = hasResources
-	c.supportsResourceListChanged = capabilityListChanged(resourcesCapability)
+	c.capabilities.resources = hasResources
+	c.capabilities.resourcesListChanged = capabilityListChanged(resourcesCapability)
 
 	return nil
 }

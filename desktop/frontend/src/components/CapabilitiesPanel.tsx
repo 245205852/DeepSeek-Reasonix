@@ -5,6 +5,7 @@ import { app } from "../lib/bridge";
 import { activeWorkBusyNoticeText, installMCPServer } from "../lib/capabilityMutations";
 import { useT } from "../lib/i18n";
 import { mcpServerLifecycleActions, mcpServerRetryableFromAvailableList } from "../lib/mcpServerLifecycle";
+import { mcpSessionStateLabel, mcpSettingsSearchText } from "../lib/mcpSessionStatus";
 import { canUseNativeMCPOAuth } from "../lib/mcpOAuthEligibility";
 import type { CapabilitiesView, MCPMarketplaceEntry, MCPMarketplaceView, MCPServerInput, PluginAgentView, PluginCommandView, PluginCompatibilityIssue, PluginHookView, PluginInstallOptions, PluginMCPServerView, PluginSkillView, PluginView, ServerView, SkillRootSkillView, SkillRootView, SkillsSettingsView, SkillView, TabMeta } from "../lib/types";
 import { InlineConfirmButton } from "./InlineConfirmButton";
@@ -2440,25 +2441,9 @@ function mcpSettingsServerSummary(server: ServerView, t: ReturnType<typeof useT>
 	}
 	if (server.status !== "connected") return serverStatusLabel(server, t);
 	const unavailable = mcpServerSchemaIssueCount(server);
-	const parts = [mcpSessionStateLabel(server, t), t("caps.serverToolSummary", { tools: server.tools || 0 })];
+	const parts = [mcpSessionStateLabel(server, t, serverStatusLabel(server, t)), t("caps.serverToolSummary", { tools: server.tools || 0 })];
 	if (unavailable > 0) parts.push(t("caps.schemaIssues", { count: unavailable }));
 	return parts.join(" · ");
-}
-
-function mcpSessionStateLabel(server: ServerView, t: ReturnType<typeof useT>): string {
-	switch (server.sessionState) {
-		case "connecting":
-		case "listening":
-			return t("status.connecting");
-		case "reconnecting":
-			return `${t("remote.status.reconnecting")} ${server.reconnectAttempts || 1}/5`;
-		case "failed":
-			return t("caps.failed");
-		case "ready":
-			return serverStatusLabel(server, t);
-		default:
-			return serverStatusLabel(server, t);
-	}
 }
 
 function mcpServerSourceLabel(server: ServerView, t: ReturnType<typeof useT>): string {
@@ -2474,22 +2459,6 @@ function mcpServerSourceLabel(server: ServerView, t: ReturnType<typeof useT>): s
 		default:
 			return t("caps.sourceUser");
 	}
-}
-
-function mcpSettingsSearchText(server: ServerView): string {
-	return [
-		server.name,
-		server.transport,
-		serverCommand(server),
-		server.error,
-		server.source,
-		server.configSource,
-		server.protocolVersion,
-		server.sessionState,
-		server.errorKind,
-		server.managedByPlugin,
-		...(server.toolList ?? []).flatMap((tool) => [tool.name, tool.description]),
-	].filter(Boolean).join(" ").toLowerCase();
 }
 
 function MCPSettingsSubpageHeader({
@@ -3145,7 +3114,7 @@ export function MCPServersSettingsPage() {
 	const filteredServers = useMemo(() => {
 		const sorted = sortServersForDisplay(servers ?? []);
 		const normalizedQuery = query.trim().toLowerCase();
-		return normalizedQuery ? sorted.filter((server) => mcpSettingsSearchText(server).includes(normalizedQuery)) : sorted;
+		return normalizedQuery ? sorted.filter((server) => mcpSettingsSearchText(server, serverCommand(server)).includes(normalizedQuery)) : sorted;
 	}, [query, servers]);
 	const projectServers = useMemo(() => filteredServers.filter((server) => server.source === "project"), [filteredServers]);
 	const managedServers = useMemo(

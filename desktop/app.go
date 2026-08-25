@@ -7718,14 +7718,7 @@ func (a *App) mcpServersView() []ServerView {
 			}
 			seen[s.Name] = true
 			connected[s.Name] = true
-			view := ServerView{
-				Name: s.Name, Transport: s.Transport, Status: "connected", RuntimeState: mcpSessionRuntimeState(s.SessionState),
-				Tools: s.Tools, Prompts: s.Prompts, Resources: s.Resources,
-				HasTools:        s.HasTools,
-				ToolList:        pluginToolsToView(s.ToolList),
-				ProtocolVersion: s.ProtocolVersion, SessionState: string(s.SessionState),
-				ReconnectAttempts: s.ReconnectAttempts, ErrorKind: string(s.LastErrorKind), Error: s.LastError,
-			}
+			view := pluginServerToView(s)
 			if p, ok := configured[s.Name]; ok {
 				view = withPluginConfigInWorkspace(view, p, workspaceRoot)
 			}
@@ -9184,16 +9177,7 @@ func findMCPServerView(ctrl control.SessionAPI, name string) (ServerView, bool) 
 	}
 	for _, s := range ctrl.Host().Servers() {
 		if s.Name == name {
-			view := ServerView{
-				Name: s.Name, Transport: s.Transport, Status: "connected",
-				Tools: s.Tools, Prompts: s.Prompts, Resources: s.Resources,
-				HasTools:     s.HasTools,
-				ToolList:     pluginToolsToView(s.ToolList),
-				RuntimeState: mcpSessionRuntimeState(s.SessionState), ProtocolVersion: s.ProtocolVersion,
-				SessionState: string(s.SessionState), ReconnectAttempts: s.ReconnectAttempts,
-				ErrorKind: string(s.LastErrorKind), Error: s.LastError,
-			}
-			return view, true
+			return pluginServerToView(s), true
 		}
 	}
 	for _, f := range ctrl.Host().Failures() {
@@ -9205,17 +9189,6 @@ func findMCPServerView(ctrl control.SessionAPI, name string) (ServerView, bool) 
 		}
 	}
 	return ServerView{}, false
-}
-
-func mcpSessionRuntimeState(state plugin.SessionState) string {
-	switch state {
-	case plugin.SessionStateConnecting, plugin.SessionStateListening, plugin.SessionStateReconnecting:
-		return "connecting"
-	case plugin.SessionStateFailed:
-		return "issue"
-	default:
-		return "ready"
-	}
 }
 
 func pluginToolsToView(tools []plugin.ToolInfo) []ToolView {
