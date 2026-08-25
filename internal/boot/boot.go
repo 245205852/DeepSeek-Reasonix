@@ -1550,7 +1550,7 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 	// without inheriting dynamic mcp__* schemas.
 	var capLedger *capability.Ledger
 	var capAudit *capability.Audit
-	capSpecs := PluginSpecsForRootWithOptions(cfg.Plugins, root, pluginSpecOptions)
+	capEntries, capSpecs := capabilityServerInventory(cfg.Plugins, root, pluginSpecOptions, extraSpecs, enabledMCPNames)
 	cachedTools, cacheKeyOK := capability.LoadCachedToolsForSpecs(capSpecs)
 	skillStore.ConfigureToolBindings(func(sk skill.Skill) []tool.MCPBinding {
 		return skillMCPBindings(sk, reg, capSpecs, cachedTools, cacheKeyOK)
@@ -1587,7 +1587,7 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 	// Always build the capability runtime and provider-visible use_capability
 	// proxy so all three role settings share one tool schema.
 	capRuntime = agent.NewMCPCapabilityRuntime(ctx, pluginHost, capSpecs, reg, catalogFn)
-	capRuntime.ConfigureServers(cfg.Plugins, capSpecs, enabledMCPNames)
+	capRuntime.ConfigureServers(capEntries, capSpecs, enabledMCPNames)
 	capLedger = capability.NewLedger()
 	capAudit = &capability.Audit{}
 	capProxy = capRuntime.NewFrontend(capLedger, capAudit)

@@ -875,7 +875,7 @@ func (t *UseCapabilityTool) inspect(ctx context.Context, id string) (string, err
 			}
 			if server != "" {
 				if !t.serverEnabled(server) {
-					return string(b) + "\n\nServer is disabled in this session.", nil
+					return string(b) + "\n\n" + t.serverUnavailableReason(server), nil
 				}
 				if t.host != nil && t.host.HasClient(server) {
 					// serverTools refreshes the snapshot too: inspecting a
@@ -991,7 +991,7 @@ func (t *UseCapabilityTool) resolveCall(ctx context.Context, id string, args jso
 		return tool.ResolvedCall{}, err
 	}
 	if !t.serverEnabled(server) {
-		return t.resolveUnavailable(base, id, plugin.ModelToolName(server, raw), fmt.Sprintf("MCP server %q is disabled in this session", server)), nil
+		return t.resolveUnavailable(base, id, plugin.ModelToolName(server, raw), t.serverUnavailableReason(server)), nil
 	}
 	var runtimeSpec plugin.Spec
 	releaseRuntime := func() {}
@@ -1062,7 +1062,7 @@ func (t *UseCapabilityTool) resolveCall(ctx context.Context, id string, args jso
 		var ok bool
 		spec, ok = t.specFor(server)
 		if !ok {
-			return t.resolveUnavailable(base, id, modelName, fmt.Sprintf("MCP server %q is not configured", server)), nil
+			return t.resolveUnavailable(base, id, modelName, mcpServerUnregisteredMessage(server)), nil
 		}
 		spec = plugin.ResolveStoredAuthorization(ctx, spec)
 	}
@@ -1383,7 +1383,7 @@ func (t *UseCapabilityTool) lockAuthorizedRuntimeServer(ctx context.Context, ser
 	if t.runtime == nil {
 		spec, ok := t.specFor(server)
 		if !ok {
-			return plugin.Spec{}, func() {}, fmt.Errorf("MCP server %q is not configured", server)
+			return plugin.Spec{}, func() {}, mcpServerUnregisteredError(server)
 		}
 		spec = plugin.ResolveStoredAuthorization(ctx, spec)
 		if !spec.ServerAuthorized() {
@@ -1399,11 +1399,11 @@ func (t *UseCapabilityTool) lockAuthorizedRuntimeServer(ctx context.Context, ser
 	t.runtime.mu.RUnlock()
 	if !ok {
 		unlock()
-		return plugin.Spec{}, func() {}, fmt.Errorf("MCP server %q is not configured", server)
+		return plugin.Spec{}, func() {}, mcpServerUnregisteredError(server)
 	}
 	if !configured.enabled {
 		unlock()
-		return plugin.Spec{}, func() {}, fmt.Errorf("MCP server %q is disabled in this session", server)
+		return plugin.Spec{}, func() {}, mcpServerDisabledError(server)
 	}
 	spec := plugin.ResolveStoredAuthorization(ctx, cloneMCPSpec(configured.spec))
 	if !spec.ServerAuthorized() {
@@ -1496,7 +1496,7 @@ func parseMCPServerCapabilityID(id string) (string, bool) {
 func (t *UseCapabilityTool) resolveServerConnect(ctx context.Context, server string, base tool.ResolvedCall) (tool.ResolvedCall, error) {
 	id := "mcp-server:" + server
 	if !t.serverEnabled(server) {
-		return t.resolveUnavailable(base, id, plugin.ToolPrefix(server), fmt.Sprintf("MCP server %q is disabled in this session", server)), nil
+		return t.resolveUnavailable(base, id, plugin.ToolPrefix(server), t.serverUnavailableReason(server)), nil
 	}
 	if t.host != nil && t.host.HasClient(server) {
 		out, err := t.listServerTools(ctx, server)
