@@ -128,9 +128,9 @@ export function projectTreeWithoutTopic(tree: ProjectNode[], topicId: string): P
   return projectTreeWithoutTopics(tree, new Set([id]));
 }
 
-// Pending archive IDs are a client-side tombstone overlay. Apply it to every
-// incoming page as well as the resident tree so an older request cannot paint
-// a topic back while its backend mutation is still queued or running.
+// Post-commit archive IDs are a client-side tombstone overlay. Apply it to
+// every incoming page as well as the resident tree so a pre-commit request
+// cannot paint a topic back before the canonical reload acquires its sequence.
 export function projectTreeWithoutTopics(tree: ProjectNode[], topicIds: ReadonlySet<string>): ProjectNode[] {
   if (topicIds.size === 0) return tree;
   let changed = false;

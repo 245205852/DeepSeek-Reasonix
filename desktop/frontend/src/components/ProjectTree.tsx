@@ -1387,7 +1387,7 @@ export function ProjectTree({
           )}
           {isSessionNode ? (
             <ProjectTreeSessionArchiveMenu
-              open={topicMenuOpen} point={menuPoint} sessionPath={sessionPath} blocked={topicTrashing} busy={sessionTrashing} confirmed={confirmArchiveTarget === archiveTargetKey}
+              open={topicMenuOpen} point={menuPoint} sessionPath={sessionPath} blocked={archiveBlocked || topicTrashing} busy={sessionTrashing} confirmed={confirmArchiveTarget === archiveTargetKey}
               onConfirm={() => setConfirmArchiveTarget(archiveTargetKey)} onTrash={() => { setConfirmArchiveTarget(null); void trashSession(sessionPath); }} onClose={closeMenu} />
           ) : <ContextMenu open={topicMenuOpen} point={menuPoint} items={topicMenuItems} minWidth={178} ariaLabel={t("projectTree.topicActions")} onClose={closeMenu} />}
           {shortcutIndex > 0 && (

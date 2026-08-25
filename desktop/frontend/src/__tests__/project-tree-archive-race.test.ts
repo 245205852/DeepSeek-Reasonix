@@ -108,6 +108,7 @@ async function testPendingEndsOnlyAfterCanonicalReload() {
   let pending = true;
   const job = runProjectTreeArchiveJob({
     archive: async () => {},
+    commit: () => {},
     reload: () => reloadGate.promise,
     finishPending: () => { pending = false; },
     recover: async () => {},
@@ -121,16 +122,28 @@ async function testPendingEndsOnlyAfterCanonicalReload() {
 }
 
 async function testFailedArchiveRestoresVisibilityBeforeRecoveryReload() {
+  const backendGate = deferred<void>();
   let pending = true;
+  let tombstones = new Set<string>();
   let recoveryObservedPending: boolean | null = null;
   const job = runProjectTreeArchiveJob({
-    archive: async () => { throw new Error("busy"); },
+    archive: () => backendGate.promise,
+    commit: () => { tombstones = projectTreeTrashingTopics(tombstones, "topic-a", true); },
     reload: async () => {},
     finishPending: () => { pending = false; },
     recover: async () => { recoveryObservedPending = pending; },
   });
 
+  await Promise.resolve();
+  assert.equal(pending, true);
+  assert.equal(tombstones.has("topic-a"), false, "pending backend work must not hide the topic");
+  assert.equal(projectTreeWithoutTopics(
+    [{ key: "topic-a", kind: "topic", label: "A", topicId: "topic-a" }],
+    tombstones,
+  ).length, 1);
+  backendGate.reject(new Error("busy"));
   assert.equal(await job, false);
+  assert.equal(tombstones.has("topic-a"), false, "rejected archives never commit a tombstone");
   assert.equal(recoveryObservedPending, false);
 }
 
@@ -181,16 +194,18 @@ function testProjectTreeWiresEveryRaceGuard() {
     join(dirname(fileURLToPath(import.meta.url)), "../components/ProjectTreeSessionArchiveMenu.tsx"),
     "utf8",
   );
-  assert.match(archiveSource, /invalidateProjectTreeTopicLoads[\s\S]*optimisticallyRemoveTopic\(topicId\)/);
+  assert.match(archiveSource, /await archive\(\)[\s\S]*commit\(\)[\s\S]*await reload\(\)/);
+  assert.match(archiveSource, /commitArchiveTombstone\(topicId\)[\s\S]*invalidateProjectTreeTopicLoads[\s\S]*optimisticallyRemoveTopic\(topicId\)/);
   assert.match(source, /projectTreeWithoutTopics\(asArray\(page\.items\), currentArchiveTombstones\(\)\)/);
-  assert.match(archiveSource, /archiveQueueRef\.current\.catch[\s\S]*\.then\(async \(\) =>/);
+  assert.match(archiveSource, /return previous\.catch\(\(\) => undefined\)\.then\(work\)/);
   assert.match(archiveSource, /pendingLoads = targets\.map[\s\S]*onReloadStarted[\s\S]*await Promise\.all\(pendingLoads\)/);
   assert.match(archiveSource, /onReloadStarted: \(\) => releaseArchiveTombstone\(topicId\)/);
-  assert.match(archiveSource, /await refreshRef\.current\(reloadOptions\)[\s\S]*finally \{[\s\S]*endTrashingTopic\(topicId\)/);
+  assert.match(archiveSource, /finishPending: \(\) => endTrashingTopic\(topicId\)/);
   assert.match(source, /const topicMenuOpen = menuNodeKey === key/);
   assert.match(source, /onContextMenu=\{openTopicMenu\}/);
   assert.match(source, /node\.sessionPath \?\? ""/);
   assert.match(sessionMenuSource, /disabled: !sessionPath \|\| blocked \|\| busy/);
+  assert.match(source, /sessionPath=\{sessionPath\} blocked=\{archiveBlocked \|\| topicTrashing\}/);
   assert.match(source, /void trashSession\(sessionPath\)/);
   assert.match(archiveSource, /projectTreeFolderKeyForSession\(treeRef\.current, sessionPath\)[\s\S]*refreshRef\.current\(reloadOptions\)/);
 }
