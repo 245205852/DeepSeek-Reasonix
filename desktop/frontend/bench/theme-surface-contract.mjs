@@ -20,12 +20,28 @@ const modes = [
 ];
 const overlaySelectors = [
   ".anchored-popover",
+  ".slashmenu",
+  ".composer-access-menu",
   ".jobs-popover",
   ".modelsw__menu",
-  ".sound-select__menu",
+  ".workspace-recent-menu",
+  ".floating-menu",
   ".mem-ws-select__menu",
-  ".composer-access-menu",
+  ".menu",
+  ".sound-select__menu",
+  ".settings-model-picker__menu",
+  ".external-opener__menu",
+  ".context-menu",
+  ".theme-gallery__menu",
   ".theme-gallery__editor",
+  ".theme-editor__header",
+  ".theme-editor__live",
+  ".provider-access-more__menu",
+  ".topicbar__more-menu",
+  ".topicbar__more-export-menu",
+  ".heartbeat-filter-menu",
+  ".heartbeat-project-menu",
+  ".heartbeat-task-menu",
 ];
 const surfaceSelectors = [
   ".msg-pasted-block",
@@ -155,7 +171,7 @@ try {
   await page.emulateMedia({ colorScheme: "dark" });
   for (const [paneOpacity, expectedAlpha] of [[0, 0.4], [0.5, 0.9], [1, 1]]) {
     for (const scene of ["home", "task"]) {
-      const alpha = await page.evaluate(({ paneOpacity, scene }) => {
+      const alphas = await page.evaluate(({ overlaySelectors, paneOpacity, scene }) => {
         const root = document.documentElement;
         const percentage = `${Math.min((paneOpacity + 0.4) * 100, 100)}%`;
         root.setAttribute("data-theme-style", "graphite");
@@ -165,17 +181,24 @@ try {
         root.setAttribute("data-theme-scene", scene);
         root.style.setProperty("--theme-pane-overlay-pct", percentage);
         root.style.setProperty("--theme-pane-task-overlay-pct", percentage);
-        const value = getComputedStyle(document.querySelector(".jobs-popover")).backgroundColor;
-        const canvas = document.createElement("canvas");
-        canvas.width = 1;
-        canvas.height = 1;
-        const context = canvas.getContext("2d");
-        context.clearRect(0, 0, 1, 1);
-        context.fillStyle = value;
-        context.fillRect(0, 0, 1, 1);
-        return context.getImageData(0, 0, 1, 1).data[3] / 255;
-      }, { paneOpacity, scene });
-      assert(Math.abs(alpha - expectedAlpha) <= 1 / 255, `${scene} portal overlay follows paneOpacity ${paneOpacity} (${alpha})`);
+        return Object.fromEntries(overlaySelectors.map((selector) => {
+          const value = getComputedStyle(document.querySelector(selector)).backgroundColor;
+          const canvas = document.createElement("canvas");
+          canvas.width = 1;
+          canvas.height = 1;
+          const context = canvas.getContext("2d");
+          context.clearRect(0, 0, 1, 1);
+          context.fillStyle = value;
+          context.fillRect(0, 0, 1, 1);
+          return [selector, context.getImageData(0, 0, 1, 1).data[3] / 255];
+        }));
+      }, { overlaySelectors, paneOpacity, scene });
+      for (const [selector, alpha] of Object.entries(alphas)) {
+        assert(
+          Math.abs(alpha - expectedAlpha) <= 1 / 255,
+          `${scene} ${selector} follows paneOpacity ${paneOpacity} (${alpha})`,
+        );
+      }
     }
   }
 

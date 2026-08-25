@@ -29994,7 +29994,7 @@ body > .mermaid-diagram--fullscreen {
 :root[data-theme-style] .modelsw__menu {
   border-color: var(--app-graphite-hairline-strong);
   border-radius: 8px;
-  background: var(--bg-elev);
+  background: var(--overlay-surface-bg);
   box-shadow: var(--app-graphite-shadow-float);
 }
 
