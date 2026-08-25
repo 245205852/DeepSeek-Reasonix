@@ -5,7 +5,7 @@ const mockListeners = new Map<string, Set<(payload: unknown) => void>>();
 const openedListeners = new Set<(meta: TabMeta) => void>();
 
 function runtimeAvailable(): boolean {
-  return typeof window !== "undefined" && Boolean(window.runtime);
+  return typeof window !== "undefined" && Boolean(window.go?.main?.App && window.runtime);
 }
 
 function registerMock(tabId: string, channel: MockRemoteTabChannel, cb: (payload: unknown) => void): () => void {
