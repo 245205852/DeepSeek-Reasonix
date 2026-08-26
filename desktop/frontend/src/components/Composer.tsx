@@ -5,7 +5,7 @@ import { asArray } from "../lib/array";
 import { filterAtMatches } from "../lib/atMatches";
 import { DedupIndex, sha256 } from "../lib/attachDedup";
 import { app, onFilesDropped } from "../lib/bridge";
-import { enqueueInboxGuidance } from "../lib/inboxSubmit";
+import { enqueueInboxGuidanceForActiveTurn, steerInboxItemForActiveTurn } from "../lib/inboxSubmit";
 import { formatInboxError, isInboxItemMissing } from "../lib/inboxError";
 import { inboxScopeKey } from "../lib/composerInboxQueue";
 import { useComposerInboxRefresh } from "../lib/useComposerInboxRefresh";
@@ -552,7 +552,7 @@ export function Composer({
   imageInputEnabled = true,
   imageUnderstandingEnabled = false,
   attachmentInputEnabled = true,
-  tabId,
+  tabId, turnId,
   effort,
   onSend,
   onSteer,
@@ -627,7 +627,7 @@ export function Composer({
   imageUnderstandingEnabled?: boolean;
   /** False for remote sessions because local filesystem paths are not portable to Serve. */
   attachmentInputEnabled?: boolean;
-  tabId?: string;
+  tabId?: string; turnId?: string;
   effort?: EffortInfo;
   onSend: (displayText: string, submitText?: string, tabId?: string, structured?: StructuredInvocationSubmit) => void | Promise<void>;
   onInvocationMetadataChange?: (metadata: Record<string, { kind: "skill" | "subagent"; color?: string }>) => void;
@@ -2131,7 +2131,7 @@ export function Composer({
           const receiptTracker = guidanceReceiptTrackerRef.current;
           receiptTracker?.start(submitDraftKey);
           try {
-            const receipt = await enqueueInboxGuidance(app, submitTabId || "", guidanceText, guidanceSubmitText, structured, { steer: true });
+            const receipt = await enqueueInboxGuidanceForActiveTurn(app, submitTabId || "", guidanceText, guidanceSubmitText, structured, turnId);
             if (receipt?.error) throw new Error(receipt.error);
             const consumedBeforeReceipt = receiptTracker?.takeConsumed(submitDraftKey, receipt.itemId) ?? false;
             if (!consumedBeforeReceipt) {
@@ -2189,7 +2189,7 @@ export function Composer({
       }
       if (durable && !running) return await kickIdleGuidance(app.SetInboxPaused, targetTabId || "", () => setGuidanceRetryNonce((value) => value + 1));
       if (running && durable) {
-        const receipt = await app.SteerInboxItem(targetTabId || "", item.id);
+        const receipt = await steerInboxItemForActiveTurn(app, targetTabId || "", item.id, turnId);
         if (receipt?.error) throw new Error(receipt.error);
         if (receipt?.disposition === "steer_accepted") {
           updatePendingGuidanceForDraft(targetDraftKey, (items) => items.filter((queued) => queued.id !== item.id));

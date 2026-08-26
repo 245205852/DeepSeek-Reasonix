@@ -16,6 +16,8 @@ export type EventKind =
   | "tool_dispatch"
   | "tool_result"
   | "tool_result_preview"
+  | "turn_status"
+  | "prompt_answered"
   | "tool_progress"
   | "usage"
   | "notice"
@@ -38,6 +40,28 @@ export type EventKind =
   | "completion_summary"
   | "provider_unreachable";
 export type StreamAttemptAction = "begin" | "discard" | "commit";
+export type TurnStatus = "queued" | "in_progress" | "waiting_user" | "cancelling" | "completed" | "interrupted" | "failed" | "protocol_failed";
+export interface TurnEventEnvelope {
+  turnId: string;
+  seq: number;
+  status: TurnStatus | string;
+  runtimeEpoch?: string;
+  submissionId?: string;
+  transcriptRevision?: number;
+  transcriptDigest?: string;
+  event: WireEvent;
+}
+export interface TurnEventReplayView {
+  events: TurnEventEnvelope[];
+  floorSeq: number;
+  latestSeq: number;
+  nextAfterSeq: number;
+  hasMore: boolean;
+  resetRequired: boolean;
+  transcriptRevision?: number;
+  transcriptDigest?: string;
+  runtimeEpoch?: string;
+}
 export interface WireStreamAttempt {
   id: string;
   action: StreamAttemptAction;
@@ -322,6 +346,9 @@ export interface MemoryCitation {
 
 export interface WireEvent {
   kind: EventKind;
+  turnId?: string;
+  seq?: number;
+  status?: TurnStatus;
   text?: string;
   detail?: string;
   // Stable notice id for localization; empty/absent = localize by text match.
@@ -341,12 +368,12 @@ export interface WireEvent {
   err?: string;
   checkpointTurn?: number; // Authoritative TurnDone rewind target; zero is valid.
   submissionId?: string; // Opaque correlation for the exact optimistic user submission.
-  outcome?: "final_readiness" | "recovery_paused";
+  outcome?: "completed" | "partial" | "blocked" | "final_readiness" | "recovery_paused";
   readiness?: WireFinalReadiness;
   retryAttempt?: number;
   retryMax?: number;
   /** Optional: "headers" | "stream". Older clients ignore unknown fields. */
-  retryScope?: "headers" | "stream";
+  retryScope?: "headers" | "stream" | "protocol";
   streamAttempt?: WireStreamAttempt;
   /** Durable session-inbox item id for steer / TurnDone correlation. */
   itemId?: string;
@@ -461,6 +488,10 @@ export interface TabMeta {
   backgroundJobs?: number;
   cancelRequested?: boolean;
   cancellable?: boolean;
+  turnId?: string;
+  turnStatus?: TurnStatus;
+  turnEventSeq?: number;
+  turnReplayAfterSeq?: number;
   mode: Mode;
   collaborationMode?: CollaborationMode;
   toolApprovalMode?: ToolApprovalMode;

@@ -122,6 +122,7 @@ import type {
   TerminalWorkspaceView,
   TopicMeta,
   ToolApprovalMode,
+  TurnEventReplayView,
   UpdateInfo,
   UpdateProgress,
   WireEvent,
@@ -206,6 +207,7 @@ export interface AppBindings extends SessionCatalogBindings, ProjectTreeOrganiza
   Submit(input: string): Promise<void>;
   SubmitToTab(tabID: string, input: string): Promise<void>;
   SubmitToTabWithID(tabID: string, input: string, submissionID: string): Promise<void>;
+  StartTurnForTab?(tabID: string, input: string, submissionID: string): Promise<{ turnId: string; status: string; runtimeEpoch?: string; submissionId?: string }>;
   SubmitDisplay(display: string, input: string): Promise<void>;
   SubmitDisplayToTab(tabID: string, display: string, input: string): Promise<void>;
   SubmitDisplayToTabWithID(tabID: string, display: string, input: string, submissionID: string): Promise<void>;
@@ -252,7 +254,11 @@ export interface AppBindings extends SessionCatalogBindings, ProjectTreeOrganiza
   EnqueueInboxFollowup(tabID: string, display: string, submit: string, idempotency: string): Promise<{ itemId: string; disposition: string; position: number; paused: boolean; idempotent?: boolean; error?: string }>;
   EnqueueInboxFollowupWithInvocations(tabID: string, display: string, submit: string, invocations: InvocationRequest[], idempotency: string): Promise<{ itemId: string; disposition: string; position: number; paused: boolean; idempotent?: boolean; error?: string }>;
   EnqueueInboxSteer(tabID: string, display: string, submit: string, idempotency: string): Promise<{ itemId: string; disposition: string; position: number; paused: boolean; idempotent?: boolean; error?: string }>;
+  EnqueueInboxSteerForTurn?(tabID: string, turnID: string, display: string, submit: string, idempotency: string): Promise<{ itemId: string; disposition: string; position: number; paused: boolean; idempotent?: boolean; error?: string }>;
   SteerInboxItem(tabID: string, itemID: string): Promise<{
+    itemId: string; disposition: string; position: number; paused: boolean; idempotent?: boolean; error?: string;
+  }>;
+  SteerInboxItemForTurn?(tabID: string, turnID: string, itemID: string): Promise<{
     itemId: string; disposition: string; position: number; paused: boolean; idempotent?: boolean; error?: string;
   }>;
   ReadInboxItem(tabID: string, id: string): Promise<{ id: string; displayText: string; rawText: string; submitText: string }>;
@@ -267,6 +273,9 @@ export interface AppBindings extends SessionCatalogBindings, ProjectTreeOrganiza
   CancelTab(tabID: string): Promise<void>;
   CancelTabWithInboxItems(tabID: string, itemIDs: string[]): Promise<void>;
   CancelTabWithInboxItemsResult?(tabID: string, itemIDs: string[]): Promise<{ discardedItemIds: string[]; warning?: string }>;
+  InterruptTurnForTab?(tabID: string, turnID: string): Promise<void>;
+  InterruptTurnWithInboxItemsForTab?(tabID: string, turnID: string, itemIDs: string[]): Promise<{ discardedItemIds: string[]; warning?: string }>;
+  TurnEventsForTab?(tabID: string, afterSeq: number): Promise<TurnEventReplayView>;
   Approve(id: string, allow: boolean, session: boolean, persist: boolean): Promise<void>;
   ApproveTab(tabID: string, id: string, allow: boolean, session: boolean, persist: boolean): Promise<void>;
   ResolvePlanDecision(id: string, action: "start_execution" | "revise_plan" | "exit_plan"): Promise<void>;
@@ -279,6 +288,7 @@ export interface AppBindings extends SessionCatalogBindings, ProjectTreeOrganiza
   RecoveryCheckpointEnabledTab(tabID: string): Promise<boolean>;
   AnswerQuestion(id: string, answers: QuestionAnswer[]): Promise<void>;
   AnswerQuestionForTab(tabID: string, id: string, answers: QuestionAnswer[]): Promise<void>;
+  AnswerPromptForTab?(tabID: string, turnID: string, id: string, answers: QuestionAnswer[]): Promise<void>;
   ReplayPendingPrompts(): Promise<void>;
   ReplayPendingPromptsForTab(tabID: string): Promise<void>;
   SetPlanMode(on: boolean): Promise<void>;

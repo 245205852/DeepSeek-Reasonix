@@ -693,7 +693,7 @@ await flushFrames();
 const scrollToBottomBeforeSnapshot = scrollToBottomCalls;
 await switchSurface("surface-m");
 check(integrity?.restoreSnapshot === undefined, "same-row surface remount does not restore an old scrollTop");
-readyRef.current = false;
+check(readyRef.current === false, "surface switch invalidates old readiness before incoming items render");
 await act(async () => integrity?.handleItemsRendered(1));
 await flushFrames();
 check(scrollToBottomCalls === scrollToBottomBeforeSnapshot + 1, "same-row reveal follows normal tail positioning");
@@ -707,7 +707,6 @@ const prependedRows: TranscriptRow[] = [
 ];
 await switchSurface("surface-n", prependedRows);
 check(integrity?.restoreSnapshot === undefined, "a prepended key sequence discards the captured snapshot");
-readyRef.current = false;
 await act(async () => integrity?.handleItemsRendered(1));
 await flushFrames();
 check(scrollToBottomCalls === scrollToBottomBeforeSnapshot + 2, "changed data falls back to normal first-mount positioning");
@@ -717,7 +716,6 @@ check(scrollToBottomCalls === scrollToBottomBeforeSnapshot + 2, "changed data fa
 const foreignRows: TranscriptRow[] = [{ kind: "answer", key: "row-elsewhere", item: { ...item, id: "elsewhere" } }];
 await switchSurface("surface-l", foreignRows);
 check(integrity?.restoreSnapshot === undefined, "a disjoint key sequence discards the snapshot");
-readyRef.current = false;
 await act(async () => integrity?.handleItemsRendered(1));
 await flushFrames();
 check(scrollToBottomCalls === scrollToBottomBeforeSnapshot + 3, "a disjoint snapshot-less first mount settles at the bottom");
