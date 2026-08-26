@@ -33,7 +33,8 @@ export interface RemoteProjectBindings {
   CancelRemoteTabJobs(tabId: string, jobIds: string[]): Promise<void>;
   SteerRemoteTab(tabId: string, input: string): Promise<void>;
   SetRemoteTabPlanMode(tabId: string, on: boolean): Promise<void>;
-  CompactRemoteTab(tabId: string): Promise<void>;
+  CompactRemoteTab(tabId: string, instructions: string): Promise<void>;
+  ReplayRemoteTabPrompts(tabId: string): Promise<unknown>;
   ForkRemoteTab(tabId: string, turn: number, name: string): Promise<void>;
   SummarizeRemoteTab(tabId: string, turn: number, mode: string): Promise<void>;
   ForgetRemoteTab(tabId: string, name: string): Promise<void>;

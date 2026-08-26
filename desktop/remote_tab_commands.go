@@ -367,8 +367,12 @@ func (a *App) SetRemoteTabPlanMode(tabID string, on bool) error {
 	return a.remoteTabPost(tabID, "/plan", map[string]any{"on": on})
 }
 
-func (a *App) CompactRemoteTab(tabID string) error {
-	return a.remoteTabPost(tabID, "/compact", nil)
+func (a *App) CompactRemoteTab(tabID, instructions string) error {
+	return a.remoteTabPost(tabID, "/compact", map[string]any{"instructions": strings.TrimSpace(instructions)})
+}
+
+func (a *App) ReplayRemoteTabPrompts(tabID string) (json.RawMessage, error) {
+	return a.remoteTabGet(tabID, "/pending-prompts")
 }
 
 func (a *App) ForkRemoteTab(tabID string, turn int, name string) error {

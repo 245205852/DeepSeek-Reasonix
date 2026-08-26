@@ -15,6 +15,7 @@ export async function openRemoteNewSession(remote: RemoteTabRefView, retryHydrat
 export function remoteRuntimeCommand(input: string):
   | { method: "setModel" | "setEffort"; value: string }
   | { method: "newSession" | "clearSession" }
+  | { method: "compact"; value: string }
   | { method: "runManagementCommand"; rehydrate?: boolean }
   | undefined {
   const trimmed = input.trim();
@@ -23,13 +24,14 @@ export function remoteRuntimeCommand(input: string):
   const match = /^\/(model|effort)\s+(\S+)$/.exec(trimmed);
   if (match) return { method: match[1] === "model" ? "setModel" : "setEffort", value: match[2] };
   const verb = /^\/([^\s]+)/.exec(trimmed)?.[1]?.toLowerCase();
+  if (verb === "compact") return { method: "compact", value: trimmed.slice("/compact".length).trim() };
   if (verb === "goal" && remoteGoalCommandStartsTurn(trimmed)) return undefined;
   // These controller verbs are synchronous management operations: they emit
   // notices or mutate session metadata but do not admit a conversational
   // turn. Custom commands, skills, docs queries, and MCP prompts deliberately
   // remain on the ordinary submit path because they can start model work.
   const management = new Set([
-    "compact", "context", "goal", "memory", "remember", "migrate", "migration",
+    "context", "goal", "memory", "remember", "migrate", "migration",
     "skill", "skills", "plugin", "plugins", "reload-cmd", "hooks", "mcp",
     "provider", "tree", "branch", "switch", "rewind",
   ]);
@@ -64,6 +66,7 @@ export function useRemoteComposerSend(
       if (!activeRemote) return;
       return openRemoteNewSession(activeRemote, session.retryHydration);
     }
+    if (command?.method === "compact") return session.compact(command.value);
     if (command?.method === "runManagementCommand") return session.runManagementCommand(trimmed, command.rehydrate);
     if (command?.method === "setModel" || command?.method === "setEffort") return session[command.method](command.value);
     if (activeTabId && collaborationMode === "goal" && !goal.trim() && trimmed) await applyGoal(activeTabId, trimmed);

@@ -123,7 +123,9 @@ console.log("\nbundle budgets");
 // Atomic remote profile changes, exact approval draining, and generation-safe
 // history handoff bring the measured path to 445.228 KiB. Retain 0.072 KiB of
 // headroom with the smallest existing decimal ratchet.
-const initialJSBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 445.3 : 445.3;
+// Direct pending-prompt recovery and authoritative remote Goal state bring the
+// measured path to 445.473 KiB. Retain 0.027 KiB of bounded headroom.
+const initialJSBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 445.5 : 445.5;
 assertBudget("initial JavaScript gzip", initialJSGzip, initialJSBudgetKiB * 1024);
 assertBudget("largest initial JavaScript chunk gzip", largestInitialJS, 280 * 1024);
 // Render-blocking CSS is intentionally absent: styles.css loads deferred via

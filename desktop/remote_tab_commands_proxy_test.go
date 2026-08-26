@@ -52,7 +52,7 @@ func TestRemoteTabCommandsForwardedToServe(t *testing.T) {
 		{"cancel-jobs", func() error { return a.CancelRemoteTabJobs(meta.ID, []string{"job-1"}) }, `POST /jobs/cancel {"ids":["job-1"]}`},
 		{"steer", func() error { return a.SteerRemoteTab(meta.ID, "keep it narrow") }, `POST /inbox/items {"input":"keep it narrow","intent":"steer"}`},
 		{"plan-on", func() error { return a.SetRemoteTabPlanMode(meta.ID, true) }, `POST /plan {"on":true}`},
-		{"compact", func() error { return a.CompactRemoteTab(meta.ID) }, "POST /compact {}"},
+		{"compact", func() error { return a.CompactRemoteTab(meta.ID, "preserve tests") }, `POST /compact {"instructions":"preserve tests"}`},
 		{"fork", func() error { return a.ForkRemoteTab(meta.ID, 2, "try-auth") }, `POST /fork {"name":"try-auth","turn":2}`},
 		{"summarize", func() error { return a.SummarizeRemoteTab(meta.ID, 4, "upto") }, `POST /summarize {"mode":"upto","turn":4}`},
 		{"forget", func() error { return a.ForgetRemoteTab(meta.ID, "api-key") }, `POST /forget {"name":"api-key"}`},
@@ -83,7 +83,10 @@ func TestRemoteTabCommandsForwardedToServe(t *testing.T) {
 	if _, err := a.RemoteTabSkills(meta.ID); err != nil {
 		t.Fatalf("skills: %v", err)
 	}
-	foundBranches, foundSkills := false, false
+	if _, err := a.ReplayRemoteTabPrompts(meta.ID); err != nil {
+		t.Fatalf("pending prompts: %v", err)
+	}
+	foundBranches, foundSkills, foundPrompts := false, false, false
 	for _, c := range fs.recorded() {
 		if c == "GET /branches " {
 			foundBranches = true
@@ -91,8 +94,11 @@ func TestRemoteTabCommandsForwardedToServe(t *testing.T) {
 		if c == "GET /skills " {
 			foundSkills = true
 		}
+		if c == "GET /pending-prompts " {
+			foundPrompts = true
+		}
 	}
-	if !foundBranches || !foundSkills {
-		t.Fatalf("branches/skills reads missing: %v", fs.recorded())
+	if !foundBranches || !foundSkills || !foundPrompts {
+		t.Fatalf("branches/skills/prompt reads missing: %v", fs.recorded())
 	}
 }

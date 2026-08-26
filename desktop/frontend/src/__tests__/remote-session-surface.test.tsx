@@ -68,6 +68,7 @@ let statusGoalStatus: "stopped" | "complete" = "stopped";
 let statusQualityFloor: "standard" | "delivery" = "standard";
 let statusModelLabel = "DeepSeek · Mock";
 let statusEffort = "high";
+let statusPendingPrompt = false, replayedPrompts: unknown[] = [];
 let snapshotHistory: unknown[] = [];
 let blockApproval = false;
 let releaseApproval: (() => void) | undefined;
@@ -127,6 +128,7 @@ window.go = { main: { App: {
         toolApprovalMode: "auto",
         goal: "",
         goalStatus: statusGoalStatus,
+        goalRuntime: { turnsUsed: 2, turnsLimit: 0, tokensUsed: 321, requestsUsed: 3, workDurationMs: 4000, tokensLimit: 0, noProgressTurns: 0, noProgressLimit: 0, budgetExtensions: 0 },
         qualityFloor: statusQualityFloor,
         effort: { supported: true, current: statusEffort, default: "auto", levels: ["auto", "high", "max"] },
         used: 1200,
@@ -146,12 +148,14 @@ window.go = { main: { App: {
 			return { running: false, plan: true, toolApprovalMode: "yolo", goal: "", qualityFloor: "standard" };
 		}
 		return {
-			running: false, pendingPrompt: false, backgroundJobs: 0,
+			running: false, pendingPrompt: statusPendingPrompt, backgroundJobs: 0,
 			label: statusModelLabel, plan: true, toolApprovalMode: "auto", goal: "",
 			goalStatus: statusGoalStatus, qualityFloor: statusQualityFloor,
+			goalRuntime: { turnsUsed: 2, turnsLimit: 0, tokensUsed: 321, requestsUsed: 3, workDurationMs: 4000, tokensLimit: 0, noProgressTurns: 0, noProgressLimit: 0, budgetExtensions: 0 },
 			effort: { supported: true, current: statusEffort, default: "auto", levels: ["auto", "high", "max"] },
 		};
 	},
+  async ReplayRemoteTabPrompts(tabId: string) { tape.push(`replay-prompts:${tabId}`); return replayedPrompts; },
   async SubmitRemoteTab(tabId: string, text: string) {
     tape.push(`submit:${tabId}:${text}`);
   },
@@ -167,6 +171,7 @@ window.go = { main: { App: {
   async SummarizeRemoteTab(tabId: string, turn: number, mode: string) {
     tape.push(`summarize:${tabId}:${turn}:${mode}`);
   },
+  async CompactRemoteTab(tabId: string, instructions: string) { tape.push(`compact:${tabId}:${instructions}`); },
   async SetRemoteTabEffort(tabId: string, level: string) {
     tape.push(`effort:${tabId}:${level}`);
     statusEffort = level;
@@ -482,16 +487,9 @@ function HookProbe({ tabId = "tab-remote-2" }: { tabId?: string }) {
   return null;
 }
 const probeRoot = createRoot(document.createElement("div"));
-await act(async () => {
-  probeRoot.render(
-    <LocaleProvider>
-      <HookProbe />
-    </LocaleProvider>,
-  );
-});
-await act(async () => flush());
+await act(async () => { probeRoot.render(<LocaleProvider><HookProbe /></LocaleProvider>); await flush(); });
 ok(probe?.state === "ready", "a successful fenced snapshot recovers a ready event missed before listener mount");
-ok(probe?.composerProfile?.collaborationMode === "plan" && probe?.composerProfile?.toolApprovalMode === "auto",
+ok(probe?.composerProfile?.collaborationMode === "plan" && probe?.composerProfile?.toolApprovalMode === "auto" && probe.goalRuntime?.tokensUsed === 321,
   "snapshot status hydrates the authoritative remote composer profile");
 ok(probe?.effort?.current === "high" && probe?.transcript.checkpoints[0]?.turn === 3
   && probe?.transcript.checkpoints[0]?.fileCount === 2 && probe?.transcript.checkpoints[0]?.files.length === 1,
@@ -507,8 +505,13 @@ ok(remoteRuntimeCommand("/goal")?.method === "runManagementCommand" && remoteRun
   && remoteRuntimeCommand("/goal --strict pause")?.method === "runManagementCommand",
   "goal status and lifecycle actions remain synchronous management commands");
 ok(remoteRuntimeCommand("/branch experiment")?.rehydrate === true && remoteRuntimeCommand("/switch main")?.rehydrate === true
-  && remoteRuntimeCommand("/rewind 3 conversation")?.rehydrate === true && remoteRuntimeCommand("/context")?.rehydrate !== true,
+  && remoteRuntimeCommand("/rewind 3 conversation")?.rehydrate === true && remoteRuntimeCommand("/context")?.rehydrate !== true
+  && remoteRuntimeCommand("/compact preserve tests")?.method === "compact",
   "session-changing management commands request authoritative rehydration");
+statusPendingPrompt = true; replayedPrompts = [{ kind: "approval_request", approval: { id: "recovered-prompt", tool: "bash", subject: "replayed after drop" } }];
+await act(async () => { await probe?.runManagementCommand("/context"); await flush(); });
+ok(tape.includes("replay-prompts:tab-remote-2") && probe?.transcript.approval?.id === "recovered-prompt", "pending status recovers an SSE-dropped prompt through Serve");
+await act(async () => { await probe?.approve("recovered-prompt", "deny"); await flush(); }); statusPendingPrompt = false; replayedPrompts = [];
 let remoteLiveNotifications = 0;
 const unsubscribeRemoteLive = probe?.liveStore.subscribe("tab-remote-2", () => { remoteLiveNotifications += 1; });
 await act(async () => {
@@ -521,10 +524,7 @@ ok(probe?.liveStore.getSnapshot("tab-remote-2")?.text === "remote live ticker" &
 unsubscribeRemoteLive?.();
 const turnDoneGeneration = probe?.surfaceGeneration;
 statusGoalStatus = "complete";
-snapshotHistory = [
-  { role: "user", content: "server-side prompt" },
-  { role: "assistant", content: "reconciled final answer" },
-];
+snapshotHistory = [{ role: "user", content: "server-side prompt" }, { role: "assistant", content: "reconciled final answer" }];
 await act(async () => {
   __emitMockRemoteTab("tab-remote-2", "event", { kind: "turn_done" });
   await flush();
@@ -574,6 +574,10 @@ ok(tape.includes("submit:tab-remote-2:/context") && tape.includes("status:tab-re
   "management commands dispatch without conversational admission and refresh status");
 ok(!probe?.transcript.items.some((item) => item.kind === "user" && item.text === "/context"),
   "management commands do not add an optimistic user turn");
+const beforeCompactGeneration = probe?.surfaceGeneration;
+snapshotHistory = [{ role: "assistant", content: "compacted remote history" }];
+await act(async () => { await probe?.compact("preserve tests"); await flush(); });
+ok(tape.includes("compact:tab-remote-2:preserve tests") && probe?.surfaceGeneration === (beforeCompactGeneration ?? 0) + 1 && probe.transcript.items.some((item) => item.kind === "assistant" && item.text === "compacted remote history"), "remote compact waits for the dedicated endpoint and rehydrates history");
 const beforeSwitchGeneration = probe?.surfaceGeneration;
 snapshotHistory = [{ role: "assistant", content: "adopted switched session" }];
 await act(async () => { await probe?.runManagementCommand("/switch feature", true); await flush(); });

@@ -5132,7 +5132,7 @@ export default function App() {
               turnPhase={visibleRuntimeState.turnPhase}
               goal={goal}
               goalStatus={remoteSurfaceActive ? remoteSession.composerProfile?.goalStatus : state.meta?.goalStatus}
-              goalRuntime={state.meta?.goalRuntime}
+              goalRuntime={remoteSurfaceActive ? remoteSession.goalRuntime : state.meta?.goalRuntime}
               cwd={state.meta?.cwd}
               modelLabel={remoteSurfaceActive ? remoteSession.modelLabel || activeTab?.label || t("status.connecting") : state.meta?.label ?? t("status.connecting")}
               commandCatalog={remoteSurfaceActive ? remoteSession.commands : undefined}

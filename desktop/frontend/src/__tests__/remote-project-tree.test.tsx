@@ -98,8 +98,10 @@ ok(
   "remote clear and new commands bypass optimistic submit and use session rotation",
 );
 ok(
-  /const management = new Set\(\[[\s\S]*?"compact"[\s\S]*?"context"[\s\S]*?"goal"[\s\S]*?"mcp"/.test(remoteIntegrationSource) &&
+  /verb === "compact"[\s\S]*?method: "compact"/.test(remoteIntegrationSource) &&
+    /const management = new Set\(\[[\s\S]*?"context"[\s\S]*?"goal"[\s\S]*?"mcp"/.test(remoteIntegrationSource) &&
     /command\?\.method === "runManagementCommand"[\s\S]*?session\.runManagementCommand\(trimmed, command\.rehydrate\)/.test(remoteIntegrationSource) &&
+    /command\?\.method === "compact"[\s\S]*?session\.compact\(command\.value\)/.test(remoteIntegrationSource) &&
     /verb === "goal" && remoteGoalCommandStartsTurn\(trimmed\)/.test(remoteIntegrationSource) &&
     /rehydrate: verb === "branch" \|\| verb === "switch" \|\| verb === "rewind"/.test(remoteIntegrationSource),
   "remote non-turn management commands bypass optimistic conversational submit",
@@ -151,6 +153,7 @@ ok(
   /turnPhase=\{visibleRuntimeState\.turnPhase\}/.test(appSource) &&
     /turnStartAt=\{visibleRuntimeState\.turnStartAt\}/.test(appSource) &&
     /liveStore=\{remoteSurfaceActive \? remoteSession\.liveStore : liveStore\}/.test(appSource) &&
+    /goalRuntime=\{remoteSurfaceActive \? remoteSession\.goalRuntime : state\.meta\?\.goalRuntime\}/.test(appSource) &&
     /context=\{visibleRuntimeState\.context\}/.test(appSource),
   "remote composer timing, tokens, live stream, and cost use the visible remote runtime",
 );

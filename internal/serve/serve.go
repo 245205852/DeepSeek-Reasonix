@@ -525,6 +525,7 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("GET /status", s.status)
 	mux.HandleFunc("GET /sessions", s.sessions)
 	mux.HandleFunc("GET /commands", s.commands)
+	mux.HandleFunc("GET /pending-prompts", s.pendingPrompts)
 	mux.HandleFunc("GET /skills", s.skills)
 	mux.HandleFunc("GET /todos", s.todos)
 	mux.HandleFunc("POST /delete-session", s.deleteSession)
@@ -812,18 +813,6 @@ func (s *Server) approve(w http.ResponseWriter, r *http.Request) {
 	if err := s.ctl().ResolveApproval(body.ID, body.Allow, scope); err != nil {
 		http.Error(w, err.Error(), http.StatusServiceUnavailable)
 		return
-	}
-	w.WriteHeader(http.StatusNoContent)
-}
-
-func (s *Server) compact(w http.ResponseWriter, r *http.Request) {
-	if err := s.ctl().Compact(r.Context(), ""); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	// Persist the compacted session to disk — ctrl.Compact() only mutates in-memory.
-	if err := s.ctl().Snapshot(); err != nil {
-		slog.Warn("serve: snapshot after compact", "err", err)
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -1359,6 +1348,9 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 		"window":           window,
 		"cacheHit":         hit,
 		"cacheMiss":        miss,
+	}
+	if s.ctl().Goal() != "" {
+		sess["goalRuntime"] = s.ctl().GoalRuntime()
 	}
 	if path := strings.TrimSpace(s.ctl().SessionPath()); path != "" && store.IsSessionTranscriptName(filepath.Base(path)) {
 		sess["sessionName"] = strings.TrimSuffix(filepath.Base(path), ".jsonl")
