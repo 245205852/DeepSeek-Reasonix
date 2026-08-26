@@ -496,6 +496,7 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("POST /approve", s.approve)
 	mux.HandleFunc("POST /plan-decision", s.planDecision)
 	mux.HandleFunc("POST /plan", s.plan)
+	mux.HandleFunc("POST /composer-profile", s.composerProfile)
 	mux.HandleFunc("POST /compact", s.compact)
 	mux.HandleFunc("POST /new", s.newSession)
 	mux.HandleFunc("POST /clear", s.clearSession)
@@ -1115,20 +1116,6 @@ func (s *Server) goal(w http.ResponseWriter, r *http.Request) {
 	// Disable plan mode before setting the goal, mirroring the desktop.
 	s.ctl().SetPlanMode(false)
 	s.ctl().SetGoal(goal)
-	w.WriteHeader(http.StatusNoContent)
-}
-
-// answer responds to an ask_request.
-func (s *Server) answer(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		ID      string            `json:"id"`
-		Answers []event.AskAnswer `json:"answers"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.ID == "" {
-		http.Error(w, "missing id", http.StatusBadRequest)
-		return
-	}
-	s.ctl().AnswerQuestion(body.ID, body.Answers)
 	w.WriteHeader(http.StatusNoContent)
 }
 

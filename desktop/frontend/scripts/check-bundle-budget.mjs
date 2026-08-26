@@ -120,7 +120,10 @@ console.log("\nbundle budgets");
 // is 440.02 KiB. The current main-v2 turn-event, finish-protocol, and session
 // repair runtime then moves the combined path to 445.097 KiB; retain 0.103 KiB
 // of bounded build/toolchain headroom.
-const initialJSBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 445.2 : 445.2;
+// Atomic remote profile changes, exact approval draining, and generation-safe
+// history handoff bring the measured path to 445.228 KiB. Retain 0.072 KiB of
+// headroom with the smallest existing decimal ratchet.
+const initialJSBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 445.3 : 445.3;
 assertBudget("initial JavaScript gzip", initialJSGzip, initialJSBudgetKiB * 1024);
 assertBudget("largest initial JavaScript chunk gzip", largestInitialJS, 280 * 1024);
 // Render-blocking CSS is intentionally absent: styles.css loads deferred via

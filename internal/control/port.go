@@ -85,6 +85,7 @@ type Approvals interface {
 	// refuses the mutation and steers feedback.
 	ResolveRecovery(id string, action agent.RecoveryAction, feedback string) error
 	AnswerQuestion(id string, answers []event.AskAnswer)
+	AnswerQuestionChecked(id string, answers []event.AskAnswer) error
 	Ask(ctx context.Context, questions []event.AskQuestion) ([]event.AskAnswer, error)
 	ReplayPendingPrompts()
 	ReplayPendingPromptsTo(sink event.Sink)
@@ -254,6 +255,7 @@ type Settings interface {
 	SetResponseLanguage(lang string)
 	SetReasoningLanguage(lang string)
 	SetDisplayRecorder(fn func(content, display string))
+	ApplyComposerProfile(plan bool, toolApprovalMode, goal string) ([]string, error)
 }
 
 // SessionAPI is the full driving port — the composition of every sub-port. A

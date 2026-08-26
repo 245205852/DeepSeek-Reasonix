@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -723,6 +724,42 @@ func (a *App) SetRemoteTabToolApprovalMode(tabID, mode string) error {
 	defer cancel()
 	body, _ := json.Marshal(map[string]string{"mode": mode})
 	return servePost(ctx, client, serveURL(base, "/tool-approval-mode"), body)
+}
+
+func (a *App) SetRemoteTabComposerProfile(tabID, collaborationMode, toolApprovalMode, goal string) ([]string, error) {
+	client, base, err := a.remoteTabCommandClient(tabID)
+	if err != nil {
+		return nil, err
+	}
+	body, _ := json.Marshal(map[string]any{
+		"collaborationMode": collaborationMode,
+		"toolApprovalMode":  toolApprovalMode,
+		"goal":              goal,
+	})
+	ctx, cancel := commandContext(a)
+	defer cancel()
+	resp, err := serveDo(ctx, client, http.MethodPost, serveURL(base, "/composer-profile"), body)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	data, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		if message := strings.TrimSpace(string(data)); message != "" {
+			return nil, fmt.Errorf("%s: status %d: %s", serveURL(base, "/composer-profile"), resp.StatusCode, message)
+		}
+		return nil, fmt.Errorf("%s: status %d", serveURL(base, "/composer-profile"), resp.StatusCode)
+	}
+	if len(bytes.TrimSpace(data)) == 0 {
+		return []string{}, nil
+	}
+	var result struct {
+		DrainedApprovalIDs []string `json:"drainedApprovalIDs"`
+	}
+	if err := json.Unmarshal(data, &result); err != nil {
+		return nil, fmt.Errorf("decode remote composer profile response: %w", err)
+	}
+	return result.DrainedApprovalIDs, nil
 }
 
 func (a *App) SetRemoteTabGoal(tabID, goal string) error {

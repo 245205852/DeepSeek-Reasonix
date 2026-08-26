@@ -1943,7 +1943,7 @@ export default function App() {
     activeTabId, remote: remoteSurfaceActive, collaborationMode, toolApprovalMode, goal,
     planIntentRef: userPlanModeByTabRef, yoloRestoreRef: yoloRestoreToolApprovalModesRef,
     patchProfile: patchActiveComposerProfile, setControllerMode: syncModeToController,
-    setControllerCollaborationMode, setControllerToolApprovalMode, clearControllerGoal,
+    setControllerCollaborationMode, setControllerToolApprovalMode, clearControllerGoal, drainRemoteApprovals: remoteSession.drainApprovals,
     showError: (message) => showToast(message, "error"),
   });
   const applyQualityFloor = useCallback(

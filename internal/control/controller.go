@@ -5691,6 +5691,30 @@ func (c *Controller) ApplyMode(plan, autoApproveTools bool) []string {
 	return c.ApplyToolApprovalMode(ToolApprovalAsk)
 }
 
+// ApplyComposerProfile publishes the collaboration, approval, and Goal axes as
+// one controller operation. The only fallible mutation (durable Goal state)
+// commits first, so a persistence failure leaves Plan and approval unchanged.
+// Serve serializes this call with turn admission and controller replacement.
+func (c *Controller) ApplyComposerProfile(plan bool, toolApprovalMode, goal string) ([]string, error) {
+	toolApprovalMode = strings.ToLower(strings.TrimSpace(toolApprovalMode))
+	switch toolApprovalMode {
+	case ToolApprovalAsk, ToolApprovalAuto, ToolApprovalYolo:
+	default:
+		return nil, fmt.Errorf("tool approval mode must be ask, auto, or yolo")
+	}
+	goal = strings.TrimSpace(goal)
+	if strings.TrimSpace(c.Goal()) != goal {
+		if err := c.SetGoalDurable(goal); err != nil {
+			return nil, fmt.Errorf("persist goal state: %w", err)
+		}
+	}
+	if goal != "" {
+		plan = false
+	}
+	c.applyPlanMode(plan)
+	return c.ApplyToolApprovalMode(toolApprovalMode), nil
+}
+
 // AutoApproveTools reports whether YOLO tool auto-approval is on,
 // for status indicators and mode persistence.
 func (c *Controller) AutoApproveTools() bool {

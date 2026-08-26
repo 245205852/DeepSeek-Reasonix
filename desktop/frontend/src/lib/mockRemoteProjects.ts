@@ -104,7 +104,6 @@ export function createMockRemoteProjects(): {
       }
     },
     async RewindRemoteTab() {},
-    async SetRemoteTabToolApprovalMode() {},
     async SetRemoteTabGoal() {},
     async RemoteTabSnapshot(tabId) {
       return { history: [], status: { label: tabs.get(tabId)?.label ?? "" } };
@@ -115,7 +114,7 @@ export function createMockRemoteProjects(): {
     async ResumeRemoteTabGoal() {},
     async CancelRemoteTabJobs() {},
     async SteerRemoteTab() {},
-    async SetRemoteTabPlanMode() {},
+    async SetRemoteTabComposerProfile() { return []; },
     async CompactRemoteTab() {},
     async ForkRemoteTab() {},
     async SummarizeRemoteTab() {},

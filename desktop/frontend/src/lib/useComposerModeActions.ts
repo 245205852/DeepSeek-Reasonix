@@ -28,6 +28,7 @@ type ComposerModeActionsOptions = {
   setControllerCollaborationMode: (mode: CollaborationMode) => Promise<void>;
   setControllerToolApprovalMode: (mode: ToolApprovalMode) => Promise<void> | void;
   clearControllerGoal: () => Promise<void>;
+  drainRemoteApprovals: (ids: string[]) => void;
   showError: (message: string) => void;
 };
 
@@ -36,7 +37,7 @@ export function useComposerModeActions(options: ComposerModeActionsOptions) {
     activeTabId, remote, collaborationMode, toolApprovalMode, goal,
     planIntentRef, yoloRestoreRef, patchProfile, setControllerMode,
     setControllerCollaborationMode, setControllerToolApprovalMode,
-    clearControllerGoal, showError,
+    clearControllerGoal, drainRemoteApprovals, showError,
   } = options;
   const rememberPlanMode = useCallback((enabled: boolean) => {
     planIntentRef.current = updateUserPlanModeIntent(planIntentRef.current, activeTabId, enabled);
@@ -47,17 +48,16 @@ export function useComposerModeActions(options: ComposerModeActionsOptions) {
       const next = composerProfileWithMode(mode);
       void (async () => {
         try {
-          if (goal.trim()) await app.SetRemoteTabGoal(activeTabId, "");
-          await app.SetRemoteTabPlanMode(activeTabId, modeHasPlan(mode));
-          await app.SetRemoteTabToolApprovalMode(activeTabId, next.toolApprovalMode ?? "ask");
+          const drained = await app.SetRemoteTabComposerProfile(
+            activeTabId,
+            next.collaborationMode ?? "normal",
+            next.toolApprovalMode ?? "ask",
+            "",
+          );
+          drainRemoteApprovals(drained);
           rememberPlanMode(modeHasPlan(mode));
           patchProfile(next, ["collaborationMode", "toolApprovalMode", "goal"]);
         } catch (error) {
-          await Promise.allSettled([
-            app.SetRemoteTabGoal(activeTabId, goal),
-            app.SetRemoteTabPlanMode(activeTabId, collaborationMode === "plan"),
-            app.SetRemoteTabToolApprovalMode(activeTabId, toolApprovalMode),
-          ]);
           showError(error instanceof Error ? error.message : String(error));
         }
       })();
@@ -66,28 +66,17 @@ export function useComposerModeActions(options: ComposerModeActionsOptions) {
     rememberPlanMode(modeHasPlan(mode));
     patchProfile(composerProfileWithMode(mode), ["collaborationMode", "toolApprovalMode", "goal"]);
     void setControllerMode(mode);
-  }, [activeTabId, collaborationMode, goal, patchProfile, rememberPlanMode, remote, setControllerMode, showError, toolApprovalMode]);
+  }, [activeTabId, drainRemoteApprovals, patchProfile, rememberPlanMode, remote, setControllerMode, showError]);
 
   const applyCollaborationMode = useCallback(async (mode: CollaborationMode): Promise<void> => {
     if (remote && activeTabId) {
-      if (mode === "goal") {
-        await app.SetRemoteTabPlanMode(activeTabId, false);
-        rememberPlanMode(false);
-        patchProfile({ collaborationMode: "normal", goalDraftMode: true, goal: "" }, ["collaborationMode", "goal"]);
-        return;
-      }
-      try {
-        if (goal.trim()) await app.SetRemoteTabGoal(activeTabId, "");
-        await app.SetRemoteTabPlanMode(activeTabId, mode === "plan");
-        rememberPlanMode(mode === "plan");
-        patchProfile({ collaborationMode: mode, goalDraftMode: false, goal: "" }, ["collaborationMode", "goal"]);
-      } catch (error) {
-        await Promise.allSettled([
-          app.SetRemoteTabGoal(activeTabId, goal),
-          app.SetRemoteTabPlanMode(activeTabId, collaborationMode === "plan"),
-        ]);
-        throw error;
-      }
+      const controllerMode = mode === "goal" ? "normal" : mode;
+      const drained = await app.SetRemoteTabComposerProfile(activeTabId, controllerMode, toolApprovalMode, "");
+      drainRemoteApprovals(drained);
+      rememberPlanMode(mode === "plan");
+      patchProfile(mode === "goal"
+        ? { collaborationMode: "normal", goalDraftMode: true, goal: "" }
+        : { collaborationMode: mode, goalDraftMode: false, goal: "" }, ["collaborationMode", "goal"]);
       return;
     }
     if (mode === "goal") {
@@ -99,7 +88,7 @@ export function useComposerModeActions(options: ComposerModeActionsOptions) {
     await setControllerCollaborationMode(mode);
     rememberPlanMode(mode === "plan");
     patchProfile({ collaborationMode: mode, goalDraftMode: false, goal: "" }, ["collaborationMode", "goal"]);
-  }, [activeTabId, clearControllerGoal, collaborationMode, goal, patchProfile, rememberPlanMode, remote, setControllerCollaborationMode]);
+  }, [activeTabId, clearControllerGoal, drainRemoteApprovals, patchProfile, rememberPlanMode, remote, setControllerCollaborationMode, toolApprovalMode]);
 
   const applyToolApprovalMode = useCallback((mode: ToolApprovalMode) => {
     if (!activeTabId) return;
@@ -111,7 +100,9 @@ export function useComposerModeActions(options: ComposerModeActionsOptions) {
       }
     };
     if (remote) {
-      void app.SetRemoteTabToolApprovalMode(activeTabId, mode).then(() => {
+      const controllerMode = goal.trim() ? "goal" : collaborationMode === "plan" ? "plan" : "normal";
+      void app.SetRemoteTabComposerProfile(activeTabId, controllerMode, mode, goal).then((drained) => {
+        drainRemoteApprovals(drained);
         rememberRestoreMode();
         patchProfile({ toolApprovalMode: mode }, ["toolApprovalMode"]);
       }).catch((error) => showError(error instanceof Error ? error.message : String(error)));
@@ -120,7 +111,7 @@ export function useComposerModeActions(options: ComposerModeActionsOptions) {
     rememberRestoreMode();
     patchProfile({ toolApprovalMode: mode }, ["toolApprovalMode"]);
     void setControllerToolApprovalMode(mode);
-  }, [activeTabId, patchProfile, remote, setControllerToolApprovalMode, showError, toolApprovalMode, yoloRestoreRef]);
+  }, [activeTabId, collaborationMode, drainRemoteApprovals, goal, patchProfile, remote, setControllerToolApprovalMode, showError, toolApprovalMode, yoloRestoreRef]);
 
   return { applyMode, applyCollaborationMode, applyToolApprovalMode };
 }

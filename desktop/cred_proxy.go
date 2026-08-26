@@ -5,6 +5,7 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -213,7 +214,13 @@ func (a *App) credentialProxySecret() (string, error) {
 // controller. This is the cross-process half of failure-atomic model switches.
 func credentialProxyModelTokenFor(secret, hostID, workspace, modelRef string) string {
 	mac := hmac.New(sha256.New, []byte(secret))
-	mac.Write([]byte("reasonix-credential-proxy-model:" + hostID + ":" + workspace + ":" + modelRef))
+	_, _ = mac.Write([]byte("reasonix-credential-proxy-model:v2"))
+	for _, field := range []string{hostID, workspace, modelRef} {
+		var size [8]byte
+		binary.BigEndian.PutUint64(size[:], uint64(len(field)))
+		_, _ = mac.Write(size[:])
+		_, _ = mac.Write([]byte(field))
+	}
 	return hex.EncodeToString(mac.Sum(nil))[:32]
 }
 

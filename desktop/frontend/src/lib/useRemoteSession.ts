@@ -67,6 +67,7 @@ export interface RemoteSessionApi {
   resumeGoal: () => Promise<void>;
   steer: (input: string) => Promise<void>;
   cancelJob: (jobId: string) => Promise<boolean>;
+  drainApprovals: (ids: string[]) => void;
   retryHydration: () => Promise<void>;
 }
 
@@ -264,6 +265,7 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
     let hydratePromise: Promise<void> | null = null;
     let hydrateAfterCurrent = false;
     let historyReconcilePromise: Promise<void> | null = null;
+    let historyReconcileAfterCurrent = false;
     let connectionGeneration = 0;
     // Never start the snapshot retry loop on a shell with no connection: the
     // ready transition triggers the first hydration instead. (initial is
@@ -275,15 +277,18 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
     // slow subscriber can miss intermediate tool/text frames even when it
     // receives turn_done (or when the watchdog observes the settled status).
     const reconcileHistory = async () => {
-      if (historyReconcilePromise) return historyReconcilePromise;
+      const requestedGeneration = connectionGeneration;
+      if (historyReconcilePromise) {
+        historyReconcileAfterCurrent = true;
+        return historyReconcilePromise;
+      }
       historyReconcilePromise = (async () => {
-        const expectedConnectionGeneration = connectionGeneration;
         const snap = await app.RemoteTabSnapshot(tabId);
         // Ready-to-ready state publications represent /new, /clear, or
         // saved-session adoption just as surely as reconnect publications do.
         // A durable-history read started for the previous session must never
         // replace the newly hydrated transcript.
-        if (cancelled || connectionGeneration !== expectedConnectionGeneration) return;
+        if (cancelled || connectionGeneration !== requestedGeneration) return;
         const messages = Array.isArray(snap.history) ? (snap.history as HistoryMessage[]) : [];
         const checkpoints = remoteCheckpoints(snap.checkpoints);
         setCommands(Array.isArray(snap.commands) ? snap.commands as CommandInfo[] : []);
@@ -296,7 +301,10 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
       try {
         await historyReconcilePromise;
       } finally {
+        const rerun = historyReconcileAfterCurrent;
+        historyReconcileAfterCurrent = false;
         historyReconcilePromise = null;
+        if (rerun && !cancelled) void reconcileHistory().catch(() => undefined);
       }
     };
 
@@ -664,10 +672,14 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
     await app.SteerRemoteTab(tabId, input);
   }, [tabId]);
 
+  const drainApprovals = useCallback((ids: string[]) => {
+    setTranscript((current) => reducer(current, { type: "approval_drained", ids, epoch: current.promptEpoch }));
+  }, []);
+
   return {
     state, error, transcript, liveStore, hydrated, running: transcript.running, modelLabel, commands,
     composerProfile, effort, surfaceGeneration, promptError, submit, runManagementCommand, cancelTurn,
     approve, resolvePlanDecision, answer, clearExtensionForm, rewind, setModel, setEffort, setQualityFloor, pauseGoal, resumeGoal, steer, cancelJob,
-    retryHydration,
+    drainApprovals, retryHydration,
   };
 }

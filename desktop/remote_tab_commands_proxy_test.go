@@ -18,6 +18,7 @@ func TestRemoteTabCommandsForwardedToServe(t *testing.T) {
 	a := &App{remoteRuntime: kernel}
 	cleanupRemoteTabPumps(t, a)
 	meta := openReadyRemoteTab(t, a, RemoteTabOpenOptions{NewSession: true})
+	var profileDrained []string
 
 	steps := []struct {
 		name string
@@ -39,6 +40,10 @@ func TestRemoteTabCommandsForwardedToServe(t *testing.T) {
 		}, `POST /answer {"answers":[{"QuestionID":"question-1","Selected":["yes"]}],"id":"ask-1"}`},
 		{"rewind", func() error { return a.RewindRemoteTab(meta.ID, "3", "code") }, `POST /rewind {"scope":"code","turn":3}`},
 		{"approval-mode", func() error { return a.SetRemoteTabToolApprovalMode(meta.ID, "auto") }, `POST /tool-approval-mode {"mode":"auto"}`},
+		{"composer-profile", func() (err error) {
+			profileDrained, err = a.SetRemoteTabComposerProfile(meta.ID, "plan", "auto", "")
+			return
+		}, `POST /composer-profile {"collaborationMode":"plan","goal":"","toolApprovalMode":"auto"}`},
 		{"goal", func() error { return a.SetRemoteTabGoal(meta.ID, "ship it") }, `POST /goal {"goal":"ship it"}`},
 		{"effort", func() error { return a.SetRemoteTabEffort(meta.ID, "high") }, `POST /effort {"level":"high"}`},
 		{"quality-floor", func() error { return a.SetRemoteTabQualityFloor(meta.ID, "delivery") }, `POST /quality-floor {"floor":"delivery"}`},
@@ -57,6 +62,9 @@ func TestRemoteTabCommandsForwardedToServe(t *testing.T) {
 		if err := step.call(); err != nil {
 			t.Fatalf("%s: %v", step.name, err)
 		}
+	}
+	if !slices.Equal(profileDrained, []string{"approval-1"}) {
+		t.Fatalf("composer profile drained ids = %v, want [approval-1]", profileDrained)
 	}
 	calls := fs.recorded()
 	if slices.ContainsFunc(calls, func(call string) bool {

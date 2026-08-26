@@ -90,7 +90,7 @@ window.go = { main: { App: {
 				return new Promise<{ history: unknown[]; status: unknown }>((resolve) => { resolveRotationReconcile = resolve; });
 			}
 			return {
-				history: [{ role: "assistant", content: rotationSnapshotCalls === 1 ? "initial session" : "fresh rotated session" }],
+				history: [{ role: "assistant", content: rotationSnapshotCalls === 1 ? "initial session" : rotationSnapshotCalls === 3 ? "fresh rotated session" : "fresh reconciled turn" }],
 				status: { running: false, label: "Rotation", plan: false, toolApprovalMode: "ask", goal: "" },
 			};
 		}
@@ -750,15 +750,9 @@ await act(async () => stateRaceRoot.unmount());
 // Post-turn reconciliation can overlap a ready-to-ready /new, /clear, or
 // resume. The old history response must not replace the newly adopted session.
 let rotationProbe: RemoteSessionApi | undefined;
-function RotationProbe() {
-	rotationProbe = useRemoteSession("tab-reconcile-rotation");
-	return null;
-}
+function RotationProbe() { rotationProbe = useRemoteSession("tab-reconcile-rotation"); return null; }
 const rotationRoot = createRoot(document.createElement("div"));
-await act(async () => {
-	rotationRoot.render(<LocaleProvider><RotationProbe /></LocaleProvider>);
-	await flush();
-});
+await act(async () => { rotationRoot.render(<LocaleProvider><RotationProbe /></LocaleProvider>); await flush(); });
 await act(async () => {
 	__emitMockRemoteTab("tab-reconcile-rotation", "event", { kind: "turn_started" });
 	__emitMockRemoteTab("tab-reconcile-rotation", "event", { kind: "turn_done" });
@@ -768,6 +762,7 @@ await act(async () => {
 });
 ok(rotationProbe?.transcript.items.some((item) => item.kind === "assistant" && item.text === "fresh rotated session") === true,
 	"ready-to-ready rotation hydrates the adopted session while old reconciliation is pending");
+await act(async () => { __emitMockRemoteTab("tab-reconcile-rotation", "event", { kind: "turn_started" }); __emitMockRemoteTab("tab-reconcile-rotation", "event", { kind: "turn_done" }); await Promise.resolve(); });
 await act(async () => {
 	resolveRotationReconcile?.({
 		history: [{ role: "assistant", content: "stale previous session" }],
@@ -775,18 +770,15 @@ await act(async () => {
 	});
 	await flush();
 });
-ok(rotationProbe?.transcript.items.some((item) => item.kind === "assistant" && item.text === "fresh rotated session") === true
+ok(rotationProbe?.transcript.items.some((item) => item.kind === "assistant" && item.text === "fresh reconciled turn") === true
 	&& !rotationProbe.transcript.items.some((item) => item.kind === "assistant" && item.text === "stale previous session"),
-	"session generation fence rejects stale post-turn history after rotation");
+	"session generation fence rejects stale history and hands reconciliation to the new generation");
 await act(async () => rotationRoot.unmount());
 
 // Pending prompt frames retained by Desktop are replayed by the next snapshot,
 // which restores decisions missed while the tab had no frontend listener.
 let replayProbe: RemoteSessionApi | undefined;
-function ReplayProbe() {
-	replayProbe = useRemoteSession("tab-replay");
-	return null;
-}
+function ReplayProbe() { replayProbe = useRemoteSession("tab-replay"); return null; }
 const replayRoot = createRoot(document.createElement("div"));
 await act(async () => {
 	replayRoot.render(<LocaleProvider><ReplayProbe /></LocaleProvider>);
@@ -794,6 +786,10 @@ await act(async () => {
 });
 ok(replayProbe?.transcript.approval?.id === "replayed-approval", "snapshot replays a prompt emitted while the remote tab was inactive");
 ok(replayProbe?.transcript.extensionForm?.pluginId === "replayed-plugin" && replayProbe.transcript.extensionForm.surfaceId === "replayed-form", "snapshot replays an extension form emitted while the remote tab was inactive");
+await act(async () => { replayProbe?.drainApprovals(["different-approval"]); await flush(); });
+ok(replayProbe?.transcript.approval?.id === "replayed-approval", "a remote mode transaction preserves approvals it did not drain");
+await act(async () => { replayProbe?.drainApprovals(["replayed-approval"]); await flush(); });
+ok(replayProbe?.transcript.approval === undefined, "a remote mode transaction clears the exact approval it auto-allowed");
 await act(async () => replayRoot.unmount());
 dom.window.close();
 process.stdout.write(`\n${passed} passed, ${failed} failed\n`);

@@ -218,6 +218,9 @@ func TestCredentialProxyModelTokensKeepRoutesImmutable(t *testing.T) {
 	if one != again {
 		t.Fatal("the same model route token was not stable across registration")
 	}
+	if collision := credentialProxyModelTokenFor(secret, "box", "~/app", "provider:model-a"); collision == credentialProxyModelTokenFor(secret, "box", "~/app:provider", "model-a") {
+		t.Fatal("length-framed route identities shared a token")
+	}
 }
 
 func TestCredentialProxyReconnectRegistersTrackedWorkspaces(t *testing.T) {

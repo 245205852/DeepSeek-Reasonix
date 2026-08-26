@@ -77,8 +77,8 @@ ok(
 );
 ok(
   /useComposerModeActions\(\{[\s\S]*?remote: remoteSurfaceActive/.test(appSource) &&
-    /if \(remote && activeTabId\)[\s\S]*?SetRemoteTabPlanMode\(activeTabId,[\s\S]*?SetRemoteTabToolApprovalMode\(activeTabId,/.test(modeActionsSource),
-  "remote composer mode changes route through the remote plan and approval endpoints",
+    /if \(remote && activeTabId\)[\s\S]*?SetRemoteTabComposerProfile\(/.test(modeActionsSource),
+  "remote composer mode changes publish all axes through one remote transaction",
 );
 ok(
   /tab\.id === tabId && tab\.remote[\s\S]*?SetRemoteTabGoal\(tabId, trimmed\)/.test(appSource) &&
@@ -176,8 +176,9 @@ ok(
   "remote surfaces disable terminal shortcuts, mounting, and menu actions",
 );
 ok(
-  /Promise\.allSettled\(\[[\s\S]*?SetRemoteTabGoal\(activeTabId, goal\)[\s\S]*?SetRemoteTabPlanMode\(activeTabId, collaborationMode === "plan"\)/.test(modeActionsSource),
-  "a failed remote collaboration-mode transition rolls Goal and plan state back",
+  /SetRemoteTabComposerProfile\(activeTabId, controllerMode, toolApprovalMode, ""\)/.test(modeActionsSource) &&
+    !/Promise\.allSettled\(\[[\s\S]*?SetRemoteTabGoal\(activeTabId, goal\)/.test(modeActionsSource),
+  "remote collaboration changes rely on the atomic backend transaction instead of tunnel rollback",
 );
 
 process.stdout.write(`\n${passed} passed, ${failed} failed\n`);
