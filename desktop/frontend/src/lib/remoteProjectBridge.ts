@@ -22,6 +22,7 @@ export interface RemoteProjectBindings {
   SetRemoteTabModel(tabId: string, ref: string): Promise<void>;
   RewindRemoteTab(tabId: string, checkpointId: string, scope: string): Promise<void>;
   SetRemoteTabComposerProfile(tabId: string, collaborationMode: string, toolApprovalMode: string, goal: string): Promise<string[]>;
+  SetRemoteTabToolApprovalMode(tabId: string, mode: string): Promise<void>;
   SetRemoteTabGoal(tabId: string, goal: string): Promise<void>;
   RemoteTabSnapshot(tabId: string): Promise<RemoteTabSnapshot>;
   RemoteTabStatus(tabId: string): Promise<unknown>;
@@ -31,6 +32,7 @@ export interface RemoteProjectBindings {
   ResumeRemoteTabGoal(tabId: string): Promise<void>;
   CancelRemoteTabJobs(tabId: string, jobIds: string[]): Promise<void>;
   SteerRemoteTab(tabId: string, input: string): Promise<void>;
+  SetRemoteTabPlanMode(tabId: string, on: boolean): Promise<void>;
   CompactRemoteTab(tabId: string): Promise<void>;
   ForkRemoteTab(tabId: string, turn: number, name: string): Promise<void>;
   SummarizeRemoteTab(tabId: string, turn: number, mode: string): Promise<void>;

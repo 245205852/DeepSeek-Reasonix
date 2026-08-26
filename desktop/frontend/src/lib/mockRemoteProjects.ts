@@ -115,6 +115,8 @@ export function createMockRemoteProjects(): {
     async CancelRemoteTabJobs() {},
     async SteerRemoteTab() {},
     async SetRemoteTabComposerProfile() { return []; },
+    async SetRemoteTabToolApprovalMode() {},
+    async SetRemoteTabPlanMode() {},
     async CompactRemoteTab() {},
     async ForkRemoteTab() {},
     async SummarizeRemoteTab() {},
