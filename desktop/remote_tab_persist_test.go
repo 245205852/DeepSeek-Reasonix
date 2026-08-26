@@ -412,8 +412,10 @@ func TestRemoteTabMetasMarksOnlySelectedTabActive(t *testing.T) {
 		remoteTabs: map[string]*remoteTab{
 			"remote-1": {
 				id: "remote-1", ref: RemoteTabRef{HostID: "box", Workspace: "~/one"},
-				running: true, turnStartedAt: 123, pendingPrompt: true,
-				backgroundJobs: 2, cancelRequested: true, cancellable: true,
+				runtime: remoteTabRuntimeState{
+					running: true, turnStartedAt: 123, pendingPrompt: true,
+					backgroundJobs: 2, cancelRequested: true, cancellable: true,
+				},
 			},
 			"remote-2": {id: "remote-2", ref: RemoteTabRef{HostID: "box", Workspace: "~/two"}},
 		},

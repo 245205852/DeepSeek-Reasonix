@@ -86,15 +86,15 @@ ok(
   "remote goal activation and goal-draft submission stay on the remote controller",
 );
 ok(
-  /remoteRuntimeCommand\(trimmed\)[\s\S]*?runtimeCommand\?\.method === "setModel"[\s\S]*?remoteSession\[runtimeCommand\.method\]\(runtimeCommand\.value\)[\s\S]*?await remoteSend/.test(appSource) &&
+  /remoteRuntimeCommand\(trimmed\)[\s\S]*?command\?\.method === "setModel"[\s\S]*?session\[command\.method\]\(command\.value\)[\s\S]*?await send/.test(remoteIntegrationSource) &&
     /\^\\\/\(model\|effort\)/.test(remoteIntegrationSource),
   "remote model and effort slash commands bypass optimistic conversational submit",
 );
 ok(
   /trimmed === "\/new"[\s\S]*?method: "newSession"/.test(remoteIntegrationSource) &&
     /trimmed === "\/clear"[\s\S]*?method: "clearSession"/.test(remoteIntegrationSource) &&
-    /runtimeCommand\?\.method === "clearSession"[\s\S]*?setClearContextPending\(true\)/.test(appSource) &&
-    /runtimeCommand\?\.method === "newSession"[\s\S]*?OpenRemoteProjectTab[\s\S]*?newSession: true/.test(appSource),
+    /command\?\.method === "clearSession"[\s\S]*?requestClear\(\)/.test(remoteIntegrationSource) &&
+    /command\?\.method === "newSession"[\s\S]*?OpenRemoteProjectTab[\s\S]*?newSession: true/.test(remoteIntegrationSource),
   "remote clear and new commands bypass optimistic submit and use session rotation",
 );
 ok(

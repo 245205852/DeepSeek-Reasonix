@@ -1,12 +1,8 @@
 import type { ProjectNode, RemoteProjectView, RemoteSessionView, TabMeta } from "./types";
 import type { RemoteProjectBindings } from "./remoteProjectBridge";
+import { __emitMockRemoteTab, __emitMockRemoteTabOpened } from "./remoteTabEvents";
 
-interface RemoteProjectMockEvents {
-  opened?: (meta: TabMeta) => void;
-  tab?: (tabId: string, channel: "event" | "state", payload: unknown) => void;
-}
-
-export function createMockRemoteProjects(events: RemoteProjectMockEvents = {}): {
+export function createMockRemoteProjects(): {
   bindings: RemoteProjectBindings;
   appendToTree: (tree: ProjectNode[]) => ProjectNode[];
 } {
@@ -63,8 +59,8 @@ export function createMockRemoteProjects(events: RemoteProjectMockEvents = {}): 
         tab.topicTitle = rows.find((row) => row.name === opts.sessionName)?.title || tab.workspaceName;
         for (const row of rows) row.current = row.name === opts.sessionName;
       }
-      events.tab?.(id, "state", { state: "ready" });
-      events.opened?.({ ...tab });
+      __emitMockRemoteTab(id, "state", { state: "ready" });
+      __emitMockRemoteTabOpened({ ...tab });
       return { ...tab };
     },
     async RemoteProjectSessions(hostId, workspace) {
@@ -87,14 +83,14 @@ export function createMockRemoteProjects(events: RemoteProjectMockEvents = {}): 
     },
     async CloseRemoteTab(tabId) { tabs.delete(tabId); },
     async SubmitRemoteTab(tabId, text) {
-      events.tab?.(tabId, "event", { kind: "turn_started" });
-      events.tab?.(tabId, "event", { kind: "message", text: `Mock remote reply: ${text}` });
-      events.tab?.(tabId, "event", { kind: "turn_done" });
+      __emitMockRemoteTab(tabId, "event", { kind: "turn_started" });
+      __emitMockRemoteTab(tabId, "event", { kind: "message", text: `Mock remote reply: ${text}` });
+      __emitMockRemoteTab(tabId, "event", { kind: "turn_done" });
     },
     async ClearRemoteTabSession(tabId) {
-      events.tab?.(tabId, "state", { state: "ready" });
+      __emitMockRemoteTab(tabId, "state", { state: "ready" });
     },
-    async CancelRemoteTab(tabId) { events.tab?.(tabId, "event", { kind: "turn_done" }); },
+    async CancelRemoteTab(tabId) { __emitMockRemoteTab(tabId, "event", { kind: "turn_done" }); },
     async ApproveRemoteTab() {},
     async ResolveRemoteTabPlanDecision() {},
     async SetRemoteTabQualityFloor() {},
@@ -103,7 +99,7 @@ export function createMockRemoteProjects(events: RemoteProjectMockEvents = {}): 
       const tab = tabs.get(tabId);
       if (tab) {
         tab.label = ref;
-        events.opened?.({ ...tab });
+        __emitMockRemoteTabOpened({ ...tab });
       }
     },
     async RewindRemoteTab() {},

@@ -134,18 +134,8 @@ import type {
   WorkspaceView,
   SessionClearResult,
 } from "./types";
-import { __emitMockRemoteTab, __emitMockRemoteTabOpened } from "./remoteTabEvents";
-export {
-  __emitMockRemoteTab,
-  __emitMockRemoteTabOpened,
-  __emitMockRemoteTabUpdated,
-  onRemoteTabEvent,
-  onRemoteTabOpened,
-  onRemoteTabState,
-  onRemoteTabUpdated,
-} from "./remoteTabEvents";
-export const COMPACT_RATIO_MIN_PERCENT = 30;
-export const COMPACT_RATIO_MAX_PERCENT = 85;
+export * from "./remoteTabEvents";
+export const COMPACT_RATIO_MIN_PERCENT = 30, COMPACT_RATIO_MAX_PERCENT = 85;
 
 export interface DesktopShellStatusView {
   trayState: "probing" | "ready" | "unavailable";
@@ -1415,10 +1405,7 @@ function mockExternalOpenerIconDataURL(color: string, label: string): string {
 
 function makeMockApp(): AppBindings {
   const scenario = mockScenario();
-  const remoteProjects = createMockRemoteProjects({
-    opened: __emitMockRemoteTabOpened,
-    tab: __emitMockRemoteTab,
-  });
+  const remoteProjects = createMockRemoteProjects();
   const freshMock = scenario === "fresh";
   const guidanceMock = scenario === "guidance", recoveryMock = typeof import.meta.env !== "undefined" && import.meta.env.DEV && scenario === "recovery";
   const runningMock = scenario === "running" || guidanceMock;

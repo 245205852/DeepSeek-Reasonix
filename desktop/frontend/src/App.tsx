@@ -136,7 +136,7 @@ import {
   type RestorableToolApprovalMode,
 } from "./lib/toolApprovalMode";
 import { useComposerModeActions } from "./lib/useComposerModeActions";
-import { remoteRuntimeCommand, useRemoteComposerProfileSync, useRemoteComposerRuntimeActions } from "./lib/useRemoteComposerIntegration";
+import { useRemoteComposerProfileSync, useRemoteComposerRuntimeActions, useRemoteComposerSend } from "./lib/useRemoteComposerIntegration";
 import {
   CREATION_RIGHT_DOCK_MIN_RENDER_WIDTH,
   CREATION_RIGHT_DOCK_TREE_MIN_WIDTH,
@@ -1740,11 +1740,9 @@ export default function App() {
       cancelled = true;
     };
   }, [activeTab?.scope, activeTab?.topicId, activeTab?.workspaceRoot, projectRevision]);
-  const sessionTurns = useMemo(() => {
-    const visibleUserTurns = visibleRuntimeState.items.reduce((count, item) => (item.kind === "user" ? count + 1 : count), 0);
-    const currentTabTurns = Math.max(visibleRuntimeState.checkpoints.length, visibleUserTurns);
-    return currentTabTurns > 0 ? currentTabTurns : remoteSurfaceActive ? 0 : activeTopicTurns ?? 0;
-  }, [activeTopicTurns, remoteSurfaceActive, visibleRuntimeState.checkpoints.length, visibleRuntimeState.items]);
+  const visibleUserTurns = visibleRuntimeState.items.reduce((count, item) => (item.kind === "user" ? count + 1 : count), 0);
+  const currentTabTurns = Math.max(visibleRuntimeState.checkpoints.length, visibleUserTurns);
+  const sessionTurns = currentTabTurns > 0 ? currentTabTurns : remoteSurfaceActive ? 0 : activeTopicTurns ?? 0;
   const startupSplashHold = !activeTabId && state.meta?.ready !== true && !state.meta?.startupErr;
   const activeComposerProfile = activeTabId ? composerProfilesByTab[activeTabId] : undefined;
   const backendActiveComposerProfile = useMemo(() => {
@@ -1763,11 +1761,9 @@ export default function App() {
   const goal = composerProfile.goal;
   const collaborationMode = displayedComposerProfileCollaborationMode(composerProfile);
   const toolApprovalMode = composerProfile.toolApprovalMode;
-  const remoteComposerProfileReady = useRemoteComposerProfileSync({
-    activeTabId, remote: remoteSurfaceActive, remoteProfile: remoteSession.composerProfile,
-    collaborationMode, toolApprovalMode, goal, qualityFloor: composerProfile.qualityFloor, pending: composerProfile.pending,
-    setProfiles: setComposerProfilesByTab,
-  });
+  const remoteComposerProfileReady = useRemoteComposerProfileSync({ activeTabId, remote: remoteSurfaceActive,
+    remoteProfile: remoteSession.composerProfile, collaborationMode, toolApprovalMode, goal,
+    qualityFloor: composerProfile.qualityFloor, pending: composerProfile.pending, setProfiles: setComposerProfilesByTab });
   const controllerReady =
     state.meta?.ready === true &&
     (!state.meta.runtime || state.meta.runtime.phase === "ready") &&
@@ -2008,28 +2004,8 @@ export default function App() {
     },
     [activeTabId, applyGoalForTab],
   );
-  const remoteComposerSend = useCallback(async (displayText: string, submitText = displayText): Promise<void> => {
-    const trimmed = (submitText || displayText).trim();
-    const runtimeCommand = remoteRuntimeCommand(trimmed);
-    if (runtimeCommand?.method === "clearSession") {
-      setClearContextPending(true);
-      return;
-    }
-    if (runtimeCommand?.method === "newSession") {
-      if (!activeTab?.remote) return;
-      await app.OpenRemoteProjectTab(activeTab.remote.hostId, activeTab.remote.workspace, { newSession: true });
-      await remoteSession.retryHydration();
-      return;
-    }
-    if (runtimeCommand?.method === "setModel" || runtimeCommand?.method === "setEffort") {
-      return remoteSession[runtimeCommand.method](runtimeCommand.value);
-    }
-    if (activeTabId && collaborationMode === "goal" && !goal.trim()) {
-      const nextGoal = trimmed;
-      if (nextGoal) await applyGoalForTab(activeTabId, nextGoal);
-    }
-    await remoteSend(displayText, submitText);
-  }, [activeTab?.remote, activeTabId, applyGoalForTab, collaborationMode, goal, remoteSend, remoteSession]);
+  const remoteComposerSend = useRemoteComposerSend(activeTab?.remote, activeTabId, collaborationMode, goal,
+    remoteSession, remoteSend, applyGoalForTab, useCallback(() => setClearContextPending(true), []));
   const cancelRuntimeJob = useCallback(async (tabId: string, jobId: string): Promise<boolean> => {
     try {
       const cancelled = await app.CancelJobForTab(tabId, jobId);

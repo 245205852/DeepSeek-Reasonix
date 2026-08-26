@@ -1,7 +1,8 @@
 import { useCallback, useEffect, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
+import { app } from "./bridge";
 import { reconcileComposerProfile, type ComposerProfile, type ComposerProfilesByTab } from "./composerProfile";
 import type { GoalAction } from "./goalAction";
-import type { CollaborationMode, QualityFloor, ToolApprovalMode } from "./types";
+import type { CollaborationMode, QualityFloor, RemoteTabRefView, ToolApprovalMode } from "./types";
 import type { RemoteSessionApi } from "./useRemoteSession";
 
 type RemoteProfile = RemoteSessionApi["composerProfile"];
@@ -16,6 +17,32 @@ export function remoteRuntimeCommand(input: string):
   const match = /^\/(model|effort)\s+(\S+)$/.exec(trimmed);
   if (!match) return undefined;
   return { method: match[1] === "model" ? "setModel" : "setEffort", value: match[2] };
+}
+
+export function useRemoteComposerSend(
+  activeRemote: RemoteTabRefView | undefined,
+  activeTabId: string | undefined,
+  collaborationMode: CollaborationMode,
+  goal: string,
+  session: RemoteSessionApi,
+  send: (displayText: string, submitText?: string) => Promise<void>,
+  applyGoal: (tabId: string, goal: string) => Promise<unknown>,
+  requestClear: () => void,
+) {
+  return useCallback(async (displayText: string, submitText = displayText): Promise<void> => {
+    const trimmed = (submitText || displayText).trim();
+    const command = remoteRuntimeCommand(trimmed);
+    if (command?.method === "clearSession") return requestClear();
+    if (command?.method === "newSession") {
+      if (!activeRemote) return;
+      await app.OpenRemoteProjectTab(activeRemote.hostId, activeRemote.workspace, { newSession: true });
+      await session.retryHydration();
+      return;
+    }
+    if (command?.method === "setModel" || command?.method === "setEffort") return session[command.method](command.value);
+    if (activeTabId && collaborationMode === "goal" && !goal.trim() && trimmed) await applyGoal(activeTabId, trimmed);
+    await send(displayText, submitText);
+  }, [activeRemote, activeTabId, applyGoal, collaborationMode, goal, requestClear, send, session]);
 }
 
 export function useRemoteComposerProfileSync(options: {

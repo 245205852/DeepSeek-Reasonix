@@ -4,7 +4,7 @@ import type { HistoryServerSearch } from "./searchSources";
 import type { Todo } from "./tools";
 import type { ContextBudgetInfo, ContextMaintenanceInfo, WireContextMaintenance } from "./contextMaintenanceTypes";
 import type { WireApproval } from "./approvalTypes";
-import type { RemoteTabRefView, RemoteTabStateValue } from "./remoteTypes";
+import type { RemoteProjectNodeFields, RemoteSessionMetaFields, RemoteTabMetaFields } from "./remoteTypes";
 export * from "./remoteTypes";
 export type { ContextBudgetInfo, ContextMaintenanceInfo, ContextMaintenanceReceipt, WireContextMaintenance } from "./contextMaintenanceTypes";
 export type { ProjectGroupsSnapshot, ProjectRuntimeTopic, ProjectTopicKey, ProjectTopicPage, ProjectTopicPageRequest, ProjectTreeChangedV2, ProjectTreeOrganizationBindings, ProjectTreeRuntimeSnapshot, ProjectTreeSnapshot, SessionCatalogBindings, SessionCatalogStatus, SessionGroup, SessionReference } from "./sessionCatalogTypes";
@@ -458,7 +458,7 @@ export interface WireFinalReadiness {
 }
 
 // Tab management types (desktop/tabs.go).
-export interface TabMeta {
+export interface TabMeta extends RemoteTabMetaFields {
   id: string;
   tabType?: "session" | "file";
   scope: string;
@@ -467,8 +467,6 @@ export interface TabMeta {
   workspacePath?: string;
   gitBranch?: string;
   isolatedWorktree?: boolean;
-  remote?: RemoteTabRefView;
-  remoteState?: RemoteTabStateValue;
   topicId: string;
   topicTitle: string;
   sessionPath?: string;
@@ -533,7 +531,7 @@ export interface TerminalWorkspaceView {
   shells: TerminalShellView[];
 }
 
-export interface ProjectNode {
+export interface ProjectNode extends RemoteProjectNodeFields {
   key: string;
   kind: "project" | "topic" | "session" | "global_folder" | "global_topic" | "global_session";
   label: string;
@@ -563,9 +561,6 @@ export interface ProjectNode {
   recoveryCopyCount?: number; // folded recovery copies behind this row (badge only)
   isolatedWorktree?: boolean;
   runtimeOnly?: boolean;
-  /** Present ⇒ remote project group; drives the cloud badge on the folder row. */
-  remote?: RemoteTabRefView;
-  remoteSession?: { hostId: string; workspace: string; name: string };
   children?: ProjectNode[];
 }
 
@@ -950,7 +945,7 @@ export interface ContextInfo {
   contextBudget?: ContextBudgetInfo;
 }
 
-export interface Meta {
+export interface Meta extends RemoteSessionMetaFields {
   label: string;
   ready: boolean;
   runtime?: SessionRuntimeView;
@@ -979,7 +974,6 @@ export interface Meta {
   goalStatus?: GoalStatus;
   goalRuntime?: GoalRuntime;
   canonicalTodos?: Todo[]; dismissedTodoBatches?: string[];
-  remote?: RemoteTabRefView;
 }
 
 export type CollaborationMode = "normal" | "plan" | "goal";

@@ -10,17 +10,16 @@ import { asArray } from "../lib/array";
 import { useToast } from "../lib/toast";
 import { app } from "../lib/bridge";
 import { onProjectTreeChangedV2 } from "../lib/sessionCatalogBridge";
-import { isRuntimeSessionNode, isTopicNode, loadWorkbenchOrganizeMode, loadWorkbenchSortMode, mergeIncompleteProjectTopicPage, mergeProjectTopicPage, projectTreeDedupedExactTime, projectTreeEventAffectsFolder, projectTreeFolderDisclosure, projectTreeReadActivityKey, projectTreeRevisionIsFresh, projectTreeShellChildren, projectTreeShellSignature, projectTreeShouldApplyShellSnapshot, projectTreeShouldRenderTopicActions, projectTreeShouldSuppressOpenForRename, projectTreeTopicArchiveBlocked, projectTreeTopicHasUnreadActivity, projectTreeTopicHoverCardModel, projectTreeTopicMenuOffersPin, projectTreeTopicMetaLine, projectTreeTopicOpenRequest, projectTreeTopicPageIsFresh, projectTreeTopicPageSignature, projectTreeTopicRecoveryCopyCount, projectTreeWithoutTopic, projectTreeWithTopicTitle, topicActivityAt, topicActivityDateLabel, topicActivityLabel, topicIsActive, topicStatus, topicStatusLabel, topicUnknownTimeLabel, WORKBENCH_ORGANIZE_KEY, WORKBENCH_SORT_KEY, type ProjectTreePendingTopicOpen, type ProjectTreeReadActivity, type ProjectTreeTopicHoverCard, type ProjectTreeVariant, type WorkbenchOrganizeMode, type WorkbenchSortMode } from "../lib/projectTreeTopic";
+import { isRuntimeSessionNode, isTopicNode, loadWorkbenchOrganizeMode, loadWorkbenchSortMode, mergeIncompleteProjectTopicPage, mergeProjectTopicPage, projectTreeDedupedExactTime, projectTreeEventAffectsFolder, projectTreeFolderDisclosure, projectTreeReadActivityKey, projectTreeRevisionIsFresh, projectTreeShellChildren, projectTreeShellSignature, projectTreeShouldApplyShellSnapshot, projectTreeShouldRenderTopicActions, projectTreeShouldSuppressOpenForRename, projectTreeTopicArchiveBlocked, projectTreeTopicHasUnreadActivity, projectTreeTopicHoverCardModel, projectTreeTopicMenuOffersPin, projectTreeTopicMetaLine, projectTreeTopicOpenRequest, projectTreeTopicPageIsFresh, projectTreeTopicPageSignature, projectTreeTopicRecoveryCopyCount, projectTreeWithoutTopic, projectTreeWithTopicTitle, topicActivityAt, topicActivityDateLabel, topicActivityLabel, topicIsActive, topicStatus, topicStatusLabel, topicUnknownTimeLabel, WORKBENCH_ORGANIZE_KEY, WORKBENCH_SORT_KEY, type ProjectTreePendingTopicOpen, type ProjectTreeReadActivity, type ProjectTreeTopicHoverCard, type WorkbenchOrganizeMode, type WorkbenchSortMode } from "../lib/projectTreeTopic";
 export * from "../lib/projectTreeTopic";
 import { arrangeClassicProjectTree, arrangeWorkbenchTree, classicTopicWindow, CLASSIC_TOPIC_PREVIEW_LIMIT, splitPinnedProjectTree, type PinnedTreeSections } from "../lib/projectTreePresentation";
 export * from "../lib/projectTreePresentation";
-import type { ProjectNode, RemoteTabRefView, SessionCatalogStatus } from "../lib/types";
+import type { ProjectNode, SessionCatalogStatus } from "../lib/types";
 import { topicActivityTime } from "../lib/session";
 import { useT, type Translator } from "../lib/i18n";
 import { PROJECT_COLOR_OPTIONS, projectColorValue } from "../lib/projectColors";
 import { projectTreeSessionArchiveTargetKey, projectTreeTopicArchiveTargetKey, projectTreeWithoutTopics, reloadProjectTreeTopics, useProjectTreeArchiveController, type ProjectTreeRefresh, type ProjectTreeRefreshOptions } from "../lib/projectTreeArchive";
 import { topicShortcutLabel, type TopicShortcutEntry } from "../lib/topicShortcuts";
-import type { ShortcutPlatform } from "../lib/keyboardShortcuts";
 import { ContextMenu, contextMenuPointFromEvent, type ContextMenuItem, type ContextMenuPoint } from "./ContextMenu";
 import { Tooltip } from "./Tooltip";
 import { WorktreeBadge } from "./WorktreeBadge";
@@ -32,36 +31,7 @@ import { GLOBAL_PROJECT_ORDER_KEY, ProjectTreeFolderActivity, ProjectTreeGroupRo
 import { ProjectTreeSessionArchiveMenu } from "./ProjectTreeSessionArchiveMenu";
 import { ProjectTreeHeaderAddControl, ProjectTreeRemoteAction, projectTreeHeaderAddItems } from "./ProjectTreeAddControls";
 import { buildRemoteProjectMenuItems, mergeRemoteSessionsIntoTree, openRemoteSessionNode, remoteProjectKey, remoteServeBadgeState, renameRemoteProjectTitle, useRemoteProjectGroups, useRemoteSessionActions } from "./ProjectTreeRemoteGroups";
-interface ProjectTreeProps {
-  activeScope?: string;
-  activeWorkspaceRoot?: string;
-  activeTopicId?: string;
-  activeSessionPath?: string;
-  activeRemote?: RemoteTabRefView;
-  imTopicSources?: Record<string, ProjectTreeImTopicSource>;
-  variant?: ProjectTreeVariant;
-  onOpenTopic: (scope: string, workspaceRoot: string, topicId: string, sessionPath?: string) => Promise<void> | void;
-  onAddProject: (path?: string) => Promise<void>;
-  onCreateTopic?: (scope: string, workspaceRoot: string) => Promise<void> | void;
-  onCreateIsolatedWorktree?: (workspaceRoot: string) => Promise<void> | void;
-  onRenameTopic?: (topicId: string, title: string) => Promise<void> | void;
-  onTopicsChanged?: () => Promise<void> | void;
-  refreshSignal?: number;
-  timeFilter: "all" | "10" | "20" | "1h" | "3h" | "5h" | "1d";
-  onTimeFilterChange: (filter: "all" | "10" | "20" | "1h" | "3h" | "5h" | "1d") => void;
-  searchExpanded?: boolean;
-  searchFocusSignal?: number;
-  showShortcutBadges?: boolean;
-  shortcutPlatform?: ShortcutPlatform;
-  onVisibleTopicsChange?: (topics: TopicShortcutEntry[]) => void;
-}
-
-type ProjectTreeImTopicSource = {
-  platform?: string;
-  label: string;
-  title?: string;
-  remoteId?: string;
-};
+import type { ProjectTreeProps } from "./ProjectTreeProps";
 
 function projectNodeKey(node: ProjectNode, depth: number): string {
   return node.key || `${node.kind}-${node.root ?? ""}-${node.topicId ?? ""}-${node.sessionPath ?? ""}-${depth}`;

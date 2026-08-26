@@ -85,6 +85,10 @@ type remoteTab struct {
 
 	// Transient runtime state is projected into TabMeta even while this tab is
 	// inactive, matching the local tab strip's running/prompt/job indicators.
+	runtime remoteTabRuntimeState
+}
+
+type remoteTabRuntimeState struct {
 	running         bool
 	turnStartedAt   int64
 	pendingPrompt   bool
@@ -544,12 +548,12 @@ func remoteTabMetaLocked(tab *remoteTab) TabMeta {
 		Remote:          &ref,
 		RemoteState:     tab.state,
 		Ready:           tab.state == "ready",
-		Running:         tab.running || tab.pendingPrompt || tab.backgroundJobs > 0,
-		TurnStartedAt:   tab.turnStartedAt,
-		PendingPrompt:   tab.pendingPrompt,
-		BackgroundJobs:  tab.backgroundJobs,
-		CancelRequested: tab.cancelRequested,
-		Cancellable:     tab.cancellable,
+		Running:         tab.runtime.running || tab.runtime.pendingPrompt || tab.runtime.backgroundJobs > 0,
+		TurnStartedAt:   tab.runtime.turnStartedAt,
+		PendingPrompt:   tab.runtime.pendingPrompt,
+		BackgroundJobs:  tab.runtime.backgroundJobs,
+		CancelRequested: tab.runtime.cancelRequested,
+		Cancellable:     tab.runtime.cancellable,
 	}
 }
 

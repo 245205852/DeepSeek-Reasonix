@@ -27,6 +27,20 @@ export interface RemoteTabRefView {
   workspace: string;
 }
 
+export interface RemoteTabMetaFields {
+  remote?: RemoteTabRefView;
+  remoteState?: RemoteTabStateValue;
+}
+
+export interface RemoteProjectNodeFields {
+  remote?: RemoteTabRefView;
+  remoteSession?: { hostId: string; workspace: string; name: string };
+}
+
+export interface RemoteSessionMetaFields {
+  remote?: RemoteTabRefView;
+}
+
 export interface RemoteProjectView {
   hostId: string;
   workspace: string;
