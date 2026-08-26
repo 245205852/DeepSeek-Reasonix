@@ -53,6 +53,7 @@ export interface RemoteSessionApi {
   surfaceGeneration: number;
   promptError: string;
   submit: (text: string) => Promise<void>;
+  runManagementCommand: (text: string) => Promise<void>;
   cancelTurn: () => Promise<void>;
   approve: (callId: string, decision: string) => Promise<void>;
   resolvePlanDecision: (callId: string, action: "start_execution" | "revise_plan" | "exit_plan", feedback?: string) => Promise<void>;
@@ -276,8 +277,13 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
     const reconcileHistory = async () => {
       if (historyReconcilePromise) return historyReconcilePromise;
       historyReconcilePromise = (async () => {
+        const expectedConnectionGeneration = connectionGeneration;
         const snap = await app.RemoteTabSnapshot(tabId);
-        if (cancelled) return;
+        // Ready-to-ready state publications represent /new, /clear, or
+        // saved-session adoption just as surely as reconnect publications do.
+        // A durable-history read started for the previous session must never
+        // replace the newly hydrated transcript.
+        if (cancelled || connectionGeneration !== expectedConnectionGeneration) return;
         const messages = Array.isArray(snap.history) ? (snap.history as HistoryMessage[]) : [];
         const checkpoints = remoteCheckpoints(snap.checkpoints);
         setCommands(Array.isArray(snap.commands) ? snap.commands as CommandInfo[] : []);
@@ -299,12 +305,13 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
     // reserved for actual session adoption/reconnects because Transcript uses
     // it as a reveal/remount boundary.
     const refreshStatus = async () => {
+      const expectedConnectionGeneration = connectionGeneration;
       const status = await app.RemoteTabStatus(tabId);
-      if (cancelled) return;
+      if (cancelled || connectionGeneration !== expectedConnectionGeneration) return;
       const settledWithPossibleFrameLoss = transcriptRef.current.running
         && (status as RemoteStatus | null)?.running === false;
       const { hydrateRemoteTelemetry } = await loadRemoteSurface();
-      if (cancelled) return;
+      if (cancelled || connectionGeneration !== expectedConnectionGeneration) return;
       applyRemoteStatus(status);
       setTranscript((current) => hydrateRemoteTelemetry(
         reducer(current, remoteStatusToAction(status, Date.now())),
@@ -422,7 +429,11 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
 
     const offState = onRemoteTabState(tabId, (s) => {
       if (cancelled) return;
-      if (s.state !== "ready") connectionGeneration += 1;
+      // Every backend state publication advances the surface identity. In
+      // particular, session rotations intentionally publish ready -> ready,
+      // so fencing only non-ready transitions leaves stale history requests
+      // able to overwrite the adopted session.
+      connectionGeneration += 1;
       setState(s.state);
       setError(s.error ?? "");
       if (s.state === "ready") {
@@ -495,6 +506,18 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
       setTranscript((s) => reducer(s, { type: "send_failed", submissionId, error }));
       throw e;
     }
+  }, [tabId]);
+
+  const runManagementCommand = useCallback(async (text: string) => {
+    if (!tabId) return;
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    // Management verbs produce notices/state changes rather than a model
+    // turn, so do not create the optimistic conversational bubble used by
+    // submit(). Refresh the authoritative profile after the command settles.
+    await app.SubmitRemoteTab(tabId, trimmed);
+    const current = refreshStatusRef.current;
+    if (current?.tabId === tabId) await current.run();
   }, [tabId]);
 
   const cancelTurn = useCallback(async () => {
@@ -638,7 +661,7 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
 
   return {
     state, error, transcript, liveStore, hydrated, running: transcript.running, modelLabel, commands,
-    composerProfile, effort, surfaceGeneration, promptError, submit, cancelTurn,
+    composerProfile, effort, surfaceGeneration, promptError, submit, runManagementCommand, cancelTurn,
     approve, resolvePlanDecision, answer, clearExtensionForm, rewind, setModel, setEffort, setQualityFloor, pauseGoal, resumeGoal, steer, cancelJob,
     retryHydration,
   };

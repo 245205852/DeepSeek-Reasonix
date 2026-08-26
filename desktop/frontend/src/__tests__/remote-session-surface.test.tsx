@@ -75,6 +75,8 @@ let blockAnswer = false;
 let releaseAnswer: (() => void) | undefined;
 let resolveRaceSnapshot: ((value: { history: unknown[]; status: unknown }) => void) | undefined;
 const resolveStateRaceSnapshots: Array<(value: { history: unknown[]; status: unknown }) => void> = [];
+let rotationSnapshotCalls = 0;
+let resolveRotationReconcile: ((value: { history: unknown[]; status: unknown }) => void) | undefined;
 window.go = { main: { App: {
   async RemoteTabSnapshot(tabId: string) {
     tape.push(`snapshot:${tabId}`);
@@ -82,6 +84,16 @@ window.go = { main: { App: {
 		if (tabId === "tab-pending-model") return new Promise(() => {});
 		if (tabId === "tab-race") return new Promise<{ history: unknown[]; status: unknown }>((resolve) => { resolveRaceSnapshot = resolve; });
 		if (tabId === "tab-state-race") return new Promise<{ history: unknown[]; status: unknown }>((resolve) => { resolveStateRaceSnapshots.push(resolve); });
+		if (tabId === "tab-reconcile-rotation") {
+			rotationSnapshotCalls += 1;
+			if (rotationSnapshotCalls === 2) {
+				return new Promise<{ history: unknown[]; status: unknown }>((resolve) => { resolveRotationReconcile = resolve; });
+			}
+			return {
+				history: [{ role: "assistant", content: rotationSnapshotCalls === 1 ? "initial session" : "fresh rotated session" }],
+				status: { running: false, label: "Rotation", plan: false, toolApprovalMode: "ask", goal: "" },
+			};
+		}
 		if (tabId === "tab-tool-history") return {
 			history: [
 				{ role: "assistant", content: "", toolCalls: [{ id: "remote-tool", name: "bash", arguments: "{\"command\":\"go test ./...\"}" }] },
@@ -550,6 +562,14 @@ await act(async () => {
 });
 ok(Boolean(probe?.transcript.items.some((item) => item.kind === "user" && item.text === "run tests")), "submit adds the optimistic user bubble through the shared reducer");
 await act(async () => {
+  await probe?.runManagementCommand("/context");
+  await flush();
+});
+ok(tape.includes("submit:tab-remote-2:/context") && tape.includes("status:tab-remote-2"),
+  "management commands dispatch without conversational admission and refresh status");
+ok(!probe?.transcript.items.some((item) => item.kind === "user" && item.text === "/context"),
+  "management commands do not add an optimistic user turn");
+await act(async () => {
   await probe?.cancelTurn();
   await probe?.approve("call-1", "allow");
   await probe?.answer("ask-1", [{ QuestionID: "q1", Selected: ["yes"] }]);
@@ -713,6 +733,39 @@ ok(stateRaceProbe?.state === "ready" && stateRaceProbe.hydrated === true
 	&& stateRaceProbe.transcript.items.some((item) => item.kind === "assistant" && item.text === "fresh generation"),
 	"a ready generation re-hydrates after discarding the stale in-flight snapshot");
 await act(async () => stateRaceRoot.unmount());
+
+// Post-turn reconciliation can overlap a ready-to-ready /new, /clear, or
+// resume. The old history response must not replace the newly adopted session.
+let rotationProbe: RemoteSessionApi | undefined;
+function RotationProbe() {
+	rotationProbe = useRemoteSession("tab-reconcile-rotation");
+	return null;
+}
+const rotationRoot = createRoot(document.createElement("div"));
+await act(async () => {
+	rotationRoot.render(<LocaleProvider><RotationProbe /></LocaleProvider>);
+	await flush();
+});
+await act(async () => {
+	__emitMockRemoteTab("tab-reconcile-rotation", "event", { kind: "turn_started" });
+	__emitMockRemoteTab("tab-reconcile-rotation", "event", { kind: "turn_done" });
+	await Promise.resolve();
+	__emitMockRemoteTab("tab-reconcile-rotation", "state", { state: "ready" });
+	await flush();
+});
+ok(rotationProbe?.transcript.items.some((item) => item.kind === "assistant" && item.text === "fresh rotated session") === true,
+	"ready-to-ready rotation hydrates the adopted session while old reconciliation is pending");
+await act(async () => {
+	resolveRotationReconcile?.({
+		history: [{ role: "assistant", content: "stale previous session" }],
+		status: { running: false, label: "Stale", plan: false, toolApprovalMode: "ask", goal: "" },
+	});
+	await flush();
+});
+ok(rotationProbe?.transcript.items.some((item) => item.kind === "assistant" && item.text === "fresh rotated session") === true
+	&& !rotationProbe.transcript.items.some((item) => item.kind === "assistant" && item.text === "stale previous session"),
+	"session generation fence rejects stale post-turn history after rotation");
+await act(async () => rotationRoot.unmount());
 
 // Pending prompt frames retained by Desktop are replayed by the next snapshot,
 // which restores decisions missed while the tab had no frontend listener.

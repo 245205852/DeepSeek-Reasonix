@@ -2171,36 +2171,6 @@ func (c *Controller) Turn() int {
 	return c.turn
 }
 
-// ResolvePlanDecision answers the Plan card without collapsing revise and exit
-// into the generic approval boolean used by older clients.
-func (c *Controller) ResolvePlanDecision(id string, action PlanDecisionAction) error {
-	if c == nil {
-		return fmt.Errorf("controller is nil")
-	}
-	id = strings.TrimSpace(id)
-	if id == "" {
-		return fmt.Errorf("empty plan approval id")
-	}
-	switch action {
-	case PlanDecisionStartExecution, PlanDecisionRevisePlan, PlanDecisionExitPlan:
-	default:
-		return fmt.Errorf("unknown plan decision %q", action)
-	}
-	pending, ok, err := c.approval.resolveToolAfter(id, planApprovalTool, func(p pendingApproval) error {
-		return c.emitTurnEventChecked(event.Event{Kind: event.PromptAnswered, ItemID: id, Status: event.TurnInProgress})
-	})
-	if err != nil {
-		return err
-	}
-	if !ok || pending.reply == nil {
-		return nil
-	}
-	pending.kind = "plan"
-	c.recordDecisionReceipt(pending, string(action))
-	pending.reply <- approvalReply{allow: action == PlanDecisionStartExecution}
-	return nil
-}
-
 func (c *Controller) recordDecisionReceipt(pending pendingApproval, outcome string) {
 	if c == nil || c.executor == nil || pending.reply == nil {
 		return

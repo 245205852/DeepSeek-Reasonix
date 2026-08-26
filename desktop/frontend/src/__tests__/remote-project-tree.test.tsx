@@ -94,8 +94,21 @@ ok(
   /trimmed === "\/new"[\s\S]*?method: "newSession"/.test(remoteIntegrationSource) &&
     /trimmed === "\/clear"[\s\S]*?method: "clearSession"/.test(remoteIntegrationSource) &&
     /command\?\.method === "clearSession"[\s\S]*?requestClear\(\)/.test(remoteIntegrationSource) &&
-    /command\?\.method === "newSession"[\s\S]*?OpenRemoteProjectTab[\s\S]*?newSession: true/.test(remoteIntegrationSource),
+    /command\?\.method === "newSession"[\s\S]*?openRemoteNewSession\(activeRemote, session\.retryHydration\)/.test(remoteIntegrationSource),
   "remote clear and new commands bypass optimistic submit and use session rotation",
+);
+ok(
+  /const management = new Set\(\[[\s\S]*?"compact"[\s\S]*?"context"[\s\S]*?"goal"[\s\S]*?"mcp"/.test(remoteIntegrationSource) &&
+    /command\?\.method === "runManagementCommand"[\s\S]*?session\.runManagementCommand\(trimmed\)/.test(remoteIntegrationSource),
+  "remote non-turn management commands bypass optimistic conversational submit",
+);
+ok(
+  /if \(activeTab\?\.remote\) return openRemoteNewSession\(activeTab\.remote, remoteSession\.retryHydration\)/.test(appSource),
+  "global New Session routes the active remote tab through its Serve controller",
+);
+ok(
+  /item\.id !== "cmd-terminal" && item\.id !== "cmd-reload-runtime"/.test(appSource),
+  "remote command palettes hide local-only terminal and runtime reload actions",
 );
 ok(
   /const remote = index\.get\(topicId\);[\s\S]*?if \(!remote\) return false;[\s\S]*?await action\(remote\);/.test(remoteSource) &&

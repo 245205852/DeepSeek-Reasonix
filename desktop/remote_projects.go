@@ -89,6 +89,9 @@ type remoteTab struct {
 }
 
 type remoteTabRuntimeState struct {
+	// revision orders asynchronous /status snapshots against newer requests
+	// and SSE-derived runtime mutations within the same connection generation.
+	revision        uint64
 	running         bool
 	turnStartedAt   int64
 	pendingPrompt   bool

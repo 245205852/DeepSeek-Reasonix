@@ -10,14 +10,15 @@ import (
 
 func (s *Server) planDecision(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		ID     string                     `json:"id"`
-		Action control.PlanDecisionAction `json:"action"`
+		ID       string                     `json:"id"`
+		Action   control.PlanDecisionAction `json:"action"`
+		Feedback string                     `json:"feedback"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.ID) == "" {
 		http.Error(w, "missing id", http.StatusBadRequest)
 		return
 	}
-	if err := s.ctl().ResolvePlanDecision(body.ID, body.Action); err != nil {
+	if err := s.ctl().ResolvePlanDecisionWithFeedback(body.ID, body.Action, body.Feedback); err != nil {
 		http.Error(w, err.Error(), http.StatusConflict)
 		return
 	}

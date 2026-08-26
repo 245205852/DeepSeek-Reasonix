@@ -80,6 +80,7 @@ type Approvals interface {
 	Approve(id string, allow, session, persist bool)
 	ResolveApproval(id string, allow bool, scope sandbox.ApprovalScope) error
 	ResolvePlanDecision(id string, action PlanDecisionAction) error
+	ResolvePlanDecisionWithFeedback(id string, action PlanDecisionAction, feedback string) error
 	// ResolveRecovery answers an Auto Guard card: continue|continue_task|revise. Revise
 	// refuses the mutation and steers feedback.
 	ResolveRecovery(id string, action agent.RecoveryAction, feedback string) error

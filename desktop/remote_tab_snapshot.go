@@ -29,6 +29,7 @@ func (a *App) RemoteTabSnapshot(tabID string) (RemoteTabSnapshot, error) {
 		return RemoteTabSnapshot{}, err
 	}
 	gen := a.remoteTabClientGeneration(tabID, client)
+	statusSeq := a.reserveRemoteTabStatusSequence(tabID, client, gen)
 	ctx, cancel := commandContext(a)
 	defer cancel()
 	var snap RemoteTabSnapshot
@@ -81,7 +82,11 @@ func (a *App) RemoteTabSnapshot(tabID string) (RemoteTabSnapshot, error) {
 		snap.PendingEvents = append(snap.PendingEvents, append(json.RawMessage(nil), tab.pendingEvents[key]...))
 	}
 	a.remoteTabMu.Unlock()
-	a.recordRemoteTabSessionStatus(tabID, client, gen, snap.Status)
+	if len(snap.Status) > 0 && !a.recordRemoteTabSessionStatus(tabID, client, gen, statusSeq, snap.Status) {
+		// Do not hand a status member captured before a newer request/event to
+		// the frontend aggregate snapshot; it will fetch /status explicitly.
+		snap.Status = nil
+	}
 	a.recordRemoteTabModelCatalog(tabID, client, gen, snap.Models)
 	return snap, nil
 }
@@ -94,11 +99,14 @@ func (a *App) RemoteTabStatus(tabID string) (json.RawMessage, error) {
 		return nil, err
 	}
 	gen := a.remoteTabClientGeneration(tabID, client)
+	statusSeq := a.reserveRemoteTabStatusSequence(tabID, client, gen)
 	ctx, cancel := commandContext(a)
 	defer cancel()
 	status, err := serveGet(ctx, client, serveURL(base, "/status"))
 	if err == nil {
-		a.recordRemoteTabSessionStatus(tabID, client, gen, status)
+		if !a.recordRemoteTabSessionStatus(tabID, client, gen, statusSeq, status) {
+			return nil, fmt.Errorf("remote tab %q status was superseded by newer runtime state", tabID)
+		}
 	}
 	return status, err
 }
@@ -112,7 +120,21 @@ func (a *App) remoteTabClientGeneration(tabID string, client *http.Client) uint6
 	return 0
 }
 
-func (a *App) recordRemoteTabSessionStatus(tabID string, client *http.Client, gen uint64, status json.RawMessage) {
+func (a *App) reserveRemoteTabStatusSequence(tabID string, client *http.Client, gen uint64) uint64 {
+	if gen == 0 {
+		return 0
+	}
+	a.remoteTabMu.Lock()
+	defer a.remoteTabMu.Unlock()
+	tab := a.remoteTabs[tabID]
+	if tab == nil || tab.client != client || tab.gen != gen {
+		return 0
+	}
+	tab.runtime.revision++
+	return tab.runtime.revision
+}
+
+func (a *App) recordRemoteTabSessionStatus(tabID string, client *http.Client, gen, statusSeq uint64, status json.RawMessage) bool {
 	var payload struct {
 		SessionName     string `json:"sessionName"`
 		Running         *bool  `json:"running"`
@@ -121,14 +143,14 @@ func (a *App) recordRemoteTabSessionStatus(tabID string, client *http.Client, ge
 		CancelRequested *bool  `json:"cancelRequested"`
 		Cancellable     *bool  `json:"cancellable"`
 	}
-	if gen == 0 || json.Unmarshal(status, &payload) != nil {
-		return
+	if gen == 0 || statusSeq == 0 || json.Unmarshal(status, &payload) != nil {
+		return false
 	}
 	a.remoteTabMu.Lock()
 	tab := a.remoteTabs[tabID]
-	if tab == nil || tab.client != client || tab.gen != gen {
+	if tab == nil || tab.client != client || tab.gen != gen || tab.runtime.revision != statusSeq {
 		a.remoteTabMu.Unlock()
-		return
+		return false
 	}
 	before := remoteTabMetaLocked(tab)
 	if name := strings.TrimSpace(payload.SessionName); name != "" {
@@ -163,6 +185,7 @@ func (a *App) recordRemoteTabSessionStatus(tabID string, client *http.Client, ge
 		before.CancelRequested != after.CancelRequested || before.Cancellable != after.Cancellable {
 		a.emitRemoteEvent("remote-tab:updated", after)
 	}
+	return true
 }
 
 func (a *App) recordRemoteTabModelCatalog(tabID string, client *http.Client, gen uint64, models json.RawMessage) {

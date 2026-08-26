@@ -764,6 +764,12 @@ func (s *Server) submit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	submitWithAction(ctrl, body.Input, body.Format, body.Action)
+	if isServeManagementCommand(trimmed) && !ctrl.Running() && !ctrl.RuntimeStatus().PendingPrompt {
+		// Management notices/status are successful non-turn operations.
+		s.bindMu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
 	// After synchronous admission, a successful start sets Running. A silent
 	// drop (rotating/closed) leaves Running false — return 409 instead of 202.
 	// Finishing-window park also leaves Running false briefly; prefer 202 only

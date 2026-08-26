@@ -7,16 +7,31 @@ import type { RemoteSessionApi } from "./useRemoteSession";
 
 type RemoteProfile = RemoteSessionApi["composerProfile"];
 
+export async function openRemoteNewSession(remote: RemoteTabRefView, retryHydration: () => Promise<void>): Promise<void> {
+  await app.OpenRemoteProjectTab(remote.hostId, remote.workspace, { newSession: true });
+  await retryHydration();
+}
+
 export function remoteRuntimeCommand(input: string):
   | { method: "setModel" | "setEffort"; value: string }
-  | { method: "newSession" | "clearSession" }
+  | { method: "newSession" | "clearSession" | "runManagementCommand" }
   | undefined {
   const trimmed = input.trim();
   if (trimmed === "/new") return { method: "newSession" };
   if (trimmed === "/clear") return { method: "clearSession" };
   const match = /^\/(model|effort)\s+(\S+)$/.exec(trimmed);
-  if (!match) return undefined;
-  return { method: match[1] === "model" ? "setModel" : "setEffort", value: match[2] };
+  if (match) return { method: match[1] === "model" ? "setModel" : "setEffort", value: match[2] };
+  const verb = /^\/([^\s]+)/.exec(trimmed)?.[1]?.toLowerCase();
+  // These controller verbs are synchronous management operations: they emit
+  // notices or mutate session metadata but do not admit a conversational
+  // turn. Custom commands, skills, docs queries, and MCP prompts deliberately
+  // remain on the ordinary submit path because they can start model work.
+  const management = new Set([
+    "compact", "context", "goal", "memory", "remember", "migrate", "migration",
+    "skill", "skills", "plugin", "plugins", "reload-cmd", "hooks", "mcp",
+    "provider", "tree", "branch", "switch", "rewind",
+  ]);
+  return verb && management.has(verb) ? { method: "runManagementCommand" } : undefined;
 }
 
 export function useRemoteComposerSend(
@@ -35,10 +50,9 @@ export function useRemoteComposerSend(
     if (command?.method === "clearSession") return requestClear();
     if (command?.method === "newSession") {
       if (!activeRemote) return;
-      await app.OpenRemoteProjectTab(activeRemote.hostId, activeRemote.workspace, { newSession: true });
-      await session.retryHydration();
-      return;
+      return openRemoteNewSession(activeRemote, session.retryHydration);
     }
+    if (command?.method === "runManagementCommand") return session.runManagementCommand(trimmed);
     if (command?.method === "setModel" || command?.method === "setEffort") return session[command.method](command.value);
     if (activeTabId && collaborationMode === "goal" && !goal.trim() && trimmed) await applyGoal(activeTabId, trimmed);
     await send(displayText, submitText);

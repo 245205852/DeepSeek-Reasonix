@@ -384,6 +384,7 @@ func (a *App) completeRemoteTabTurn(tabID string, gen uint64) {
 		a.remoteTabMu.Unlock()
 		return
 	}
+	tab.runtime.revision++
 	tab.pendingEvents = nil
 	tab.runtime.running = false
 	tab.runtime.turnStartedAt = 0
@@ -413,6 +414,7 @@ func (a *App) recordRemoteTabTurnStarted(tabID string, gen uint64, frame json.Ra
 		a.remoteTabMu.Unlock()
 		return
 	}
+	tab.runtime.revision++
 	tab.runtime.running = true
 	tab.runtime.turnStartedAt = payload.TurnStartedAt
 	tab.runtime.pendingPrompt = false
@@ -446,6 +448,7 @@ func (a *App) cacheRemotePendingEvent(tabID string, gen uint64, kind string, fra
 		a.remoteTabMu.Unlock()
 		return
 	}
+	tab.runtime.revision++
 	if tab.pendingEvents == nil {
 		tab.pendingEvents = make(map[string]json.RawMessage)
 	}
@@ -462,6 +465,7 @@ func (a *App) clearRemotePendingEvent(tabID, kind, callID string) {
 	var meta TabMeta
 	changed := false
 	if tab := a.remoteTabs[tabID]; tab != nil {
+		tab.runtime.revision++
 		delete(tab.pendingEvents, kind+":"+strings.TrimSpace(callID))
 		pending := len(tab.pendingEvents) > 0
 		changed = tab.runtime.pendingPrompt != pending
@@ -623,8 +627,9 @@ func (a *App) ApproveRemoteTab(tabID, callID, decision string) error {
 
 // ResolveRemoteTabPlanDecision preserves the three distinct exit_plan_mode
 // outcomes that the generic approval boolean cannot represent. Revision text
-// is queued only after the decision is accepted, so it becomes the next
-// durable follow-up once the planning turn has fully settled.
+// travels in the same Serve request so the controller can durably stage it
+// before resolving the approval; a tunnel failure can no longer split the
+// decision from the requested revision.
 func (a *App) ResolveRemoteTabPlanDecision(tabID, callID, action, feedback string) error {
 	client, base, err := a.remoteTabCommandClient(tabID)
 	if err != nil {
@@ -638,20 +643,9 @@ func (a *App) ResolveRemoteTabPlanDecision(tabID, callID, action, feedback strin
 	}
 	ctx, cancel := commandContext(a)
 	defer cancel()
-	body, _ := json.Marshal(map[string]string{"id": callID, "action": action})
+	body, _ := json.Marshal(map[string]string{"id": callID, "action": action, "feedback": strings.TrimSpace(feedback)})
 	if err := servePost(ctx, client, serveURL(base, "/plan-decision"), body); err != nil {
 		return err
-	}
-	feedback = strings.TrimSpace(feedback)
-	if action == "revise_plan" && feedback != "" {
-		followup, _ := json.Marshal(map[string]string{
-			"input":          feedback,
-			"intent":         "followup",
-			"idempotencyKey": "plan-revision:" + strings.TrimSpace(callID),
-		})
-		if err := servePost(ctx, client, serveURL(base, "/inbox/items"), followup); err != nil {
-			return fmt.Errorf("queue remote plan revision: %w", err)
-		}
 	}
 	a.clearRemotePendingEvent(tabID, "approval_request", callID)
 	return nil

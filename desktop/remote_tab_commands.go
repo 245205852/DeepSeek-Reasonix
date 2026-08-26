@@ -147,6 +147,7 @@ func (a *App) resumeRemoteTabSession(tabID, name string) {
 		current.session.reset = false
 		current.session.newSession = false
 		current.session.name = name
+		current.runtime.revision++
 		meta := remoteTabMetaLocked(current)
 		a.remoteTabMu.Unlock()
 		a.emitRemoteEvent("remote-tab:updated", meta)
@@ -510,6 +511,7 @@ func (a *App) rotateRemoteTabSession(tabID, path string) error {
 	tab.session.reset = true
 	tab.session.newSession = true
 	tab.session.name = ""
+	tab.runtime.revision++
 	meta := remoteTabMetaLocked(tab)
 	a.remoteTabMu.Unlock()
 	a.emitRemoteEvent("remote-tab:updated", meta)

@@ -473,7 +473,8 @@ func TestRemoteStatusRefreshPublishesInactiveRuntimeMeta(t *testing.T) {
 		},
 		remoteTabLayout: remoteTabLayoutState{activeID: "remote-2"},
 	}
-	a.recordRemoteTabSessionStatus("remote-1", client, 4, json.RawMessage(`{"running":true,"pendingPrompt":true,"backgroundJobs":3,"cancelRequested":true,"cancellable":true}`))
+	statusSeq := a.reserveRemoteTabStatusSequence("remote-1", client, 4)
+	a.recordRemoteTabSessionStatus("remote-1", client, 4, statusSeq, json.RawMessage(`{"running":true,"pendingPrompt":true,"backgroundJobs":3,"cancelRequested":true,"cancellable":true}`))
 	metas, _, _ := a.remoteTabMetas(nil)
 	var got TabMeta
 	for _, meta := range metas {
@@ -486,6 +487,39 @@ func TestRemoteStatusRefreshPublishesInactiveRuntimeMeta(t *testing.T) {
 	}
 	if log.count("remote-tab:updated ") != 1 {
 		t.Fatalf("runtime status update events = %v", log.recorded())
+	}
+}
+
+func TestRemoteStatusRefreshRejectsOutOfOrderSnapshot(t *testing.T) {
+	client := &http.Client{}
+	a := &App{remoteTabs: map[string]*remoteTab{
+		"remote-1": {id: "remote-1", client: client, gen: 4},
+	}}
+	older := a.reserveRemoteTabStatusSequence("remote-1", client, 4)
+	newer := a.reserveRemoteTabStatusSequence("remote-1", client, 4)
+	a.recordRemoteTabSessionStatus("remote-1", client, 4, newer, json.RawMessage(`{"running":false,"pendingPrompt":false}`))
+	a.recordRemoteTabSessionStatus("remote-1", client, 4, older, json.RawMessage(`{"running":true,"pendingPrompt":true}`))
+	a.remoteTabMu.Lock()
+	runtime := a.remoteTabs["remote-1"].runtime
+	a.remoteTabMu.Unlock()
+	if runtime.running || runtime.pendingPrompt {
+		t.Fatalf("older status overwrote newer settled state: %+v", runtime)
+	}
+}
+
+func TestRemoteStatusRefreshRejectsSnapshotOlderThanTurnDone(t *testing.T) {
+	client := &http.Client{}
+	a := &App{remoteTabs: map[string]*remoteTab{
+		"remote-1": {id: "remote-1", client: client, gen: 4, runtime: remoteTabRuntimeState{running: true}},
+	}}
+	stale := a.reserveRemoteTabStatusSequence("remote-1", client, 4)
+	a.completeRemoteTabTurn("remote-1", 4)
+	a.recordRemoteTabSessionStatus("remote-1", client, 4, stale, json.RawMessage(`{"running":true,"pendingPrompt":true}`))
+	a.remoteTabMu.Lock()
+	runtime := a.remoteTabs["remote-1"].runtime
+	a.remoteTabMu.Unlock()
+	if runtime.running || runtime.pendingPrompt {
+		t.Fatalf("pre-turn_done status revived settled runtime: %+v", runtime)
 	}
 }
 

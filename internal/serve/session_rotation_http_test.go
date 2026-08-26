@@ -41,3 +41,19 @@ func TestServeClearSessionEndpoint(t *testing.T) {
 		t.Errorf("clear session = %d, want 204", resp.StatusCode)
 	}
 }
+
+func TestServeManagementSubmitReturnsNoContent(t *testing.T) {
+	bc := NewBroadcaster()
+	ctrl := control.New(control.Options{Sink: bc})
+	srv := httptest.NewServer(New(ctrl, bc, config.ServeConfig{}).Handler())
+	defer srv.Close()
+
+	resp, err := http.Post(srv.URL+"/submit", "application/json", strings.NewReader(`{"input":"/context"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Errorf("management submit = %d, want 204", resp.StatusCode)
+	}
+}

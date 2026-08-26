@@ -136,7 +136,7 @@ import {
   type RestorableToolApprovalMode,
 } from "./lib/toolApprovalMode";
 import { useComposerModeActions } from "./lib/useComposerModeActions";
-import { useRemoteComposerProfileSync, useRemoteComposerRuntimeActions, useRemoteComposerSend } from "./lib/useRemoteComposerIntegration";
+import { openRemoteNewSession, useRemoteComposerProfileSync, useRemoteComposerRuntimeActions, useRemoteComposerSend } from "./lib/useRemoteComposerIntegration";
 import {
   CREATION_RIGHT_DOCK_MIN_RENDER_WIDTH,
   CREATION_RIGHT_DOCK_TREE_MIN_WIDTH,
@@ -3898,9 +3898,10 @@ export default function App() {
   const handleNewTab = useCallback(async () => {
     closeTransientOverlays();
     setSidebarImDetailConnectionId("");
+    if (activeTab?.remote) return openRemoteNewSession(activeTab.remote, remoteSession.retryHydration);
     const target = blankSessionTarget();
     await openBlankSession(target.scope, target.workspaceRoot);
-  }, [blankSessionTarget, closeTransientOverlays, openBlankSession]);
+  }, [activeTab?.remote, blankSessionTarget, closeTransientOverlays, openBlankSession, remoteSession]);
 
   const handleOpenTopic = useCallback((scope: string, workspaceRoot: string, topicId: string, sessionPath?: string): Promise<void> => {
     closeTransientOverlays();
@@ -4113,7 +4114,7 @@ export default function App() {
           .catch((err) => showToast(err instanceof Error ? err.message : String(err), "error"));
       },
     }));
-    return [...(remoteSurfaceActive ? cmds.filter((item) => item.id !== "cmd-terminal") : cmds), ...extensionItems, ...remoteItems, ...sessionItems];
+    return [...(remoteSurfaceActive ? cmds.filter((item) => item.id !== "cmd-terminal" && item.id !== "cmd-reload-runtime") : cmds), ...extensionItems, ...remoteItems, ...sessionItems];
   }, [t, paletteSessions, paletteExtensionActions, remoteHosts, remoteStatuses, activeTab?.id, handleNewTab, openTrash, onResumeSession, openRemoteWorkspaceFromStatus, connectAndOpenRemoteWorkspace, openRightDockMode, remoteSurfaceActive, showToast]);
   // Delete / rename act on disk, then re-fetch so the panel reflects the change.
   const onDeleteSession = useCallback(
