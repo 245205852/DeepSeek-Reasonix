@@ -43,8 +43,18 @@ type Event struct {
 	StreamAttempt   *StreamAttempt      `json:"streamAttempt,omitempty"`
 	// ItemID correlates Steer / TurnDone / unapplied-steer with a durable
 	// session-inbox entry. Empty for legacy text-only guidance.
-	ItemID    string            `json:"itemId,omitempty"`
-	Workspace *WorkspaceChanged `json:"workspace,omitempty"`
+	ItemID string `json:"itemId,omitempty"`
+	// SessionPath routes frames emitted by detached Serve controllers. Older
+	// clients ignore the omitted/unknown field and keep single-session behavior.
+	SessionPath string `json:"sessionPath,omitempty"`
+	// SessionCurrent is set by Serve at publication time for frames belonging
+	// to its foreground controller. It lets all-session clients adopt an
+	// externally selected/recovered foreground without polling on every token.
+	SessionCurrent bool `json:"sessionCurrent,omitempty"`
+	// SessionReset distinguishes a fresh /new or /clear target from a resumed
+	// durable session when a different client rotates the foreground.
+	SessionReset bool              `json:"sessionReset,omitempty"`
+	Workspace    *WorkspaceChanged `json:"workspace,omitempty"`
 	// Phase is set on turn_phase events: working | checking | verifying | reviewing.
 	Phase string `json:"phase,omitempty"`
 	// Completion is set on completion_summary events (content-free quality summary).
@@ -99,7 +109,7 @@ type StreamAttempt struct {
 
 // ToWire converts a typed runtime event into the shared frontend JSON contract.
 func ToWire(e event.Event) Event {
-	w := Event{Kind: kindNames[e.Kind], TurnID: e.TurnID, Sequence: e.Sequence, Status: string(e.Status), Text: e.Text, Detail: e.Detail, Reasoning: e.Reasoning, ItemID: e.ItemID}
+	w := Event{Kind: kindNames[e.Kind], TurnID: e.TurnID, Sequence: e.Sequence, Status: string(e.Status), Text: e.Text, Detail: e.Detail, Reasoning: e.Reasoning, ItemID: e.ItemID, SessionPath: e.SessionPath, SessionReset: e.SessionReset}
 	if len(e.MemoryCitations) > 0 {
 		w.MemoryCitations = ToWireMemoryCitations(e.MemoryCitations)
 	}
@@ -583,6 +593,7 @@ var kindNames = map[event.Kind]string{
 	event.ToolResultPreview:       "tool_result_preview",
 	event.TurnStatusChanged:       "turn_status",
 	event.PromptAnswered:          "prompt_answered",
+	event.SessionChanged:          "session_changed",
 }
 
 // ContextMaintenance is the JSON form of event.ContextMaintenance.

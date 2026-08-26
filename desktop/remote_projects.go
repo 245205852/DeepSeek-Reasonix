@@ -41,8 +41,10 @@ type RemoteProjectView struct {
 // RemoteTabOpenOptions mirrors the frontend opts bag: NewSession lands the
 // tab in a fresh serve session; SessionName resumes a listed one.
 type RemoteTabOpenOptions struct {
-	NewSession  bool   `json:"newSession,omitempty"`
-	SessionName string `json:"sessionName,omitempty"`
+	NewSession   bool   `json:"newSession,omitempty"`
+	SessionName  string `json:"sessionName,omitempty"`
+	SessionPath  string `json:"sessionPath,omitempty"`
+	SessionTitle string `json:"sessionTitle,omitempty"`
 }
 
 // RemoteTabStateView is the payload on the remote-tab:{id}:state channel.
@@ -55,15 +57,19 @@ type RemoteTabStateView struct {
 // remoteTab is one open remote project tab.
 type remoteTab struct {
 	sessionMu sync.Mutex
-	id        string
-	ref       RemoteTabRef
-	state     string
-	err       string
-	session   remoteTabSessionState
-	hostLabel string
+	// routeEventMu orders foreground-route adoption with route-scoped frames.
+	// It stays separate from remoteTabMu so frontend callbacks run unlocked;
+	// lock order is routeEventMu, then App.remoteTabMu.
+	routeEventMu sync.Mutex
+	id           string
+	ref          RemoteTabRef
+	state        string
+	err          string
+	session      remoteTabSessionState
+	hostLabel    string
 	// topicTitle starts as the workspace name and adopts the generated title.
-	topicTitle           string
-	titleRefreshInFlight bool
+	topicTitle   string
+	titleRefresh remoteTabTitleRefreshState
 	// model is the desktop-owned current model ref for this remote tab.
 	// modelSeq orders concurrent writes for deterministic proxy registration.
 	model    string
@@ -86,6 +92,8 @@ type remoteTab struct {
 	// Transient runtime state is projected into TabMeta even while this tab is
 	// inactive, matching the local tab strip's running/prompt/job indicators.
 	runtime remoteTabRuntimeState
+	// routing fences all-session SSE and retains background project-tree state.
+	routing remoteTabSessionRouting
 }
 
 type remoteTabRuntimeState struct {
@@ -100,9 +108,15 @@ type remoteTabRuntimeState struct {
 	cancellable     bool
 }
 
+type remoteTabTitleRefreshState struct {
+	path string
+	seq  uint64
+}
+
 type remoteTabSessionState struct {
 	newSession bool
 	name       string
+	path       string
 	reset      bool
 	// instanceID identifies the Serve process that owns this session. A
 	// changed id requires explicit /new or /resume re-entry before ready.
@@ -270,10 +284,11 @@ func (a *App) remoteProjectNodes() ([]ProjectNode, error) {
 // ── Remote project tabs ──
 
 type remoteTabOpenRegistration struct {
-	reuseID    string
-	reuseBlank bool
-	revive     bool
-	retired    []context.CancelFunc
+	reuseID         string
+	reuseBlank      bool
+	revive          bool
+	commitSelection bool
+	retired         []context.CancelFunc
 }
 
 // registerRemoteTabOpen serializes reuse, error-shell retirement, and insert.
@@ -291,14 +306,8 @@ func (a *App) registerRemoteTabOpen(tab *remoteTab, hostLabel string, opts Remot
 		result.reuseID = existing.id
 		result.reuseBlank = existing.session.reset
 		result.revive = existing.state == "disconnected" || existing.state == "serve_down"
-		existing.hostLabel = hostLabel
-		if (result.revive || existing.client == nil) && (opts.NewSession || strings.TrimSpace(opts.SessionName) != "") {
-			existing.session.newSession = opts.NewSession
-			existing.session.name = strings.TrimSpace(opts.SessionName)
-		}
-		if result.revive {
-			existing.state = "connecting"
-		}
+		result.commitSelection = (result.revive || existing.client == nil) &&
+			(opts.NewSession || strings.TrimSpace(opts.SessionName) != "" || strings.TrimSpace(opts.SessionPath) != "")
 		return result
 	}
 	for id, existing := range a.remoteTabs {
@@ -315,6 +324,40 @@ func (a *App) registerRemoteTabOpen(tab *remoteTab, hostLabel string, opts Remot
 	a.remoteTabs[tab.id] = tab
 	a.remoteTabLayout.order = append(a.remoteTabLayout.order, tab.id)
 	return result
+}
+
+// commitRemoteTabOpenRegistration applies a reused shell's requested identity
+// only after the single-surface visibility transaction has succeeded. Until
+// then the persisted shell and Serve remain aligned on the previous session.
+func (a *App) commitRemoteTabOpenRegistration(registration remoteTabOpenRegistration, hostLabel string, opts RemoteTabOpenOptions) bool {
+	if registration.reuseID == "" {
+		return false
+	}
+	a.remoteTabMu.Lock()
+	defer a.remoteTabMu.Unlock()
+	existing := a.remoteTabs[registration.reuseID]
+	if existing == nil {
+		return false
+	}
+	existing.hostLabel = hostLabel
+	if registration.commitSelection {
+		existing.session.newSession = opts.NewSession
+		existing.session.name = strings.TrimSpace(opts.SessionName)
+		existing.session.path = strings.TrimSpace(opts.SessionPath)
+		if title := strings.TrimSpace(opts.SessionTitle); title != "" {
+			existing.topicTitle = title
+		}
+		if existing.session.newSession {
+			commitRemoteTabAttachRoute(existing, "", true)
+		} else if existing.session.path != "" {
+			commitRemoteTabAttachRoute(existing, existing.session.path, false)
+		}
+	}
+	if registration.revive {
+		existing.state = "connecting"
+		existing.err = ""
+	}
+	return true
 }
 
 // OpenRemoteProjectTab registers the project (idempotent), opens an in-app
@@ -362,7 +405,16 @@ func (a *App) OpenRemoteProjectTab(hostID, workspace string, opts RemoteTabOpenO
 	if host.CredentialProxyEnabled() {
 		model = resolveNewSessionModel(cfg)
 	}
-	tab := &remoteTab{id: tabID, ref: ref, state: "connecting", session: remoteTabSessionState{newSession: opts.NewSession, name: opts.SessionName}, hostLabel: host.Name, topicTitle: remoteWorkspaceName(workspace), model: model}
+	title := strings.TrimSpace(opts.SessionTitle)
+	if title == "" {
+		title = remoteWorkspaceName(workspace)
+	}
+	tab := &remoteTab{
+		id: tabID, ref: ref, state: "connecting",
+		session:   remoteTabSessionState{newSession: opts.NewSession, name: strings.TrimSpace(opts.SessionName), path: strings.TrimSpace(opts.SessionPath)},
+		hostLabel: host.Name, topicTitle: title, model: model,
+		routing: remoteTabSessionRouting{currentPath: strings.TrimSpace(opts.SessionPath), running: map[string]bool{}},
+	}
 
 	// Reuse-or-insert is atomic so concurrent opens cannot create two sessions.
 	registration := a.registerRemoteTabOpen(tab, host.Name, opts)
@@ -380,6 +432,9 @@ func (a *App) OpenRemoteProjectTab(hostID, workspace string, opts RemoteTabOpenO
 				return TabMeta{}, err
 			}
 		}
+		if !a.commitRemoteTabOpenRegistration(registration, host.Name, opts) {
+			return TabMeta{}, fmt.Errorf("remote tab %q closed while opening", registration.reuseID)
+		}
 
 		// Apply the requested session transition only after the visible-surface
 		// transaction succeeds. A snapshot failure must leave the remote Serve's
@@ -387,8 +442,8 @@ func (a *App) OpenRemoteProjectTab(hostID, workspace string, opts RemoteTabOpenO
 		if registration.revive {
 			a.emitRemoteTabState(registration.reuseID, "connecting", "")
 			a.goSafe("remoteTabServe", func() { a.bootstrapRemoteTab(registration.reuseID, hostID, workspace) })
-		} else if name := strings.TrimSpace(opts.SessionName); name != "" {
-			a.resumeRemoteTabSession(registration.reuseID, name)
+		} else if name := strings.TrimSpace(opts.SessionName); name != "" || strings.TrimSpace(opts.SessionPath) != "" {
+			a.resumeRemoteTabSessionPath(registration.reuseID, name, opts.SessionPath, opts.SessionTitle)
 		} else {
 			// Reuse the pending blank like EnsureBlankTab does locally; only
 			// reset again once the current session earned content.
@@ -636,7 +691,7 @@ func (a *App) bootstrapRemoteTab(tabID, hostID, workspace string) {
 		a.remoteTabMu.Unlock()
 		return // closed while the bootstrap was in flight
 	}
-	opts := RemoteTabOpenOptions{NewSession: openTab.session.newSession, SessionName: openTab.session.name}
+	opts := RemoteTabOpenOptions{NewSession: openTab.session.newSession, SessionName: openTab.session.name, SessionPath: openTab.session.path, SessionTitle: openTab.topicTitle}
 	a.remoteTabMu.Unlock()
 	// ctx outlives the call: the pump derives from it, while the handshake
 	// and session entry inside run under a bounded sub-context.

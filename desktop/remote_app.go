@@ -177,7 +177,7 @@ type remoteKernel interface {
 	RemoveForward(hostID, forwardID string) error
 
 	EnsureServer(ctx context.Context, hostID, workspace string) (RemoteServerView, string, error)
-	SwitchCredentialProxyModel(ctx context.Context, hostID, workspace, currentRef, nextRef string) error
+	SwitchCredentialProxyModel(ctx context.Context, hostID, workspace, currentRef, nextRef, expectedPath string) error
 	StopServer(hostID, workspace string) error
 	ServerStatus(hostID, workspace string) RemoteServerView
 	// ServeSnapshot is the read-only lookup for already-running serves; it
@@ -621,6 +621,7 @@ type managedHost struct {
 	credPort atomic.Int64
 	// credFallbackAt throttles legacy-serve replacement per workspace.
 	credFallbackAt map[string]int64
+	credWatch      credentialWatchdog
 }
 
 // serveEntry is one workspace's serve registration: the published view (with
@@ -729,6 +730,14 @@ func (m *desktopRemoteManager) UpdateHost(id string, in RemoteHostInput) (Remote
 		return append(changes, config.UnusedGeneratedRemoteCredentialChanges(c, removals)...), nil
 	}); err != nil {
 		return RemoteHostView{}, err
+	}
+	if !merged.CredentialProxyEnabled() {
+		m.mu.Lock()
+		mh := m.hosts[id]
+		m.mu.Unlock()
+		if mh != nil {
+			mh.credWatch.stop()
+		}
 	}
 	return hostEntryToView(merged), nil
 }
@@ -935,6 +944,7 @@ func closeManagedHost(mh *managedHost) {
 	if mh == nil {
 		return
 	}
+	mh.credWatch.stop()
 	if mh.cancel != nil {
 		mh.cancel()
 	}

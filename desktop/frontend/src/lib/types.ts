@@ -17,7 +17,7 @@ export type EventKind =
   | "tool_result"
   | "tool_result_preview"
   | "turn_status"
-  | "prompt_answered"
+  | "prompt_answered" | "session_changed"
   | "tool_progress"
   | "usage"
   | "notice"
@@ -377,6 +377,7 @@ export interface WireEvent {
   streamAttempt?: WireStreamAttempt;
   /** Durable session-inbox item id for steer / TurnDone correlation. */
   itemId?: string;
+  sessionPath?: string; // Serve multi-session routing tag; absent locally.
   workspace?: WireWorkspaceChanged;
   /** turn_phase: working | checking | verifying | reviewing */
   phase?: string;

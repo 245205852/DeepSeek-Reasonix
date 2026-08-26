@@ -92,6 +92,9 @@ func TestMigrateBlankRemoteSessionTitleOverride(t *testing.T) {
 	}
 }
 
+// TestSetRemoteTabModelFailureKeepsPreviousModel: a local-proxy switch that
+// fails at the credential-proxy step must leave the tab's previous model
+// intact instead of half-committing the new one.
 func TestSetRemoteTabModelFailureKeepsPreviousModel(t *testing.T) {
 	isolateDesktopUserDirs(t)
 	setDesktopTestCredential(t, "DEEPSEEK_API_KEY", "sk-test")
@@ -521,6 +524,9 @@ func TestRemoteTabTitleAdoptsServeSession(t *testing.T) {
 	log.mu.Lock()
 	log.events = nil
 	log.mu.Unlock()
+	a.remoteTabMu.Lock()
+	a.remoteTabs[meta.ID].topicTitle = remoteWorkspaceName("~/app")
+	a.remoteTabMu.Unlock()
 
 	a.refreshRemoteTabTitle(meta.ID)
 
@@ -543,6 +549,47 @@ func TestRemoteTabTitleAdoptsServeSession(t *testing.T) {
 		if tab.ID == meta.ID && tab.TopicTitle != "Fix the login bug" {
 			t.Fatalf("ListTabs title = %q", tab.TopicTitle)
 		}
+	}
+}
+
+func TestRemoteTabTitleRefreshRejectsRotatedSession(t *testing.T) {
+	fs := newFakeServe(t, "s3cret", []serveSessionEntry{{Name: "a", Path: "/a.jsonl", Title: "Title A", Current: true}})
+	kernel := &fakeRemoteKernel{
+		statuses:   []RemoteConnectionStatusView{{HostID: "box", State: "connected"}},
+		ensureView: RemoteServerView{HostID: "box", State: "ready", LocalURL: fs.server.URL}, ensureToken: "s3cret",
+	}
+	seedBridgeTestHost(t, "box")
+	a := &App{remoteRuntime: kernel}
+	cleanupRemoteTabPumps(t, a)
+	meta := openReadyRemoteTab(t, a, RemoteTabOpenOptions{SessionName: "a"})
+	fs.mu.Lock()
+	fs.sessionsStarted = make(chan struct{}, 1)
+	fs.sessionsRelease = make(chan struct{})
+	started, release := fs.sessionsStarted, fs.sessionsRelease
+	fs.mu.Unlock()
+	done := make(chan struct{})
+	go func() { a.refreshRemoteTabTitle(meta.ID); close(done) }()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("title refresh did not start")
+	}
+	a.remoteTabMu.Lock()
+	tab := a.remoteTabs[meta.ID]
+	tab.session.name, tab.session.path = "b", "/b.jsonl"
+	tab.routing.currentPath, tab.topicTitle = "/b.jsonl", "Selected B"
+	a.remoteTabMu.Unlock()
+	close(release)
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("title refresh did not return")
+	}
+	a.remoteTabMu.Lock()
+	name, path, route, title := tab.session.name, tab.session.path, tab.routing.currentPath, tab.topicTitle
+	a.remoteTabMu.Unlock()
+	if name != "b" || path != "/b.jsonl" || route != "/b.jsonl" || title != "Selected B" {
+		t.Fatalf("stale title refresh replaced rotated session: name=%q path=%q route=%q title=%q", name, path, route, title)
 	}
 }
 

@@ -1,14 +1,11 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
-	"net/http/cookiejar"
 	"net/http/httptest"
-	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -27,23 +24,57 @@ type fakeServe struct {
 
 	mu                             sync.Mutex
 	newCalled                      int
+	newSessionPath                 string
 	resumePath                     string
 	cookieOnNew                    bool
 	sessions                       []serveSessionEntry
 	calls                          []string // "METHOD /path body" per command request
+	expectedPaths                  []string // foreground command fence headers
 	failNext                       string   // non-empty ⇒ next command endpoint replies 409 with this text
 	failEnter                      string   // non-empty ⇒ next /new or /resume replies 409
 	enterDelay                     time.Duration
+	newStarted, newRelease         chan struct{}
+	resumeStarted, resumeRelease   chan struct{}
 	failHistory                    bool // /history replies 500 when set
 	historyStarted, historyRelease chan struct{}
 	failSessions                   bool // /sessions replies 500 when set
 	sessionsStarted                chan struct{}
 	sessionsRelease                chan struct{}
-	eventsConns                    int  // /events connections opened
+	eventsConns                    int // /events connections opened
+	eventsQuery                    string
+	eventFrames                    []string
+	eventFeed                      <-chan string
 	eventsStatus                   int  // non-zero makes /events fail before opening
 	eventsCloseEarly               bool // return immediately after the initial 200 frames
 	statusPayload                  string
 	statusAfterCancel              string
+}
+
+func TestRegisterRemoteTabOpenReviveCarriesSelectedTitle(t *testing.T) {
+	ref := RemoteTabRef{HostID: "box", Workspace: "~/app"}
+	existing := &remoteTab{
+		id: "remote-1", ref: ref, state: "disconnected", topicTitle: "Old title",
+		session: remoteTabSessionState{name: "old", path: "/sessions/old.jsonl"},
+		routing: remoteTabSessionRouting{currentPath: "/sessions/old.jsonl", running: map[string]bool{}},
+	}
+	a := &App{remoteTabs: map[string]*remoteTab{existing.id: existing}}
+	registration := a.registerRemoteTabOpen(&remoteTab{id: "unused", ref: ref}, "Box", RemoteTabOpenOptions{
+		SessionName: "selected", SessionPath: "/sessions/selected.jsonl", SessionTitle: "Selected title",
+	})
+	if registration.reuseID != existing.id || !registration.revive {
+		t.Fatalf("registration = %+v, want revived %q", registration, existing.id)
+	}
+	if existing.topicTitle != "Old title" || existing.routing.currentPath != "/sessions/old.jsonl" {
+		t.Fatalf("registration changed identity before visibility commit: title=%q path=%q", existing.topicTitle, existing.routing.currentPath)
+	}
+	if !a.commitRemoteTabOpenRegistration(registration, "Box", RemoteTabOpenOptions{
+		SessionName: "selected", SessionPath: "/sessions/selected.jsonl", SessionTitle: "Selected title",
+	}) {
+		t.Fatal("commitRemoteTabOpenRegistration rejected the reused shell")
+	}
+	if existing.topicTitle != "Selected title" {
+		t.Fatalf("revived title = %q, want selected title", existing.topicTitle)
+	}
 }
 
 func (fs *fakeServe) eventsCount() int { fs.mu.Lock(); defer fs.mu.Unlock(); return fs.eventsConns }
@@ -54,6 +85,12 @@ func (fs *fakeServe) recorded() []string {
 	out := make([]string, len(fs.calls))
 	copy(out, fs.calls)
 	return out
+}
+
+func (fs *fakeServe) recordedExpectedPaths() []string {
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	return append([]string(nil), fs.expectedPaths...)
 }
 
 func (fs *fakeServe) record(method, path, body string) {
@@ -94,6 +131,8 @@ func newFakeServe(t *testing.T, token string, sessions []serveSessionEntry) *fak
 		fail := fs.failEnter
 		fs.failEnter = ""
 		enterDelay := fs.enterDelay
+		newSessionPath := fs.newSessionPath
+		newStarted, newRelease := fs.newStarted, fs.newRelease
 		if fail != "" {
 			fs.mu.Unlock()
 			http.Error(w, fail, http.StatusConflict)
@@ -104,8 +143,24 @@ func newFakeServe(t *testing.T, token string, sessions []serveSessionEntry) *fak
 			fs.sessions[i].Current = false
 		}
 		fs.mu.Unlock()
+		if newStarted != nil {
+			select {
+			case newStarted <- struct{}{}:
+			default:
+			}
+		}
+		if newRelease != nil {
+			select {
+			case <-newRelease:
+			case <-r.Context().Done():
+				return
+			}
+		}
 		if enterDelay > 0 {
 			time.Sleep(enterDelay)
+		}
+		if newSessionPath != "" {
+			w.Header().Set("X-Reasonix-Session-Path", newSessionPath)
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})
@@ -121,6 +176,7 @@ func newFakeServe(t *testing.T, token string, sessions []serveSessionEntry) *fak
 		fail := fs.failEnter
 		fs.failEnter = ""
 		enterDelay := fs.enterDelay
+		resumeStarted, resumeRelease := fs.resumeStarted, fs.resumeRelease
 		if fail != "" {
 			fs.mu.Unlock()
 			http.Error(w, fail, http.StatusConflict)
@@ -131,6 +187,19 @@ func newFakeServe(t *testing.T, token string, sessions []serveSessionEntry) *fak
 			fs.sessions[i].Current = fs.sessions[i].Path == body.Path
 		}
 		fs.mu.Unlock()
+		if resumeStarted != nil {
+			select {
+			case resumeStarted <- struct{}{}:
+			default:
+			}
+		}
+		if resumeRelease != nil {
+			select {
+			case <-resumeRelease:
+			case <-r.Context().Done():
+				return
+			}
+		}
 		if enterDelay > 0 {
 			time.Sleep(enterDelay)
 		}
@@ -141,6 +210,7 @@ func newFakeServe(t *testing.T, token string, sessions []serveSessionEntry) *fak
 		fs.mu.Lock()
 		fail := fs.failSessions
 		started, release := fs.sessionsStarted, fs.sessionsRelease
+		sessions := append([]serveSessionEntry(nil), fs.sessions...)
 		fs.mu.Unlock()
 		if started != nil {
 			select {
@@ -159,13 +229,16 @@ func newFakeServe(t *testing.T, token string, sessions []serveSessionEntry) *fak
 			http.Error(w, "sessions unavailable", http.StatusInternalServerError)
 			return
 		}
-		writeTestJSON(w, fs.sessions)
+		writeTestJSON(w, sessions)
 	})
 	mux.HandleFunc("GET /events", func(w http.ResponseWriter, r *http.Request) {
 		fs.mu.Lock()
 		fs.eventsConns++
+		fs.eventsQuery = r.URL.RawQuery
 		eventsStatus := fs.eventsStatus
 		closeEarly := fs.eventsCloseEarly
+		frames := append([]string(nil), fs.eventFrames...)
+		feed := fs.eventFeed
 		fs.mu.Unlock()
 		if eventsStatus != 0 {
 			http.Error(w, "event stream unavailable", eventsStatus)
@@ -177,19 +250,36 @@ func newFakeServe(t *testing.T, token string, sessions []serveSessionEntry) *fak
 			http.Error(w, "no flusher", http.StatusInternalServerError)
 			return
 		}
-		fmt.Fprintf(w, "data: %s\n\n", `{"kind":"session_start"}`)
-		fmt.Fprintf(w, "data: %s\n\n", `{"kind":"ready"}`)
+		if len(frames) == 0 {
+			frames = []string{`{"kind":"session_start"}`, `{"kind":"ready"}`}
+		}
+		for _, frame := range frames {
+			fmt.Fprintf(w, "data: %s\n\n", frame)
+		}
 		flusher.Flush()
 		if closeEarly {
 			return
 		}
-		<-r.Context().Done()
+		if feed == nil {
+			<-r.Context().Done()
+			return
+		}
+		for {
+			select {
+			case frame := <-feed:
+				fmt.Fprintf(w, "data: %s\n\n", frame)
+				flusher.Flush()
+			case <-r.Context().Done():
+				return
+			}
+		}
 	})
 	command := func(path string) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
 			data, _ := io.ReadAll(io.LimitReader(r.Body, 4<<10))
 			fs.record(r.Method, path, string(data))
 			fs.mu.Lock()
+			fs.expectedPaths = append(fs.expectedPaths, r.Header.Get(expectedSessionPathHeader))
 			fail := fs.failNext
 			fs.failNext = ""
 			if path == "/cancel" && fs.statusAfterCancel != "" {
@@ -297,39 +387,6 @@ func seedBridgeTestHost(t *testing.T, hostID string) {
 	}
 }
 
-// eventLog records every emitRemoteEvent call from any goroutine.
-type eventLog struct {
-	mu     sync.Mutex
-	events []string // "name payload"
-}
-
-func (l *eventLog) add(name string, payload any) {
-	text, _ := json.Marshal(payload)
-	l.mu.Lock()
-	l.events = append(l.events, name+" "+string(text))
-	l.mu.Unlock()
-}
-
-func (l *eventLog) recorded() []string {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	out := make([]string, len(l.events))
-	copy(out, l.events)
-	return out
-}
-
-func (l *eventLog) count(prefix string) int {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	n := 0
-	for _, e := range l.events {
-		if strings.HasPrefix(e, prefix) {
-			n++
-		}
-	}
-	return n
-}
-
 func waitForTabState(t *testing.T, a *App, tabID, want string) {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)
@@ -346,6 +403,20 @@ func waitForTabState(t *testing.T, a *App, tabID, want string) {
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf("remote tab %s state = %q, want %q", tabID, state, want)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func waitForRemoteEventCount(t *testing.T, log *eventLog, prefix string, want int) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if got := log.count(prefix); got >= want {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("event count for %q = %d, want >= %d (events: %v)", prefix, log.count(prefix), want, log.recorded())
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -372,6 +443,7 @@ func cleanupRemoteTabPumps(t *testing.T, a *App) {
 // the tab's event channel and the session cookie riding the jar.
 func TestRemoteTabBridgeEntersNewSessionAndStreams(t *testing.T) {
 	fs := newFakeServe(t, "s3cret", nil)
+	fs.newSessionPath = "/sessions/fresh.jsonl"
 	kernel := &fakeRemoteKernel{
 		statuses:    []RemoteConnectionStatusView{{HostID: "box", State: "connected"}},
 		ensureView:  RemoteServerView{HostID: "box", State: "ready", LocalURL: fs.server.URL},
@@ -396,9 +468,21 @@ func TestRemoteTabBridgeEntersNewSessionAndStreams(t *testing.T) {
 	if got := log.count("remote-tab:" + meta.ID + ":event"); got < 2 {
 		t.Fatalf("pump forwarded %d frames, want ≥2 (events: %v)", got, log.events)
 	}
-	if log.count("remote-tab:"+meta.ID+":state") < 2 {
-		t.Fatalf("expected connecting + ready state events, got %v", log.events)
+	fs.mu.Lock()
+	eventsQuery := fs.eventsQuery
+	fs.mu.Unlock()
+	if eventsQuery != "all=1" {
+		t.Fatalf("event stream query = %q, want all=1", eventsQuery)
 	}
+	a.remoteTabMu.Lock()
+	currentPath := a.remoteTabs[meta.ID].routing.currentPath
+	a.remoteTabMu.Unlock()
+	if currentPath != "/sessions/fresh.jsonl" {
+		t.Fatalf("current session path = %q, want response header path", currentPath)
+	}
+	// State becomes observable immediately before its event is emitted. Wait for
+	// the event too so a slow runner cannot sample that intentional handoff gap.
+	waitForRemoteEventCount(t, log, "remote-tab:"+meta.ID+":state", 2)
 
 	// Cancelling the pump (close/reconnect) must exit silently: no error
 	// state is emitted for a deliberate stop.
@@ -573,25 +657,6 @@ func TestRemoteTabBridgeResumeResolvesSessionPath(t *testing.T) {
 	}
 }
 
-// TestEnterRemoteSessionUnknownName fails fast on an unlisted session name.
-func TestEnterRemoteSessionUnknownName(t *testing.T) {
-	fs := newFakeServe(t, "s3cret", []serveSessionEntry{{Name: "s1", Path: "/x.jsonl"}})
-	jar, err := cookiejar.New(nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	client := &http.Client{Jar: jar}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	if err := serveHandshake(ctx, client, fs.server.URL, "s3cret"); err != nil {
-		t.Fatal(err)
-	}
-	err = enterRemoteSession(ctx, client, fs.server.URL, RemoteTabOpenOptions{SessionName: "missing"})
-	if err == nil || !strings.Contains(err.Error(), `"missing" not found`) {
-		t.Fatalf("err = %v, want unknown session error", err)
-	}
-}
-
 // openReadyRemoteTab opens a tab against the fake serve and waits for ready.
 func openReadyRemoteTab(t *testing.T, a *App, opts RemoteTabOpenOptions) TabMeta {
 	t.Helper()
@@ -689,6 +754,7 @@ func TestSetModelForTabRemoteOwnsModelOnDesktop(t *testing.T) {
 	}
 
 	fs := newFakeServe(t, "s3cret", nil)
+	fs.newSessionPath = "/remote/sessions/model-switch.jsonl"
 	kernel := &fakeRemoteKernel{
 		statuses:    []RemoteConnectionStatusView{{HostID: "box", State: "connected"}},
 		ensureView:  RemoteServerView{HostID: "box", State: "ready", LocalURL: fs.server.URL},
@@ -701,7 +767,7 @@ func TestSetModelForTabRemoteOwnsModelOnDesktop(t *testing.T) {
 	if err := a.SetModelForTab(meta.ID, "deepseek/deepseek-v4-pro"); err != nil {
 		t.Fatalf("SetModelForTab: %v", err)
 	}
-	if len(kernel.switchProxyCalls) != 1 || kernel.switchProxyCalls[0] != [4]string{"box", "~/app", "deepseek/deepseek-v4-flash", "deepseek/deepseek-v4-pro"} {
+	if len(kernel.switchProxyCalls) != 1 || kernel.switchProxyCalls[0] != [5]string{"box", "~/app", "deepseek/deepseek-v4-flash", "deepseek/deepseek-v4-pro", fs.newSessionPath} {
 		t.Fatalf("credential proxy switch calls = %+v", kernel.switchProxyCalls)
 	}
 	for _, c := range fs.recorded() {
@@ -719,61 +785,3 @@ func TestSetModelForTabRemoteOwnsModelOnDesktop(t *testing.T) {
 		t.Fatalf("current = %q, want deepseek/deepseek-v4-pro", current)
 	}
 }
-
-// TestSetModelForTabRemoteCredentialPostsServeModel: remote-credential hosts
-// switch through the serve's per-session endpoint.
-func TestSetModelForTabRemoteCredentialPostsServeModel(t *testing.T) {
-	isolateDesktopUserDirs(t)
-	cfg := config.Default()
-	if err := cfg.UpsertRemoteHost(config.RemoteHostEntry{Name: "box", Host: "127.0.0.1", Port: 22, User: "dev"}); err != nil {
-		t.Fatal(err)
-	}
-	if err := cfg.SaveTo(config.UserConfigPath()); err != nil {
-		t.Fatalf("save config: %v", err)
-	}
-	fs := newFakeServe(t, "s3cret", nil)
-	kernel := &fakeRemoteKernel{
-		statuses:    []RemoteConnectionStatusView{{HostID: "box", State: "connected"}},
-		ensureView:  RemoteServerView{HostID: "box", State: "ready", LocalURL: fs.server.URL},
-		ensureToken: "s3cret",
-	}
-	log := &eventLog{}
-	a := &App{remoteRuntime: kernel, remoteEventHook: log.add}
-	cleanupRemoteTabPumps(t, a)
-	meta := openReadyRemoteTab(t, a, RemoteTabOpenOptions{NewSession: true})
-	a.remoteTabMu.Lock()
-	a.remoteTabLayout.activeID = "other-tab"
-	a.remoteTabMu.Unlock()
-
-	if err := a.SetModelForTab(meta.ID, "remote/chat"); err != nil {
-		t.Fatalf("SetModelForTab: %v", err)
-	}
-	posted := false
-	for _, c := range fs.recorded() {
-		if strings.HasPrefix(c, "POST /model ") && strings.Contains(c, `"ref":"remote/chat"`) {
-			posted = true
-		}
-	}
-	if !posted {
-		t.Fatalf("serve never saw POST /model with the ref: %v", fs.recorded())
-	}
-	a.remoteTabMu.Lock()
-	model, activeID := "", a.remoteTabLayout.activeID
-	if tab := a.remoteTabs[meta.ID]; tab != nil {
-		model = tab.model
-	}
-	a.remoteTabMu.Unlock()
-	if model != "remote/chat" {
-		t.Fatalf("tab.model = %q, want remote/chat", model)
-	}
-	if activeID != "other-tab" {
-		t.Fatalf("completed model switch reactivated %q, want other-tab to stay active", activeID)
-	}
-	if !slices.ContainsFunc(log.recorded(), func(event string) bool { return strings.HasPrefix(event, "remote-tab:updated ") }) {
-		t.Fatalf("model switch did not publish metadata update: %v", log.recorded())
-	}
-}
-
-// TestSetRemoteTabModelFailureKeepsPreviousModel: a local-proxy switch that
-// fails at the credential-proxy step must leave the tab's previous model
-// intact instead of half-committing the new one.
