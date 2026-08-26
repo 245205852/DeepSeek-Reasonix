@@ -91,8 +91,12 @@ export function createMockRemoteProjects(events: RemoteProjectMockEvents = {}): 
       events.tab?.(tabId, "event", { kind: "message", text: `Mock remote reply: ${text}` });
       events.tab?.(tabId, "event", { kind: "turn_done" });
     },
+    async ClearRemoteTabSession(tabId) {
+      events.tab?.(tabId, "state", { state: "ready" });
+    },
     async CancelRemoteTab(tabId) { events.tab?.(tabId, "event", { kind: "turn_done" }); },
     async ApproveRemoteTab() {},
+    async ResolveRemoteTabPlanDecision() {},
     async SetRemoteTabQualityFloor() {},
     async AnswerRemoteTab() {},
     async SetRemoteTabModel(tabId, ref) {

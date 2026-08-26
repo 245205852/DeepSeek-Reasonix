@@ -1674,6 +1674,9 @@ export default function App() {
   );
   const { active: remoteSurfaceActive, session: remoteSession, ready: remoteComposerReady, onSend: remoteSend, onCancel: remoteCancel } = useActiveRemoteSession(activeTab, showToast);
   const visibleRuntimeState = remoteSurfaceActive ? remoteSession.transcript : state;
+  const localWorkspaceDockBlocked = remoteSurfaceActive && (rightDockMode === "files" || rightDockMode === "changed");
+  const surfaceWorkspacePanelRenderable = effectiveWorkspacePanelRenderable && !localWorkspaceDockBlocked;
+  const surfaceWorkspacePanelGridOpen = effectiveWorkspacePanelGridOpen && !localWorkspaceDockBlocked;
   const terminalSurfaceOpen = terminalPanelOpen && !remoteSurfaceActive;
   const activePlanRevisionInsertRequest =
     planRevisionInsertRequest &&
@@ -2028,13 +2031,25 @@ export default function App() {
   const remoteComposerSend = useCallback(async (displayText: string, submitText = displayText): Promise<void> => {
     const trimmed = (submitText || displayText).trim();
     const runtimeCommand = remoteRuntimeCommand(trimmed);
-    if (runtimeCommand) return remoteSession[runtimeCommand.method](runtimeCommand.value);
+    if (runtimeCommand?.method === "clearSession") {
+      setClearContextPending(true);
+      return;
+    }
+    if (runtimeCommand?.method === "newSession") {
+      if (!activeTab?.remote) return;
+      await app.OpenRemoteProjectTab(activeTab.remote.hostId, activeTab.remote.workspace, { newSession: true });
+      await remoteSession.retryHydration();
+      return;
+    }
+    if (runtimeCommand?.method === "setModel" || runtimeCommand?.method === "setEffort") {
+      return remoteSession[runtimeCommand.method](runtimeCommand.value);
+    }
     if (activeTabId && collaborationMode === "goal" && !goal.trim()) {
       const nextGoal = trimmed;
       if (nextGoal) await applyGoalForTab(activeTabId, nextGoal);
     }
     await remoteSend(displayText, submitText);
-  }, [activeTabId, applyGoalForTab, collaborationMode, goal, remoteSend, remoteSession]);
+  }, [activeTab?.remote, activeTabId, applyGoalForTab, collaborationMode, goal, remoteSend, remoteSession]);
   const cancelRuntimeJob = useCallback(async (tabId: string, jobId: string): Promise<boolean> => {
     try {
       const cancelled = await app.CancelJobForTab(tabId, jobId);
@@ -2251,14 +2266,19 @@ export default function App() {
   const confirmClearContext = useCallback(async () => {
     setClearContextPending(false);
     try {
-      await clearSession();
+      if (remoteSurfaceActive && activeTabId) {
+        await app.ClearRemoteTabSession(activeTabId);
+        await remoteSession.retryHydration();
+      } else {
+        await clearSession();
+      }
       setDockRefreshKey((v) => v + 1);
       notice(t("clearContext.done"));
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       notice(msg || t("clearContext.failed"), "warn");
     }
-  }, [clearSession, notice, t]);
+  }, [activeTabId, clearSession, notice, remoteSession, remoteSurfaceActive, t]);
 
   useEffect(() => {
     activeTabIdRef.current = activeTabId;
@@ -4319,17 +4339,17 @@ export default function App() {
   // Dock collapse/expand toggle. Rendered in the dock's own tools row when the
   // dock is open (its top-right corner), and in the topic bar when closed.
   const dockToggleButton = (
-    <Tooltip label={effectiveWorkspacePanelRenderable ? t("rightDock.collapse") : t("rightDock.expand")}>
+    <Tooltip label={surfaceWorkspacePanelRenderable ? t("rightDock.collapse") : t("rightDock.expand")}>
       <button
         className={[
           "topicbar__chrome-btn",
           "topicbar__chrome-btn--workspace",
-          effectiveWorkspacePanelRenderable ? "topicbar__chrome-btn--active" : "",
+          surfaceWorkspacePanelRenderable ? "topicbar__chrome-btn--active" : "",
         ].filter(Boolean).join(" ")}
         type="button"
         onClick={toggleWorkspacePanel}
-        aria-label={effectiveWorkspacePanelRenderable ? t("rightDock.collapse") : t("rightDock.expand")}
-        aria-pressed={effectiveWorkspacePanelRenderable}
+        aria-label={surfaceWorkspacePanelRenderable ? t("rightDock.collapse") : t("rightDock.expand")}
+        aria-pressed={surfaceWorkspacePanelRenderable}
       >
         <PanelRight size={15} />
       </button>
@@ -4406,7 +4426,7 @@ export default function App() {
           sidebarImDetailConnection ? "layout--statusbar-hidden" : "",
           sidebarCollapsed ? "layout--sidebar-collapsed" : "",
           sidebarResizing ? "layout--resizing layout--sidebar-resizing" : "",
-          effectiveWorkspacePanelGridOpen ? "layout--workspace-open" : "",
+          surfaceWorkspacePanelGridOpen ? "layout--workspace-open" : "",
           workspacePanelOverlay ? "layout--workspace-overlay" : "",
           "layout--terminal-drawer-open",
           terminalSurfaceOpen ? "layout--terminal-drawer-expanded" : "",
@@ -4432,8 +4452,8 @@ export default function App() {
             sidebarCollapsed={sidebarCollapsed}
             sidebarToggleTitle={sidebarToggleTitle}
             workspacePanelMaximized={workspacePanelMaximized}
-            workspacePanelRenderable={effectiveWorkspacePanelRenderable}
-            workspacePanelLabel={effectiveWorkspacePanelRenderable ? t("rightDock.collapse") : t("rightDock.expand")}
+            workspacePanelRenderable={surfaceWorkspacePanelRenderable}
+            workspacePanelLabel={surfaceWorkspacePanelRenderable ? t("rightDock.collapse") : t("rightDock.expand")}
             onToggleSidebar={toggleSidebar}
             onToggleWorkspacePanel={toggleWorkspacePanel}
             onTabChange={(id) => void handleTabChange(id)}
@@ -5130,7 +5150,7 @@ export default function App() {
               qualityFloor={composerProfile.qualityFloor}
               floorInferred={(activeTab?.floorInferred ?? false) && !composerProfile.pending.qualityFloor}
               onSetQualityFloor={applyQualityFloor}
-              turnPhase={state.turnPhase}
+              turnPhase={visibleRuntimeState.turnPhase}
               goal={goal}
               goalStatus={remoteSurfaceActive ? remoteSession.composerProfile?.goalStatus : state.meta?.goalStatus}
               goalRuntime={state.meta?.goalRuntime}
@@ -5163,17 +5183,17 @@ export default function App() {
               submitDisabled={remoteSurfaceActive ? !remoteComposerReady || !remoteComposerProfileReady : !controllerReady}
               decisionPending={rewindCommitting || state.messageAction != null || Boolean(decisionSurface)}
               ready={remoteSurfaceActive ? remoteComposerReady && remoteComposerProfileReady : controllerReady}
-              turnStartAt={state.turnStartAt}
-              turnWaitAccumMs={state.turnWaitAccumMs}
-              promptWaitStartedAt={state.promptWaitStartedAt}
-              turnTokens={state.turnTokens}
-              turnOutputTokens={state.turnOutputTokens}
-              turnOutputCharsAtUsage={state.turnOutputCharsAtUsage}
-              turnModelActiveAt={state.turnModelActiveAt}
-              turnModelActiveMs={state.turnModelActiveMs}
-              liveStore={liveStore}
-              turnArgChars={state.turnArgChars}
-              retry={state.retry}
+              turnStartAt={visibleRuntimeState.turnStartAt}
+              turnWaitAccumMs={visibleRuntimeState.turnWaitAccumMs}
+              promptWaitStartedAt={visibleRuntimeState.promptWaitStartedAt}
+              turnTokens={visibleRuntimeState.turnTokens}
+              turnOutputTokens={visibleRuntimeState.turnOutputTokens}
+              turnOutputCharsAtUsage={visibleRuntimeState.turnOutputCharsAtUsage}
+              turnModelActiveAt={visibleRuntimeState.turnModelActiveAt}
+              turnModelActiveMs={visibleRuntimeState.turnModelActiveMs}
+              liveStore={remoteSurfaceActive ? remoteSession.liveStore : liveStore}
+              turnArgChars={visibleRuntimeState.turnArgChars}
+              retry={visibleRuntimeState.retry}
               suspendedByDecision={Boolean(decisionSurface)}
               transientDismissSignal={transientOverlayDismissSignal}
               sessionKey={composerSessionKey}
@@ -5185,13 +5205,13 @@ export default function App() {
               guidanceQueuePreviewItems={guidanceQueueMockItems}
               showContextWindowRing={sidebarCreation}
               heroMode={creationEmptyHero}
-              context={state.context}
-              turnCost={state.turnCost}
-              turnRateBand={state.turnRateBand}
-              currency={state.sessionCurrency}
-              cacheHitTokens={state.usage?.cacheHitTokens}
-              cacheMissTokens={state.usage?.cacheMissTokens}
-              balance={state.balance}
+              context={visibleRuntimeState.context}
+              turnCost={visibleRuntimeState.turnCost}
+              turnRateBand={visibleRuntimeState.turnRateBand}
+              currency={visibleRuntimeState.sessionCurrency}
+              cacheHitTokens={visibleRuntimeState.usage?.cacheHitTokens}
+              cacheMissTokens={visibleRuntimeState.usage?.cacheMissTokens}
+              balance={visibleRuntimeState.balance}
             />
             </div>
           </footer>
@@ -5200,7 +5220,7 @@ export default function App() {
           )}
         </section>
 
-        {effectiveWorkspacePanelGridOpen && (
+        {surfaceWorkspacePanelGridOpen && (
           <button
             className="workspace-panel-resizer"
             type="button"
@@ -5216,7 +5236,7 @@ export default function App() {
           />
         )}
 
-        {effectiveWorkspacePanelRenderable && (
+        {surfaceWorkspacePanelRenderable && (
           <aside
             className={[
               "workbench-dock",
@@ -5301,7 +5321,7 @@ export default function App() {
                 <Suspense fallback={null}>
                   <WorkspacePanel
                     key={workspaceTreeMemoryKey}
-                    open={effectiveWorkspacePanelRenderable}
+                    open={surfaceWorkspacePanelRenderable}
                     tabId={activeTabId}
                     cwd={state.meta?.cwd}
                     workspaceScopeKey={workspaceScopeKey}

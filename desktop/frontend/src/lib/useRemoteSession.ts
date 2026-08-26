@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { app, onRemoteTabEvent, onRemoteTabState } from "./bridge";
 import type { CancelOutcome } from "./inboxCancel";
-import { initialState, reducer, type State } from "./useController";
+import { initialState, reducer, type ControllerLiveStore, type State } from "./useController";
 import type { CheckpointMeta, CollaborationMode, EffortInfo, GoalStatus, HistoryMessage, QualityFloor, RemoteTabStateValue, TabMeta, ToolApprovalMode, WireEvent } from "./types";
 import type { RemoteAskAnswer } from "./remoteTypes";
 
@@ -35,6 +35,7 @@ export interface RemoteSessionApi {
   state: RemoteTabStateValue;
   error: string;
   transcript: State;
+  liveStore: ControllerLiveStore;
   hydrated: boolean;
   running: boolean;
   /** The serve's label for the active model, for the composer capsule. */
@@ -53,6 +54,7 @@ export interface RemoteSessionApi {
   submit: (text: string) => Promise<void>;
   cancelTurn: () => Promise<void>;
   approve: (callId: string, decision: string) => Promise<void>;
+  resolvePlanDecision: (callId: string, action: "start_execution" | "revise_plan" | "exit_plan", feedback?: string) => Promise<void>;
   answer: (callId: string, answers: RemoteAskAnswer[]) => Promise<void>;
   rewind: (turn: number, scope: string) => Promise<void>;
   setModel: (ref: string) => Promise<void>;
@@ -202,6 +204,7 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
   const [promptError, setPromptError] = useState("");
   const [hydrated, setHydrated] = useState(false);
   const transcriptRef = useRef(transcript);
+  const liveListenersRef = useRef(new Set<() => void>());
   const hydratedRef = useRef(false);
   const hydratingRef = useRef(false);
   const bufferedEventsRef = useRef<WireEvent[]>([]);
@@ -210,7 +213,22 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
 
   useEffect(() => {
     transcriptRef.current = transcript;
+    for (const listener of liveListenersRef.current) listener();
   }, [transcript]);
+
+  const liveStore = useMemo<ControllerLiveStore>(() => ({
+    subscribe(requestedTabId, listener) {
+      if (!tabId || requestedTabId !== tabId) return () => undefined;
+      liveListenersRef.current.add(listener);
+      return () => liveListenersRef.current.delete(listener);
+    },
+    getSnapshot(requestedTabId) {
+      return requestedTabId === tabId ? transcriptRef.current.live : undefined;
+    },
+    getModelActiveAt(requestedTabId) {
+      return requestedTabId === tabId ? transcriptRef.current.turnModelActiveAt : undefined;
+    },
+  }), [tabId]);
 
   const applyRemoteStatus = useCallback((status: unknown) => {
     if (!isAuthoritativeRemoteStatus(status)) return;
@@ -229,6 +247,7 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
     setError("");
     setPromptError("");
     setTranscript(initialState);
+    transcriptRef.current = initialState;
     setModelLabel("");
     setComposerProfile(undefined);
     setEffortInfo(undefined);
@@ -238,6 +257,7 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
     setHydrated(false);
     let cancelled = false;
     let hydratePromise: Promise<void> | null = null;
+    let hydrateAfterCurrent = false;
     let historyReconcilePromise: Promise<void> | null = null;
     let connectionGeneration = 0;
     // Never start the snapshot retry loop on a shell with no connection: the
@@ -297,6 +317,10 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
       if (force) {
         hydratedRef.current = false;
         setHydrated(false);
+        // A ready event may arrive while the previous connection generation is
+        // still hydrating. That in-flight snapshot must finish and be discarded,
+        // then hand off to a fresh snapshot for the ready generation.
+        if (hydratePromise) hydrateAfterCurrent = true;
       }
       return hydrateLoop();
     };
@@ -381,7 +405,10 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
       try {
         await hydratePromise;
       } finally {
+        const rerun = hydrateAfterCurrent;
+        hydrateAfterCurrent = false;
         hydratePromise = null;
+        if (rerun && !cancelled) void hydrateLoop();
       }
     };
     hydrateRef.current = { tabId, run: hydrate };
@@ -474,6 +501,22 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
     setPromptError("");
     try {
       await app.ApproveRemoteTab(tabId, callId, decision);
+      setTranscript((s) => s.approval?.id === callId ? { ...s, approval: undefined } : s);
+    } catch (error) {
+      setPromptError(error instanceof Error ? error.message : String(error));
+      throw error;
+    }
+  }, [tabId]);
+
+  const resolvePlanDecision = useCallback(async (
+    callId: string,
+    action: "start_execution" | "revise_plan" | "exit_plan",
+    feedback = "",
+  ) => {
+    if (!tabId) return;
+    setPromptError("");
+    try {
+      await app.ResolveRemoteTabPlanDecision(tabId, callId, action, feedback);
       setTranscript((s) => s.approval?.id === callId ? { ...s, approval: undefined } : s);
     } catch (error) {
       setPromptError(error instanceof Error ? error.message : String(error));
@@ -583,9 +626,9 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
   }, [tabId]);
 
   return {
-    state, error, transcript, hydrated, running: transcript.running, modelLabel,
+    state, error, transcript, liveStore, hydrated, running: transcript.running, modelLabel,
     composerProfile, effort, surfaceGeneration, promptError, submit, cancelTurn,
-    approve, answer, rewind, setModel, setEffort, setQualityFloor, pauseGoal, resumeGoal, steer, cancelJob,
+    approve, resolvePlanDecision, answer, rewind, setModel, setEffort, setQualityFloor, pauseGoal, resumeGoal, steer, cancelJob,
     retryHydration,
   };
 }

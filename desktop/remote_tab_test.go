@@ -203,7 +203,7 @@ func newFakeServe(t *testing.T, token string, sessions []serveSessionEntry) *fak
 			w.WriteHeader(http.StatusNoContent)
 		}
 	}
-	for _, path := range []string{"/submit", "/cancel", "/approve", "/answer", "/rewind", "/goal", "/goal/pause", "/goal/resume", "/jobs/cancel", "/inbox/items", "/tool-approval-mode", "/delete-session", "/model", "/effort", "/quality-floor", "/plan", "/compact", "/fork", "/summarize", "/forget"} {
+	for _, path := range []string{"/submit", "/cancel", "/approve", "/plan-decision", "/answer", "/rewind", "/goal", "/goal/pause", "/goal/resume", "/jobs/cancel", "/inbox/items", "/tool-approval-mode", "/delete-session", "/model", "/effort", "/quality-floor", "/plan", "/compact", "/fork", "/summarize", "/forget", "/clear"} {
 		mux.HandleFunc("POST "+path, command(path))
 	}
 	snapshot := func(path, payload string) {

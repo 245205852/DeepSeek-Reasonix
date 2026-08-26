@@ -82,6 +82,15 @@ type remoteTab struct {
 	// Pending approval/ask frames are retained while the frontend surface is
 	// inactive. RemoteTabSnapshot replays them when that surface mounts again.
 	pendingEvents map[string]json.RawMessage
+
+	// Transient runtime state is projected into TabMeta even while this tab is
+	// inactive, matching the local tab strip's running/prompt/job indicators.
+	running         bool
+	turnStartedAt   int64
+	pendingPrompt   bool
+	backgroundJobs  int
+	cancelRequested bool
+	cancellable     bool
 }
 
 type remoteTabSessionState struct {
@@ -373,7 +382,9 @@ func (a *App) OpenRemoteProjectTab(hostID, workspace string, opts RemoteTabOpenO
 			// Reuse the pending blank like EnsureBlankTab does locally; only
 			// reset again once the current session earned content.
 			if opts.NewSession && !registration.reuseBlank {
-				a.resetRemoteTabSession(registration.reuseID)
+				if err := a.resetRemoteTabSession(registration.reuseID); err != nil {
+					return TabMeta{}, err
+				}
 			}
 		}
 		meta, ok := a.remoteTabMetaSnapshot(registration.reuseID)
@@ -521,17 +532,24 @@ func remoteTabMetaLocked(tab *remoteTab) TabMeta {
 	}
 	ref := tab.ref
 	return TabMeta{
-		ID:            tab.id,
-		Scope:         "project",
-		WorkspaceRoot: tab.ref.Workspace,
-		WorkspaceName: remoteWorkspaceName(tab.ref.Workspace),
-		TopicTitle:    tab.topicTitle,
-		Label:         label,
-		Mode:          "normal",
-		Active:        true,
-		Cwd:           tab.ref.Workspace,
-		Remote:        &ref,
-		RemoteState:   tab.state,
+		ID:              tab.id,
+		Scope:           "project",
+		WorkspaceRoot:   tab.ref.Workspace,
+		WorkspaceName:   remoteWorkspaceName(tab.ref.Workspace),
+		TopicTitle:      tab.topicTitle,
+		Label:           label,
+		Mode:            "normal",
+		Active:          true,
+		Cwd:             tab.ref.Workspace,
+		Remote:          &ref,
+		RemoteState:     tab.state,
+		Ready:           tab.state == "ready",
+		Running:         tab.running || tab.pendingPrompt || tab.backgroundJobs > 0,
+		TurnStartedAt:   tab.turnStartedAt,
+		PendingPrompt:   tab.pendingPrompt,
+		BackgroundJobs:  tab.backgroundJobs,
+		CancelRequested: tab.cancelRequested,
+		Cancellable:     tab.cancellable,
 	}
 }
 

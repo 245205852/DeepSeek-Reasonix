@@ -86,9 +86,16 @@ ok(
   "remote goal activation and goal-draft submission stay on the remote controller",
 );
 ok(
-  /remoteRuntimeCommand\(trimmed\)[\s\S]*?remoteSession\[runtimeCommand\.method\]\(runtimeCommand\.value\)[\s\S]*?await remoteSend/.test(appSource) &&
+  /remoteRuntimeCommand\(trimmed\)[\s\S]*?runtimeCommand\?\.method === "setModel"[\s\S]*?remoteSession\[runtimeCommand\.method\]\(runtimeCommand\.value\)[\s\S]*?await remoteSend/.test(appSource) &&
     /\^\\\/\(model\|effort\)/.test(remoteIntegrationSource),
   "remote model and effort slash commands bypass optimistic conversational submit",
+);
+ok(
+  /trimmed === "\/new"[\s\S]*?method: "newSession"/.test(remoteIntegrationSource) &&
+    /trimmed === "\/clear"[\s\S]*?method: "clearSession"/.test(remoteIntegrationSource) &&
+    /runtimeCommand\?\.method === "clearSession"[\s\S]*?setClearContextPending\(true\)/.test(appSource) &&
+    /runtimeCommand\?\.method === "newSession"[\s\S]*?OpenRemoteProjectTab[\s\S]*?newSession: true/.test(appSource),
+  "remote clear and new commands bypass optimistic submit and use session rotation",
 );
 ok(
   /const remote = index\.get\(topicId\);[\s\S]*?if \(!remote\) return false;[\s\S]*?await action\(remote\);/.test(remoteSource) &&
@@ -124,6 +131,19 @@ ok(
     /onCancelJob=\{remoteSurfaceActive \? remoteSession\.cancelJob : cancelJob\}/.test(appSource) &&
     /backgroundRuntimes=\{remoteSurfaceActive \? \[\] : backgroundRuntimes\}/.test(appSource),
   "remote status and context chrome never fall back to local session telemetry",
+);
+ok(
+  /turnPhase=\{visibleRuntimeState\.turnPhase\}/.test(appSource) &&
+    /turnStartAt=\{visibleRuntimeState\.turnStartAt\}/.test(appSource) &&
+    /liveStore=\{remoteSurfaceActive \? remoteSession\.liveStore : liveStore\}/.test(appSource) &&
+    /context=\{visibleRuntimeState\.context\}/.test(appSource),
+  "remote composer timing, tokens, live stream, and cost use the visible remote runtime",
+);
+ok(
+  /localWorkspaceDockBlocked = remoteSurfaceActive && \(rightDockMode === "files" \|\| rightDockMode === "changed"\)/.test(appSource) &&
+    /surfaceWorkspacePanelRenderable = effectiveWorkspacePanelRenderable && !localWorkspaceDockBlocked/.test(appSource) &&
+    /\{surfaceWorkspacePanelRenderable && \([\s\S]*?<WorkspacePanel/.test(appSource),
+  "remote surfaces do not mount the local Files or Changes workspace panel",
 );
 ok(
   /session\.pauseGoal\(\)/.test(remoteIntegrationSource) && /session\.resumeGoal\(\)/.test(remoteIntegrationSource),

@@ -3029,7 +3029,7 @@ func (c *Controller) ClearSession() error {
 	// live session replaced.
 	if err := c.beginRotation(); err != nil {
 		if errors.Is(err, errTurnRunningRotation) {
-			return fmt.Errorf("cannot clear while a turn is running")
+			return fmt.Errorf("cannot clear while a turn is running: %w", err)
 		}
 		return err
 	}

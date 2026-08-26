@@ -283,6 +283,34 @@ func TestRemoteResumeBusyKeepsCurrentSessionReady(t *testing.T) {
 	}
 }
 
+func TestRemoteNewBusyKeepsCurrentSessionReady(t *testing.T) {
+	fs := newFakeServe(t, "s3cret", []serveSessionEntry{{Name: "saved", Path: "/saved.jsonl", Title: "Saved", Current: true}})
+	kernel := &fakeRemoteKernel{
+		statuses:   []RemoteConnectionStatusView{{HostID: "box", State: "connected"}},
+		ensureView: RemoteServerView{HostID: "box", State: "ready", LocalURL: fs.server.URL}, ensureToken: "s3cret",
+	}
+	seedBridgeTestHost(t, "box")
+	a := &App{remoteRuntime: kernel}
+	cleanupRemoteTabPumps(t, a)
+	meta := openReadyRemoteTab(t, a, RemoteTabOpenOptions{SessionName: "saved"})
+	a.remoteTabMu.Lock()
+	previousTitle := a.remoteTabs[meta.ID].topicTitle
+	a.remoteTabMu.Unlock()
+	fs.mu.Lock()
+	fs.failEnter = "cannot start a new session while a turn is running"
+	fs.mu.Unlock()
+	if _, err := a.OpenRemoteProjectTab("box", "~/app", RemoteTabOpenOptions{NewSession: true}); err == nil || !strings.Contains(err.Error(), "while a turn is running") {
+		t.Fatalf("busy new-session error = %v", err)
+	}
+	a.remoteTabMu.Lock()
+	tab := a.remoteTabs[meta.ID]
+	state, message, title, client := tab.state, tab.err, tab.topicTitle, tab.client
+	a.remoteTabMu.Unlock()
+	if state != "ready" || message != "" || title != previousTitle || client == nil {
+		t.Fatalf("busy new-session state/error/title/client = %q/%q/%q/%v, want ready current attachment", state, message, title, client)
+	}
+}
+
 func TestRemoteResumeLeaseConflictFailsAttach(t *testing.T) {
 	fs := newFakeServe(t, "s3cret", []serveSessionEntry{{Name: "saved", Path: "/saved.jsonl", Title: "Saved"}})
 	fs.mu.Lock()

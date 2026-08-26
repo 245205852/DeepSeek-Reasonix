@@ -74,14 +74,14 @@ let releaseApproval: (() => void) | undefined;
 let blockAnswer = false;
 let releaseAnswer: (() => void) | undefined;
 let resolveRaceSnapshot: ((value: { history: unknown[]; status: unknown }) => void) | undefined;
-let resolveStateRaceSnapshot: ((value: { history: unknown[]; status: unknown }) => void) | undefined;
+const resolveStateRaceSnapshots: Array<(value: { history: unknown[]; status: unknown }) => void> = [];
 window.go = { main: { App: {
   async RemoteTabSnapshot(tabId: string) {
     tape.push(`snapshot:${tabId}`);
 		if (tabId === "tab-hydration-failure" && failHydration) throw new Error("history exceeds bridge limit");
 		if (tabId === "tab-pending-model") return new Promise(() => {});
 		if (tabId === "tab-race") return new Promise<{ history: unknown[]; status: unknown }>((resolve) => { resolveRaceSnapshot = resolve; });
-		if (tabId === "tab-state-race") return new Promise<{ history: unknown[]; status: unknown }>((resolve) => { resolveStateRaceSnapshot = resolve; });
+		if (tabId === "tab-state-race") return new Promise<{ history: unknown[]; status: unknown }>((resolve) => { resolveStateRaceSnapshots.push(resolve); });
 		if (tabId === "tab-tool-history") return {
 			history: [
 				{ role: "assistant", content: "", toolCalls: [{ id: "remote-tool", name: "bash", arguments: "{\"command\":\"go test ./...\"}" }] },
@@ -181,6 +181,9 @@ window.go = { main: { App: {
 		if (failApproval) throw new Error("tunnel write failed");
 		if (blockApproval) await new Promise<void>((resolve) => { releaseApproval = resolve; });
   },
+	async ResolveRemoteTabPlanDecision(tabId: string, callId: string, action: string, feedback: string) {
+		tape.push(`plan-decision:${tabId}:${callId}:${action}:${feedback}`);
+	},
 	async AnswerRemoteTab(tabId: string, callId: string, answers: Array<{ QuestionID: string; Selected: string[] }>) {
 		tape.push(`answer:${tabId}:${callId}:${JSON.stringify(answers)}`);
 		if (blockAnswer) await new Promise<void>((resolve) => { releaseAnswer = resolve; });
@@ -289,6 +292,38 @@ await act(async () => {
   });
   ok(tape.includes("approve:tab-remote-1:call-9:session"), "session grant forwards its approval scope");
 	ok(!document.querySelector(".remote-surface__approval"), "approval card clears after deciding");
+}
+
+await act(async () => {
+	__emitMockRemoteTab("tab-remote-1", "event", {
+		kind: "approval_request",
+		approval: { id: "plan-remote", tool: "exit_plan_mode", subject: "Plan ready" },
+	});
+	await flush();
+});
+{
+	const planDialog = document.querySelector(".remote-surface__approval");
+	await act(async () => {
+		[...planDialog!.querySelectorAll<HTMLButtonElement>(".prompt-action")]
+			.find((button) => button.textContent?.includes("Revise plan"))?.click();
+		await flush();
+	});
+	await act(async () => {
+		const input = planDialog?.querySelector<HTMLTextAreaElement>(".plan-revision__input");
+		if (input) {
+			Object.getOwnPropertyDescriptor(dom.window.HTMLTextAreaElement.prototype, "value")?.set?.call(input, "cover the rollback path");
+			input.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+		}
+		await flush();
+	});
+	await act(async () => {
+		planDialog?.querySelector<HTMLButtonElement>(".plan-revision__actions .btn--primary")?.click();
+		await new Promise((resolve) => setTimeout(resolve, 220));
+	});
+	ok(tape.includes("plan-decision:tab-remote-1:plan-remote:revise_plan:cover the rollback path"),
+		"remote plan revision uses the specialized decision endpoint and preserves feedback");
+	ok(!tape.some((entry) => entry.startsWith("approve:tab-remote-1:plan-remote")),
+		"remote plan decisions never collapse into generic approval booleans");
 }
 
 await act(async () => {
@@ -423,6 +458,16 @@ ok(probe?.transcript.context.used === 1200 && probe.transcript.context.window ==
   && probe.transcript.balance?.display === "¥88.00" && probe.transcript.sessionCost === 0.12
   && probe.transcript.jobs[0]?.id === "job-remote" && probe.transcript.lastTurnOutputTokens === 200,
   "snapshot status hydrates remote context, usage, balance, cost, and jobs");
+let remoteLiveNotifications = 0;
+const unsubscribeRemoteLive = probe?.liveStore.subscribe("tab-remote-2", () => { remoteLiveNotifications += 1; });
+await act(async () => {
+	__emitMockRemoteTab("tab-remote-2", "event", { kind: "turn_started", turnStartedAt: 1234 });
+	__emitMockRemoteTab("tab-remote-2", "event", { kind: "text", text: "remote live ticker" });
+	await flush();
+});
+ok(probe?.liveStore.getSnapshot("tab-remote-2")?.text === "remote live ticker" && remoteLiveNotifications > 0,
+	"remote live-store notifications drive the shared composer ticker");
+unsubscribeRemoteLive?.();
 const turnDoneGeneration = probe?.surfaceGeneration;
 statusGoalStatus = "complete";
 snapshotHistory = [
@@ -621,14 +666,24 @@ await act(async () => {
 });
 await act(async () => {
 	__emitMockRemoteTab("tab-state-race", "state", { state: "reconnecting" });
-	resolveStateRaceSnapshot?.({
+	__emitMockRemoteTab("tab-state-race", "state", { state: "ready" });
+	resolveStateRaceSnapshots[0]?.({
 		history: [],
 		status: { running: false, label: "Stale", plan: false, toolApprovalMode: "ask", goal: "" },
 	});
 	await flush();
 });
-ok(stateRaceProbe?.state === "reconnecting" && stateRaceProbe.hydrated === false,
-	"a stale snapshot cannot overwrite a newer non-ready connection generation");
+await act(async () => {
+	resolveStateRaceSnapshots[1]?.({
+		history: [{ role: "assistant", content: "fresh generation" }],
+		status: { running: false, label: "Fresh", plan: false, toolApprovalMode: "ask", goal: "" },
+	});
+	await flush();
+});
+ok(stateRaceProbe?.state === "ready" && stateRaceProbe.hydrated === true
+	&& stateRaceProbe.modelLabel === "Fresh"
+	&& stateRaceProbe.transcript.items.some((item) => item.kind === "assistant" && item.text === "fresh generation"),
+	"a ready generation re-hydrates after discarding the stale in-flight snapshot");
 await act(async () => stateRaceRoot.unmount());
 
 // Pending prompt frames retained by Desktop are replayed by the next snapshot,

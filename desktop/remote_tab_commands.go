@@ -450,12 +450,23 @@ func (a *App) refreshRemoteTabTitle(tabID string) {
 	}
 }
 
-func (a *App) resetRemoteTabSession(tabID string) {
+func (a *App) resetRemoteTabSession(tabID string) error {
+	return a.rotateRemoteTabSession(tabID, "/new")
+}
+
+// ClearRemoteTabSession clears the active remote transcript through Serve's
+// dedicated session-rotation endpoint. It intentionally bypasses /submit so
+// the frontend does not create an optimistic conversational turn for /clear.
+func (a *App) ClearRemoteTabSession(tabID string) error {
+	return a.rotateRemoteTabSession(tabID, "/clear")
+}
+
+func (a *App) rotateRemoteTabSession(tabID, path string) error {
 	a.remoteTabMu.Lock()
 	tab := a.remoteTabs[tabID]
 	if tab == nil {
 		a.remoteTabMu.Unlock()
-		return
+		return fmt.Errorf("remote tab %q is not connected", tabID)
 	}
 	a.remoteTabMu.Unlock()
 	tab.sessionMu.Lock()
@@ -463,34 +474,43 @@ func (a *App) resetRemoteTabSession(tabID string) {
 	a.remoteTabMu.Lock()
 	if a.remoteTabs[tabID] != tab {
 		a.remoteTabMu.Unlock()
-		return
+		return fmt.Errorf("remote tab %q closed while starting a new session", tabID)
 	}
 	if tab.client == nil {
+		if path != "/new" {
+			a.remoteTabMu.Unlock()
+			return fmt.Errorf("remote tab %q is not connected", tabID)
+		}
 		tab.session.newSession = true
 		tab.session.name = ""
 		a.remoteTabMu.Unlock()
-		return
+		return nil
 	}
 	client, base := tab.client, tab.base
 	a.remoteTabMu.Unlock()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	if err := servePost(ctx, client, serveURL(base, "/new"), nil); err != nil {
-		a.emitRemoteTabState(tabID, "error", err.Error())
-		return
+	if err := servePost(ctx, client, serveURL(base, path), nil); err != nil {
+		// Session rotation can be rejected while the current remote turn is active.
+		// That does not invalidate the attached session or its event pump, so
+		// return an action error while leaving the tab ready and observable.
+		return err
 	}
 	title := a.localizedDefaultTopicTitle()
 	a.remoteTabMu.Lock()
 	if a.remoteTabs[tabID] != tab || tab.client != client {
 		a.remoteTabMu.Unlock()
-		return
+		return fmt.Errorf("remote tab %q changed while starting a new session", tabID)
 	}
 	tab.topicTitle = title
 	tab.session.reset = true
+	tab.session.newSession = true
+	tab.session.name = ""
 	meta := remoteTabMetaLocked(tab)
 	a.remoteTabMu.Unlock()
 	a.emitRemoteEvent("remote-tab:updated", meta)
 	a.saveTabsFromRemote()
 	a.emitRemoteTabState(tabID, "ready", "")
+	return nil
 }

@@ -343,12 +343,17 @@ func (a *App) remoteTabPump(ctx context.Context, tabID string, gen uint64, opene
 			kind = probe.Kind
 		}
 		switch kind {
+		case "turn_started":
+			a.recordRemoteTabTurnStarted(tabID, gen, json.RawMessage(frame))
 		case "approval_request", "ask_request":
 			a.cacheRemotePendingEvent(tabID, gen, kind, json.RawMessage(frame))
 		case "turn_done":
 			a.completeRemoteTabTurn(tabID, gen)
 		}
 		a.emitRemoteEvent(fmt.Sprintf("remote-tab:%s:event", tabID), json.RawMessage(frame))
+		if kind == "turn_started" || kind == "approval_request" || kind == "ask_request" {
+			a.goSafe("remoteTabRuntimeStatus", func() { _, _ = a.RemoteTabStatus(tabID) })
+		}
 		if kind == "turn_done" {
 			// Capture the durable session name immediately, closing the window
 			// where a replacement Serve could otherwise lose a just-finished
@@ -376,14 +381,48 @@ func (a *App) remoteTabPump(ctx context.Context, tabID string, gen uint64, opene
 
 func (a *App) completeRemoteTabTurn(tabID string, gen uint64) {
 	a.remoteTabMu.Lock()
-	defer a.remoteTabMu.Unlock()
-	if tab := a.remoteTabs[tabID]; tab != nil && tab.gen == gen {
-		tab.pendingEvents = nil
-		// A completed turn makes the fresh session non-blank even when the
-		// best-effort /sessions title lookup fails. New Topic must never reuse
-		// a conversation that already has a completed turn.
-		tab.session.reset = false
+	tab := a.remoteTabs[tabID]
+	if tab == nil || tab.gen != gen {
+		a.remoteTabMu.Unlock()
+		return
 	}
+	tab.pendingEvents = nil
+	tab.running = false
+	tab.turnStartedAt = 0
+	tab.pendingPrompt = false
+	tab.cancelRequested = false
+	tab.cancellable = tab.backgroundJobs > 0
+	// A completed turn makes the fresh session non-blank even when the
+	// best-effort /sessions title lookup fails. New Topic must never reuse
+	// a conversation that already has a completed turn.
+	tab.session.reset = false
+	meta := remoteTabMetaLocked(tab)
+	a.remoteTabMu.Unlock()
+	a.emitRemoteEvent("remote-tab:updated", meta)
+}
+
+func (a *App) recordRemoteTabTurnStarted(tabID string, gen uint64, frame json.RawMessage) {
+	var payload struct {
+		TurnStartedAt int64 `json:"turnStartedAt"`
+	}
+	_ = json.Unmarshal(frame, &payload)
+	if payload.TurnStartedAt <= 0 {
+		payload.TurnStartedAt = time.Now().UnixMilli()
+	}
+	a.remoteTabMu.Lock()
+	tab := a.remoteTabs[tabID]
+	if tab == nil || tab.gen != gen {
+		a.remoteTabMu.Unlock()
+		return
+	}
+	tab.running = true
+	tab.turnStartedAt = payload.TurnStartedAt
+	tab.pendingPrompt = false
+	tab.cancelRequested = false
+	tab.cancellable = true
+	meta := remoteTabMetaLocked(tab)
+	a.remoteTabMu.Unlock()
+	a.emitRemoteEvent("remote-tab:updated", meta)
 }
 
 func (a *App) cacheRemotePendingEvent(tabID string, gen uint64, kind string, frame json.RawMessage) {
@@ -404,23 +443,37 @@ func (a *App) cacheRemotePendingEvent(tabID string, gen uint64, kind string, fra
 	}
 	key := kind + ":" + strings.TrimSpace(id)
 	a.remoteTabMu.Lock()
-	defer a.remoteTabMu.Unlock()
 	tab := a.remoteTabs[tabID]
 	if tab == nil || tab.gen != gen {
+		a.remoteTabMu.Unlock()
 		return
 	}
 	if tab.pendingEvents == nil {
 		tab.pendingEvents = make(map[string]json.RawMessage)
 	}
 	tab.pendingEvents[key] = append(json.RawMessage(nil), frame...)
+	tab.pendingPrompt = true
+	tab.cancellable = true
+	meta := remoteTabMetaLocked(tab)
+	a.remoteTabMu.Unlock()
+	a.emitRemoteEvent("remote-tab:updated", meta)
 }
 
 func (a *App) clearRemotePendingEvent(tabID, kind, callID string) {
 	a.remoteTabMu.Lock()
+	var meta TabMeta
+	changed := false
 	if tab := a.remoteTabs[tabID]; tab != nil {
 		delete(tab.pendingEvents, kind+":"+strings.TrimSpace(callID))
+		pending := len(tab.pendingEvents) > 0
+		changed = tab.pendingPrompt != pending
+		tab.pendingPrompt = pending
+		meta = remoteTabMetaLocked(tab)
 	}
 	a.remoteTabMu.Unlock()
+	if changed {
+		a.emitRemoteEvent("remote-tab:updated", meta)
+	}
 }
 
 // serveGet fetches a JSON member of the tab snapshot, returning the raw
@@ -565,6 +618,42 @@ func (a *App) ApproveRemoteTab(tabID, callID, decision string) error {
 	body, _ := json.Marshal(map[string]any{"id": callID, "allow": allow, "session": session, "persist": persist})
 	if err := servePost(ctx, client, serveURL(base, "/approve"), body); err != nil {
 		return err
+	}
+	a.clearRemotePendingEvent(tabID, "approval_request", callID)
+	return nil
+}
+
+// ResolveRemoteTabPlanDecision preserves the three distinct exit_plan_mode
+// outcomes that the generic approval boolean cannot represent. Revision text
+// is queued only after the decision is accepted, so it becomes the next
+// durable follow-up once the planning turn has fully settled.
+func (a *App) ResolveRemoteTabPlanDecision(tabID, callID, action, feedback string) error {
+	client, base, err := a.remoteTabCommandClient(tabID)
+	if err != nil {
+		return err
+	}
+	action = strings.ToLower(strings.TrimSpace(action))
+	switch action {
+	case "start_execution", "revise_plan", "exit_plan":
+	default:
+		return fmt.Errorf("invalid remote plan decision %q", action)
+	}
+	ctx, cancel := commandContext(a)
+	defer cancel()
+	body, _ := json.Marshal(map[string]string{"id": callID, "action": action})
+	if err := servePost(ctx, client, serveURL(base, "/plan-decision"), body); err != nil {
+		return err
+	}
+	feedback = strings.TrimSpace(feedback)
+	if action == "revise_plan" && feedback != "" {
+		followup, _ := json.Marshal(map[string]string{
+			"input":          feedback,
+			"intent":         "followup",
+			"idempotencyKey": "plan-revision:" + strings.TrimSpace(callID),
+		})
+		if err := servePost(ctx, client, serveURL(base, "/inbox/items"), followup); err != nil {
+			return fmt.Errorf("queue remote plan revision: %w", err)
+		}
 	}
 	a.clearRemotePendingEvent(tabID, "approval_request", callID)
 	return nil
@@ -747,18 +836,55 @@ func (a *App) remoteTabClientGeneration(tabID string, client *http.Client) uint6
 
 func (a *App) recordRemoteTabSessionStatus(tabID string, client *http.Client, gen uint64, status json.RawMessage) {
 	var payload struct {
-		SessionName string `json:"sessionName"`
+		SessionName     string `json:"sessionName"`
+		Running         *bool  `json:"running"`
+		PendingPrompt   *bool  `json:"pendingPrompt"`
+		BackgroundJobs  *int   `json:"backgroundJobs"`
+		CancelRequested *bool  `json:"cancelRequested"`
+		Cancellable     *bool  `json:"cancellable"`
 	}
-	if gen == 0 || json.Unmarshal(status, &payload) != nil || strings.TrimSpace(payload.SessionName) == "" {
+	if gen == 0 || json.Unmarshal(status, &payload) != nil {
 		return
 	}
 	a.remoteTabMu.Lock()
-	if tab := a.remoteTabs[tabID]; tab != nil && tab.client == client && tab.gen == gen {
-		tab.session.name = strings.TrimSpace(payload.SessionName)
+	tab := a.remoteTabs[tabID]
+	if tab == nil || tab.client != client || tab.gen != gen {
+		a.remoteTabMu.Unlock()
+		return
+	}
+	before := remoteTabMetaLocked(tab)
+	if name := strings.TrimSpace(payload.SessionName); name != "" {
+		tab.session.name = name
 		tab.session.newSession = false
 		tab.session.reset = false
 	}
+	if payload.Running != nil {
+		tab.running = *payload.Running
+	}
+	if payload.PendingPrompt != nil {
+		tab.pendingPrompt = *payload.PendingPrompt
+	}
+	if payload.BackgroundJobs != nil {
+		tab.backgroundJobs = max(0, *payload.BackgroundJobs)
+	}
+	if payload.CancelRequested != nil {
+		tab.cancelRequested = *payload.CancelRequested
+	}
+	if payload.Cancellable != nil {
+		tab.cancellable = *payload.Cancellable
+	}
+	if (tab.running || tab.pendingPrompt) && tab.turnStartedAt <= 0 {
+		tab.turnStartedAt = time.Now().UnixMilli()
+	} else if !tab.running && !tab.pendingPrompt {
+		tab.turnStartedAt = 0
+	}
+	after := remoteTabMetaLocked(tab)
 	a.remoteTabMu.Unlock()
+	if before.Running != after.Running || before.TurnStartedAt != after.TurnStartedAt ||
+		before.PendingPrompt != after.PendingPrompt || before.BackgroundJobs != after.BackgroundJobs ||
+		before.CancelRequested != after.CancelRequested || before.Cancellable != after.Cancellable {
+		a.emitRemoteEvent("remote-tab:updated", after)
+	}
 }
 
 // listTabsWithRemote merges the remote strip entries into a local tab list.

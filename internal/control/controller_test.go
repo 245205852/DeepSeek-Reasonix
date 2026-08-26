@@ -2520,6 +2520,9 @@ func TestSessionMutationsRefuseWhileRotating(t *testing.T) {
 	if err := c.beginRotation(); !errors.Is(err, errTurnRunningRotation) {
 		t.Fatalf("beginRotation while running = %v, want errTurnRunningRotation", err)
 	}
+	if err := c.ClearSession(); err == nil || !IsSessionRotationBusy(err) || !strings.Contains(err.Error(), "cannot clear while a turn is running") {
+		t.Fatalf("ClearSession while running = %v, want classified busy error", err)
+	}
 	if err := c.Compact(context.Background(), ""); err == nil || !strings.Contains(err.Error(), "cannot compact while a turn is running") {
 		t.Fatalf("Compact while running = %v, want 'cannot compact' message", err)
 	}

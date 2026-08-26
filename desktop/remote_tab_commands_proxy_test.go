@@ -30,6 +30,10 @@ func TestRemoteTabCommandsForwardedToServe(t *testing.T) {
 		{"approve-session", func() error { return a.ApproveRemoteTab(meta.ID, "call-2", "session") }, `POST /approve {"allow":true,"id":"call-2","persist":false,"session":true}`},
 		{"approve-persist", func() error { return a.ApproveRemoteTab(meta.ID, "call-3", "persist") }, `POST /approve {"allow":true,"id":"call-3","persist":true,"session":true}`},
 		{"approve-deny", func() error { return a.ApproveRemoteTab(meta.ID, "call-4", "deny") }, `POST /approve {"allow":false,"id":"call-4","persist":false,"session":false}`},
+		{"plan-start", func() error { return a.ResolveRemoteTabPlanDecision(meta.ID, "plan-1", "start_execution", "") }, `POST /plan-decision {"action":"start_execution","id":"plan-1"}`},
+		{"plan-revise", func() error {
+			return a.ResolveRemoteTabPlanDecision(meta.ID, "plan-2", "revise_plan", "check the fallback")
+		}, `POST /plan-decision {"action":"revise_plan","id":"plan-2"}`},
 		{"answer", func() error {
 			return a.AnswerRemoteTab(meta.ID, "ask-1", []RemoteAskAnswer{{QuestionID: "question-1", Selected: []string{"yes"}}})
 		}, `POST /answer {"answers":[{"QuestionID":"question-1","Selected":["yes"]}],"id":"ask-1"}`},
@@ -47,6 +51,7 @@ func TestRemoteTabCommandsForwardedToServe(t *testing.T) {
 		{"fork", func() error { return a.ForkRemoteTab(meta.ID, 2, "try-auth") }, `POST /fork {"name":"try-auth","turn":2}`},
 		{"summarize", func() error { return a.SummarizeRemoteTab(meta.ID, 4, "upto") }, `POST /summarize {"mode":"upto","turn":4}`},
 		{"forget", func() error { return a.ForgetRemoteTab(meta.ID, "api-key") }, `POST /forget {"name":"api-key"}`},
+		{"clear", func() error { return a.ClearRemoteTabSession(meta.ID) }, "POST /clear {}"},
 	}
 	for _, step := range steps {
 		if err := step.call(); err != nil {
@@ -54,6 +59,9 @@ func TestRemoteTabCommandsForwardedToServe(t *testing.T) {
 		}
 	}
 	calls := fs.recorded()
+	if !slices.Contains(calls, `POST /inbox/items {"idempotencyKey":"plan-revision:plan-2","input":"check the fallback","intent":"followup"}`) {
+		t.Fatalf("plan revision follow-up missing: %v", calls)
+	}
 	for _, step := range steps {
 		if !slices.Contains(calls, step.want) {
 			t.Fatalf("%s: serve saw %v, want %q", step.name, calls, step.want)

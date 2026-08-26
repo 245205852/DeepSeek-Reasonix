@@ -123,10 +123,14 @@ export function RemoteSessionSurface({ tab, session }: { tab: TabMeta; session: 
             cwd={tab.cwd}
             tabId={tab.id}
             toolApprovalMode={session.composerProfile?.toolApprovalMode}
-            onAnswer={(allow, sessionScope, persist) => runAction(() => session.approve(
-              approval.id,
-              allow ? (persist ? "persist" : sessionScope ? "session" : "allow") : "deny",
-            ))}
+            onAnswer={(allow, sessionScope, persist) => runAction(() => approval.tool === "exit_plan_mode"
+              ? session.resolvePlanDecision(approval.id, allow ? "start_execution" : "revise_plan")
+              : session.approve(
+                  approval.id,
+                  allow ? (persist ? "persist" : sessionScope ? "session" : "allow") : "deny",
+                ))}
+            onRevisePlan={(text) => runAction(() => session.resolvePlanDecision(approval.id, "revise_plan", text))}
+            onExitPlan={() => runAction(() => session.resolvePlanDecision(approval.id, "exit_plan"))}
             onStop={() => runAction(session.cancelTurn)}
           />
         </div>

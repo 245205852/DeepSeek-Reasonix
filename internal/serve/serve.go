@@ -493,9 +493,11 @@ func (s *Server) handler() http.Handler {
 	s.registerInboxRoutes(mux)
 	mux.HandleFunc("POST /cancel", s.cancel)
 	mux.HandleFunc("POST /approve", s.approve)
+	mux.HandleFunc("POST /plan-decision", s.planDecision)
 	mux.HandleFunc("POST /plan", s.plan)
 	mux.HandleFunc("POST /compact", s.compact)
 	mux.HandleFunc("POST /new", s.newSession)
+	mux.HandleFunc("POST /clear", s.clearSession)
 	mux.HandleFunc("POST /rewind", s.rewind)
 	mux.HandleFunc("POST /fork", s.fork)
 	mux.HandleFunc("POST /summarize", s.summarize)
@@ -792,6 +794,22 @@ func (s *Server) approve(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func (s *Server) planDecision(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		ID     string                     `json:"id"`
+		Action control.PlanDecisionAction `json:"action"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.ID) == "" {
+		http.Error(w, "missing id", http.StatusBadRequest)
+		return
+	}
+	if err := s.ctl().ResolvePlanDecision(body.ID, body.Action); err != nil {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (s *Server) plan(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		On bool `json:"on"`
@@ -831,6 +849,28 @@ func (s *Server) newSession(w http.ResponseWriter, _ *http.Request) {
 	}
 	s.bc.ResetSession()
 	// Fresh path — the lease follows it; failure is theoretical but not silent.
+	if err := s.rebindSessionLease(s.ctl().SessionPath()); err != nil {
+		http.Error(w, sessionInUseError(err), http.StatusConflict)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) clearSession(w http.ResponseWriter, _ *http.Request) {
+	// Clear rotates the session path just like /new, but also removes the old
+	// transcript artifacts. Keep controller mutation and lease rebinding under
+	// one binding lock so remote clients never observe split ownership.
+	s.bindMu.Lock()
+	defer s.bindMu.Unlock()
+	if err := s.ctl().ClearSession(); err != nil {
+		if control.IsSessionRotationBusy(err) {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	s.bc.ResetSession()
 	if err := s.rebindSessionLease(s.ctl().SessionPath()); err != nil {
 		http.Error(w, sessionInUseError(err), http.StatusConflict)
 		return

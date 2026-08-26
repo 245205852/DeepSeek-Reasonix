@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -409,7 +410,11 @@ func TestReconcileTabStripOrderPreservesMixedOrderAndRepairsMembership(t *testin
 func TestRemoteTabMetasMarksOnlySelectedTabActive(t *testing.T) {
 	a := &App{
 		remoteTabs: map[string]*remoteTab{
-			"remote-1": {id: "remote-1", ref: RemoteTabRef{HostID: "box", Workspace: "~/one"}},
+			"remote-1": {
+				id: "remote-1", ref: RemoteTabRef{HostID: "box", Workspace: "~/one"},
+				running: true, turnStartedAt: 123, pendingPrompt: true,
+				backgroundJobs: 2, cancelRequested: true, cancellable: true,
+			},
 			"remote-2": {id: "remote-2", ref: RemoteTabRef{HostID: "box", Workspace: "~/two"}},
 		},
 		remoteTabLayout: remoteTabLayoutState{
@@ -426,6 +431,36 @@ func TestRemoteTabMetasMarksOnlySelectedTabActive(t *testing.T) {
 		if meta.Active != (meta.ID == "remote-2") {
 			t.Fatalf("meta %s active = %v", meta.ID, meta.Active)
 		}
+		if meta.ID == "remote-1" && (!meta.Running || meta.TurnStartedAt != 123 || !meta.PendingPrompt || meta.BackgroundJobs != 2 || !meta.CancelRequested || !meta.Cancellable) {
+			t.Fatalf("inactive remote runtime meta = %+v", meta)
+		}
+	}
+}
+
+func TestRemoteStatusRefreshPublishesInactiveRuntimeMeta(t *testing.T) {
+	client := &http.Client{}
+	log := &eventLog{}
+	a := &App{
+		remoteEventHook: log.add,
+		remoteTabs: map[string]*remoteTab{
+			"remote-1": {id: "remote-1", ref: RemoteTabRef{HostID: "box", Workspace: "~/one"}, client: client, gen: 4},
+			"remote-2": {id: "remote-2", ref: RemoteTabRef{HostID: "box", Workspace: "~/two"}},
+		},
+		remoteTabLayout: remoteTabLayoutState{activeID: "remote-2"},
+	}
+	a.recordRemoteTabSessionStatus("remote-1", client, 4, json.RawMessage(`{"running":true,"pendingPrompt":true,"backgroundJobs":3,"cancelRequested":true,"cancellable":true}`))
+	metas, _, _ := a.remoteTabMetas(nil)
+	var got TabMeta
+	for _, meta := range metas {
+		if meta.ID == "remote-1" {
+			got = meta
+		}
+	}
+	if got.Active || !got.Running || !got.PendingPrompt || got.BackgroundJobs != 3 || !got.CancelRequested || !got.Cancellable || got.TurnStartedAt <= 0 {
+		t.Fatalf("inactive status projection = %+v", got)
+	}
+	if log.count("remote-tab:updated ") != 1 {
+		t.Fatalf("runtime status update events = %v", log.recorded())
 	}
 }
 
