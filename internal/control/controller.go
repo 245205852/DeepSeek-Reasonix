@@ -2171,36 +2171,6 @@ func (c *Controller) Turn() int {
 	return c.turn
 }
 
-// ResolvePlanDecision answers the Plan card without collapsing revise and exit
-// into the generic approval boolean used by older clients.
-func (c *Controller) ResolvePlanDecision(id string, action PlanDecisionAction) error {
-	if c == nil {
-		return fmt.Errorf("controller is nil")
-	}
-	id = strings.TrimSpace(id)
-	if id == "" {
-		return fmt.Errorf("empty plan approval id")
-	}
-	switch action {
-	case PlanDecisionStartExecution, PlanDecisionRevisePlan, PlanDecisionExitPlan:
-	default:
-		return fmt.Errorf("unknown plan decision %q", action)
-	}
-	pending, ok, err := c.approval.resolveToolAfter(id, planApprovalTool, func(p pendingApproval) error {
-		return c.emitTurnEventChecked(event.Event{Kind: event.PromptAnswered, ItemID: id, Status: event.TurnInProgress})
-	})
-	if err != nil {
-		return err
-	}
-	if !ok || pending.reply == nil {
-		return nil
-	}
-	pending.kind = "plan"
-	c.recordDecisionReceipt(pending, string(action))
-	pending.reply <- approvalReply{allow: action == PlanDecisionStartExecution}
-	return nil
-}
-
 func (c *Controller) recordDecisionReceipt(pending pendingApproval, outcome string) {
 	if c == nil || c.executor == nil || pending.reply == nil {
 		return
@@ -3080,7 +3050,7 @@ func (c *Controller) ClearSession() error {
 	// live session replaced.
 	if err := c.beginRotation(); err != nil {
 		if errors.Is(err, errTurnRunningRotation) {
-			return fmt.Errorf("cannot clear while a turn is running")
+			return fmt.Errorf("cannot clear while a turn is running: %w", err)
 		}
 		return err
 	}
@@ -5719,6 +5689,30 @@ func (c *Controller) ApplyMode(plan, autoApproveTools bool) []string {
 		return c.ApplyToolApprovalMode(ToolApprovalYolo)
 	}
 	return c.ApplyToolApprovalMode(ToolApprovalAsk)
+}
+
+// ApplyComposerProfile publishes the collaboration, approval, and Goal axes as
+// one controller operation. The only fallible mutation (durable Goal state)
+// commits first, so a persistence failure leaves Plan and approval unchanged.
+// Serve serializes this call with turn admission and controller replacement.
+func (c *Controller) ApplyComposerProfile(plan bool, toolApprovalMode, goal string) ([]string, error) {
+	toolApprovalMode = strings.ToLower(strings.TrimSpace(toolApprovalMode))
+	switch toolApprovalMode {
+	case ToolApprovalAsk, ToolApprovalAuto, ToolApprovalYolo:
+	default:
+		return nil, fmt.Errorf("tool approval mode must be ask, auto, or yolo")
+	}
+	goal = strings.TrimSpace(goal)
+	if strings.TrimSpace(c.Goal()) != goal {
+		if err := c.SetGoalDurable(goal); err != nil {
+			return nil, fmt.Errorf("persist goal state: %w", err)
+		}
+	}
+	if goal != "" {
+		plan = false
+	}
+	c.applyPlanMode(plan)
+	return c.ApplyToolApprovalMode(toolApprovalMode), nil
 }
 
 // AutoApproveTools reports whether YOLO tool auto-approval is on,

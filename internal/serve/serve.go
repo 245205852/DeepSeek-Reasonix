@@ -494,9 +494,12 @@ func (s *Server) handler() http.Handler {
 	s.registerInboxRoutes(mux)
 	mux.HandleFunc("POST /cancel", s.cancel)
 	mux.HandleFunc("POST /approve", s.approve)
+	mux.HandleFunc("POST /plan-decision", s.planDecision)
 	mux.HandleFunc("POST /plan", s.plan)
+	mux.HandleFunc("POST /composer-profile", s.composerProfile)
 	mux.HandleFunc("POST /compact", s.compact)
 	mux.HandleFunc("POST /new", s.newSession)
+	mux.HandleFunc("POST /clear", s.clearSession)
 	mux.HandleFunc("POST /rewind", s.rewind)
 	mux.HandleFunc("POST /fork", s.fork)
 	mux.HandleFunc("POST /summarize", s.summarize)
@@ -505,15 +508,24 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("POST /auto-approve-tools", s.autoApproveTools)
 	mux.HandleFunc("POST /bypass", s.bypass)
 	mux.HandleFunc("POST /goal", s.goal)
+	mux.HandleFunc("POST /goal/pause", s.goalPause)
+	mux.HandleFunc("POST /goal/resume", s.goalResume)
+	mux.HandleFunc("POST /jobs/cancel", s.jobsCancel)
 	mux.HandleFunc("POST /answer", s.answer)
 	mux.HandleFunc("POST /resume", s.resume)
 	mux.HandleFunc("POST /forget", s.forget)
 	mux.HandleFunc("GET /checkpoints", s.checkpoints)
 	mux.HandleFunc("GET /branches", s.branches)
 	mux.HandleFunc("GET /models", s.models)
+	mux.HandleFunc("POST /model", s.modelSwitch)
+	mux.HandleFunc("POST /effort", s.effortSwitch)
+	mux.HandleFunc("POST /quality-floor", s.qualityFloorSwitch)
 	mux.HandleFunc("POST /extensions/reload", s.reloadExtensionsHTTP)
+	mux.HandleFunc("POST /extension-form", s.submitExtensionForm)
 	mux.HandleFunc("GET /status", s.status)
 	mux.HandleFunc("GET /sessions", s.sessions)
+	mux.HandleFunc("GET /commands", s.commands)
+	mux.HandleFunc("GET /pending-prompts", s.pendingPrompts)
 	mux.HandleFunc("GET /skills", s.skills)
 	mux.HandleFunc("GET /todos", s.todos)
 	mux.HandleFunc("POST /delete-session", s.deleteSession)
@@ -724,16 +736,8 @@ func (s *Server) submit(w http.ResponseWriter, r *http.Request) {
 	}
 	// Intercept /model <ref> for runtime model switching (the controller's
 	// Submit path only lists models — switching is frontend-specific).
-	if strings.HasPrefix(trimmed, "/model ") {
-		ref := strings.TrimSpace(strings.TrimPrefix(trimmed, "/model"))
-		if ref != "" {
-			if err := s.switchModel(r.Context(), ref); err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
+	if s.submitModelCommand(w, r, trimmed) {
+		return
 	}
 	// Intercept /effort <level> for reasoning effort switching.
 	if strings.HasPrefix(trimmed, "/effort ") {
@@ -762,6 +766,12 @@ func (s *Server) submit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	submitWithAction(ctrl, body.Input, body.Format, body.Action)
+	if isServeManagementCommand(trimmed) && !ctrl.Running() && !ctrl.RuntimeStatus().PendingPrompt {
+		// Management notices/status are successful non-turn operations.
+		s.bindMu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
 	// After synchronous admission, a successful start sets Running. A silent
 	// drop (rotating/closed) leaves Running false — return 409 instead of 202.
 	// Finishing-window park also leaves Running false briefly; prefer 202 only
@@ -803,30 +813,6 @@ func (s *Server) approve(w http.ResponseWriter, r *http.Request) {
 	if err := s.ctl().ResolveApproval(body.ID, body.Allow, scope); err != nil {
 		http.Error(w, err.Error(), http.StatusServiceUnavailable)
 		return
-	}
-	w.WriteHeader(http.StatusNoContent)
-}
-
-func (s *Server) plan(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		On bool `json:"on"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, "bad body", http.StatusBadRequest)
-		return
-	}
-	s.ctl().SetPlanMode(body.On)
-	w.WriteHeader(http.StatusNoContent)
-}
-
-func (s *Server) compact(w http.ResponseWriter, r *http.Request) {
-	if err := s.ctl().Compact(r.Context(), ""); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	// Persist the compacted session to disk — ctrl.Compact() only mutates in-memory.
-	if err := s.ctl().Snapshot(); err != nil {
-		slog.Warn("serve: snapshot after compact", "err", err)
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -1122,20 +1108,6 @@ func (s *Server) goal(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// answer responds to an ask_request.
-func (s *Server) answer(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		ID      string            `json:"id"`
-		Answers []event.AskAnswer `json:"answers"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.ID == "" {
-		http.Error(w, "missing id", http.StatusBadRequest)
-		return
-	}
-	s.ctl().AnswerQuestion(body.ID, body.Answers)
-	w.WriteHeader(http.StatusNoContent)
-}
-
 // resume loads a previous session from a JSONL file.
 func (s *Server) resume(w http.ResponseWriter, r *http.Request) {
 	var body struct {
@@ -1235,21 +1207,6 @@ func (s *Server) forget(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
-}
-
-// checkpoints returns the session's checkpoint list for the rewind picker.
-func (s *Server) checkpoints(w http.ResponseWriter, _ *http.Request) {
-	type cp struct {
-		Turn   int    `json:"turn"`
-		Prompt string `json:"prompt"`
-		Files  int    `json:"files"`
-	}
-	raw := s.ctl().Checkpoints()
-	out := make([]cp, len(raw))
-	for i, c := range raw {
-		out[i] = cp{Turn: c.Turn, Prompt: c.Prompt, Files: len(c.Paths)}
-	}
-	writeJSON(w, out)
 }
 
 // branches returns the branch list and tree text.
@@ -1385,11 +1342,33 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 		"toolApprovalMode": s.ctl().ToolApprovalMode(),
 		"goal":             s.ctl().Goal(),
 		"goalStatus":       s.ctl().GoalStatus(),
+		"qualityFloor":     s.ctl().QualityFloor(),
 		"cwd":              s.ctl().SessionDir(),
 		"used":             used,
 		"window":           window,
 		"cacheHit":         hit,
 		"cacheMiss":        miss,
+	}
+	if s.ctl().Goal() != "" {
+		sess["goalRuntime"] = s.ctl().GoalRuntime()
+	}
+	if path := strings.TrimSpace(s.ctl().SessionPath()); path != "" && store.IsSessionTranscriptName(filepath.Base(path)) {
+		sess["sessionName"] = strings.TrimSuffix(filepath.Base(path), ".jsonl")
+	}
+	if cfg, err := config.Load(); err == nil {
+		if entry, ok := cfg.ResolveModel(currentModelRef(s.ctl())); ok {
+			capability := config.EffortCapabilityForEntry(entry)
+			levels := capability.Levels
+			if levels == nil {
+				levels = []string{}
+			}
+			sess["effort"] = map[string]any{
+				"supported": capability.Supported,
+				"current":   config.EffortDisplay(entry),
+				"default":   capability.Default,
+				"levels":    levels,
+			}
+		}
 	}
 	// Runtime reconciliation fields for desktop running-state watchdogs: the
 	// remote tab surface polls /status and maps these onto the same

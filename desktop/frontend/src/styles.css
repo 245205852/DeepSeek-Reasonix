@@ -39342,3 +39342,63 @@ body > .mermaid-diagram--fullscreen {
 .project-tree__remote-badge--serve-idle {
   background: var(--fg-faint);
 }
+
+/* ── Remote session surface (remote tab content area) ─────────────── */
+.remote-surface {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  padding: 16px;
+  overflow-y: auto;
+}
+.remote-surface--waiting,
+.remote-surface--warning,
+.remote-surface--error,
+.remote-surface--disconnected {
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  color: var(--fg-dim);
+  font-size: var(--text-md);
+}
+.remote-surface--warning { color: var(--warn, var(--fg)); }
+.remote-surface--error { color: var(--danger, var(--fg)); }
+.remote-surface__detail {
+  max-width: 60%;
+  color: var(--fg-faint);
+  font-size: var(--text-sm);
+  overflow-wrap: anywhere;
+}
+.remote-surface__spinner { animation: remote-surface-spin 1s linear infinite; }
+@keyframes remote-surface-spin { to { transform: rotate(360deg); } }
+.remote-surface__approval,
+.remote-surface__ask {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  max-width: 760px;
+  margin: 8px auto 0;
+  padding: 12px;
+  border: 1px solid color-mix(in srgb, var(--warn, var(--fg)) 45%, var(--border));
+  border-radius: 10px;
+  background: var(--bg-elev);
+}
+.remote-surface__approval-head { display: flex; align-items: center; gap: 6px; font-size: var(--text-sm); font-weight: 600; }
+.remote-surface__approval-body {
+  max-height: 180px;
+  margin: 0;
+  padding: 8px;
+  overflow-y: auto;
+  border-radius: 6px;
+  background: var(--bg);
+  font-family: var(--font-mono, monospace);
+  font-size: var(--text-xs);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.remote-surface__approval-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.remote-surface__ask-question { display: flex; flex-direction: column; gap: 6px; }
+.remote-surface__ask-prompt { font-size: var(--text-sm); font-weight: 600; }
+.remote-surface__ask-options { display: flex; flex-wrap: wrap; gap: 8px; }

@@ -2423,7 +2423,7 @@ func (a *App) ListTabs() []TabMeta {
 	}
 	a.mu.RUnlock()
 	if !needsRepair {
-		return enrichTabMetas(out)
+		return a.listTabsWithRemote(out)
 	}
 
 	a.mu.Lock()
@@ -2434,7 +2434,7 @@ func (a *App) ListTabs() []TabMeta {
 		}
 	}
 	a.mu.Unlock()
-	return enrichTabMetas(out)
+	return a.listTabsWithRemote(out)
 }
 
 // syncTabWorkspaceRootSpellings repoints visible and detached project runtimes
@@ -3211,83 +3211,58 @@ func (a *App) indexedBlankTopicIDLocked(scope, workspaceRoot string) string {
 	return ""
 }
 
-// SetActiveTab switches the frontend's active tab. A no-op when tabID is
-// already active or unknown.
-func (a *App) SetActiveTab(tabID string) error {
-	a.mu.RLock()
-	_, ok := a.tabs[tabID]
-	alreadyActive := a.activeTabID == tabID
-	a.mu.RUnlock()
-	if !ok {
-		return fmt.Errorf("tab %q not found", tabID)
-	}
-	if alreadyActive {
-		return nil
-	}
-	a.mu.RLock()
-	active := a.tabs[a.activeTabID]
-	a.mu.RUnlock()
-	if err := a.snapshotTabForAction(active, "switching tabs"); err != nil {
-		return err
-	}
-
-	a.mu.Lock()
-	if _, ok := a.tabs[tabID]; !ok {
-		a.mu.Unlock()
-		return fmt.Errorf("tab %q not found", tabID)
-	}
-	if a.activeTabID == tabID {
-		a.mu.Unlock()
-		return nil
-	}
-	a.activeTabID = tabID
-	next := a.tabs[tabID]
-	// A direct tab click supersedes a pending ticketed activation's
-	// publication (prune + ready event), but does not cancel its build: the
-	// tab stays open in this layout, so the build may legitimately complete.
-	// Switching to the pending activation's own tab keeps it alive.
-	supersededReq, supersededTab := a.supersedePendingTopicActivationLocked(tabID, false)
-	dir, entries, activeID, version := a.saveTabsCollectLocked()
-	a.mu.Unlock()
-
-	// I/O outside the lock — disk writes can block for hundreds of ms on
-	// Windows when antivirus or the search indexer briefly locks the file.
-	a.saveTabsWrite(dir, entries, activeID, version)
-	if active != nil {
-		active.clearRuntimeDisplayCurrency()
-	}
-	if next != nil {
-		next.clearRuntimeDisplayCurrency()
-	}
-	if supersededReq != "" {
-		a.emitTopicActivation(TopicActivationEvent{RequestID: supersededReq, TabID: supersededTab, Phase: topicActivationPhaseCancelled})
-	}
-	a.kickDeferredRebuildRetry()
-	return nil
-}
-
-// ReorderTabs persists the frontend's manual tab order. The submitted order must
-// contain every currently open tab exactly once.
+// ReorderTabs persists the full local+remote strip while keeping each
+// registry's internal order independent.
 func (a *App) ReorderTabs(tabIDs []string) error {
+	a.remoteTabMu.Lock()
+	remoteCount := len(a.remoteTabs)
+	a.remoteTabMu.Unlock()
 	a.mu.Lock()
-	defer a.mu.Unlock()
-	if len(tabIDs) != len(a.tabs) {
+	if len(tabIDs) != len(a.tabs)+remoteCount {
+		a.mu.Unlock()
 		return fmt.Errorf("tab order length mismatch")
 	}
 	seen := make(map[string]bool, len(tabIDs))
-	next := make([]string, 0, len(tabIDs))
+	next := make([]string, 0, len(a.tabs))
+	nextRemote := make([]string, 0, remoteCount)
 	for _, id := range tabIDs {
-		if _, ok := a.tabs[id]; !ok {
-			return fmt.Errorf("tab %q not found", id)
-		}
 		if seen[id] {
+			a.mu.Unlock()
 			return fmt.Errorf("duplicate tab %q", id)
 		}
 		seen[id] = true
-		next = append(next, id)
+		if _, ok := a.tabs[id]; ok {
+			next = append(next, id)
+		} else {
+			nextRemote = append(nextRemote, id)
+		}
 	}
+	if len(next) != len(a.tabs) {
+		a.mu.Unlock()
+		return fmt.Errorf("tab order is missing local tabs")
+	}
+	a.remoteTabMu.Lock()
+	remoteOK := len(nextRemote) == len(a.remoteTabs)
+	if remoteOK {
+		for _, id := range nextRemote {
+			if a.remoteTabs[id] == nil {
+				remoteOK = false
+				break
+			}
+		}
+	}
+	if !remoteOK {
+		a.remoteTabMu.Unlock()
+		a.mu.Unlock()
+		return fmt.Errorf("tab order is missing remote tabs")
+	}
+	a.remoteTabLayout.order = append([]string(nil), nextRemote...)
+	a.remoteTabLayout.stripOrder = append([]string(nil), tabIDs...)
+	a.remoteTabMu.Unlock()
 	a.tabOrder = next
-	a.saveTabsLocked()
+	dir, entries, activeID, version := a.saveTabsCollectLocked()
+	a.mu.Unlock()
+	a.saveTabsWrite(dir, entries, activeID, version)
 	return nil
 }
 
@@ -3312,7 +3287,7 @@ func (a *App) closeTabRuntime(tabID string, allowDetach bool) error {
 		a.mu.Unlock()
 		return fmt.Errorf("tab %q not found", tabID)
 	}
-	if len(a.tabs) <= 1 {
+	if len(a.tabs) <= 1 && !a.hasRemoteTabSurface() {
 		a.mu.Unlock()
 		return fmt.Errorf("cannot close the last tab")
 	}
@@ -3344,7 +3319,7 @@ func (a *App) closeTabRuntime(tabID string, allowDetach bool) error {
 		}
 		return fmt.Errorf("tab %q changed while closing", tabID)
 	}
-	if len(a.tabs) <= 1 {
+	if len(a.tabs) <= 1 && !a.hasRemoteTabSurface() {
 		a.mu.Unlock()
 		return fmt.Errorf("cannot close the last tab")
 	}
@@ -5016,33 +4991,11 @@ type desktopTabEntry struct {
 }
 
 type desktopTabsFile struct {
-	Tabs      []desktopTabEntry `json:"tabs"`
-	ActiveTab string            `json:"activeTab"`
-}
-
-func singleSurfaceLayoutStyle(style string) bool {
-	switch strings.ToLower(strings.TrimSpace(style)) {
-	case "workbench", "creation":
-		return true
-	default:
-		return false
-	}
-}
-
-func singleSurfaceTabsFile(f desktopTabsFile) desktopTabsFile {
-	if len(f.Tabs) <= 1 {
-		return f
-	}
-	chosen := f.Tabs[0]
-	if active := strings.TrimSpace(f.ActiveTab); active != "" {
-		for _, entry := range f.Tabs {
-			if entry.ID == active {
-				chosen = entry
-				break
-			}
-		}
-	}
-	return desktopTabsFile{Tabs: []desktopTabEntry{chosen}, ActiveTab: chosen.ID}
+	Tabs           []desktopTabEntry       `json:"tabs"`
+	ActiveTab      string                  `json:"activeTab"`
+	RemoteTabs     []desktopRemoteTabEntry `json:"remoteTabs,omitempty"`
+	RemoteTabOrder []string                `json:"remoteTabOrder,omitempty"`
+	TabOrder       []string                `json:"tabOrder,omitempty"`
 }
 
 func desktopConfigDir() string {
@@ -5098,7 +5051,15 @@ func (a *App) saveTabsWrite(dir string, entries []desktopTabEntry, activeID stri
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return
 	}
-	f := desktopTabsFile{Tabs: entries, ActiveTab: activeID}
+	localIDs := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		localIDs = append(localIDs, entry.ID)
+	}
+	remoteEntries, remoteOrder, tabOrder, remoteActive := a.remoteTabsFileEntries(localIDs)
+	if remoteActive != "" {
+		activeID = remoteActive
+	}
+	f := desktopTabsFile{Tabs: entries, ActiveTab: activeID, RemoteTabs: remoteEntries, RemoteTabOrder: remoteOrder, TabOrder: tabOrder}
 	b, err := json.MarshalIndent(f, "", "  ")
 	if err != nil {
 		return

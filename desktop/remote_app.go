@@ -139,12 +139,13 @@ type RemoteForwardView struct {
 }
 
 type RemoteServerView struct {
-	HostID    string `json:"hostId"`
-	Workspace string `json:"workspace"`
-	State     string `json:"state"`
-	Message   string `json:"message,omitempty"`
-	LocalURL  string `json:"localUrl,omitempty"`
-	Error     string `json:"error,omitempty"`
+	HostID     string `json:"hostId"`
+	Workspace  string `json:"workspace"`
+	State      string `json:"state"`
+	Message    string `json:"message,omitempty"`
+	LocalURL   string `json:"localUrl,omitempty"`
+	InstanceID string `json:"instanceId,omitempty"`
+	Error      string `json:"error,omitempty"`
 }
 
 // ── Kernel seam ──
@@ -176,6 +177,7 @@ type remoteKernel interface {
 	RemoveForward(hostID, forwardID string) error
 
 	EnsureServer(ctx context.Context, hostID, workspace string) (RemoteServerView, string, error)
+	SwitchCredentialProxyModel(ctx context.Context, hostID, workspace, currentRef, nextRef string) error
 	StopServer(hostID, workspace string) error
 	ServerStatus(hostID, workspace string) RemoteServerView
 	// ServeSnapshot is the read-only lookup for already-running serves; it
@@ -221,6 +223,9 @@ func (a *App) stopRemoteRuntime() {
 // emitRemoteEvent bridges a kernel callback to the frontend through the async
 // emitter so a slow webview never blocks the kernel.
 func (a *App) emitRemoteEvent(name string, payload any) {
+	if a.remoteEventHook != nil {
+		a.remoteEventHook(name, payload)
+	}
 	ctx := a.bootContext()
 	if ctx == nil {
 		return
@@ -231,6 +236,7 @@ func (a *App) emitRemoteEvent(name string, payload any) {
 // remoteEventSink implementation on *App.
 func (a *App) onStatus(s RemoteConnectionStatusView) {
 	a.emitRemoteEvent("remote:status", s)
+	a.remoteTabsHostStatus(s.HostID, s.State, s.Error)
 	// Close web windows after terminal SSH failures; transient reconnects keep
 	// them open while the status event explains the failure.
 	if s.State == "stopped" && s.Error != "" {
@@ -332,6 +338,9 @@ func (a *App) RemoveRemoteHost(id string) error {
 		}
 		if err := rt.RemoveHost(id); err != nil {
 			return err
+		}
+		if err := a.removeRemoteTabsForHost(id); err != nil {
+			return fmt.Errorf("replace tabs for removed remote host: %w", err)
 		}
 		a.closeRemoteWindowForHost(id)
 		return nil
@@ -557,26 +566,6 @@ func serveURLWithToken(localURL, token string) string {
 		return fmt.Sprintf("%s?token=%s", strings.TrimRight(localURL, "/"), token)
 	}
 	return localURL
-}
-
-func (a *App) StopRemoteServer(hostID, workspace string) error {
-	op := a.beginRemoteWindowHostOperation(hostID)
-	return op.run(func(func() bool) error {
-		rt, err := a.remoteRT()
-		if err != nil {
-			return err
-		}
-		if err := rt.StopServer(hostID, workspace); err != nil {
-			return err
-		}
-		// Stopping the service also tears down that workspace's loopback
-		// tunnel, so close the host's web window only when it is showing this
-		// workspace.
-		if a.remoteWindowWorkspace(hostID) == workspace {
-			a.closeRemoteWindowForHost(hostID)
-		}
-		return nil
-	})
 }
 
 func (a *App) RemoteServerStatus(hostID, workspace string) (RemoteServerView, error) {

@@ -22,6 +22,8 @@ type fakeRemoteKernel struct {
 	ensureToken       string
 	ensureErr         error
 	ensureCalls       int
+	switchProxyErr    error
+	switchProxyCalls  [][4]string
 	platformErr       error
 	platformChecks    []string
 	stoppedWorkspaces []string
@@ -109,17 +111,21 @@ func (f *fakeRemoteKernel) EnsureServer(context.Context, string, string) (Remote
 	f.ensureCalls++
 	return f.ensureView, f.ensureToken, f.ensureErr
 }
+func (f *fakeRemoteKernel) SwitchCredentialProxyModel(_ context.Context, hostID, workspace, currentRef, nextRef string) error {
+	f.switchProxyCalls = append(f.switchProxyCalls, [4]string{hostID, workspace, currentRef, nextRef})
+	return f.switchProxyErr
+}
 func (f *fakeRemoteKernel) StopServer(_ string, workspace string) error {
 	f.stoppedWorkspaces = append(f.stoppedWorkspaces, workspace)
 	return nil
 }
+func (f *fakeRemoteKernel) ServerStatus(string, string) RemoteServerView { return f.ensureView }
 func (f *fakeRemoteKernel) ServeSnapshot(string, string) (RemoteServerView, string, bool) {
 	if f.ensureErr != nil || f.ensureView.State != "ready" || f.ensureView.LocalURL == "" || f.ensureToken == "" {
 		return RemoteServerView{}, "", false
 	}
 	return f.ensureView, f.ensureToken, true
 }
-func (f *fakeRemoteKernel) ServerStatus(string, string) RemoteServerView { return f.ensureView }
 func (f *fakeRemoteKernel) ServerLogs(context.Context, string, string, int) (string, error) {
 	return "log line", nil
 }

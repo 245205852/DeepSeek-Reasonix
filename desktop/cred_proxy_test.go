@@ -172,9 +172,8 @@ func TestCredentialProxyRejectsUnreadableOrOversizeBodies(t *testing.T) {
 }
 
 // TestCredentialProxyTokenStableAcrossRestarts: the virtual token derives
-// from a persisted secret, so a restarted desktop keeps the same token (a
-// reused remote serve keeps working); different hosts and different
-// workspaces derive different tokens.
+// from a persisted secret plus host/workspace/model identity, so a restarted
+// desktop keeps the same route while distinct workspaces stay isolated.
 func TestCredentialProxyTokenStableAcrossRestarts(t *testing.T) {
 	seedBridgeTestHost(t, "box")
 	a1 := &App{}
@@ -208,6 +207,22 @@ func TestCredentialProxyTokenStableAcrossRestarts(t *testing.T) {
 	}
 }
 
+func TestCredentialProxyModelTokensKeepRoutesImmutable(t *testing.T) {
+	secret := strings.Repeat("ab", 32)
+	one := credentialProxyModelTokenFor(secret, "box", "~/app", "provider/model-a")
+	two := credentialProxyModelTokenFor(secret, "box", "~/app", "provider/model-b")
+	again := credentialProxyModelTokenFor(secret, "box", "~/app", "provider/model-a")
+	if one == two {
+		t.Fatal("different models shared one mutable credential proxy route token")
+	}
+	if one != again {
+		t.Fatal("the same model route token was not stable across registration")
+	}
+	if collision := credentialProxyModelTokenFor(secret, "box", "~/app", "provider:model-a"); collision == credentialProxyModelTokenFor(secret, "box", "~/app:provider", "model-a") {
+		t.Fatal("length-framed route identities shared a token")
+	}
+}
+
 func TestCredentialProxyReconnectRegistersTrackedWorkspaces(t *testing.T) {
 	seedBridgeTestHost(t, "box")
 	app := &App{}
@@ -221,7 +236,11 @@ func TestCredentialProxyReconnectRegistersTrackedWorkspaces(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	otherToken, err := app.credentialProxyToken("box", "~/other")
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherToken, err := app.credentialProxyModelToken("box", "~/other", cfg.DefaultModel)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -342,18 +361,5 @@ func TestCredentialModeConfigRoundTrip(t *testing.T) {
 	}
 	if n := normalizeCredentialMode("bogus"); n != "" {
 		t.Fatalf("bogus mode normalized to %q", n)
-	}
-}
-
-// seedBridgeTestHost installs a config-backed host for bridge-level tests.
-func seedBridgeTestHost(t *testing.T, hostID string) {
-	t.Helper()
-	home := t.TempDir()
-	t.Setenv("REASONIX_HOME", home)
-	t.Setenv("HOME", home)
-	if err := editUserConfig(func(c *config.Config) error {
-		return c.UpsertRemoteHost(config.RemoteHostEntry{Name: hostID, Host: "127.0.0.1", Port: 22, User: "dev"})
-	}); err != nil {
-		t.Fatal(err)
 	}
 }

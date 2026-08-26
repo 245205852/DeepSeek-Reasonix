@@ -5,6 +5,7 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -207,20 +208,28 @@ func (a *App) credentialProxySecret() (string, error) {
 	return p.CredentialProxySecret, nil
 }
 
-// credentialProxyTokenFor derives a virtual token. Tokens are stable across
-// desktop restarts, so a reused remote serve keeps working.
-func credentialProxyTokenFor(secret, hostID, workspace string) string {
+// credentialProxyModelTokenFor gives each staged model an immutable route.
+// A controller already running with the previous virtual token therefore keeps
+// its old upstream for the whole turn while Serve builds and publishes the new
+// controller. This is the cross-process half of failure-atomic model switches.
+func credentialProxyModelTokenFor(secret, hostID, workspace, modelRef string) string {
 	mac := hmac.New(sha256.New, []byte(secret))
-	mac.Write([]byte("reasonix-credential-proxy:" + hostID + ":" + workspace))
+	_, _ = mac.Write([]byte("reasonix-credential-proxy-model:v2"))
+	for _, field := range []string{hostID, workspace, modelRef} {
+		var size [8]byte
+		binary.BigEndian.PutUint64(size[:], uint64(len(field)))
+		_, _ = mac.Write(size[:])
+		_, _ = mac.Write([]byte(field))
+	}
 	return hex.EncodeToString(mac.Sum(nil))[:32]
 }
 
-func (a *App) credentialProxyToken(hostID, workspace string) (string, error) {
+func (a *App) credentialProxyModelToken(hostID, workspace, modelRef string) (string, error) {
 	secret, err := a.credentialProxySecret()
 	if err != nil {
 		return "", err
 	}
-	return credentialProxyTokenFor(secret, hostID, workspace), nil
+	return credentialProxyModelTokenFor(secret, hostID, workspace, modelRef), nil
 }
 
 // credentialProxyRouteInfo is everything a serve bootstrap needs to install
@@ -280,6 +289,35 @@ func (a *App) registerCredentialProxyRoute(hostID, workspace string) (credential
 		return credentialProxyRouteInfo{}, err
 	}
 	ref := strings.TrimSpace(cfg.DefaultModel)
+	if workspaceModel := a.desktopModelForWorkspace(hostID, workspace); workspaceModel != "" {
+		ref = workspaceModel
+	}
+	return a.applyCredentialProxyModel(hostID, workspace, ref)
+}
+
+// desktopModelForWorkspace deterministically selects the newest tab-owned
+// model for a workspace; map iteration order must never choose a route.
+func (a *App) desktopModelForWorkspace(hostID, workspace string) string {
+	a.remoteTabMu.Lock()
+	defer a.remoteTabMu.Unlock()
+	var selected string
+	var selectedSeq uint64
+	for _, tab := range a.remoteTabs {
+		if tab == nil || tab.ref.HostID != hostID || tab.ref.Workspace != workspace || strings.TrimSpace(tab.model) == "" {
+			continue
+		}
+		if tab.modelSeq >= selectedSeq {
+			selected, selectedSeq = tab.model, tab.modelSeq
+		}
+	}
+	return selected
+}
+
+func (a *App) applyCredentialProxyModel(hostID, workspace, ref string) (credentialProxyRouteInfo, error) {
+	cfg, err := config.Load()
+	if err != nil {
+		return credentialProxyRouteInfo{}, err
+	}
 	up, err := resolveProxyProvider(cfg, ref)
 	if err != nil {
 		return credentialProxyRouteInfo{}, err
@@ -294,7 +332,9 @@ func (a *App) registerCredentialProxyRoute(hostID, workspace string) (credential
 	if proxy == nil {
 		return credentialProxyRouteInfo{}, fmt.Errorf("credential proxy: not running")
 	}
-	token, err := a.credentialProxyToken(hostID, workspace)
+	// Route tokens include the canonical desktop model ref. Never mutate the
+	// route held by an in-flight controller during a model switch.
+	token, err := a.credentialProxyModelToken(hostID, workspace, ref)
 	if err != nil {
 		return credentialProxyRouteInfo{}, err
 	}

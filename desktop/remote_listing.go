@@ -6,10 +6,18 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/cookiejar"
+	"net/url"
 	"strings"
 	"time"
+)
+
+const (
+	serveSnapshotMaxBytes = 32 << 20
+	serveSessionsMaxBytes = 8 << 20
+	serveEventMaxBytes    = 8 << 20
 )
 
 // This listing-only bridge lets project groups show sessions before the full
@@ -32,6 +40,7 @@ type RemoteSessionView struct {
 	Turns          int    `json:"turns,omitempty"`
 	Current        bool   `json:"current,omitempty"`
 	LastActivityAt int64  `json:"lastActivityAt,omitempty"`
+	Pinned         bool   `json:"pinned,omitempty"`
 }
 
 // serveURL joins a serve base URL and an API path.
@@ -39,7 +48,32 @@ func serveURL(base, path string) string {
 	return strings.TrimRight(base, "/") + path
 }
 
-// servePost posts a JSON body and discards the response payload.
+func newServeHTTPClient(base string) (*http.Client, error) {
+	parsed, err := url.Parse(strings.TrimSpace(base))
+	if err != nil {
+		return nil, fmt.Errorf("invalid remote serve URL: %w", err)
+	}
+	ip := net.ParseIP(parsed.Hostname())
+	if parsed.Scheme != "http" || ip == nil || !ip.IsLoopback() || parsed.User != nil {
+		return nil, fmt.Errorf("remote serve URL must use loopback HTTP")
+	}
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		return nil, err
+	}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.Proxy = nil
+	return &http.Client{
+		Jar:       jar,
+		Transport: transport,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}, nil
+}
+
+// servePost keeps the bounded response text in failures so remote lease and
+// busy-state hints reach the desktop surface.
 func servePost(ctx context.Context, client *http.Client, url string, body []byte) error {
 	if body == nil {
 		body = []byte("{}")
@@ -49,9 +83,12 @@ func servePost(ctx context.Context, client *http.Client, url string, body []byte
 		return err
 	}
 	defer resp.Body.Close()
-	_, _ = io.Copy(io.Discard, resp.Body)
+	data, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		return nil
+	}
+	if message := strings.TrimSpace(string(data)); message != "" {
+		return fmt.Errorf("%s: status %d: %s", url, resp.StatusCode, message)
 	}
 	return fmt.Errorf("%s: status %d", url, resp.StatusCode)
 }
@@ -99,8 +136,15 @@ func serveSessions(ctx context.Context, client *http.Client, base string) ([]ser
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("serve /sessions: status %d", resp.StatusCode)
 	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, serveSessionsMaxBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > serveSessionsMaxBytes {
+		return nil, fmt.Errorf("serve /sessions response exceeds %d bytes", serveSessionsMaxBytes)
+	}
 	var out []serveSessionEntry
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+	if err := json.Unmarshal(data, &out); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -111,6 +155,16 @@ func serveSessions(ctx context.Context, client *http.Client, base string) ([]ser
 // registration. A serve that is not running reports an error — query paths
 // must never cold-start one.
 func (a *App) serveClientForRef(hostID, workspace string) (*http.Client, string, func(), error) {
+	a.remoteTabMu.Lock()
+	for _, tab := range a.remoteTabs {
+		if tab.ref.HostID == hostID && tab.ref.Workspace == workspace && tab.client != nil {
+			client, base := tab.client, tab.base
+			a.remoteTabMu.Unlock()
+			return client, base, func() {}, nil
+		}
+	}
+	a.remoteTabMu.Unlock()
+
 	rt, err := a.remoteRT()
 	if err != nil {
 		return nil, "", nil, err
@@ -124,12 +178,11 @@ func (a *App) serveClientForRef(hostID, workspace string) (*http.Client, string,
 		ctx = context.Background()
 	}
 	callCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	jar, jarErr := cookiejar.New(nil)
-	if jarErr != nil {
+	client, clientErr := newServeHTTPClient(view.LocalURL)
+	if clientErr != nil {
 		cancel()
-		return nil, "", nil, jarErr
+		return nil, "", nil, clientErr
 	}
-	client := &http.Client{Jar: jar}
 	if err := serveHandshake(callCtx, client, view.LocalURL, token); err != nil {
 		cancel()
 		return nil, "", nil, err
@@ -146,25 +199,48 @@ func (a *App) RemoteProjectSessions(hostID, workspace string) ([]RemoteSessionVi
 		return nil, err
 	}
 	defer done()
-	ctx := a.bootContext()
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	callCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	ctx, cancel := commandContext(a)
 	defer cancel()
-	entries, err := serveSessions(callCtx, client, base)
+	entries, err := serveSessions(ctx, client, base)
 	if err != nil {
 		return nil, err
 	}
 	out := make([]RemoteSessionView, 0, len(entries))
+	pinned := make([]RemoteSessionView, 0, len(entries))
+	hasCurrent := false
 	for _, e := range entries {
-		out = append(out, RemoteSessionView{
+		title := strings.TrimSpace(e.Title)
+		if override := remoteSessionTitleOverride(hostID, workspace, e.Name); override != "" {
+			title = override
+		}
+		view := RemoteSessionView{
 			Name:           e.Name,
-			Title:          strings.TrimSpace(e.Title),
+			Title:          title,
 			Turns:          e.Turns,
 			Current:        e.Current,
 			LastActivityAt: e.MtimeMilli,
-		})
+			Pinned:         remoteSessionPinned(hostID, workspace, e.Name),
+		}
+		hasCurrent = hasCurrent || e.Current
+		if view.Pinned {
+			pinned = append(pinned, view)
+		} else {
+			out = append(out, view)
+		}
 	}
-	return out, nil
+	if !hasCurrent {
+		a.remoteTabMu.Lock()
+		var blank *RemoteSessionView
+		for _, tab := range a.remoteTabs {
+			if tab.ref.HostID == hostID && tab.ref.Workspace == workspace && tab.session.reset {
+				blank = &RemoteSessionView{Name: "", Title: tab.topicTitle, Current: true, LastActivityAt: time.Now().UnixMilli()}
+				break
+			}
+		}
+		a.remoteTabMu.Unlock()
+		if blank != nil {
+			return append([]RemoteSessionView{*blank}, append(pinned, out...)...), nil
+		}
+	}
+	return append(pinned, out...), nil
 }

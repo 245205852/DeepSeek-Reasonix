@@ -134,9 +134,8 @@ import type {
   WorkspaceView,
   SessionClearResult,
 } from "./types";
-
-export const COMPACT_RATIO_MIN_PERCENT = 30;
-export const COMPACT_RATIO_MAX_PERCENT = 85;
+export * from "./remoteTabEvents";
+export const COMPACT_RATIO_MIN_PERCENT = 30, COMPACT_RATIO_MAX_PERCENT = 85;
 
 export interface DesktopShellStatusView {
   trayState: "probing" | "ready" | "unavailable";
@@ -1032,6 +1031,7 @@ export function onRemoteServer(cb: (s: RemoteServerView) => void): () => void {
   }
   return registerMockRemoteListener("server", cb as (v: unknown) => void);
 }
+
 // Mock event fan-out so browser-dev and tsx tests can drive remote:* events
 // without a Wails runtime.
 type MockRemoteChannel = "status" | "forwards" | "server";
