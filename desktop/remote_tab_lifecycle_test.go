@@ -283,6 +283,28 @@ func TestRemoteResumeBusyKeepsCurrentSessionReady(t *testing.T) {
 	}
 }
 
+func TestRemoteResumeRejectedKeepsCurrentSessionReady(t *testing.T) {
+	fs := newFakeServe(t, "s3cret", []serveSessionEntry{{Name: "saved", Path: "/saved.jsonl", Title: "Saved"}})
+	kernel := &fakeRemoteKernel{
+		statuses:   []RemoteConnectionStatusView{{HostID: "box", State: "connected"}},
+		ensureView: RemoteServerView{HostID: "box", State: "ready", LocalURL: fs.server.URL}, ensureToken: "s3cret",
+	}
+	seedBridgeTestHost(t, "box")
+	a := &App{remoteRuntime: kernel}
+	cleanupRemoteTabPumps(t, a)
+	meta := openReadyRemoteTab(t, a, RemoteTabOpenOptions{NewSession: true})
+	fs.mu.Lock()
+	fs.failEnter = "session is already leased by another process"
+	fs.mu.Unlock()
+	a.resumeRemoteTabSession(meta.ID, "saved")
+	a.remoteTabMu.Lock()
+	state, message := a.remoteTabs[meta.ID].state, a.remoteTabs[meta.ID].err
+	a.remoteTabMu.Unlock()
+	if state != "ready" || !strings.Contains(message, "already leased") {
+		t.Fatalf("rejected resume state/error = %q/%q, want ready action error", state, message)
+	}
+}
+
 func TestRemoteNewBusyKeepsCurrentSessionReady(t *testing.T) {
 	fs := newFakeServe(t, "s3cret", []serveSessionEntry{{Name: "saved", Path: "/saved.jsonl", Title: "Saved", Current: true}})
 	kernel := &fakeRemoteKernel{

@@ -10,6 +10,7 @@ import { formatInboxError, isInboxItemMissing } from "../lib/inboxError";
 import { inboxScopeKey } from "../lib/composerInboxQueue";
 import { useComposerInboxRefresh } from "../lib/useComposerInboxRefresh";
 import { useComposerImeGuard } from "../lib/useComposerImeGuard";
+import { useComposerCommandCatalog } from "../lib/useComposerCommandCatalog";
 import { guidanceIsInFlight, guidanceNeedsRetry, guidanceTextMatches, kickIdleGuidance, markGuidanceQueued } from "../lib/composerGuidance";
 import { canUsePromptHistory, composerEnterAction, composerEscapeAction, composerMenuKeyAction, insertComposerNewline, isFnKeyEvent, isImeKeyEvent, promptHistoryDirectionFromEvent } from "../lib/composerKeyboard";
 import { cacheGeneration, loadOlder } from "../lib/composerHistory";
@@ -549,6 +550,7 @@ export function Composer({
   goalRuntime,
   cwd,
   modelLabel,
+  commandCatalog,
   imageInputEnabled = true,
   imageUnderstandingEnabled = false,
   attachmentInputEnabled = true,
@@ -622,6 +624,7 @@ export function Composer({
   goalRuntime?: GoalRuntime;
   cwd?: string;
   modelLabel: string;
+  commandCatalog?: readonly CommandInfo[];
   imageInputEnabled?: boolean;
   /** True when text-only image turns are preprocessed by a configured vision model. */
   imageUnderstandingEnabled?: boolean;
@@ -1259,18 +1262,7 @@ export function Composer({
   }, [guidanceExpanded, pendingGuidance.length]);
 
   // --- slash commands ---
-  const [commands, setCommands] = useState<CommandInfo[]>([]);
-  useEffect(() => {
-    let live = true;
-    app.Commands()
-      .then((next) => {
-        if (live) setCommands(asArray(next));
-      })
-      .catch(() => {});
-    return () => {
-      live = false;
-    };
-  }, [ready, cwd, running, workspaceScopeKey]);
+  const commands = useComposerCommandCatalog(commandCatalog, ready ?? false, cwd, running, workspaceScopeKey ?? "");
   useEffect(() => {
     onInvocationMetadataChange?.(Object.fromEntries(
       commands

@@ -5,6 +5,7 @@ import { app } from "../lib/bridge";
 import { Transcript } from "./Transcript";
 import { AskCard } from "./AskCard";
 import { ApprovalModal } from "./ApprovalModal";
+import { ExtensionFormDialog } from "./ExtensionFormDialog";
 import type { RemoteSessionApi } from "../lib/useRemoteSession";
 export { hydrateRemoteTelemetry, loadRemoteStatusSnapshot } from "../lib/remoteTelemetry";
 import type { TabMeta, WireApproval, WireAsk } from "../lib/types";
@@ -21,11 +22,20 @@ export function RemoteSessionSurface({ tab, session }: { tab: TabMeta; session: 
   const t = useT();
   const approval = session.transcript.approval as WireApproval | undefined;
   const ask = session.transcript.ask as WireAsk | undefined;
+  const extensionForm = session.transcript.extensionForm;
   const [actionError, setActionError] = useState("");
-  useEffect(() => setActionError(""), [session.state, tab.id]);
+  const [extensionFormBusy, setExtensionFormBusy] = useState(false);
+  useEffect(() => { setActionError(""); setExtensionFormBusy(false); }, [session.state, tab.id]);
   const runAction = (action: () => Promise<unknown>) => {
     setActionError("");
     void action().catch((error) => setActionError(error instanceof Error ? error.message : String(error)));
+  };
+  const submitExtensionForm = (values: Record<string, unknown>) => {
+    if (!extensionForm || extensionFormBusy) return;
+    setExtensionFormBusy(true);
+    runAction(() => app.SubmitRemoteTabExtensionForm(tab.id, extensionForm.pluginId, extensionForm.surfaceId, values)
+      .then(() => session.clearExtensionForm(extensionForm.pluginId, extensionForm.surfaceId))
+      .finally(() => setExtensionFormBusy(false)));
   };
   if (!tab.remote) return null;
 
@@ -146,6 +156,15 @@ export function RemoteSessionSurface({ tab, session }: { tab: TabMeta; session: 
           }))))}
           onDismiss={() => runAction(() => session.answer(ask.id, []))}
           onStop={() => runAction(() => session.cancelTurn())}
+        />
+      ) : null}
+      {extensionForm ? (
+        <ExtensionFormDialog
+          key={`${tab.id}:${extensionForm.pluginId}:${extensionForm.surfaceId}`}
+          surface={extensionForm}
+          busy={extensionFormBusy}
+          onSubmit={submitExtensionForm}
+          onCancel={() => submitExtensionForm({ cancelled: true })}
         />
       ) : null}
       {actionError || session.promptError || (session.state === "ready" && session.error) ? (

@@ -45,13 +45,13 @@ import { Composer } from "./components/Composer";
 import { TodoPanel } from "./components/TodoPanel";
 import { ApprovalModal } from "./components/ApprovalModal";
 import { AskCard } from "./components/AskCard";
-import { ExtensionFormDialog } from "./components/ExtensionFormDialog";
 import { ClearContextCard } from "./components/ClearContextCard";
 import { RuntimeDecisionCard } from "./components/RuntimeDecisionCard";
 import { decisionSurfaceMockFromInput, type DecisionSurfaceKind as MockDecisionSurfaceKind } from "./lib/decisionSurfaceMock";
 const UndoRewindBanner = lazy(() => import("./components/UndoRewindBanner").then((module) => ({ default: module.UndoRewindBanner })));
 const ProjectTree = lazy(() => import("./components/ProjectTree").then((module) => ({ default: module.ProjectTree })));
 const RemoteSessionSurface = lazy(() => import("./components/RemoteSessionSurface").then((module) => ({ default: module.RemoteSessionSurface })));
+const ExtensionFormDialog = lazy(() => import("./components/ExtensionFormDialog").then((module) => ({ default: module.ExtensionFormDialog })));
 /** Footer decision surface kinds. Runtime blockers are explicit recovery choices. */
 type DecisionSurfaceKind = MockDecisionSurfaceKind | "extension_form";
 import { StatusBar } from "./components/StatusBar";
@@ -5031,13 +5031,15 @@ export default function App() {
               )
             : visibleDecisionSurface === "extension_form"
               ? state.extensionForm && (
-              <ExtensionFormDialog
-                key={`${activeTabId ?? ""}:${state.extensionForm.pluginId}:${state.extensionForm.surfaceId}`}
-                surface={state.extensionForm}
-                busy={extensionFormBusy}
-                onSubmit={(values) => void submitExtensionForm(values)}
-                onCancel={() => void cancelExtensionForm()}
-              />
+              <Suspense fallback={null}>
+                <ExtensionFormDialog
+                  key={`${activeTabId ?? ""}:${state.extensionForm.pluginId}:${state.extensionForm.surfaceId}`}
+                  surface={state.extensionForm}
+                  busy={extensionFormBusy}
+                  onSubmit={(values) => void submitExtensionForm(values)}
+                  onCancel={() => void cancelExtensionForm()}
+                />
+              </Suspense>
               )
             : visibleDecisionSurface === "workspace_conflict" && workspaceConflict ? (
               <RuntimeDecisionCard
@@ -5132,6 +5134,7 @@ export default function App() {
               goalRuntime={state.meta?.goalRuntime}
               cwd={state.meta?.cwd}
               modelLabel={remoteSurfaceActive ? remoteSession.modelLabel || activeTab?.label || t("status.connecting") : state.meta?.label ?? t("status.connecting")}
+              commandCatalog={remoteSurfaceActive ? remoteSession.commands : undefined}
               imageInputEnabled={!remoteSurfaceActive && state.meta?.imageInputEnabled !== false}
               imageUnderstandingEnabled={state.meta?.visionFallbackEnabled === true}
               attachmentInputEnabled={!remoteSurfaceActive}

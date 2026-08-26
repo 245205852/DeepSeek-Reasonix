@@ -9,6 +9,14 @@ import (
 	"time"
 )
 
+// hasRemoteTabSurface is called while App.mu protects the local registry.
+// The repository lock order is local App.mu before remoteTabMu.
+func (a *App) hasRemoteTabSurface() bool {
+	a.remoteTabMu.Lock()
+	defer a.remoteTabMu.Unlock()
+	return len(a.remoteTabs) > 0
+}
+
 // reconcileTabStripOrder merges the preferred persisted order with every
 // currently live local and remote tab id.
 func reconcileTabStripOrder(preferred, localIDs, remoteIDs []string) []string {

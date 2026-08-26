@@ -439,6 +439,29 @@ func TestRemoteTabMetasMarksOnlySelectedTabActive(t *testing.T) {
 	}
 }
 
+func TestCloseFinalLocalTabAllowsRemainingRemoteSurface(t *testing.T) {
+	a := &App{}
+	seedLocalTab(a, "local")
+	a.remoteTabs = map[string]*remoteTab{
+		"remote": {id: "remote", ref: RemoteTabRef{HostID: "box", Workspace: "~/app"}, state: "disconnected"},
+	}
+	a.remoteTabLayout.order = []string{"remote"}
+	a.remoteTabLayout.stripOrder = []string{"local", "remote"}
+	a.remoteTabLayout.activeID = "remote"
+	if err := a.CloseTab("local"); err != nil {
+		t.Fatalf("CloseTab(local) with remote survivor: %v", err)
+	}
+	a.mu.RLock()
+	localCount := len(a.tabs)
+	a.mu.RUnlock()
+	if localCount != 0 {
+		t.Fatalf("local tab count = %d, want 0", localCount)
+	}
+	if tabs := a.ListTabs(); len(tabs) != 1 || tabs[0].ID != "remote" || !tabs[0].Active {
+		t.Fatalf("remaining surfaces = %+v, want active remote", tabs)
+	}
+}
+
 func TestRemoteStatusRefreshPublishesInactiveRuntimeMeta(t *testing.T) {
 	client := &http.Client{}
 	log := &eventLog{}

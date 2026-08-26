@@ -76,6 +76,7 @@ export interface RemoteTabSnapshot {
   todos?: unknown[];
   checkpoints?: unknown[];
   models?: string[];
+  commands?: unknown[];
   status?: unknown;
   pendingEvents?: unknown[];
 }

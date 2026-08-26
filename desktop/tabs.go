@@ -3287,7 +3287,7 @@ func (a *App) closeTabRuntime(tabID string, allowDetach bool) error {
 		a.mu.Unlock()
 		return fmt.Errorf("tab %q not found", tabID)
 	}
-	if len(a.tabs) <= 1 {
+	if len(a.tabs) <= 1 && !a.hasRemoteTabSurface() {
 		a.mu.Unlock()
 		return fmt.Errorf("cannot close the last tab")
 	}
@@ -3319,7 +3319,7 @@ func (a *App) closeTabRuntime(tabID string, allowDetach bool) error {
 		}
 		return fmt.Errorf("tab %q changed while closing", tabID)
 	}
-	if len(a.tabs) <= 1 {
+	if len(a.tabs) <= 1 && !a.hasRemoteTabSurface() {
 		a.mu.Unlock()
 		return fmt.Errorf("cannot close the last tab")
 	}

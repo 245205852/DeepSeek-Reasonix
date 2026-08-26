@@ -16,6 +16,7 @@ type RemoteTabSnapshot struct {
 	Todos         json.RawMessage   `json:"todos,omitempty"`
 	Checkpoints   json.RawMessage   `json:"checkpoints,omitempty"`
 	Models        json.RawMessage   `json:"models,omitempty"`
+	Commands      json.RawMessage   `json:"commands,omitempty"`
 	Status        json.RawMessage   `json:"status,omitempty"`
 	PendingEvents []json.RawMessage `json:"pendingEvents,omitempty"`
 }
@@ -40,6 +41,7 @@ func (a *App) RemoteTabSnapshot(tabID string) (RemoteTabSnapshot, error) {
 		"/todos":       &snap.Todos,
 		"/checkpoints": &snap.Checkpoints,
 		"/models":      &snap.Models,
+		"/commands":    &snap.Commands,
 		"/status":      &snap.Status,
 	} {
 		wg.Add(1)
@@ -80,6 +82,7 @@ func (a *App) RemoteTabSnapshot(tabID string) (RemoteTabSnapshot, error) {
 	}
 	a.remoteTabMu.Unlock()
 	a.recordRemoteTabSessionStatus(tabID, client, gen, snap.Status)
+	a.recordRemoteTabModelCatalog(tabID, client, gen, snap.Models)
 	return snap, nil
 }
 
@@ -160,6 +163,46 @@ func (a *App) recordRemoteTabSessionStatus(tabID string, client *http.Client, ge
 		before.CancelRequested != after.CancelRequested || before.Cancellable != after.Cancellable {
 		a.emitRemoteEvent("remote-tab:updated", after)
 	}
+}
+
+func (a *App) recordRemoteTabModelCatalog(tabID string, client *http.Client, gen uint64, models json.RawMessage) {
+	if gen == 0 || a.remoteTabLocalProxy(tabID) {
+		return
+	}
+	var payload struct {
+		Current string `json:"current"`
+		Models  []struct {
+			Ref    string `json:"ref"`
+			Active bool   `json:"active"`
+		} `json:"models"`
+	}
+	if json.Unmarshal(models, &payload) != nil {
+		return
+	}
+	current := strings.TrimSpace(payload.Current)
+	if current == "" {
+		for _, entry := range payload.Models {
+			if entry.Active {
+				current = strings.TrimSpace(entry.Ref)
+				break
+			}
+		}
+	}
+	if current == "" {
+		return
+	}
+	a.remoteTabMu.Lock()
+	tab := a.remoteTabs[tabID]
+	if tab == nil || tab.client != client || tab.gen != gen || tab.model == current {
+		a.remoteTabMu.Unlock()
+		return
+	}
+	tab.model = current
+	tab.modelSeq = remoteTabModelSeq.Add(1)
+	meta := remoteTabMetaLocked(tab)
+	a.remoteTabMu.Unlock()
+	a.emitRemoteEvent("remote-tab:updated", meta)
+	a.saveTabsFromRemote()
 }
 
 // listTabsWithRemote merges the remote strip entries into a local tab list.

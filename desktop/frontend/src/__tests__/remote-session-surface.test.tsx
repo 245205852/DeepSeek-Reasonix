@@ -105,6 +105,7 @@ window.go = { main: { App: {
         canCode: true,
         canConversation: true,
       }],
+      commands: [{ name: "remote-review", description: "Review remotely", kind: "custom", group: "skills" }],
       status: {
         label: statusModelLabel,
         plan: true,
@@ -187,6 +188,9 @@ window.go = { main: { App: {
 	async AnswerRemoteTab(tabId: string, callId: string, answers: Array<{ QuestionID: string; Selected: string[] }>) {
 		tape.push(`answer:${tabId}:${callId}:${JSON.stringify(answers)}`);
 		if (blockAnswer) await new Promise<void>((resolve) => { releaseAnswer = resolve; });
+  },
+  async SubmitRemoteTabExtensionForm(tabId: string, pluginId: string, surfaceId: string, values: Record<string, unknown>) {
+    tape.push(`extension-form:${tabId}:${pluginId}:${surfaceId}:${JSON.stringify(values)}`);
   },
   async OpenRemoteProjectTab(hostId: string, workspace: string, opts?: { newSession?: boolean }) {
     tape.push(`open:${hostId}:${workspace}:${opts?.newSession ? "new" : ""}`);
@@ -392,6 +396,28 @@ ok(tape.includes('answer:tab-remote-1:ask-custom:[{"QuestionID":"q-custom","Sele
   "custom AskCard text serializes as the remote question selection");
 
 await act(async () => {
+  __emitMockRemoteTab("tab-remote-1", "event", {
+    kind: "extension_surface",
+    extension: {
+      pluginId: "remote-plugin", surfaceId: "setup", kind: "form",
+      form: { title: "Remote setup", fields: [{ key: "region", label: "Region", kind: "input", required: true, default: "us-west" }] },
+    },
+  });
+  await flush();
+});
+{
+  const form = document.querySelector(".extension-form");
+  ok(Boolean(form) && document.body.textContent?.includes("Remote setup") === true, "remote extension form renders on the shared surface");
+  await act(async () => {
+    form?.closest(".prompt-shelf")?.querySelector<HTMLButtonElement>(".decision-confirm-bar__confirm")?.click();
+    await flush();
+  });
+  ok(tape.includes('extension-form:tab-remote-1:remote-plugin:setup:{"region":"us-west"}'),
+    "remote extension form submits through the Serve proxy");
+  ok(!document.querySelector(".extension-form"), "remote extension form clears after an accepted submission");
+}
+
+await act(async () => {
   __emitMockRemoteTab("tab-remote-1", "state", { state: "serve_down", error: "tunnel closed" });
   await flush();
 });
@@ -454,6 +480,8 @@ ok(probe?.composerProfile?.collaborationMode === "plan" && probe?.composerProfil
 ok(probe?.effort?.current === "high" && probe?.transcript.checkpoints[0]?.turn === 3
   && probe?.transcript.checkpoints[0]?.fileCount === 2 && probe?.transcript.checkpoints[0]?.files.length === 1,
   "snapshot status hydrates effort and rewind checkpoints");
+ok(probe?.commands.length === 1 && probe.commands[0]?.name === "remote-review",
+  "remote hydration exposes the Serve command catalog instead of local commands");
 ok(probe?.transcript.context.used === 1200 && probe.transcript.context.window === 64000
   && probe.transcript.balance?.display === "¥88.00" && probe.transcript.sessionCost === 0.12
   && probe.transcript.jobs[0]?.id === "job-remote" && probe.transcript.lastTurnOutputTokens === 200,

@@ -203,7 +203,7 @@ func newFakeServe(t *testing.T, token string, sessions []serveSessionEntry) *fak
 			w.WriteHeader(http.StatusNoContent)
 		}
 	}
-	for _, path := range []string{"/submit", "/cancel", "/approve", "/plan-decision", "/answer", "/rewind", "/goal", "/goal/pause", "/goal/resume", "/jobs/cancel", "/inbox/items", "/tool-approval-mode", "/delete-session", "/model", "/effort", "/quality-floor", "/plan", "/compact", "/fork", "/summarize", "/forget", "/clear"} {
+	for _, path := range []string{"/submit", "/cancel", "/approve", "/plan-decision", "/answer", "/extension-form", "/rewind", "/goal", "/goal/pause", "/goal/resume", "/jobs/cancel", "/inbox/items", "/tool-approval-mode", "/delete-session", "/model", "/effort", "/quality-floor", "/plan", "/compact", "/fork", "/summarize", "/forget", "/clear"} {
 		mux.HandleFunc("POST "+path, command(path))
 	}
 	snapshot := func(path, payload string) {
@@ -238,6 +238,7 @@ func newFakeServe(t *testing.T, token string, sessions []serveSessionEntry) *fak
 	snapshot("/todos", `[]`)
 	snapshot("/checkpoints", `[{"turn":1}]`)
 	snapshot("/models", `{"current":"remote/chat","label":"chat","models":[{"ref":"remote/chat","provider":"remote","model":"chat","active":true}]}`)
+	snapshot("/commands", `[{"name":"remote-review","description":"Review remotely","kind":"custom","group":"skills"}]`)
 	mux.HandleFunc("GET /status", func(w http.ResponseWriter, r *http.Request) {
 		fs.record(r.Method, "/status", "")
 		fs.mu.Lock()
@@ -710,34 +711,6 @@ func TestSetModelForTabRemoteOwnsModelOnDesktop(t *testing.T) {
 	}
 	if current != "deepseek/deepseek-v4-pro" {
 		t.Fatalf("current = %q, want deepseek/deepseek-v4-pro", current)
-	}
-}
-
-// TestModelsForTabRemoteCredentialHostOffersServeCatalog: when the host keeps
-// its keys on the remote, the picker lists the serve's own catalog, not the
-// desktop's.
-func TestModelsForTabRemoteCredentialHostOffersServeCatalog(t *testing.T) {
-	isolateDesktopUserDirs(t)
-	cfg := config.Default()
-	if err := cfg.UpsertRemoteHost(config.RemoteHostEntry{Name: "box", Host: "127.0.0.1", Port: 22, User: "dev"}); err != nil {
-		t.Fatal(err)
-	}
-	if err := cfg.SaveTo(config.UserConfigPath()); err != nil {
-		t.Fatalf("save config: %v", err)
-	}
-	fs := newFakeServe(t, "s3cret", nil)
-	kernel := &fakeRemoteKernel{
-		statuses:    []RemoteConnectionStatusView{{HostID: "box", State: "connected"}},
-		ensureView:  RemoteServerView{HostID: "box", State: "ready", LocalURL: fs.server.URL},
-		ensureToken: "s3cret",
-	}
-	a := &App{remoteRuntime: kernel}
-	cleanupRemoteTabPumps(t, a)
-	meta := openReadyRemoteTab(t, a, RemoteTabOpenOptions{NewSession: true})
-
-	got := a.ModelsForTab(meta.ID)
-	if len(got) != 1 || got[0].Ref != "remote/chat" || !got[0].Current {
-		t.Fatalf("ModelsForTab = %+v, want the serve catalog with remote/chat current", got)
 	}
 }
 

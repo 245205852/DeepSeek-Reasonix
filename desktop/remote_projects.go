@@ -355,7 +355,11 @@ func (a *App) OpenRemoteProjectTab(hostID, workspace string, opts RemoteTabOpenO
 
 	ref := RemoteTabRef{HostID: hostID, Workspace: workspace}
 	tabID := newTabID()
-	tab := &remoteTab{id: tabID, ref: ref, state: "connecting", session: remoteTabSessionState{newSession: opts.NewSession, name: opts.SessionName}, hostLabel: host.Name, topicTitle: remoteWorkspaceName(workspace), model: resolveNewSessionModel(cfg)}
+	model := ""
+	if host.CredentialProxyEnabled() {
+		model = resolveNewSessionModel(cfg)
+	}
+	tab := &remoteTab{id: tabID, ref: ref, state: "connecting", session: remoteTabSessionState{newSession: opts.NewSession, name: opts.SessionName}, hostLabel: host.Name, topicTitle: remoteWorkspaceName(workspace), model: model}
 
 	// Reuse-or-insert is atomic so concurrent opens cannot create two sessions.
 	registration := a.registerRemoteTabOpen(tab, host.Name, opts)
@@ -451,10 +455,15 @@ func (a *App) restoreRemoteTabShells(f desktopTabsFile) {
 		if id == "" || hostID == "" || ws == "" || localIDs[id] || a.remoteTabs[id] != nil {
 			continue
 		}
-		hostLabel := hostID
+		hostLabel, model := hostID, ""
 		if cfgErr == nil {
-			if host, ok := cfg.RemoteHost(hostID); ok && strings.TrimSpace(host.Name) != "" {
-				hostLabel = host.Name
+			if host, ok := cfg.RemoteHost(hostID); ok {
+				if name := strings.TrimSpace(host.Name); name != "" {
+					hostLabel = name
+				}
+				if host.CredentialProxyEnabled() {
+					model = strings.TrimSpace(entry.Model)
+				}
 			}
 		}
 		title := strings.TrimSpace(entry.TopicTitle)
@@ -464,7 +473,7 @@ func (a *App) restoreRemoteTabShells(f desktopTabsFile) {
 		restored := &remoteTab{
 			id: id, ref: RemoteTabRef{HostID: hostID, Workspace: ws},
 			state: "disconnected", session: remoteTabSessionState{newSession: true},
-			hostLabel: hostLabel, topicTitle: title, model: strings.TrimSpace(entry.Model),
+			hostLabel: hostLabel, topicTitle: title, model: model,
 		}
 		restored.modelSeq = remoteTabModelSeq.Add(1)
 		a.remoteTabs[id] = restored

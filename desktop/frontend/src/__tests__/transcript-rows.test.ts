@@ -87,6 +87,36 @@ const fixture: Item[] = [
   eq(after, before, "outside answer content does not remount the existing process segment");
 }
 
+{
+  const currentUser: Item = { kind: "user", id: "duplicate-user", text: "current", createdAt: 200 };
+  const currentAnswer: Item = { kind: "assistant", id: "duplicate-answer", text: "current answer", reasoning: "", streaming: false };
+  const options = {
+    folds: EMPTY_FOLDS,
+    foldPreference: "auto" as const,
+    hasOlderHistory: false,
+    creationMode: false,
+    turnForUser: () => undefined,
+  };
+  const before = buildTranscriptRows(buildTurnModels([currentUser, currentAnswer]), options);
+  const after = buildTranscriptRows(buildTurnModels([
+    { kind: "user", id: "duplicate-user", text: "older", createdAt: 100, historyTurn: 1 },
+    { kind: "assistant", id: "duplicate-answer", text: "older answer", reasoning: "", streaming: false },
+    currentUser,
+    currentAnswer,
+  ]), options);
+  const beforeCurrent = before.filter((row) => row.kind === "user" || row.kind === "answer").map((row) => row.key).join(",");
+  const afterCurrent = after.filter((row) =>
+    (row.kind === "user" && row.item.text === "current")
+    || (row.kind === "answer" && row.item.text === "current answer")
+  ).map((row) => row.key).join(",");
+  eq(afterCurrent, beforeCurrent, "prepending duplicate user/answer ids preserves the mounted current row keys");
+  const olderKeys = after.filter((row) =>
+    (row.kind === "user" && row.item.text === "older")
+    || (row.kind === "answer" && row.item.text === "older answer")
+  ).map((row) => row.key);
+  ok(olderKeys.every((key) => key.includes("@") && !key.includes("#")), "duplicate history rows use immutable identity hashes instead of occurrence suffixes");
+}
+
 const turnOf = new Map([
   ["u1", 0],
   ["u2", 1],

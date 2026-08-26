@@ -95,6 +95,7 @@ export function createMockRemoteProjects(): {
     async ResolveRemoteTabPlanDecision() {},
     async SetRemoteTabQualityFloor() {},
     async AnswerRemoteTab() {},
+    async SubmitRemoteTabExtensionForm() {},
     async SetRemoteTabModel(tabId, ref) {
       const tab = tabs.get(tabId);
       if (tab) {

@@ -10,6 +10,7 @@ import { createTranscriptMeasuredSizes } from "../lib/transcriptMeasuredSizes";
 import type { TranscriptScrollWriteRecord } from "../lib/transcriptScrollProbe";
 import { buildTranscriptRows, buildTurnModels, EMPTY_FOLDS, transcriptRowMeasurementVersion, type TranscriptRow } from "../lib/transcriptRows";
 import type { Item } from "../lib/useController";
+import { installTranscriptRaceClock } from "./helpers/transcriptRaceClock";
 
 let passed = 0;
 let failed = 0;
@@ -51,42 +52,7 @@ globalThis.cancelAnimationFrame = cancelFrame;
 dom.window.requestAnimationFrame = requestFrame;
 dom.window.cancelAnimationFrame = cancelFrame;
 
-let clockNow = 10_000;
-let nextTimer = 1;
-const timers = new Map<number, { dueAt: number; run: () => void }>();
-const originalDateNow = Date.now;
-const originalSetTimeout = dom.window.setTimeout;
-const originalClearTimeout = dom.window.clearTimeout;
-Date.now = () => clockNow;
-dom.window.setTimeout = ((handler: TimerHandler, timeout = 0, ...args: unknown[]) => {
-  const id = nextTimer;
-  nextTimer += 1;
-  const run = typeof handler === "function"
-    ? () => handler(...args)
-    : () => { throw new Error("string timer handlers are unsupported in this test"); };
-  timers.set(id, { dueAt: clockNow + Math.max(0, timeout), run });
-  return id;
-}) as typeof dom.window.setTimeout;
-dom.window.clearTimeout = ((id: number | undefined) => {
-  if (id !== undefined) timers.delete(id);
-}) as typeof dom.window.clearTimeout;
-
-async function advanceClock(milliseconds: number) {
-  await act(async () => {
-    const target = clockNow + milliseconds;
-    while (true) {
-      const next = [...timers.entries()]
-        .filter(([, timer]) => timer.dueAt <= target)
-        .sort(([leftID, left], [rightID, right]) => left.dueAt - right.dueAt || leftID - rightID)[0];
-      if (!next) break;
-      const [id, timer] = next;
-      timers.delete(id);
-      clockNow = timer.dueAt;
-      timer.run();
-    }
-    clockNow = target;
-  });
-}
+const { advanceClock, restore: restoreClock } = installTranscriptRaceClock(dom.window as unknown as Window);
 
 async function flushFrames() {
   const pending = [...frames.entries()];
@@ -754,6 +720,39 @@ check(integrity?.resetKey === duplicateResetKey, "prepend plus outside-content p
 check(scrollElement.scrollTop === 160, "prepend plus outside-content patch preserves the reader viewport");
 check(scrollByCalls === 0 && scrollToCalls === 0 && scrollToIndexCalls === 0 && scrollWrites.length === 0,
   "prepend plus outside-content patch emits no recovery or direct scroll writes");
+
+// Imported pages may also repeat user/assistant ids. The already mounted
+// current turn keeps its unsuffixed keys while older duplicates receive stable
+// identity hashes, so the prepend does not reset the reader's surface.
+const duplicateTurnCurrent: Item[] = [
+  { kind: "user", id: "duplicate-turn-user", text: "current", createdAt: 200 },
+  { kind: "assistant", id: "duplicate-turn-answer", text: "current answer", reasoning: "", streaming: false },
+];
+const duplicateTurnBeforeRows = buildTranscriptRows(buildTurnModels(duplicateTurnCurrent), duplicateOptions);
+const duplicateTurnAfterRows = buildTranscriptRows(buildTurnModels([
+  { kind: "user", id: "duplicate-turn-user", text: "older", createdAt: 100, historyTurn: 1 },
+  { kind: "assistant", id: "duplicate-turn-answer", text: "older answer", reasoning: "", streaming: false },
+  ...duplicateTurnCurrent,
+]), duplicateOptions);
+const duplicateTurnBeforeKeys = duplicateTurnBeforeRows.map((row) => row.key);
+const duplicateTurnCurrentKeys = duplicateTurnAfterRows.filter((row) =>
+  (row.kind === "user" && row.item.text === "current")
+  || (row.kind === "answer" && row.item.text === "current answer")
+).map((row) => row.key);
+check(JSON.stringify(duplicateTurnCurrentKeys) === JSON.stringify(duplicateTurnBeforeKeys),
+  "prepending duplicate turn ids preserves every mounted current-turn row key");
+check(duplicateTurnAfterRows.slice(0, 2).every((row) => String(row.key).includes("@") && !String(row.key).includes("#")),
+  "older duplicate turn rows use immutable identity hashes instead of occurrence suffixes");
+await switchSurface("surface-duplicate-turn", duplicateTurnBeforeRows);
+await act(async () => arbiter?.releaseTailFollow());
+scrollElement.scrollTop = 180; const duplicateTurnResetKey = integrity?.resetKey;
+scrollWrites.length = 0; scrollByCalls = 0; scrollToCalls = 0; scrollToIndexCalls = 0;
+await act(async () => root.render(<Probe surfaceKey="surface-duplicate-turn" rows={duplicateTurnAfterRows} />));
+await flushFrames();
+check(integrity?.resetKey === duplicateTurnResetKey, "duplicate turn prepend keeps the Virtuoso generation mounted");
+check(scrollElement.scrollTop === 180, "duplicate turn prepend preserves the reader viewport");
+check(scrollByCalls === 0 && scrollToCalls === 0 && scrollToIndexCalls === 0 && scrollWrites.length === 0,
+  "duplicate turn prepend emits no recovery or direct scroll writes");
 // A 10,000-row generation gets only one keyed reset and one bounded probe.
 const longRows: TranscriptRow[] = Array.from({ length: 10_000 }, (_, index) => ({
   kind: "answer", key: `long-${index}`,
@@ -786,9 +785,7 @@ await triggerWatchdogRebuild();
 check(integrity?.resetKey !== nextGenerationResetBefore, "a changed 10,000-row generation receives a fresh hard-reset budget");
 
 await act(async () => root.unmount());
-Date.now = originalDateNow;
-dom.window.setTimeout = originalSetTimeout;
-dom.window.clearTimeout = originalClearTimeout;
+restoreClock();
 dom.window.close();
 
 if (failed > 0) {

@@ -18,6 +18,7 @@ export interface RemoteProjectBindings {
   ApproveRemoteTab(tabId: string, callId: string, decision: string): Promise<void>;
   ResolveRemoteTabPlanDecision(tabId: string, callId: string, action: "start_execution" | "revise_plan" | "exit_plan", feedback: string): Promise<void>;
   AnswerRemoteTab(tabId: string, callId: string, answers: RemoteAskAnswer[]): Promise<void>;
+  SubmitRemoteTabExtensionForm(tabId: string, pluginId: string, surfaceId: string, values: Record<string, unknown>): Promise<void>;
   SetRemoteTabModel(tabId: string, ref: string): Promise<void>;
   RewindRemoteTab(tabId: string, checkpointId: string, scope: string): Promise<void>;
   SetRemoteTabToolApprovalMode(tabId: string, mode: string): Promise<void>;

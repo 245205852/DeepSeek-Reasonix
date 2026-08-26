@@ -127,7 +127,10 @@ func (a *App) resumeRemoteTabSession(tabID, name string) {
 				a.transitionRemoteTabState(tabID, gen, "ready", "ready", "Finish the current turn before switching sessions.")
 				return
 			}
-			a.transitionRemoteTabState(tabID, gen, "ready", "error", err.Error())
+			// /resume is an action on an already attached Serve. Any rejection
+			// leaves that current session and event pump usable, so surface the
+			// action error without replacing the ready transcript.
+			a.transitionRemoteTabState(tabID, gen, "ready", "ready", err.Error())
 			return
 		}
 		title := strings.TrimSpace(entry.Title)
@@ -151,7 +154,7 @@ func (a *App) resumeRemoteTabSession(tabID, name string) {
 		a.transitionRemoteTabState(tabID, gen, "ready", "ready", "")
 		return
 	}
-	a.transitionRemoteTabState(tabID, gen, "ready", "error", fmt.Sprintf("remote session %q not found", name))
+	a.transitionRemoteTabState(tabID, gen, "ready", "ready", fmt.Sprintf("remote session %q not found", name))
 }
 
 func (a *App) SetRemoteSessionPinned(hostID, workspace, name string, pinned bool) error {

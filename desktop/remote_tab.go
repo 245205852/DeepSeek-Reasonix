@@ -682,6 +682,12 @@ func (a *App) AnswerRemoteTab(tabID, callID string, answers []RemoteAskAnswer) e
 	return nil
 }
 
+func (a *App) SubmitRemoteTabExtensionForm(tabID, pluginID, surfaceID string, values map[string]any) error {
+	return a.remoteTabPost(tabID, "/extension-form", map[string]any{
+		"pluginId": pluginID, "surfaceId": surfaceID, "values": values,
+	})
+}
+
 // RewindRemoteTab rewinds to a checkpoint. Serve identifies checkpoints by
 // TURN index and takes {turn, scope}; the checkpointID string is that turn.
 func (a *App) RewindRemoteTab(tabID, checkpointID, scope string) error {
