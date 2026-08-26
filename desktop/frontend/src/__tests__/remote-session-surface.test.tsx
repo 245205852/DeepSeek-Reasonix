@@ -103,7 +103,10 @@ window.go = { main: { App: {
 		};
 		if (tabId === "tab-replay") return {
 			history: [], status: { label: "Replay", plan: false, toolApprovalMode: "ask", goal: "" },
-			pendingEvents: [{ kind: "approval_request", approval: { id: "replayed-approval", tool: "bash", subject: "pending while inactive" } }],
+			pendingEvents: [
+				{ kind: "approval_request", approval: { id: "replayed-approval", tool: "bash", subject: "pending while inactive" } },
+				{ kind: "extension_surface", extension: { pluginId: "replayed-plugin", surfaceId: "replayed-form", kind: "form", form: { title: "Pending form", fields: [{ key: "region", label: "Region", kind: "input" }] } } },
+			],
 		};
     if (tabId === "tab-status-fallback") return { history: [] };
     return {
@@ -211,12 +214,13 @@ window.go = { main: { App: {
   },
 } as Partial<AppBindings> as AppBindings } };
 
-const [{ createRoot }, { RemoteSessionSurface }, { LocaleProvider }, { useRemoteSession }, { __emitMockRemoteTab }] = await Promise.all([
+const [{ createRoot }, { RemoteSessionSurface }, { LocaleProvider }, { useRemoteSession }, { __emitMockRemoteTab }, { remoteRuntimeCommand }] = await Promise.all([
   import("react-dom/client"),
   import("../components/RemoteSessionSurface"),
   import("../lib/i18n"),
   import("../lib/useRemoteSession"),
   import("../lib/bridge"),
+  import("../lib/useRemoteComposerIntegration"),
 ]);
 
 const remoteTab: TabMeta = {
@@ -498,6 +502,13 @@ ok(probe?.transcript.context.used === 1200 && probe.transcript.context.window ==
   && probe.transcript.balance?.display === "¥88.00" && probe.transcript.sessionCost === 0.12
   && probe.transcript.jobs[0]?.id === "job-remote" && probe.transcript.lastTurnOutputTokens === 200,
   "snapshot status hydrates remote context, usage, balance, cost, and jobs");
+ok(remoteRuntimeCommand("/goal write regression tests") === undefined && remoteRuntimeCommand("/goal --strict write regression tests") === undefined, "goal-setting commands remain conversational turns");
+ok(remoteRuntimeCommand("/goal")?.method === "runManagementCommand" && remoteRuntimeCommand("/goal status")?.method === "runManagementCommand"
+  && remoteRuntimeCommand("/goal --strict pause")?.method === "runManagementCommand",
+  "goal status and lifecycle actions remain synchronous management commands");
+ok(remoteRuntimeCommand("/branch experiment")?.rehydrate === true && remoteRuntimeCommand("/switch main")?.rehydrate === true
+  && remoteRuntimeCommand("/rewind 3 conversation")?.rehydrate === true && remoteRuntimeCommand("/context")?.rehydrate !== true,
+  "session-changing management commands request authoritative rehydration");
 let remoteLiveNotifications = 0;
 const unsubscribeRemoteLive = probe?.liveStore.subscribe("tab-remote-2", () => { remoteLiveNotifications += 1; });
 await act(async () => {
@@ -556,19 +567,21 @@ await act(async () => {
 });
 blockAnswer = false;
 ok(probe?.transcript.ask?.id === "ask-next", "an answered ask cannot clear the next prompt");
-await act(async () => {
-  await probe?.submit("run tests");
-  await flush();
-});
+await act(async () => { await probe?.submit("run tests"); await flush(); });
 ok(Boolean(probe?.transcript.items.some((item) => item.kind === "user" && item.text === "run tests")), "submit adds the optimistic user bubble through the shared reducer");
-await act(async () => {
-  await probe?.runManagementCommand("/context");
-  await flush();
-});
+await act(async () => { await probe?.runManagementCommand("/context"); await flush(); });
 ok(tape.includes("submit:tab-remote-2:/context") && tape.includes("status:tab-remote-2"),
   "management commands dispatch without conversational admission and refresh status");
 ok(!probe?.transcript.items.some((item) => item.kind === "user" && item.text === "/context"),
   "management commands do not add an optimistic user turn");
+const beforeSwitchGeneration = probe?.surfaceGeneration;
+snapshotHistory = [{ role: "assistant", content: "adopted switched session" }];
+await act(async () => { await probe?.runManagementCommand("/switch feature", true); await flush(); });
+ok(tape.includes("submit:tab-remote-2:/switch feature") && probe?.surfaceGeneration === (beforeSwitchGeneration ?? 0) + 1
+  && probe.transcript.items.some((item) => item.kind === "assistant" && item.text === "adopted switched session"),
+  "session-changing management commands replace history from an authoritative snapshot");
+ok(!probe?.transcript.items.some((item) => item.kind === "user" && item.text === "/switch feature"),
+  "session-changing management commands still avoid an optimistic user turn");
 await act(async () => {
   await probe?.cancelTurn();
   await probe?.approve("call-1", "allow");
@@ -780,6 +793,7 @@ await act(async () => {
 	await flush();
 });
 ok(replayProbe?.transcript.approval?.id === "replayed-approval", "snapshot replays a prompt emitted while the remote tab was inactive");
+ok(replayProbe?.transcript.extensionForm?.pluginId === "replayed-plugin" && replayProbe.transcript.extensionForm.surfaceId === "replayed-form", "snapshot replays an extension form emitted while the remote tab was inactive");
 await act(async () => replayRoot.unmount());
 dom.window.close();
 process.stdout.write(`\n${passed} passed, ${failed} failed\n`);

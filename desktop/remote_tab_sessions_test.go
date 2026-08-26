@@ -74,6 +74,9 @@ func TestMigrateBlankRemoteSessionTitleOverride(t *testing.T) {
 	if err := setRemoteSessionTitleOverride("box", "~/app", "", "My first topic"); err != nil {
 		t.Fatal(err)
 	}
+	if err := setRemoteSessionPinned("box", "~/app", "", true); err != nil {
+		t.Fatal(err)
+	}
 	got, err := migrateRemoteSessionTitleOverride("box", "~/app", "session-1")
 	if err != nil {
 		t.Fatal(err)
@@ -83,6 +86,9 @@ func TestMigrateBlankRemoteSessionTitleOverride(t *testing.T) {
 	}
 	if blank := remoteSessionTitleOverride("box", "~/app", ""); blank != "" {
 		t.Fatalf("blank preference survived migration: %q", blank)
+	}
+	if !remoteSessionPinned("box", "~/app", "session-1") || remoteSessionPinned("box", "~/app", "") {
+		t.Fatal("blank-session pin did not move to the durable session identity")
 	}
 }
 

@@ -99,7 +99,9 @@ ok(
 );
 ok(
   /const management = new Set\(\[[\s\S]*?"compact"[\s\S]*?"context"[\s\S]*?"goal"[\s\S]*?"mcp"/.test(remoteIntegrationSource) &&
-    /command\?\.method === "runManagementCommand"[\s\S]*?session\.runManagementCommand\(trimmed\)/.test(remoteIntegrationSource),
+    /command\?\.method === "runManagementCommand"[\s\S]*?session\.runManagementCommand\(trimmed, command\.rehydrate\)/.test(remoteIntegrationSource) &&
+    /verb === "goal" && remoteGoalCommandStartsTurn\(trimmed\)/.test(remoteIntegrationSource) &&
+    /rehydrate: verb === "branch" \|\| verb === "switch" \|\| verb === "rewind"/.test(remoteIntegrationSource),
   "remote non-turn management commands bypass optimistic conversational submit",
 );
 ok(

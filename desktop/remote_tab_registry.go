@@ -130,6 +130,47 @@ func (a *App) CloseRemoteTab(tabID string) error {
 	return a.closeRemoteTabRegistration(tabID, !protectLastSurface)
 }
 
+// removeRemoteTabsForHost drops surfaces whose connection identity was
+// deleted. If that removes the final visible surface, create a local blank in
+// the same single-surface transaction so workbench/creation layouts never
+// retain an uncloseable orphan or become surface-less.
+func (a *App) removeRemoteTabsForHost(hostID string) error {
+	protectLastSurface := a.singleSurfaceLayoutEnabled()
+	if protectLastSurface {
+		a.singleSurfaceMu.Lock()
+		defer a.singleSurfaceMu.Unlock()
+	}
+
+	a.remoteTabMu.Lock()
+	ids := make([]string, 0, len(a.remoteTabs))
+	for id, tab := range a.remoteTabs {
+		if tab != nil && tab.ref.HostID == hostID {
+			ids = append(ids, id)
+		}
+	}
+	a.remoteTabMu.Unlock()
+	if len(ids) == 0 {
+		return nil
+	}
+	for _, id := range ids {
+		if err := a.closeRemoteTabRegistration(id, true); err != nil {
+			return err
+		}
+	}
+
+	a.mu.RLock()
+	localCount := len(a.tabs)
+	a.mu.RUnlock()
+	a.remoteTabMu.Lock()
+	remoteCount := len(a.remoteTabs)
+	a.remoteTabMu.Unlock()
+	if localCount+remoteCount > 0 {
+		return nil
+	}
+	_, err := a.ensureBlankTab("global", "")
+	return err
+}
+
 // closeRemoteTabRegistration performs the registry mutation. Callers that
 // already hold singleSurfaceMu use allowEmpty only to roll back a tab whose
 // open transaction failed before it became a usable surface.

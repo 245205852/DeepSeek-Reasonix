@@ -43,4 +43,13 @@ func TestServeCommandsUsesActiveControllerCatalog(t *testing.T) {
 	if byName["new"].Kind != "builtin" || byName["clear"].Kind != "builtin" {
 		t.Fatalf("remote builtins missing: %+v", byName)
 	}
+	if byName["reload-cmd"].Kind != "builtin" {
+		t.Fatalf("remote reload-cmd missing: %+v", byName["reload-cmd"])
+	}
+	if _, ok := byName["theme"]; ok {
+		t.Fatal("remote catalog advertised the local-only /theme command")
+	}
+	if _, ok := byName["reload"]; ok {
+		t.Fatal("remote catalog advertised the local-only /reload command")
+	}
 }

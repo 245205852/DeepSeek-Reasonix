@@ -111,10 +111,10 @@ func setRemoteSessionTitleOverride(hostID, workspace, name, title string) error 
 	return saveRemotePrefs(p)
 }
 
-// migrateRemoteSessionTitleOverride moves a title assigned to the synthetic
-// blank row onto the durable Serve session name created by its first turn.
-// Keeping this as one locked preference update prevents a listing refresh from
-// observing the title under neither identity.
+// migrateRemoteSessionTitleOverride moves preferences assigned to the
+// synthetic blank row onto the durable Serve session name created by its first
+// turn. Keeping title and pin migration in one locked update prevents a
+// listing refresh from observing either preference under neither identity.
 func migrateRemoteSessionTitleOverride(hostID, workspace, name string) (string, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
@@ -125,19 +125,35 @@ func migrateRemoteSessionTitleOverride(hostID, workspace, name string) (string, 
 	p := loadRemotePrefs()
 	blankKey := remoteSessionPrefKey(hostID, workspace, "")
 	namedKey := remoteSessionPrefKey(hostID, workspace, name)
-	if named := strings.TrimSpace(p.SessionTitles[namedKey]); named != "" {
-		return named, nil
-	}
+	named := strings.TrimSpace(p.SessionTitles[namedKey])
 	blank := strings.TrimSpace(p.SessionTitles[blankKey])
-	if blank == "" {
-		return "", nil
+	changed := false
+	if named == "" && blank != "" {
+		named = blank
+		p.SessionTitles[namedKey] = blank
+		changed = true
 	}
-	p.SessionTitles[namedKey] = blank
-	delete(p.SessionTitles, blankKey)
-	if err := saveRemotePrefs(p); err != nil {
-		return "", err
+	if blank != "" {
+		delete(p.SessionTitles, blankKey)
+		changed = true
 	}
-	return blank, nil
+	if remoteSessionPinnedLocked(p, blankKey) {
+		next := make([]string, 0, len(p.PinnedSessions))
+		for _, key := range p.PinnedSessions {
+			if key != blankKey && key != namedKey {
+				next = append(next, key)
+			}
+		}
+		next = append(next, namedKey)
+		p.PinnedSessions = next
+		changed = true
+	}
+	if changed {
+		if err := saveRemotePrefs(p); err != nil {
+			return "", err
+		}
+	}
+	return named, nil
 }
 
 func saveRemotePrefs(p remotePrefs) error {

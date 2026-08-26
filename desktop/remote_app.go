@@ -339,6 +339,9 @@ func (a *App) RemoveRemoteHost(id string) error {
 		if err := rt.RemoveHost(id); err != nil {
 			return err
 		}
+		if err := a.removeRemoteTabsForHost(id); err != nil {
+			return fmt.Errorf("replace tabs for removed remote host: %w", err)
+		}
 		a.closeRemoteWindowForHost(id)
 		return nil
 	})

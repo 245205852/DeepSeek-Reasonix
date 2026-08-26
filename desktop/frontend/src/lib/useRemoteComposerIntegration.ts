@@ -14,7 +14,8 @@ export async function openRemoteNewSession(remote: RemoteTabRefView, retryHydrat
 
 export function remoteRuntimeCommand(input: string):
   | { method: "setModel" | "setEffort"; value: string }
-  | { method: "newSession" | "clearSession" | "runManagementCommand" }
+  | { method: "newSession" | "clearSession" }
+  | { method: "runManagementCommand"; rehydrate?: boolean }
   | undefined {
   const trimmed = input.trim();
   if (trimmed === "/new") return { method: "newSession" };
@@ -22,6 +23,7 @@ export function remoteRuntimeCommand(input: string):
   const match = /^\/(model|effort)\s+(\S+)$/.exec(trimmed);
   if (match) return { method: match[1] === "model" ? "setModel" : "setEffort", value: match[2] };
   const verb = /^\/([^\s]+)/.exec(trimmed)?.[1]?.toLowerCase();
+  if (verb === "goal" && remoteGoalCommandStartsTurn(trimmed)) return undefined;
   // These controller verbs are synchronous management operations: they emit
   // notices or mutate session metadata but do not admit a conversational
   // turn. Custom commands, skills, docs queries, and MCP prompts deliberately
@@ -31,7 +33,17 @@ export function remoteRuntimeCommand(input: string):
     "skill", "skills", "plugin", "plugins", "reload-cmd", "hooks", "mcp",
     "provider", "tree", "branch", "switch", "rewind",
   ]);
-  return verb && management.has(verb) ? { method: "runManagementCommand" } : undefined;
+  if (!verb || !management.has(verb)) return undefined;
+  return { method: "runManagementCommand", rehydrate: verb === "branch" || verb === "switch" || verb === "rewind" };
+}
+
+function remoteGoalCommandStartsTurn(input: string): boolean {
+  const args = input.trim().slice("/goal".length).trim().split(/\s+/).filter(Boolean);
+  const flags = new Set(["--strict", "--research", "--auto-research", "--deep", "--simple", "--no-research"]);
+  while (args.length > 0 && flags.has(args[0].toLowerCase())) args.shift();
+  if (args.length === 0) return false;
+  const action = args.join(" ").toLowerCase();
+  return !new Set(["status", "clear", "off", "stop", "done", "pause", "resume"]).has(action);
 }
 
 export function useRemoteComposerSend(
@@ -52,7 +64,7 @@ export function useRemoteComposerSend(
       if (!activeRemote) return;
       return openRemoteNewSession(activeRemote, session.retryHydration);
     }
-    if (command?.method === "runManagementCommand") return session.runManagementCommand(trimmed);
+    if (command?.method === "runManagementCommand") return session.runManagementCommand(trimmed, command.rehydrate);
     if (command?.method === "setModel" || command?.method === "setEffort") return session[command.method](command.value);
     if (activeTabId && collaborationMode === "goal" && !goal.trim() && trimmed) await applyGoal(activeTabId, trimmed);
     await send(displayText, submitText);

@@ -53,7 +53,7 @@ export interface RemoteSessionApi {
   surfaceGeneration: number;
   promptError: string;
   submit: (text: string) => Promise<void>;
-  runManagementCommand: (text: string) => Promise<void>;
+  runManagementCommand: (text: string, rehydrate?: boolean) => Promise<void>;
   cancelTurn: () => Promise<void>;
   approve: (callId: string, decision: string) => Promise<void>;
   resolvePlanDecision: (callId: string, action: "start_execution" | "revise_plan" | "exit_plan", feedback?: string) => Promise<void>;
@@ -508,7 +508,7 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
     }
   }, [tabId]);
 
-  const runManagementCommand = useCallback(async (text: string) => {
+  const runManagementCommand = useCallback(async (text: string, rehydrate = false) => {
     if (!tabId) return;
     const trimmed = text.trim();
     if (!trimmed) return;
@@ -516,6 +516,11 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
     // turn, so do not create the optimistic conversational bubble used by
     // submit(). Refresh the authoritative profile after the command settles.
     await app.SubmitRemoteTab(tabId, trimmed);
+    if (rehydrate) {
+      const hydration = hydrateRef.current;
+      if (hydration?.tabId === tabId) await hydration.run(true);
+      return;
+    }
     const current = refreshStatusRef.current;
     if (current?.tabId === tabId) await current.run();
   }, [tabId]);

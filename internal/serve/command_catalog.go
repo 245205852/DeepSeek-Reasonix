@@ -38,10 +38,8 @@ func (s *Server) commands(w http.ResponseWriter, _ *http.Request) {
 		{Name: "mcp", Description: i18n.M.CmdMcp, Kind: "builtin", Group: "integrations"},
 		{Name: "hooks", Description: i18n.M.CmdHooks, Kind: "builtin", Group: "management"},
 		{Name: "plugins", Description: i18n.M.CmdPlugins, Kind: "builtin", Group: "integrations"},
-		{Name: "theme", Description: i18n.M.CmdTheme, Kind: "builtin", Group: "management"},
 		{Name: "skill", Description: i18n.M.CmdSkill, Kind: "builtin", Group: "skills"},
 		{Name: "reload-cmd", Description: i18n.M.CmdReloadCmd, Kind: "builtin", Group: "management"},
-		{Name: "reload", Description: i18n.M.CmdReload, Kind: "builtin", Group: "management"},
 		{Name: control.ResolvedBuiltinSlashName(control.DocsSlashName, commands, skills), Description: i18n.M.CmdDocs, Hint: "<question>", Kind: "builtin", Group: "integrations"},
 	}
 	for _, sk := range skills {

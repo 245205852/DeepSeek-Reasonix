@@ -340,16 +340,21 @@ func (a *App) remoteTabPump(ctx context.Context, tabID string, gen uint64, opene
 		if json.Unmarshal([]byte(frame), &probe) == nil && probe.Kind != "" {
 			kind = probe.Kind
 		}
+		refreshRuntime := false
 		switch kind {
 		case "turn_started":
 			a.recordRemoteTabTurnStarted(tabID, gen, json.RawMessage(frame))
+			refreshRuntime = true
 		case "approval_request", "ask_request":
 			a.cacheRemotePendingEvent(tabID, gen, kind, json.RawMessage(frame))
+			refreshRuntime = true
+		case "extension_surface":
+			refreshRuntime = a.cacheRemotePendingExtensionForm(tabID, gen, json.RawMessage(frame))
 		case "turn_done":
 			a.completeRemoteTabTurn(tabID, gen)
 		}
 		a.emitRemoteEvent(fmt.Sprintf("remote-tab:%s:event", tabID), json.RawMessage(frame))
-		if kind == "turn_started" || kind == "approval_request" || kind == "ask_request" {
+		if refreshRuntime {
 			a.goSafe("remoteTabRuntimeStatus", func() { _, _ = a.RemoteTabStatus(tabID) })
 		}
 		if kind == "turn_done" {
@@ -677,9 +682,13 @@ func (a *App) AnswerRemoteTab(tabID, callID string, answers []RemoteAskAnswer) e
 }
 
 func (a *App) SubmitRemoteTabExtensionForm(tabID, pluginID, surfaceID string, values map[string]any) error {
-	return a.remoteTabPost(tabID, "/extension-form", map[string]any{
+	if err := a.remoteTabPost(tabID, "/extension-form", map[string]any{
 		"pluginId": pluginID, "surfaceId": surfaceID, "values": values,
-	})
+	}); err != nil {
+		return err
+	}
+	a.clearRemotePendingExtensionForm(tabID, pluginID, surfaceID)
+	return nil
 }
 
 // RewindRemoteTab rewinds to a checkpoint. Serve identifies checkpoints by

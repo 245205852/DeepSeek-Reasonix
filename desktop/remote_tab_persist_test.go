@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"os"
@@ -39,6 +40,38 @@ func seedLocalTab(a *App, id string) {
 	a.tabs[id] = &WorkspaceTab{ID: id, Scope: "global"}
 	a.tabOrder = append(a.tabOrder, id)
 	a.mu.Unlock()
+}
+
+func TestRemoveRemoteHostReplacesSoleRemoteSurfaceWithLocalBlank(t *testing.T) {
+	seedBridgeTestHost(t, "box")
+	a := NewApp()
+	a.remoteRuntime = &fakeRemoteKernel{}
+	t.Cleanup(func() { a.shutdown(context.Background()) })
+	a.remoteTabMu.Lock()
+	a.remoteTabs = map[string]*remoteTab{
+		"remote-only": {
+			id: "remote-only", ref: RemoteTabRef{HostID: "box", Workspace: "~/app"},
+			state: "disconnected", session: remoteTabSessionState{newSession: true},
+		},
+	}
+	a.remoteTabLayout.order = []string{"remote-only"}
+	a.remoteTabLayout.stripOrder = []string{"remote-only"}
+	a.remoteTabLayout.activeID = "remote-only"
+	a.remoteTabMu.Unlock()
+
+	if err := a.RemoveRemoteHost("box"); err != nil {
+		t.Fatal(err)
+	}
+	tabs := a.ListTabs()
+	if len(tabs) != 1 || tabs[0].Remote != nil || !tabs[0].Active {
+		t.Fatalf("tabs after deleting sole remote host = %+v, want one active local blank", tabs)
+	}
+	a.remoteTabMu.Lock()
+	remoteCount := len(a.remoteTabs)
+	a.remoteTabMu.Unlock()
+	if remoteCount != 0 {
+		t.Fatalf("deleted host retained %d remote tabs", remoteCount)
+	}
 }
 
 // TestRemoteTabOpenPersistRoundTrip: an open remote tab lands in

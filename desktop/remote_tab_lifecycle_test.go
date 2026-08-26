@@ -40,6 +40,41 @@ func TestRemoteTabSnapshotReplaysAndClearsPendingPrompt(t *testing.T) {
 	if len(snap.PendingEvents) != 0 {
 		t.Fatalf("resolved prompt was still replayed: %s", snap.PendingEvents)
 	}
+
+	form := json.RawMessage(`{"kind":"extension_surface","extension":{"pluginId":"remote-plugin","surfaceId":"setup","kind":"form","form":{"title":"Remote setup","fields":[{"key":"region","label":"Region","kind":"input"}]}}}`)
+	if !a.cacheRemotePendingExtensionForm(meta.ID, gen, form) {
+		t.Fatal("actionable extension form was not retained")
+	}
+	snap, err = a.RemoteTabSnapshot(meta.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snap.PendingEvents) != 1 || !strings.Contains(string(snap.PendingEvents[0]), "remote-plugin") {
+		t.Fatalf("pending extension form replay = %s", snap.PendingEvents)
+	}
+	fs.mu.Lock()
+	fs.failNext = "form rejected"
+	fs.mu.Unlock()
+	if err := a.SubmitRemoteTabExtensionForm(meta.ID, "remote-plugin", "setup", map[string]any{"region": "us-west"}); err == nil {
+		t.Fatal("failed extension form submission succeeded")
+	}
+	snap, err = a.RemoteTabSnapshot(meta.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snap.PendingEvents) != 1 {
+		t.Fatalf("failed extension form submission cleared replay: %s", snap.PendingEvents)
+	}
+	if err := a.SubmitRemoteTabExtensionForm(meta.ID, "remote-plugin", "setup", map[string]any{"region": "us-west"}); err != nil {
+		t.Fatal(err)
+	}
+	snap, err = a.RemoteTabSnapshot(meta.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snap.PendingEvents) != 0 {
+		t.Fatalf("submitted extension form was still replayed: %s", snap.PendingEvents)
+	}
 }
 
 func TestRemoteTabDoesNotPublishReadyWithoutEventStream(t *testing.T) {
