@@ -9,6 +9,7 @@ import { invalidateCache } from "./composerHistory";
 import { formatInboxCancelError } from "./inboxError";
 import { mergeRateBand, type AggregatedRateBand } from "./costRateBand";
 import { requestInboxCancel, type CancelOutcome } from "./inboxCancel";
+import { resolveActiveTurnId } from "./inboxSubmit";
 import { formatContextMaintenanceNotice, isNewMaintenanceOperation, rememberMaintenanceOperation } from "./contextMaintenanceTypes";
 import { formatGuardianAssessmentNotice } from "./guardianEvents";
 import { completionSummaryPresentation, normalizeCompletionSummary, sessionQualityFloor } from "./completionSummary";
@@ -37,6 +38,7 @@ import { historyPageRequestBudget } from "./historyPaging";
 import type { NavigationResult, SurfaceDataCommit, SurfaceDataOutcome } from "./navigationSurfaceTransition";
 import { sameStringList, sameTodoList } from "./todoVisibility";
 import { resolveSnapshotTurnStartedAt, resolveTurnStartedAt, snapshotPredatesTurnLifecycle } from "./turnTiming";
+import { TurnEventProjector } from "./turnEventProjection";
 import { useStaleTurnWatchdog } from "./useStaleTurnWatchdog";
 import type { SearchSource } from "./searchSources";
 import { attachWebSearchOutput, historySearchAndAnswer } from "./searchTranscript";
@@ -62,6 +64,7 @@ import type {
   TabMeta,
   ToolApprovalMode,
   TopicActivationEvent,
+  TurnEventReplayView,
   WireApproval,
   WireAsk,
   WireCompletionSummary,
@@ -354,6 +357,8 @@ export function isSteerNoticeText(text: string): boolean {
 }
 interface State {
   items: Item[];
+  /** Exact backend-owned turn targeted by Stop/Ask. */
+  activeTurnId?: string;
   running: boolean;
   turnActive: boolean;
   pendingPrompt: boolean;
@@ -385,6 +390,8 @@ interface State {
   historyOlderError?: string;
   historyRevision?: number;
   historyDigest?: string;
+  /** Number of leading items owned by the persisted transcript projection. */
+  historyPrefixCount: number;
   /** Bumped when lazy history content can change already-estimated row sizes. */
   historyLayoutRevision: number;
   historyMutation: HistoryMutation;
@@ -505,6 +512,7 @@ export const initialState: State = {
   backgroundJobs: 0,
   cancelRequested: false,
   cancellable: false,
+  activeTurnId: undefined,
   context: { used: 0, window: 0, sessionTokens: 0 },
   jobs: [],
   checkpoints: [],
@@ -514,6 +522,7 @@ export const initialState: State = {
   historyHasOlder: false,
   historyOlderLoading: false,
   historyLayoutRevision: 0,
+  historyPrefixCount: 0,
   historyMutation: { seq: 0, kind: "replace" },
   backendActivationPending: false,
   deliveryRecoveryActive: false,
@@ -691,6 +700,15 @@ export function normalizeTurnSubmit(displayText: string, submitText: string): {
   return { display, submit };
 }
 
+// These commands are handled entirely by the desktop host and deliberately do
+// not create an agent turn. Keep them on the compatibility submit entry point:
+// StartTurnForTab must return a durable turnId and would correctly reject a
+// successful local command for having no admitted turn.
+export function isLocalRuntimeCommand(input: string): boolean {
+  const trimmed = input.trim();
+  return trimmed === "/reload" || trimmed === "/effort" || trimmed.startsWith("/effort ");
+}
+
 const frontendSubmissionEpoch = typeof globalThis.crypto?.randomUUID === "function"
   ? globalThis.crypto.randomUUID()
   : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
@@ -789,14 +807,21 @@ function compactArchivedToolItems(items: Item[]): Item[] {
   });
 }
 
+function historyRevisionIsOlder(current: number | undefined, incoming: number | undefined): boolean {
+  return typeof current === "number" && current > 0
+    && typeof incoming === "number" && incoming > 0
+    && incoming < current;
+}
+
 type Action =
   | { type: "event"; e: WireEvent }
   | { type: "stream_batch"; segments: StreamSegment[] }
   | { type: "user"; text: string; submitText?: string; seq: number; submissionId: string; deliveryRecovery?: boolean }
   | { type: "unsend" }
   | { type: "send_confirmed"; submissionId: string }
+  | { type: "turn_admitted"; turnId: string; submissionId: string }
   | { type: "send_failed"; submissionId: string; error: string }
-  | { type: "backend_status"; running: boolean; turnStartedAt?: number; pendingPrompt?: boolean; backgroundJobs?: number; cancelRequested?: boolean; cancellable?: boolean; snapshotAt?: number }
+  | { type: "backend_status"; running: boolean; turnStartedAt?: number; pendingPrompt?: boolean; backgroundJobs?: number; cancelRequested?: boolean; cancellable?: boolean; turnId?: string; turnStatus?: string; snapshotAt?: number }
   | { type: "cancel_requested" }
   | { type: "meta"; meta: Meta }
   | { type: "optimistic_meta"; meta: Meta }
@@ -818,6 +843,7 @@ type Action =
   // Items carry stable entryId-derived ids; prepend also lists existing item
   // ids superseded by cross-page tool call/result merges.
   | { type: "history_replace"; items: Item[]; startTurn: number; totalTurns: number; hasOlder: boolean; revision?: number; digest?: string }
+  | { type: "history_rebase"; items: Item[]; startTurn: number; totalTurns: number; hasOlder: boolean; revision?: number; digest?: string }
   | { type: "history_prepend"; items: Item[]; removeIds: string[]; startTurn: number; totalTurns: number; hasOlder: boolean; revision?: number; digest?: string }
   | { type: "history_items_patch"; patches: Record<string, Item> }
   | { type: "history_older_start" }
@@ -843,6 +869,8 @@ function backendStatusFromRuntimeMeta(meta: RuntimeMetaSnapshot): Extract<Action
     backgroundJobs: meta.backgroundJobs ?? 0,
     cancelRequested: Boolean(meta.cancelRequested),
     cancellable: foregroundRunning,
+    turnId: meta.turnId,
+    turnStatus: meta.turnStatus,
   };
 }
 
@@ -1063,7 +1091,13 @@ function ensureAssistant(s: State): { items: Item[]; id: string; seq: number } {
     const exists = s.items.some((it) => it.id === s.currentAssistant && it.kind === "assistant");
     if (exists) return { items: s.items, id: s.currentAssistant, seq: s.seq };
   }
-  const id = `a${s.seq}`;
+  // The backend turn id survives Stop/Ask patches and event replay, so current
+  // turn state never remounts merely because its presentation status changed.
+  const stableTurnID = s.activeTurnId ? `a:${s.activeTurnId}` : undefined;
+  if (stableTurnID && s.items.some((item) => item.id === stableTurnID && item.kind === "assistant")) {
+    return { items: s.items, id: stableTurnID, seq: s.seq };
+  }
+  const id = stableTurnID ?? `a${s.seq}`;
   const item: Item = {
     kind: "assistant",
     id,
@@ -1424,6 +1458,7 @@ function applyEvent(s: State, e: WireEvent): State {
         cancellable: false,
         turnLifecycleObservedAt: promptEventClock(),
         currentAssistant: undefined,
+        activeTurnId: undefined,
         live: undefined,
       };
     }
@@ -1466,7 +1501,7 @@ function applyEvent(s: State, e: WireEvent): State {
       // immediately so the user sees their message + a blinking cursor the
       // instant the backend acknowledges the turn — no dead gap waiting for
       // the first text/reasoning token.
-      const fresh = { ...s, pendingSearchSources: undefined };
+      const fresh = { ...s, activeTurnId: e.turnId ?? s.activeTurnId, pendingSearchSources: undefined };
       const { items, id, seq } = ensureAssistant(fresh);
       return {
         ...fresh,
@@ -1475,6 +1510,7 @@ function applyEvent(s: State, e: WireEvent): State {
         seq,
         live: { id, text: "", reasoning: "", reasoningComplete: false },
         running: true,
+        activeTurnId: e.turnId ?? fresh.activeTurnId,
         turnActive: true,
         turnPhase: "working",
         completionSummary: undefined,
@@ -1489,6 +1525,43 @@ function applyEvent(s: State, e: WireEvent): State {
       const phase = (e.phase ?? e.text ?? "").trim();
       if (!phase) return s;
       return { ...s, turnPhase: phase, running: true, turnActive: true, cancellable: true };
+    }
+    case "turn_status": {
+      if (e.turnId && s.activeTurnId && e.turnId !== s.activeTurnId) return s;
+      switch (e.status) {
+        case "queued":
+          return {
+            ...s,
+            activeTurnId: e.turnId ?? s.activeTurnId,
+            running: true,
+            turnActive: true,
+            pendingPrompt: false,
+            cancelRequested: false,
+            cancellable: true,
+          };
+        case "cancelling":
+          return endPromptWait({ ...s, cancelRequested: true, pendingPrompt: false, approval: undefined, ask: undefined, cancellable: true });
+        case "waiting_user":
+          return { ...s, running: true, turnActive: true, pendingPrompt: true, cancellable: true };
+        case "in_progress":
+          return endPromptWait({ ...s, running: true, turnActive: true, pendingPrompt: false, cancelRequested: false, cancellable: true });
+        default:
+          return s;
+      }
+    }
+    case "prompt_answered": {
+      if (e.turnId && s.activeTurnId && e.turnId !== s.activeTurnId) return s;
+      if (e.itemId && s.approval?.id !== e.itemId && s.ask?.id !== e.itemId) return s;
+      return endPromptWait({
+        ...s,
+        approval: undefined,
+        ask: undefined,
+        pendingPrompt: false,
+        running: true,
+        turnActive: true,
+        cancellable: true,
+        resolvedPromptId: e.itemId ?? s.resolvedPromptId,
+      });
     }
     case "completion_summary": {
       if (!e.completion) return s;
@@ -1767,6 +1840,7 @@ function applyEvent(s: State, e: WireEvent): State {
       if (e.approval?.id !== undefined && e.approval.id === s.resolvedPromptId) return s;
       return beginPromptWait({
         ...s,
+        activeTurnId: e.turnId ?? s.activeTurnId,
         approval: e.approval,
         // A replay of the SAME prompt (post-answer delayed delivery, or the
         // #6429 re-arm after activation) keeps the original arrival time; only
@@ -1784,6 +1858,7 @@ function applyEvent(s: State, e: WireEvent): State {
       if (e.ask?.id !== undefined && e.ask.id === s.resolvedPromptId) return s;
       return beginPromptWait({
         ...s,
+        activeTurnId: e.turnId ?? s.activeTurnId,
         ask: e.ask,
         promptArrivedAt: e.ask?.id === s.promptArrivedId ? s.promptArrivedAt : promptEventClock(),
         promptArrivedId: e.ask?.id,
@@ -1799,6 +1874,7 @@ function applyEvent(s: State, e: WireEvent): State {
       return { ...s, seq: s.seq + 1, items: [...s.items, { kind: "notice", id: `g${s.seq}`, level, text: formatGuardianAssessmentNotice(e.guardian) }] };
     }
     case "turn_done": {
+      if (e.turnId && s.activeTurnId && e.turnId !== s.activeTurnId) return s;
       const now = Date.now();
       s = snapshotCompletedTurnTelemetry(s, now);
       const workDurationMs = currentTurnDurationMs(s, now);
@@ -1872,6 +1948,13 @@ function applyEvent(s: State, e: WireEvent): State {
           title: t("notice.recoveryPausedTitle"),
           text: t("notice.recoveryPausedBody"),
         }];
+      } else if (e.status === "interrupted") {
+        items = [...finalized, {
+          kind: "notice",
+          id: `e${s.seq}`,
+          level: "info",
+          text: t("notice.cancelledTurnDisplay"),
+        }];
       } else if (e.err) {
         items = [...finalized, { kind: "notice", id: `e${s.seq}`, level: "warn", text: e.err }];
       }
@@ -1890,6 +1973,7 @@ function applyEvent(s: State, e: WireEvent): State {
         cancelRequested: false,
         cancellable: keepPlanApproval,
         currentAssistant: undefined,
+        activeTurnId: undefined,
         approval: keepPlanApproval ? s.approval : undefined,
         ask: undefined,
         deliveryRecoveryActive: false,
@@ -1961,6 +2045,10 @@ export function reducer(s: State, a: Action): State {
       });
     }
     case "send_confirmed": return confirmPendingUser(s, a.submissionId);
+    case "turn_admitted":
+      return s.pendingSubmissionId === a.submissionId && a.turnId
+        ? { ...s, activeTurnId: a.turnId }
+        : s;
     case "send_failed": {
       if (s.pendingSubmissionId !== a.submissionId) return s;
       const idx = s.items.findIndex((it) => it.kind === "user" && it.submissionId === a.submissionId);
@@ -2000,6 +2088,7 @@ export function reducer(s: State, a: Action): State {
           backgroundJobs,
           cancelRequested,
           cancellable,
+          activeTurnId: a.turnId ?? s.activeTurnId,
           turnStartAt: turnStartedAt,
         };
       }
@@ -2019,6 +2108,7 @@ export function reducer(s: State, a: Action): State {
         backgroundJobs,
         cancelRequested,
         cancellable,
+        activeTurnId: undefined,
         live: undefined,
         currentAssistant: undefined,
         approval: undefined,
@@ -2090,14 +2180,16 @@ export function reducer(s: State, a: Action): State {
     case "message_action_done": return { ...s, messageAction: undefined };
     case "history": {
       const { items, seq } = historyMessagesToItems(a.messages, "h", s.seq);
-      return { ...s, items: compactArchivedToolItems(items), pendingSubmissionId: undefined, seq, hydrateHistoryLoaded: true, hydratePlaceholderItems: undefined, historyStartTurn: 0, historyTotalTurns: 0, historyHasOlder: false, historyOlderLoading: false, historyOlderError: undefined, historyRevision: undefined, historyDigest: undefined, historyMutation: { seq: s.historyMutation.seq + 1, kind: "replace" } };
+      return { ...s, items: compactArchivedToolItems(items), historyPrefixCount: items.length, pendingSubmissionId: undefined, seq, hydrateHistoryLoaded: true, hydratePlaceholderItems: undefined, historyStartTurn: 0, historyTotalTurns: 0, historyHasOlder: false, historyOlderLoading: false, historyOlderError: undefined, historyRevision: undefined, historyDigest: undefined, historyMutation: { seq: s.historyMutation.seq + 1, kind: "replace" } };
     }
     case "history_page": {
+      if (historyRevisionIsOlder(s.historyRevision, a.page.revision)) return s;
       const { items, seq, firstTurn } = historyPageItems(a.page);
       const nextItems = a.mode === "prepend" ? [...items, ...s.items] : items;
       return {
         ...s,
         items: compactArchivedToolItems(nextItems),
+        historyPrefixCount: a.mode === "prepend" ? items.length + s.historyPrefixCount : items.length,
         pendingSubmissionId: a.mode === "replace" ? undefined : s.pendingSubmissionId,
         seq: Math.max(s.seq, seq),
         hydrateHistoryLoaded: true,
@@ -2115,9 +2207,11 @@ export function reducer(s: State, a: Action): State {
     case "history_older_start": return s.historyOlderLoading && !s.historyOlderError ? s : { ...s, historyOlderLoading: true, historyOlderError: undefined };
     case "history_older_error": return { ...s, historyOlderLoading: false, historyOlderError: a.error };
     case "history_replace":
+      if (historyRevisionIsOlder(s.historyRevision, a.revision)) return s;
       return {
         ...s,
         items: compactArchivedToolItems(a.items),
+        historyPrefixCount: a.items.length,
         pendingSubmissionId: undefined,
         hydrateHistoryLoaded: true,
         hydratePlaceholderItems: undefined,
@@ -2130,12 +2224,38 @@ export function reducer(s: State, a: Action): State {
         historyDigest: a.digest,
         historyMutation: { seq: s.historyMutation.seq + 1, kind: "replace" },
       };
+    case "history_rebase": {
+      if (historyRevisionIsOlder(s.historyRevision, a.revision)) return s;
+      const liveTail = s.items.slice(Math.min(s.historyPrefixCount, s.items.length));
+      const duplicates = new Set(duplicateLiveItemIds(a.items, liveTail));
+      const retainedTail = liveTail.filter((item) => !duplicates.has(item.id));
+      return {
+        ...s,
+        items: compactArchivedToolItems([...a.items, ...retainedTail]),
+        historyPrefixCount: a.items.length,
+        hydrateHistoryLoaded: true,
+        hydratePlaceholderItems: undefined,
+        historyStartTurn: a.startTurn,
+        historyTotalTurns: a.totalTurns,
+        historyHasOlder: a.hasOlder,
+        historyOlderLoading: false,
+        historyOlderError: undefined,
+        historyRevision: a.revision,
+        historyDigest: a.digest,
+        historyLayoutRevision: s.historyLayoutRevision + 1,
+        historyMutation: { seq: s.historyMutation.seq + 1, kind: "replace" },
+      };
+    }
     case "history_prepend": {
+      if (historyRevisionIsOlder(s.historyRevision, a.revision)) return s;
       const remove = a.removeIds.length > 0 ? new Set(a.removeIds) : undefined;
       const rest = remove ? s.items.filter((item) => !remove.has(item.id)) : s.items;
+      const prefix = s.items.slice(0, Math.min(s.historyPrefixCount, s.items.length));
+      const retainedPrefix = remove ? prefix.filter((item) => !remove.has(item.id)) : prefix;
       return {
         ...s,
         items: compactArchivedToolItems([...a.items, ...rest]),
+        historyPrefixCount: a.items.length + retainedPrefix.length,
         hydrateHistoryLoaded: true,
         hydratePlaceholderItems: undefined,
         historyStartTurn: a.startTurn,
@@ -2510,6 +2630,7 @@ export function useController() {
   const sessionLoadSeq = useRef(new Map<string, number>());
   const historyOlderSeq = useRef(new Map<string, number>());
   const cancelHydrateSeq = useRef(new Map<string, number>());
+  const turnEventProjector = useRef(new TurnEventProjector()).current;
   const sessionLoadInFlight = useRef(new Map<string, { sessionPath: string; revision?: number; digest?: string; promise: Promise<void> }>());
   const transcriptSubscriptions = useRef(new Map<string, () => void>());
   const bumpMetaRefreshSeq = useCallback((tabId: string): number => {
@@ -2553,8 +2674,9 @@ export function useController() {
     historyOlderSeq.current.set(tabId, (historyOlderSeq.current.get(tabId) ?? 0) + 1);
     transcriptSubscriptions.current.get(tabId)?.();
     transcriptSubscriptions.current.delete(tabId);
+    turnEventProjector.release(tabId);
     getTranscriptStore().evictTab(tabId);
-  }, []);
+  }, [turnEventProjector]);
   const sessionLoadCurrent = useCallback((tabId: string, seq: number): boolean => {
     return sessionLoadSeq.current.get(tabId) === seq;
   }, []);
@@ -2841,6 +2963,60 @@ export function useController() {
     }
   }, [bumpSessionLoadSeq, cancelHydrateCurrent, dispatchTo, loadMetaForTab, refreshBalanceForTab, sessionLoadCurrent]);
 
+  const resetTurnEventProjection = useCallback(async (tabId: string, replay: TurnEventReplayView): Promise<boolean> => {
+    const state = statesRef.current.get(tabId);
+    if (!state) return false;
+    const sessionPath = state.meta?.sessionPath?.trim() ?? "";
+    const expectedEpoch = replay.runtimeEpoch?.trim() ?? "";
+    ensureTranscriptSubscription(tabId);
+    const projection = await getTranscriptStore().loadLatest(tabId, sessionPath, {
+      turns: HISTORY_PAGE_TURNS,
+      preferResident: false,
+      expectedRevision: replay.transcriptRevision,
+      expectedDigest: replay.transcriptDigest,
+    });
+    if (!projection) return false;
+    const current = statesRef.current.get(tabId);
+    if (!current || (current.meta?.sessionPath?.trim() ?? "") !== sessionPath) return false;
+    if (expectedEpoch && runtimeEpochByTabRef.current.get(tabId) !== expectedEpoch) return false;
+    if (replay.transcriptRevision !== undefined && projection.revisionKnown) {
+      if (projection.revision < replay.transcriptRevision) return false;
+      if (
+        projection.revision === replay.transcriptRevision &&
+        replay.transcriptDigest &&
+        projection.digest !== replay.transcriptDigest
+      ) {
+        return false;
+      }
+    }
+    if (
+      projection.revisionKnown &&
+      typeof current.historyRevision === "number" &&
+      current.historyRevision > projection.revision
+    ) return false;
+    if (
+      projection.revisionKnown &&
+      current.historyRevision === projection.revision &&
+      current.historyDigest &&
+      projection.digest !== current.historyDigest
+    ) return false;
+    dispatchTo(tabId, {
+      type: "history_rebase",
+      items: projection.items,
+      startTurn: projection.startTurn,
+      totalTurns: projection.totalTurns,
+      hasOlder: projection.hasOlder,
+      revision: projection.revisionKnown ? projection.revision : undefined,
+      digest: projection.digest || undefined,
+    });
+    return true;
+  }, [dispatchTo, ensureTranscriptSubscription]);
+
+  useEffect(() => {
+    turnEventProjector.bindReset(resetTurnEventProjection);
+    return () => turnEventProjector.unbindReset(resetTurnEventProjection);
+  }, [resetTurnEventProjection, turnEventProjector]);
+
   // On-demand full content for a ref-replaced history field (entries carrying
   // refs[] ship a ≤4KiB preview inline). Resolves through the transcript
   // store, which patches the projected items by stable id on completion. The
@@ -2944,6 +3120,9 @@ export function useController() {
   // ignore snapshots that predate a live approval/ask event (#6429).
   const dispatchRuntimeStatusForTab = useCallback((tabId: string, tab: RuntimeMetaSnapshot, snapshotAt?: number) => {
     const foregroundRunning = foregroundRunningFromRuntimeMeta(tab);
+    const runtimeEpoch = tab.runtime?.epoch;
+    const latestEventSeq = tab.turnEventSeq ?? 0;
+    turnEventProjector.observeRuntime(tabId, runtimeEpoch, latestEventSeq, tab.turnReplayAfterSeq, foregroundRunning && Boolean(tab.turnId));
     // Will the reducer reject this as a snapshot that predates the live prompt?
     // Computed on pre-dispatch state so we can schedule an authoritative
     // refetch when a stale idle snapshot is ignored.
@@ -2956,6 +3135,8 @@ export function useController() {
       backgroundJobs: tab.backgroundJobs ?? 0,
       cancelRequested: Boolean(tab.cancelRequested),
       cancellable: foregroundRunning,
+      turnId: tab.turnId,
+      turnStatus: tab.turnStatus,
       snapshotAt,
     });
     // backend_status reconciliation can clear a live prompt from frontend state.
@@ -2974,7 +3155,7 @@ export function useController() {
     const local = statesRef.current.get(tabId);
     if (local?.approval || local?.ask) return true;
     return foregroundRunning;
-  }, [dispatchTo]);
+  }, [dispatchTo, turnEventProjector]);
 
   const waitForTabReady = useCallback(async (tabId: string): Promise<void> => {
     for (let attempt = 0; attempt < 60; attempt += 1) {
@@ -3070,7 +3251,7 @@ export function useController() {
     cancelReconcileTimers.current.delete(tabId);
   }, []);
 
-  const scheduleCancelReconcile = useCallback((tabId: string, attempt = 0, cancelHydrateGeneration?: number) => {
+  const scheduleCancelReconcile = useCallback((tabId: string, attempt = 0) => {
     clearCancelReconcileTimer(tabId);
     const delay = CANCEL_RECONCILE_DELAYS_MS[Math.min(attempt, CANCEL_RECONCILE_DELAYS_MS.length - 1)];
     const timer = window.setTimeout(() => {
@@ -3080,24 +3261,20 @@ export function useController() {
         if (!tab) return;
         const stillReconciling = foregroundRunningFromRuntimeMeta(tab) || Boolean(tab.cancelRequested);
         if (stillReconciling && attempt + 1 < CANCEL_RECONCILE_DELAYS_MS.length) {
-          scheduleCancelReconcile(tabId, attempt + 1, cancelHydrateGeneration);
+          scheduleCancelReconcile(tabId, attempt + 1);
           return;
         }
-        // Cancel can race the optimistic user bubble before turn_started. The
-        // backend still persists that visible prompt (and its checkpoint), so
-        // hydrate the authoritative transcript once teardown is idle instead
-        // of leaving the UI with a discarded bubble and no edit/rewind target.
+        // TurnDone(interrupted) is now the authoritative cancellation boundary.
+        // Never replace the whole transcript here: a stale cancellation load
+        // can finish after the user's replacement turn and erase that newer
+        // prompt/answer. The terminal event patches only the active turn.
         if (!stillReconciling) {
-          void loadSessionDataForTab(tabId, true, "rewind", {
-            cancelHydrateGeneration,
-            deferResetUntilHistory: true,
-          }).catch(() => {});
           void refreshCheckpoints(tabId);
         }
       }).catch(() => {});
     }, delay);
     cancelReconcileTimers.current.set(tabId, timer);
-  }, [clearCancelReconcileTimer, loadSessionDataForTab, reconcileTabRuntime, refreshCheckpoints]);
+  }, [clearCancelReconcileTimer, reconcileTabRuntime, refreshCheckpoints]);
 
   // Topic-activation lifecycle events drive the ticketed activation flow: the
   // visible surface already switched when StartTopicActivation returned; the
@@ -3239,7 +3416,7 @@ export function useController() {
       uiPerfTracker.onStreamDispatch();
       for (const b of coalesceStreamDeltas(batch)) dispatchTo(b.tabId, { type: "stream_batch", segments: b.segments });
     });
-    const off = onEvent((e) => {
+    const handleWireEvent = (e: WireEvent) => {
       // Untagged compatibility events belong to the tab that the backend has
       // actually activated, not the frontend's optimistic selection. During a
       // slow SetActiveTab these can differ, and routing to the optimistic tab
@@ -3251,6 +3428,7 @@ export function useController() {
         if (!acceptsRuntimeEventEpoch(acceptedEpoch, e.runtimeEpoch)) return;
         if (!acceptedEpoch) runtimeEpochByTabRef.current.set(targetTabId, e.runtimeEpoch);
       }
+      if (!turnEventProjector.acceptLive(targetTabId, e, acceptedEpoch)) return;
       uiPerfTracker.onWireEvent(targetTabId, e.kind);
       if (TURN_ACTIVITY_KINDS.has(e.kind)) lastTurnActivityAtByTab.current.set(targetTabId, Date.now());
       if (e.kind === "text" || e.kind === "reasoning") {
@@ -3274,7 +3452,9 @@ export function useController() {
       if (e.kind === "turn_done" || e.kind === "notice") {
         app.JobsForTab(targetTabId).then((jobs) => dispatchTo(targetTabId, { type: "jobs", jobs: asArray(jobs) })).catch(() => {});
       }
-    });
+    };
+    turnEventProjector.bind(handleWireEvent);
+    const off = onEvent(handleWireEvent);
 
     const offReady = onReady((readyTabId) => {
       const activeId = activeTabIdRef.current;
@@ -3333,6 +3513,7 @@ export function useController() {
     // and no way to stop (#3844).
     void app.ReplayPendingPrompts().catch(() => {});
     return () => {
+      turnEventProjector.unbind(handleWireEvent);
       textBatch.drain();
       for (const timer of cancelReconcileTimers.current.values()) {
         window.clearTimeout(timer);
@@ -3348,7 +3529,7 @@ export function useController() {
       offTopicActivation();
       offTabMeta();
     };
-  }, [dispatchTo, handleTopicActivationEvent, loadSessionDataForTab, refreshBalanceForTab, refreshCheckpoints, refreshMetaForTab, syncActiveTabFromBackend]);
+  }, [dispatchTo, handleTopicActivationEvent, loadSessionDataForTab, refreshBalanceForTab, refreshCheckpoints, refreshMetaForTab, syncActiveTabFromBackend, turnEventProjector]);
 
   // Track the visible tab in the transcript store: the active tab is pinned
   // out of LRU eviction. (In-flight loads of background tabs still complete
@@ -3492,7 +3673,11 @@ export function useController() {
         ? app.SubmitInvocationsToTabWithID(tabId, structured.display.trim(), structured.input.trim(), structured.invocations, submissionId)
         : original
         ? app.SubmitEditedDisplayToTabWithID(tabId, display, submit, original, submissionId)
-        : display !== submit ? app.SubmitDisplayToTabWithID(tabId, display, submit, submissionId) : app.SubmitToTabWithID(tabId, submit, submissionId);
+        : display !== submit
+        ? app.SubmitDisplayToTabWithID(tabId, display, submit, submissionId)
+        : typeof app.StartTurnForTab === "function" && !isLocalRuntimeCommand(submit)
+        ? app.StartTurnForTab(tabId, submit, submissionId)
+        : app.SubmitToTabWithID(tabId, submit, submissionId);
       if (initialGoal) {
         const drained = await submitPromise;
         dispatchTo(tabId, { type: "send_confirmed", submissionId });
@@ -3501,7 +3686,12 @@ export function useController() {
         return;
       }
       void submitPromise.then(
-        () => dispatchTo(tabId, { type: "send_confirmed", submissionId }),
+        (receipt) => {
+          if (receipt && typeof receipt === "object" && "turnId" in receipt && typeof receipt.turnId === "string") {
+            dispatchTo(tabId, { type: "turn_admitted", turnId: receipt.turnId, submissionId });
+          }
+          dispatchTo(tabId, { type: "send_confirmed", submissionId });
+        },
         (error) => dispatchTo(tabId, { type: "send_failed", submissionId, error: `Send failed: ${error instanceof Error ? error.message : String(error)}` }),
       );
     } catch (error) {
@@ -3571,9 +3761,14 @@ export function useController() {
 
   const steerForTab = useCallback(async (tabId: string, text: string) => {
     if (!tabId) throw new Error(t("composer.workspaceStarting"));
+    const turnId = typeof app.EnqueueInboxSteerForTurn === "function" ? await resolveActiveTurnId(app, tabId, statesRef.current.get(tabId)?.activeTurnId) : undefined;
     // Durable steer first: body is on disk before admission. Rejected steers
     // become follow-ups automatically (disposition queued_followup).
-    const receipt = await app.EnqueueInboxSteer(tabId, text, text, "");
+    const receipt = typeof app.EnqueueInboxSteerForTurn === "function"
+      ? turnId
+        ? await app.EnqueueInboxSteerForTurn(tabId, turnId, text, text, "")
+        : await Promise.reject(new Error("active turn id is unavailable; refresh and try again"))
+      : await app.EnqueueInboxSteer(tabId, text, text, "");
     if (receipt?.error) throw new Error(receipt.error);
     // queued_followup is success: the instruction is durable and will run at
     // the next idle/tool-boundary kick. Do not surface it as a send failure.
@@ -3604,10 +3799,18 @@ export function useController() {
   }, [activeTabId, dispatchTo]);
 
   const cancelTab = useCallback(async (tabId: string, inboxItemIDs: string[] = []): Promise<Omit<CancelOutcome, "restoredText">> => {
-    const cancelHydrateGeneration = bumpCancelHydrateSeq(tabId);
+    bumpCancelHydrateSeq(tabId);
     try {
-      const result = await requestInboxCancel(app, tabId, inboxItemIDs);
-      scheduleCancelReconcile(tabId, 0, cancelHydrateGeneration);
+      let turnId = statesRef.current.get(tabId)?.activeTurnId;
+      const exactAPIAvailable = inboxItemIDs.length > 0
+        ? typeof app.InterruptTurnWithInboxItemsForTab === "function"
+        : typeof app.InterruptTurnForTab === "function";
+      if (!turnId && exactAPIAvailable) {
+        turnId = await resolveActiveTurnId(app, tabId);
+      }
+      if (exactAPIAvailable && !turnId) throw new Error("active turn id is unavailable; refresh and try Stop again");
+      const result = await requestInboxCancel(app, tabId, inboxItemIDs, turnId);
+      scheduleCancelReconcile(tabId, 0);
       if (result.warning) dispatchTo(tabId, { type: "local_notice", level: "warn", text: result.warning });
       return result;
     } catch (error) {
@@ -3677,8 +3880,14 @@ export function useController() {
     if (!activeTabId) return;
     const tabId = activeTabId;
     const epoch = statesRef.current.get(tabId)?.promptEpoch ?? 0;
+    const turnId = statesRef.current.get(tabId)?.activeTurnId;
     dispatchTo(tabId, { type: "clearAsk" });
-    app.AnswerQuestionForTab(tabId, id, answers).catch(() => {
+    const request = typeof app.AnswerPromptForTab === "function"
+      ? turnId
+        ? app.AnswerPromptForTab(tabId, turnId, id, answers)
+        : Promise.reject(new Error("active turn id is unavailable"))
+      : app.AnswerQuestionForTab(tabId, id, answers);
+    request.catch(() => {
       dispatchTo(tabId, { type: "submit_prompt_failed", id, epoch });
       replayPendingPromptsForActiveTab(tabId);
     });

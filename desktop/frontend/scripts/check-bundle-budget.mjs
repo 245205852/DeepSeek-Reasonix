@@ -97,13 +97,17 @@ console.log("\nbundle budgets");
 // Remote onboarding [0.5/3] adds project-group and credential-chain wiring on
 // top of the lazy wizard. Production and test-channel builds both measure
 // 432.28 KiB gzip; keep 0.22 KiB for build-SHA/toolchain drift.
+// Exact-turn routing, the extracted event-gap projector, and the stale-history
+// fence measure 434.01 KiB gzip. Keep 0.39 KiB of build/toolchain headroom.
+// Checkpoint reset, epoch fencing, live-tail queuing, and history-prefix rebase
+// add 0.5 KiB gzip to that same runtime owner.
 // The navigation surface transaction adds target identity checks, data/paint
-// terminals, and bounded history permits to the initial transcript path. The
-// measured build is 434.2 KiB gzip; retain 0.3 KiB for toolchain drift.
+// terminals, and bounded history permits to the initial transcript path.
 // Failure-atomic source restoration, terminal surface promises, and the
-// one-page viewport permit raise the measured path to 434.8 KiB. Keep 0.2 KiB
-// of headroom without widening unrelated lazy chunks.
-const initialJSBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 435.0 : 435.0;
+// one-page viewport permit are now part of the same startup path. The combined
+// build measures 437.36 KiB gzip, 2.56 KiB (0.59%) above the navigation base;
+// retain 0.34 KiB of deterministic build/toolchain headroom.
+const initialJSBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 437.7 : 437.7;
 assertBudget("initial JavaScript gzip", initialJSGzip, initialJSBudgetKiB * 1024);
 assertBudget("largest initial JavaScript chunk gzip", largestInitialJS, 280 * 1024);
 // Render-blocking CSS is intentionally absent: styles.css loads deferred via
@@ -167,15 +171,17 @@ const rawInitialBytes = [...initialJS, ...initialCSS, ...appShellCSS]
 // (0.021%). The workspace panel rework (change-row hover/revert, status badges,
 // More menu, completion summary) makes the latest-base merge 2353.1 KiB in
 // production and test channels both measure 2357.92 KiB after project-group
-// wiring. Retain it with 0.28 KiB of build-SHA/toolchain headroom.
-// The complete theme-token contract and one shared operational-overlay recipe
-// add 1.09 KiB raw CSS while remaining inside the existing gzip CSS ceiling.
-// Keep only 0.21 KiB of raw headroom so this remains a narrow, measured ratchet.
-// The navigation transaction measures 2365.8 KiB raw; keep the corresponding
-// raw allowance as narrow as the gzip ratchet above.
+// wiring. The complete theme-token contract and one shared operational-overlay
+// recipe put the pre-navigation main-v2 path at 2359.29 KiB.
+// Exact-turn command/Stop/Ask/Steer
+// routing, extracted event-gap projection, and stale-history rejection move the
+// post-rebase build to 2365.59 KiB: a 6.30 KiB (0.267%) attributable increase.
+// The checkpoint reset transaction adds 3.8 KiB raw (0.16%) for replay paging,
+// epoch/release fences, and stable history-prefix rebasing.
 // Its failure-atomic completion paths plus the fixed navigation footer
-// footprint measure 2369.1 KiB raw after minifying; retain 0.5 KiB
-// for build metadata and toolchain drift.
-const rawInitialBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 2_369.6 : 2_369.6;
+// footprint share that initial path. The combined build measures 2379.22 KiB,
+// 10.12 KiB (0.43%) above the navigation base; retain 0.58 KiB of deterministic
+// build/toolchain headroom.
+const rawInitialBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 2_379.8 : 2_379.8;
 assertBudget("initial raw JavaScript and CSS", rawInitialBytes, rawInitialBudgetKiB * 1024);
 assertBudget("largest initial JavaScript chunk raw", largestInitialJSRaw, 1_000 * 1024);

@@ -5140,7 +5140,7 @@ export default function App() {
               modelLabel={state.meta?.label ?? t("status.connecting")}
               imageInputEnabled={state.meta?.imageInputEnabled !== false}
               imageUnderstandingEnabled={state.meta?.visionFallbackEnabled === true}
-              tabId={activeTabId}
+              tabId={activeTabId} turnId={state.activeTurnId}
               effort={state.effort}
               onSend={handleSend}
               onInvocationMetadataChange={handleInvocationMetadataChange}

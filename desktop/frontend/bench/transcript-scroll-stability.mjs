@@ -429,12 +429,11 @@ try {
     undefined,
     { timeout: 30_000 },
   );
-  await page.waitForFunction(() => {
-    const element = document.querySelector(".transcript");
-    return element instanceof HTMLElement
-      && element.dataset.scrollMode === "tail-follow"
-      && element.scrollHeight - element.scrollTop - element.clientHeight <= 1;
-  });
+  // Tail ownership uses the shared 4px native-bottom threshold because Linux
+  // and WebView2 can quantize a fractional layout to different integer scroll
+  // extents. Require eight stable frames inside that product threshold instead
+  // of accepting one transient exact-bottom sample.
+  await waitForStableTranscriptGeometry(page, { timeout: 30_000, requireTail: true });
   assert(true, "rapid A→B→A switching leaves the reported long-turn session at its physical bottom");
   await openGeometryContractFixture(page);
   await runGeometryContractTraversal(page, "DPR 1 first visit");

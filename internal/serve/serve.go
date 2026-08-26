@@ -29,6 +29,7 @@ import (
 	"reasonix/internal/jobs"
 	"reasonix/internal/nilutil"
 	"reasonix/internal/provider"
+	"reasonix/internal/sandbox"
 	"reasonix/internal/stats"
 	"reasonix/internal/store"
 )
@@ -790,7 +791,19 @@ func (s *Server) approve(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "missing id", http.StatusBadRequest)
 		return
 	}
-	s.ctl().Approve(body.ID, body.Allow, body.Session, body.Persist)
+	scope := sandbox.ApprovalScopeOnce
+	if body.Allow {
+		switch {
+		case body.Persist:
+			scope = sandbox.ApprovalScopeProject
+		case body.Session:
+			scope = sandbox.ApprovalScopeSession
+		}
+	}
+	if err := s.ctl().ResolveApproval(body.ID, body.Allow, scope); err != nil {
+		http.Error(w, err.Error(), http.StatusServiceUnavailable)
+		return
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 

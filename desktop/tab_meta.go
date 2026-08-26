@@ -27,6 +27,10 @@ type TabMeta struct {
 	BackgroundJobs    int                `json:"backgroundJobs,omitempty"`
 	CancelRequested   bool               `json:"cancelRequested,omitempty"`
 	Cancellable       bool               `json:"cancellable"`
+	TurnID            string             `json:"turnId,omitempty"`
+	TurnStatus        string             `json:"turnStatus,omitempty"`
+	TurnEventSeq      uint64             `json:"turnEventSeq,omitempty"`
+	TurnReplayAfter   uint64             `json:"turnReplayAfterSeq,omitempty"`
 	Mode              string             `json:"mode"`
 	CollaborationMode string             `json:"collaborationMode"`
 	ToolApprovalMode  string             `json:"toolApprovalMode"`

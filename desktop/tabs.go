@@ -25,6 +25,7 @@ import (
 	"reasonix/internal/notify"
 	"reasonix/internal/provider"
 	"reasonix/internal/store"
+	"reasonix/internal/turnevent"
 	"slices"
 	"sort"
 	"strings"
@@ -58,6 +59,8 @@ type pendingDisplayWrite struct {
 	userContent string
 	messages    []HistoryMessage
 	persist     func(string, string, string, []HistoryMessage) error
+	onPersisted func()
+	onRetry     func()
 }
 
 // displayTextAccumulator retains provider chunks without repeatedly copying
@@ -1341,6 +1344,146 @@ func recordHistoryDisplayEvent(buffer *displayTurnBuffer, e event.Event) {
 	}
 }
 
+func displayEventFromEnvelope(envelope turnevent.Envelope) (event.Event, bool) {
+	w := envelope.Event
+	e := event.Event{
+		TurnID: envelope.TurnID, Sequence: envelope.Sequence, Status: envelope.Status,
+		Text: w.Text, Detail: w.Detail, Reasoning: w.Reasoning, ItemID: envelope.ItemID, Source: envelope.Source,
+	}
+	switch envelope.Kind {
+	case "phase":
+		e.Kind = event.Phase
+	case "reasoning":
+		e.Kind = event.Reasoning
+	case "text":
+		e.Kind = event.Text
+	case "message":
+		e.Kind = event.Message
+	case "tool_dispatch":
+		e.Kind = event.ToolDispatch
+	case "tool_result":
+		e.Kind = event.ToolResult
+	case "notice":
+		e.Kind = event.Notice
+	default:
+		return event.Event{}, false
+	}
+	if w.Level == "warn" {
+		e.Level = event.LevelWarn
+	}
+	e.Code = w.Code
+	if w.Tool != nil {
+		e.Tool = event.Tool{
+			ID: w.Tool.ID, Name: w.Tool.Name, Args: w.Tool.Args, ResolvedName: w.Tool.ResolvedName,
+			CapabilityID: w.Tool.CapabilityID, Output: w.Tool.Output, Err: w.Tool.Err,
+			ReadOnly: w.Tool.ReadOnly, Truncated: w.Tool.Truncated, DurationMs: w.Tool.DurationMs,
+			StartedAt: w.Tool.StartedAt, EndedAt: w.Tool.EndedAt, Partial: w.Tool.Partial,
+			ArgChars: w.Tool.ArgChars, Refreshed: w.Tool.Refreshed, ParentID: w.Tool.ParentID,
+			AttemptID: w.Tool.AttemptID, FileDiff: event.FileDiff{Diff: w.Tool.Diff, Added: w.Tool.Added, Removed: w.Tool.Removed},
+		}
+	}
+	if len(w.MemoryCitations) > 0 {
+		e.MemoryCitations = make([]provider.MemoryCitation, 0, len(w.MemoryCitations))
+		for _, citation := range w.MemoryCitations {
+			e.MemoryCitations = append(e.MemoryCitations, provider.MemoryCitation{
+				ID: citation.ID, Source: citation.Source, LineStart: citation.LineStart,
+				LineEnd: citation.LineEnd, Note: citation.Note, Kind: citation.Kind,
+			})
+		}
+	}
+	if w.DecisionReceipt != nil {
+		e.DecisionReceipt = &provider.DecisionReceipt{
+			ID: w.DecisionReceipt.ID, Kind: w.DecisionReceipt.Kind, Tool: w.DecisionReceipt.Tool,
+			Subject: w.DecisionReceipt.Subject, Outcome: w.DecisionReceipt.Outcome,
+		}
+	}
+	return e, true
+}
+
+func displayMessagesFromProjection(projection turnevent.PendingProjection) []HistoryMessage {
+	var planner displayTurnBuffer
+	var executor displayTurnBuffer
+	for _, envelope := range projection.Events {
+		e, ok := displayEventFromEnvelope(envelope)
+		if !ok {
+			continue
+		}
+		buffer := &executor
+		if strings.TrimSpace(e.Source) == event.UsageSourcePlanner {
+			buffer = &planner
+		}
+		recordHistoryDisplayEvent(buffer, e)
+	}
+	out := planner.materialize()
+	if projection.Status == event.TurnInterrupted {
+		out = append(out, executor.materialize()...)
+		if len(out) > 0 {
+			out = append(out, HistoryMessage{
+				Role: "notice", Level: "info", Code: event.NoticeCodeCancelledTurn,
+				Content: "This turn was interrupted. Partial output is kept for reference; only completed tool pairs and a bounded recovery summary enter the next model turn. Inspect the workspace before continuing or reverting changes.",
+			})
+		}
+	}
+	return out
+}
+
+func recoverPendingTurnProjections(tab *WorkspaceTab, ctrl control.SessionAPI) {
+	if tab == nil || ctrl == nil {
+		return
+	}
+	projectionCtrl, ok := ctrl.(interface {
+		PendingTurnProjections() []turnevent.PendingProjection
+		AcknowledgeTurnProjection(string) error
+	})
+	if !ok {
+		return
+	}
+	pending := projectionCtrl.PendingTurnProjections()
+	if len(pending) == 0 {
+		return
+	}
+	users := make([]string, 0)
+	for _, message := range ctrl.History() {
+		if message.Role == provider.RoleUser {
+			if text := strings.TrimSpace(agent.UserMessageText(message)); text != "" {
+				users = append(users, text)
+			}
+		}
+	}
+	firstUser := len(users) - len(pending)
+	for i, projection := range pending {
+		messages := displayMessagesFromProjection(projection)
+		if len(messages) == 0 {
+			if err := projectionCtrl.AcknowledgeTurnProjection(projection.TurnID); err != nil {
+				slog.Warn("desktop: acknowledge empty recovered projection", "err", err)
+			}
+			continue
+		}
+		userIndex := firstUser + i
+		if userIndex < 0 || userIndex >= len(users) {
+			slog.Warn("desktop: retain unacknowledged projection without matching user turn")
+			continue
+		}
+		turnID := projection.TurnID
+		persistOrEnqueueDisplayWrite(tab.displayBufferState(), &pendingDisplayWrite{
+			dir: controllerSessionDir(ctrl), sessionPath: ctrl.SessionPath(), userContent: users[userIndex], messages: messages,
+			persist: func(dir, sessionPath, userContent string, messages []HistoryMessage) error {
+				return recordSessionPlannerDisplayForTurn(dir, sessionPath, turnID, userContent, messages)
+			},
+			onPersisted: func() {
+				if err := projectionCtrl.AcknowledgeTurnProjection(turnID); err != nil {
+					slog.Warn("desktop: acknowledge recovered turn projection", "err", err)
+				}
+			},
+			onRetry: func() {
+				if observer, ok := ctrl.(interface{ ObserveTurnProjectionRetry() }); ok {
+					observer.ObserveTurnProjectionRetry()
+				}
+			},
+		})
+	}
+}
+
 func ensureDisplayAssistant(buffer *displayTurnBuffer) *bufferedHistoryMessage {
 	if n := len(buffer.messages); n > 0 && buffer.messages[n-1].message.Role == "assistant" {
 		return buffer.messages[n-1]
@@ -1424,21 +1567,29 @@ func enqueuePendingDisplayWrite(state *tabDisplayState, write *pendingDisplayWri
 	go retryPendingDisplayWrites(state)
 }
 
-func persistOrEnqueueDisplayWrite(state *tabDisplayState, write *pendingDisplayWrite) {
+func persistOrEnqueueDisplayWrite(state *tabDisplayState, write *pendingDisplayWrite) bool {
 	if state == nil || write == nil || write.persist == nil {
-		return
+		return true
 	}
 	state.mu.Lock()
 	hasPending := len(state.pendingWrites) > 0
 	state.mu.Unlock()
 	if hasPending {
 		enqueuePendingDisplayWrite(state, write)
-		return
+		return false
 	}
 	if err := write.persist(write.dir, write.sessionPath, write.userContent, write.messages); err != nil {
 		slog.Warn("desktop: persist display-only turn history; queued for retry", "err", err)
+		if write.onRetry != nil {
+			write.onRetry()
+		}
 		enqueuePendingDisplayWrite(state, write)
+		return false
 	}
+	if write.onPersisted != nil {
+		write.onPersisted()
+	}
+	return true
 }
 
 func retryPendingDisplayWrites(state *tabDisplayState) {
@@ -1457,6 +1608,9 @@ func retryPendingDisplayWrites(state *tabDisplayState) {
 			time.Sleep(time.Duration(failures*failures) * 50 * time.Millisecond)
 		}
 		if err := write.persist(write.dir, write.sessionPath, write.userContent, write.messages); err != nil {
+			if write.onRetry != nil {
+				write.onRetry()
+			}
 			failures++
 			if failures < displayPersistRetryLimit {
 				continue
@@ -1474,6 +1628,9 @@ func retryPendingDisplayWrites(state *tabDisplayState) {
 			state.pendingWrites = state.pendingWrites[1:]
 		}
 		state.mu.Unlock()
+		if write.onPersisted != nil {
+			write.onPersisted()
+		}
 		failures = 0
 	}
 }
@@ -1548,18 +1705,20 @@ func (s *tabEventSink) Emit(e event.Event) {
 		case event.TurnDone:
 			s.recordTurnDone()
 		}
+		if e.Kind == event.TurnDone {
+			s.flushDisplay(e.TurnID, e.Cancelled)
+		}
 		if m := app.metrics.Load(); m != nil {
 			m.observe(e)
 			if e.Kind == event.TurnDone {
-				// Content-free recovery counters only (no failure text).
+				// Display persistence and its projection acknowledgement run first,
+				// so successful compaction is included in this content-free snapshot.
 				if tab := app.tabByID(tabID); tab != nil && tab.Ctrl != nil {
 					observeControllerRecoveryMetrics(m, tab.Ctrl)
+					observeControllerTurnEventMetrics(m, tab.Ctrl)
 				}
 				m.persist()
 			}
-		}
-		if e.Kind == event.TurnDone {
-			s.flushDisplay(e.Cancelled)
 		}
 	}
 	s.emitRuntimeEvent(eventChannel, toWireTabWithSubmission(e, tabID, s.runtimeEpochSnapshot(), s.submissionIDSnapshot(), turnStartedAt))
@@ -2006,32 +2165,57 @@ func (s *tabEventSink) recordDisplay(e event.Event) {
 	}
 }
 
-func (s *tabEventSink) flushDisplay(cancelRequested bool) {
+func (s *tabEventSink) flushDisplay(turnID string, cancelRequested bool) bool {
 	tab, ctrl := s.eventTabAndController()
 	if tab == nil || ctrl == nil {
-		return
+		return false
 	}
 	history := ctrl.History()
 	keepExecutorDisplay := cancelRequested && (lastHistoryMessageIsUser(history) || hasPendingInterruptedRecovery(history))
 	messages := tab.takeDisplayTurn(keepExecutorDisplay)
 	if len(messages) == 0 {
-		return
+		acknowledgeProjectionForController(ctrl, turnID)
+		return true
 	}
 	sessionPath := ctrl.SessionPath()
 	if sessionPath == "" {
-		return
+		return false
 	}
 	userContent := lastUserMessageContent(history)
 	if strings.TrimSpace(userContent) == "" {
-		return
+		return false
 	}
-	persistOrEnqueueDisplayWrite(tab.displayBufferState(), &pendingDisplayWrite{
+	return persistOrEnqueueDisplayWrite(tab.displayBufferState(), &pendingDisplayWrite{
 		dir:         controllerSessionDir(ctrl),
 		sessionPath: sessionPath,
 		userContent: userContent,
 		messages:    messages,
-		persist:     recordSessionPlannerDisplay,
+		persist: func(dir, sessionPath, userContent string, messages []HistoryMessage) error {
+			return recordSessionPlannerDisplayForTurn(dir, sessionPath, turnID, userContent, messages)
+		},
+		onPersisted: func() { acknowledgeProjectionForController(ctrl, turnID) },
+		onRetry:     func() { observeProjectionRetryForController(ctrl) },
 	})
+}
+
+func observeProjectionRetryForController(ctrl control.SessionAPI) {
+	if ctrl == nil {
+		return
+	}
+	if observer, ok := ctrl.(interface{ ObserveTurnProjectionRetry() }); ok {
+		observer.ObserveTurnProjectionRetry()
+	}
+}
+
+func acknowledgeProjectionForController(ctrl control.SessionAPI, turnID string) {
+	if ctrl == nil || strings.TrimSpace(turnID) == "" {
+		return
+	}
+	if ack, ok := ctrl.(interface{ AcknowledgeTurnProjection(string) error }); ok {
+		if err := ack.AcknowledgeTurnProjection(turnID); err != nil {
+			slog.Warn("desktop: acknowledge turn display projection", "err", err)
+		}
+	}
 }
 
 func lastHistoryMessageIsUser(history []provider.Message) bool {
@@ -2210,6 +2394,10 @@ func (a *App) tabMeta(tab *WorkspaceTab, active bool) TabMeta {
 		m.BackgroundJobs = status.BackgroundJobs
 		m.CancelRequested = status.CancelRequested
 		m.Cancellable = status.Cancellable
+		m.TurnID = status.TurnID
+		m.TurnStatus = string(status.Status)
+		m.TurnEventSeq = status.TurnEventSeq
+		m.TurnReplayAfter = status.ReplayAfterSeq
 	}
 	if a.botBridge != nil {
 		m.RemoteControlled = a.botBridge.remoteControlledTabs()[tab.ID]
@@ -4063,6 +4251,7 @@ func (a *App) buildTabControllerWithContextCore(tab *WorkspaceTab, loadedSession
 	a.advanceSessionRuntimeEpochLocked(tab)
 	keepBuildContext = true
 	a.mu.Unlock()
+	recoverPendingTurnProjections(tab, ctrl)
 	a.emitReady(wailsCtx, tab.ID)
 }
 
