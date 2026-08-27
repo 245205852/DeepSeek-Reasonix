@@ -34,15 +34,19 @@ func (m chatTUI) handleClearConfirmKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd)
 	return m, nil
 }
 
-func (m chatTUI) confirmClearContext() (tea.Model, tea.Cmd) {
+func (m *chatTUI) clearContext() {
 	m.clearConfirm = nil
 	if err := m.ctrl.ClearSession(); err != nil {
 		m.notice(fmt.Sprintf("%s: %v", i18n.M.SlashClearFailed, err))
-		return m, nil
+		return
 	}
 	m.followSessionLease()
 	m.resetFreshContextView(true)
 	m.notice(i18n.M.SlashClearDone)
+}
+
+func (m chatTUI) confirmClearContext() (tea.Model, tea.Cmd) {
+	m.clearContext()
 	return m, tea.ClearScreen
 }
 

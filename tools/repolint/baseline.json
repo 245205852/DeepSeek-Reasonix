@@ -2,15 +2,15 @@
   "limits": {
     "banner": 15,
     "commented-code": 0,
-    "complexity": 1997,
-    "essay": 1965,
-    "file-size": 108531,
-    "function-size": 8620,
+    "complexity": 1995,
+    "essay": 1961,
+    "file-size": 108087,
+    "function-size": 8592,
     "layering": 1,
     "marker": 0,
     "narrative": 64,
     "struct-state": 116,
-    "test-file-size": 69481
+    "test-file-size": 69509
   },
   "files": {
     "cmd/e2ebench/main.go": {
@@ -675,17 +675,17 @@
       "essay": 6
     },
     "internal/cli/chat_tui.go": {
-      "complexity": 321,
+      "complexity": 322,
       "essay": 86,
-      "file-size": 4684,
-      "function-size": 1299
+      "file-size": 4690,
+      "function-size": 1305
     },
     "internal/cli/chat_tui_paste.go": {
       "essay": 6
     },
     "internal/cli/chat_tui_test.go": {
       "essay": 7,
-      "test-file-size": 3592
+      "test-file-size": 3623
     },
     "internal/cli/cli.go": {
       "complexity": 75,

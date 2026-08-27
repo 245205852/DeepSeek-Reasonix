@@ -776,6 +776,37 @@ func TestClearCommandRequiresConfirmationAndDiscardsSession(t *testing.T) {
 	}
 }
 
+// TestClearCommandInYOLOModeSkipsConfirmation guards the non-interactive fast
+// path: with YOLO already active, /clear must clear the session immediately
+// instead of opening the confirmation overlay.
+func TestClearCommandInYOLOModeSkipsConfirmation(t *testing.T) {
+	dir := t.TempDir()
+	sess := agent.NewSession("sys")
+	sess.Add(provider.Message{Role: provider.RoleUser, Content: "old context"})
+	exec := agent.New(nil, nil, sess, agent.Options{}, event.Discard)
+	path := filepath.Join(dir, "session.jsonl")
+	ctrl := control.New(control.Options{Executor: exec, SystemPrompt: "sys", SessionDir: dir, SessionPath: path, Label: "test"})
+	ctrl.SetToolApprovalMode(control.ToolApprovalYolo)
+	m := newChatTUI(ctrl, "", make(chan event.Event, 1), 80)
+
+	if cmd := m.runSlashCommand("/clear"); cmd != nil {
+		t.Fatal("/clear in YOLO mode should clear locally without returning a command")
+	}
+	if m.clearConfirm != nil {
+		t.Fatal("/clear in YOLO mode should not open a confirmation prompt")
+	}
+	if ctrl.SessionPath() == path {
+		t.Fatal("/clear in YOLO mode should rotate to a fresh session path")
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("/clear in YOLO mode should remove the old transcript, stat err=%v", err)
+	}
+	current := exec.Session().Snapshot()
+	if len(current) != 1 || current[0].Role != provider.RoleSystem || current[0].Content != "sys" {
+		t.Fatalf("cleared context = %+v, want only system prompt", current)
+	}
+}
+
 func TestClsClearsTranscriptDisplayState(t *testing.T) {
 	m := newTestChatTUI()
 	*m.pendingCommit = append(*m.pendingCommit, "stale pending")
