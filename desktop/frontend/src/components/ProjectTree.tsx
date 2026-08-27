@@ -1,7 +1,3 @@
-// ProjectTree is the sidebar replacement for the flat recent-sessions list.
-// It shows a tree of projects (each with expandable topics) plus a Global
-// section. Clicking a topic opens its tab; "+" next to a project creates a
-// new topic.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { CSSProperties, DragEvent as ReactDragEvent, KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent } from "react";
@@ -30,7 +26,7 @@ import { summarizeProjectTreeSessions } from "../lib/projectTreeDiagnostics";
 import { GLOBAL_PROJECT_ORDER_KEY, ProjectTreeFolderActivity, ProjectTreeGroupRows, applyProjectOrder, projectTreeProjectRoots, reorderedProjectRoots, useProjectTreeOrganization, type ProjectDropPosition } from "./ProjectTreeOrganization";
 import { ProjectTreeSessionArchiveMenu } from "./ProjectTreeSessionArchiveMenu";
 import { ProjectTreeHeaderAddControl, ProjectTreeRemoteAction, projectTreeHeaderAddItems } from "./ProjectTreeAddControls";
-import { buildRemoteProjectMenuItems, mergeRemoteSessionsIntoTree, openRemoteSessionNode, remoteProjectKey, remoteServeBadgeState, renameRemoteProjectTitle, useRemoteProjectGroups, useRemoteSessionActions } from "./ProjectTreeRemoteGroups";
+import { activeRemoteProjectAncestorKeys, buildRemoteProjectMenuItems, mergeRemoteSessionsIntoTree, openRemoteSessionNode, remoteProjectKey, remoteServeBadgeState, renameRemoteProjectTitle, RemoteProjectEmptyState, useRemoteProjectGroups, useRemoteSessionActions } from "./ProjectTreeRemoteGroups";
 import type { ProjectTreeProps } from "./ProjectTreeProps";
 
 function projectNodeKey(node: ProjectNode, depth: number): string {
@@ -443,7 +439,8 @@ export function ProjectTree({
     }
   }, [applyRuntimeProjection]);
   refreshRef.current = refresh;
-  const { openRemoteProject, openRemoteWindow, remoteSessions, setRemoteSessions, remoteServers, refreshRemoteSessions } = useRemoteProjectGroups(tree, showToast, expanded, query);
+  const { openRemoteProject, openRemoteWindow, remoteSessions, setRemoteSessions, remoteServers, remoteGroupBusy, remoteGroupError, ensureRemoteGroupSessions, refreshRemoteSessions } = useRemoteProjectGroups(tree, showToast, expanded, query);
+  const treeWithRemoteSessions = useMemo(() => mergeRemoteSessionsIntoTree(tree, remoteSessions, t), [remoteSessions, t, tree]);
   const remoteSessionActions = useRemoteSessionActions(remoteSessions, refreshRemoteSessions, (error) => showToast(error instanceof Error ? error.message : String(error), "error"));
   const { addingProject, handleAddProject, openBlankProjectFlow, blankProjectFlow, openRemoteConnectFlow, remoteConnectFlow } = useProjectCreation({
     onAddProject,
@@ -521,11 +518,21 @@ export function ProjectTree({
   // Following the active topic is a view concern over the tree already held.
   useEffect(() => {
     const collapsed = manuallyCollapsedRef.current;
-    const keys = defaultExpandedProjectTreeKeys(tree, activeScope, activeWorkspaceRoot, activeTopicId, activeSessionPath).filter((key) => !collapsed.has(key));
+    const keys = (activeRemote
+      ? activeRemoteProjectAncestorKeys(treeWithRemoteSessions, activeRemote, projectNodeKey)
+      : defaultExpandedProjectTreeKeys(treeWithRemoteSessions, activeScope, activeWorkspaceRoot, activeTopicId, activeSessionPath))
+      .filter((key) => !collapsed.has(key));
     // Returning prev unchanged keeps a switch that expands nothing new from
     // re-rendering the tree at all.
     setExpanded((prev) => (keys.every((key) => prev.has(key)) ? prev : new Set([...prev, ...keys])));
-  }, [tree, activeScope, activeWorkspaceRoot, activeTopicId, activeSessionPath]);
+    // Active remote groups get the same explicit cold start as a click.
+    for (const node of treeWithRemoteSessions) {
+      if (!node.remote) continue;
+      if (!keys.includes(projectNodeKey(node, 0))) continue;
+      if (!remoteSessions[remoteProjectKey(node.remote)]?.length) void ensureRemoteGroupSessions(node.remote.hostId, node.remote.workspace);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tree, activeScope, activeWorkspaceRoot, activeTopicId, activeSessionPath, activeRemote]);
 
   const markNodeRead = useCallback((node: ProjectNode) => {
     const key = projectTreeReadActivityKey(node);
@@ -547,8 +554,8 @@ export function ProjectTree({
         markActive(asArray(node.children));
       }
     };
-    markActive(tree);
-  }, [activeScope, activeSessionPath, activeTopicId, activeWorkspaceRoot, markNodeRead, tree]);
+    markActive(treeWithRemoteSessions);
+  }, [activeScope, activeSessionPath, activeTopicId, activeWorkspaceRoot, markNodeRead, treeWithRemoteSessions]);
 
   useEffect(() => {
     try {
@@ -870,8 +877,6 @@ export function ProjectTree({
     }
   };
 
-  const treeWithRemoteSessions = useMemo(() => mergeRemoteSessionsIntoTree(tree, remoteSessions, t), [remoteSessions, t, tree]);
-
   const visibleTree = useMemo(() => {
     const q = query.trim().toLowerCase();
     // Time filter: compute cutoff timestamp.
@@ -1025,8 +1030,8 @@ export function ProjectTree({
   }, [clearProjectDrag, dragProjectRoot]);
 
   const activeAncestorKeys = useMemo(
-    () => activeRemote ? tree.flatMap((node, index) => node.remote && remoteProjectKey(node.remote) === remoteProjectKey(activeRemote) ? [projectNodeKey(node, index)] : []) : activeSessionAncestorKeys(tree, activeScope, activeWorkspaceRoot, activeTopicId, activeSessionPath),
-    [activeRemote, activeScope, activeSessionPath, activeTopicId, activeWorkspaceRoot, tree],
+    () => activeRemote ? activeRemoteProjectAncestorKeys(treeWithRemoteSessions, activeRemote, projectNodeKey) : activeSessionAncestorKeys(treeWithRemoteSessions, activeScope, activeWorkspaceRoot, activeTopicId, activeSessionPath),
+    [activeRemote, activeScope, activeSessionPath, activeTopicId, activeWorkspaceRoot, treeWithRemoteSessions],
   );
   useEffect(() => {
     if (activeAncestorKeys.length === 0) return;
@@ -1617,6 +1622,13 @@ export function ProjectTree({
     const backendPage = topicPageState[key];
     const renderFolderChildren = () => {
       if (!hasChildren) {
+        const remoteGroupKey = node.remote ? remoteProjectKey(node.remote) : "";
+        const remoteBusy = Boolean(remoteGroupBusy[remoteGroupKey]);
+        const remoteError = remoteGroupError[remoteGroupKey] || "";
+        if (node.remote) return <RemoteProjectEmptyState
+          busy={remoteBusy} error={remoteError} ready={remoteServers[node.remote.hostId]?.[node.remote.workspace]?.state === "ready"}
+          isExpanded={isExpanded} depth={depth} classicTopics={classicTopics} t={t} onEnsure={() => ensureRemoteGroupSessions(node.remote!.hostId, node.remote!.workspace)}
+        />;
         // While the first topic page is still loading (cold start, catalog
         // reconcile in flight), show a skeleton instead of a blank folder or
         // a premature "no topics" placeholder.
@@ -1721,7 +1733,11 @@ export function ProjectTree({
             style={{ paddingLeft: 8 + depth * 16 }}
             onClick={() => {
               if (node.remote && !folderDisclosure.canExpand) return void openRemoteProject(node.remote, { focus: true });
-              if (folderDisclosure.canExpand) toggleExpand(key, node);
+              if (folderDisclosure.canExpand) {
+                const willExpand = !expanded.has(key);
+                toggleExpand(key, node);
+                if (node.remote && willExpand) { void ensureRemoteGroupSessions(node.remote.hostId, node.remote.workspace); }
+              }
             }}
             onKeyDown={(event) => {
               if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) {
@@ -1737,7 +1753,7 @@ export function ProjectTree({
             <span className={`project-tree__folder-label${!hasChildren ? " project-tree__folder-label--empty" : ""}`}>
               {projectLabel}
               {node.isolatedWorktree && <WorktreeBadge size={11} />}
-              {node.remote ? <span className={`project-tree__remote-badge project-tree__remote-badge--${remoteServeBadgeState(remoteServers[node.remote.hostId]?.[node.remote.workspace])}`} aria-hidden="true" /> : null}
+              {node.remote ? <span className={`project-tree__remote-badge project-tree__remote-badge--${remoteServeBadgeState(remoteServers[node.remote.hostId]?.[node.remote.workspace], remoteGroupBusy[remoteProjectKey(node.remote)])}`} aria-hidden="true" /> : null}
             </span>
             <ProjectTreeFolderActivity folder={node} />
           </button>

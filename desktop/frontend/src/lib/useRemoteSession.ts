@@ -209,7 +209,7 @@ export function useActiveRemoteSession(
 }
 
 export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabStateValue): RemoteSessionApi {
-  const [state, setState] = useState<RemoteTabStateValue>(initial ?? "connecting");
+  const [state, setState] = useState<RemoteTabStateValue>(initial === "disconnected" ? "connecting" : (initial ?? "connecting"));
   const [error, setError] = useState("");
   const [transcript, setTranscript] = useState<State>(initialState);
   const [modelLabel, setModelLabel] = useState("");
@@ -258,10 +258,12 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
 
   useEffect(() => {
     if (!tabId) return;
-    // A restored disconnected shell seeds its state from the meta; live state
-    // then flows through remote-tab:{id}:state events once a connect begins.
-    const start = initial ?? "connecting";
-    setState(start);
+    // Restored shells arrive as disconnected shells. Activation must kick the
+    // backend revive (SetActiveTab → bootstrap) and never park the UI on a
+    // reconnect placeholder — treat them as connecting until ready/error.
+    const revivedFromShell = initial === "disconnected";
+    const mountedState = revivedFromShell ? "connecting" : (initial ?? "connecting");
+    setState(mountedState);
     setError("");
     setPromptError("");
     setTranscript(initialState);
@@ -281,11 +283,6 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
     let historyReconcilePromise: Promise<void> | null = null;
     let historyReconcileAfterCurrent = false;
     let connectionGeneration = 0;
-    // Never start the snapshot retry loop on a shell with no connection: the
-    // ready transition triggers the first hydration instead. (initial is
-    // deliberately not a dependency — only the mount-time snapshot matters.)
-    const skipHydrate = start === "disconnected";
-
     // Reconcile durable history after a turn settles without advancing
     // surfaceGeneration. Serve's broadcaster is intentionally bounded, so a
     // slow subscriber can miss intermediate tool/text frames even when it
@@ -389,7 +386,7 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
           // member missed; a failure keeps hydration in the retry loop.
           const loaded = await loadRemoteStatusSnapshot(
             tabId,
-            start === "ready" ? 3 : 60,
+            mountedState === "ready" ? 3 : 60,
             () => cancelled || hydratedRef.current,
             isAuthoritativeRemoteStatus,
           );
@@ -463,7 +460,7 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
       }
     };
     hydrateRef.current = { tabId, run: hydrate };
-    if (!skipHydrate) void hydrateLoop();
+    void hydrateLoop();
 
     const offState = onRemoteTabState(tabId, (s) => {
       if (cancelled) return;
@@ -472,8 +469,13 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
       // so fencing only non-ready transitions leaves stale history requests
       // able to overwrite the adopted session.
       connectionGeneration += 1;
-      setState(s.state);
+      setState(s.state === "disconnected" ? "connecting" : s.state);
       setError(s.error ?? "");
+      if (s.state === "disconnected") {
+        hydratedRef.current = false;
+        setHydrated(false);
+        void app.SetActiveTab(tabId).catch(() => undefined);
+      }
       if (s.state === "ready") {
         void hydrate(true);
       } else {
@@ -483,6 +485,12 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
         setTranscript((prev) => (prev.running || prev.turnActive ? reducer(prev, { type: "turn_interrupted" }) : prev));
       }
     });
+    // Subscribe before activating a restored shell. SetActiveTab republishes
+    // terminal bootstrap states, while the snapshot loop covers a ready event
+    // that completed before this surface mounted.
+    if (revivedFromShell) {
+      void app.SetActiveTab(tabId).catch(() => undefined);
+    }
     const offEvent = onRemoteTabEvent(tabId, (raw) => {
       if (cancelled) return;
       const event = (raw ?? {}) as WireEvent;

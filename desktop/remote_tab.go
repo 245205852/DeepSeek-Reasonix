@@ -90,7 +90,7 @@ func (a *App) attachRemoteTabServe(ctx context.Context, tabID, base, token, inst
 	a.remoteTabMu.Unlock()
 
 	opened := make(chan error, 1)
-	a.goSafe("remoteTabPump", func() { a.remoteTabPump(pumpCtx, tabID, gen, opened) })
+	a.goRemoteTabSafe("remoteTabPump", func() { a.remoteTabPump(pumpCtx, tabID, gen, opened) })
 	select {
 	case err = <-opened:
 		if err != nil {
@@ -209,6 +209,7 @@ func (a *App) publishRemoteTabAttachedReady(tabID string, gen uint64) bool {
 	tab.err = ""
 	a.remoteTabMu.Unlock()
 	a.emitRemoteEvent(fmt.Sprintf("remote-tab:%s:state", tabID), RemoteTabStateView{State: "ready"})
+	a.applyPendingRemoteTabOpenSelection(tabID)
 	return true
 }
 
@@ -380,7 +381,7 @@ func (a *App) remoteTabPump(ctx context.Context, tabID string, gen uint64, opene
 	// Reattach now; the host status hook also retries on connection recovery.
 	if ctx.Err() == nil {
 		if startRetry := a.reconnectRemoteTabGeneration(tabID, gen); startRetry {
-			a.goSafe("remoteTabReattach", func() { a.reattachRemoteTab(tabID) })
+			a.goRemoteTabSafe("remoteTabReattach", func() { a.reattachRemoteTab(tabID) })
 		}
 	}
 }

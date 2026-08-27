@@ -114,6 +114,7 @@ const SUBAGENT_PROGRESS_TOOLS = new Set(["task", "read_only_task", "parallel_tas
 const SUBAGENT_PREVIEW_REASONING_LIMIT = 8 << 10;
 const SUBAGENT_PREVIEW_TEXT_LIMIT = 8 << 10;
 const SUBAGENT_PREVIEW_NOTICE_LIMIT = 2 << 10;
+const RUNTIME_STATUS_ONLY = { hydrateSessionData: false } as const;
 export type SubagentPhase =
   | "queued" | "running" | "reasoning" | "responding" | "tool" | "retrying"
   | "completed" | "failed" | "cancelled";
@@ -3221,7 +3222,7 @@ export function useController() {
     if (stalePromptReconcileTimers.current.has(tabId)) return;
     const timer = window.setTimeout(() => {
       stalePromptReconcileTimers.current.delete(tabId);
-      void reconcileTabRuntime(tabId, { hydrateSessionData: false }).catch(() => {});
+      void reconcileTabRuntime(tabId, RUNTIME_STATUS_ONLY).catch(() => {});
     }, STALE_PROMPT_RECONCILE_MS);
     stalePromptReconcileTimers.current.set(tabId, timer);
   }, [reconcileTabRuntime]);
@@ -3239,7 +3240,7 @@ export function useController() {
     const delay = CANCEL_RECONCILE_DELAYS_MS[Math.min(attempt, CANCEL_RECONCILE_DELAYS_MS.length - 1)];
     const timer = window.setTimeout(() => {
       cancelReconcileTimers.current.delete(tabId);
-      void reconcileTabRuntime(tabId, { hydrateSessionData: false }).then((tabs) => {
+      void reconcileTabRuntime(tabId, RUNTIME_STATUS_ONLY).then((tabs) => {
         const tab = tabs?.find((candidate) => candidate.id === tabId);
         if (!tab) return;
         const stillReconciling = foregroundRunningFromRuntimeMeta(tab) || Boolean(tab.cancelRequested);
@@ -3313,7 +3314,7 @@ export function useController() {
         sessionDigest: restoredMeta.sessionDigest,
         sessionGeneration: restoredMeta.sessionGeneration,
         surfacePolicy: "preserve-current",
-      }).then(() => reconcileTabRuntime(restoredTabId, { hydrateSessionData: false })).catch(() => {});
+      }).then(() => reconcileTabRuntime(restoredTabId, RUNTIME_STATUS_ONLY)).catch(() => {});
     }
     navigationSourcesRef.current.delete(navigationSeq);
     return true;
@@ -3385,7 +3386,7 @@ export function useController() {
           void restoreNavigationSource(pending.navigationSeq, tabId, t("history.failedOpenSession"));
           return;
         }
-        return reconcileTabRuntime(tabId, { hydrateSessionData: false });
+        return reconcileTabRuntime(tabId, RUNTIME_STATUS_ONLY);
       })
       .catch(() => {
         if (isNavigationIntentCurrent(pending.navigationSeq) && activeTabIdRef.current === tabId) {
@@ -4409,7 +4410,7 @@ export function useController() {
     dispatchRuntimeStatusForTab(tab.id, tab, snapshotAt);
     await waitForTabReady(tab.id);
     await loadSessionDataForTab(tab.id, true);
-    await reconcileTabRuntime(tab.id, { hydrateSessionData: false });
+    await reconcileTabRuntime(tab.id, RUNTIME_STATUS_ONLY);
     return tab.id;
   };
   const rewindForTabDetailed = useCallback(async (sourceTabId: string, turn: number, scope: string): Promise<RewindResultView & { ok: boolean }> => {
@@ -4519,6 +4520,40 @@ export function useController() {
     noteActivationStarted(switchRequestId, tabId);
     if (optimisticTab) {
       dispatchTo(tabId, { type: "optimistic_meta", meta: metaFromTab(optimisticTab, statesRef.current.get(tabId)?.meta) });
+    }
+    // Remote tabs have no local controller/history slice. Their transcript is
+    // hydrated by useRemoteSession via RemoteTabSnapshot after ready. Running
+    // HistorySliceForTab here fails with "session path unavailable" and the
+    // hydrateError path would bounce the user back to the previous local tab.
+    if (optimisticTab?.remote) {
+      if (!preserveTargetSurface) dispatchTo(tabId, { type: "reset" });
+      dispatchTo(tabId, { type: "hydrate_done" });
+      const backendActivation = app.SetActiveTab(tabId)
+        .then(async () => {
+          if (!isNavigationIntentCurrent(navigationSeq) || activeTabIdRef.current !== tabId) {
+            noteActivationSettled(switchRequestId, "cancelled");
+            await reassertVisibleTabAfterStaleNavigation("tab.switch", tabId);
+            return false;
+          }
+          confirmBackendActiveTab(tabId);
+          noteActivationSettled(switchRequestId, "ready");
+          return true;
+        })
+        .catch((err) => {
+          noteActivationSettled(switchRequestId, "failed", errorMessage(err));
+          if (!isNavigationIntentCurrent(navigationSeq)) return false;
+          dispatchTo(tabId, { type: "backend_activation_done" });
+          if (previousTabId && activeTabIdRef.current === tabId) {
+            setActiveTabId(previousTabId);
+            activeTabIdRef.current = previousTabId;
+          }
+          return false;
+        });
+      trackBackendActivation(tabId, backendActivation);
+      return backendActivation.then(async (activated) => {
+        if (!activated || !isNavigationIntentCurrent(navigationSeq)) return undefined;
+        return reconcileTabRuntime(tabId, RUNTIME_STATUS_ONLY);
+      });
     }
     if (!preserveTargetSurface) dispatchTo(tabId, { type: "reset" });
     if (optimisticStatus?.running) dispatchTo(tabId, optimisticStatus);
@@ -4635,7 +4670,7 @@ export function useController() {
       placeholderItems: sameSessionPlaceholderItems(meta, prevState), surfacePolicy: sameSession ? "preserve-current" : "replace-surface", preserveCachedHistory,
       sessionPath: meta.sessionPath, sessionRevision: meta.sessionRevision, sessionDigest: meta.sessionDigest, sessionGeneration: meta.sessionGeneration,
     });
-    monitorNavigationHydration(navigationSeq, meta.id, load, isNewTab ? () => reconcileTabRuntime(meta.id, { hydrateSessionData: false }) : undefined);
+    monitorNavigationHydration(navigationSeq, meta.id, load, isNewTab ? () => reconcileTabRuntime(meta.id, RUNTIME_STATUS_ONLY) : undefined);
     return meta;
   }, [beginActiveNavigation, confirmBackendActiveTab, dispatchRuntimeStatusForTab, dispatchTo, loadSessionDataForTab, monitorNavigationHydration, navigationCompletionCurrent, reassertVisibleTabAfterStaleNavigation, reconcileTabRuntime, snapshotNavigationSourceTab]);
 
@@ -4661,7 +4696,7 @@ export function useController() {
       placeholderItems: sameSessionPlaceholderItems(meta, prevState), surfacePolicy: sameSession ? "preserve-current" : "replace-surface", preserveCachedHistory,
       sessionPath: meta.sessionPath, sessionRevision: meta.sessionRevision, sessionDigest: meta.sessionDigest, sessionGeneration: meta.sessionGeneration,
     });
-    monitorNavigationHydration(navigationSeq, meta.id, load, isNewTab ? () => reconcileTabRuntime(meta.id, { hydrateSessionData: false }) : undefined);
+    monitorNavigationHydration(navigationSeq, meta.id, load, isNewTab ? () => reconcileTabRuntime(meta.id, RUNTIME_STATUS_ONLY) : undefined);
     return meta;
   }, [beginActiveNavigation, confirmBackendActiveTab, dispatchRuntimeStatusForTab, dispatchTo, loadSessionDataForTab, monitorNavigationHydration, navigationCompletionCurrent, reassertVisibleTabAfterStaleNavigation, reconcileTabRuntime, snapshotNavigationSourceTab]);
 
@@ -4687,7 +4722,7 @@ export function useController() {
       placeholderItems: sameSessionPlaceholderItems(meta, prevState), surfacePolicy: sameSession ? "preserve-current" : "replace-surface", preserveCachedHistory,
       sessionPath: meta.sessionPath, sessionRevision: meta.sessionRevision, sessionDigest: meta.sessionDigest, sessionGeneration: meta.sessionGeneration,
     });
-    monitorNavigationHydration(navigationSeq, meta.id, load, isNewTab ? () => reconcileTabRuntime(meta.id, { hydrateSessionData: false }) : undefined);
+    monitorNavigationHydration(navigationSeq, meta.id, load, isNewTab ? () => reconcileTabRuntime(meta.id, RUNTIME_STATUS_ONLY) : undefined);
     return meta;
   }, [beginActiveNavigation, confirmBackendActiveTab, dispatchRuntimeStatusForTab, dispatchTo, loadSessionDataForTab, monitorNavigationHydration, navigationCompletionCurrent, reassertVisibleTabAfterStaleNavigation, reconcileTabRuntime, snapshotNavigationSourceTab]);
 
@@ -4777,7 +4812,7 @@ export function useController() {
     dispatchTo(meta.id, { type: "optimistic_meta", meta: metaFromTab(meta, statesRef.current.get(meta.id)?.meta) });
     dispatchRuntimeStatusForTab(meta.id, meta, snapshotAt);
     const load = loadSessionDataForTab(meta.id, true, "new-session", { surfacePolicy: "replace-surface", sessionPath: meta.sessionPath, sessionGeneration: meta.sessionGeneration });
-    monitorNavigationHydration(navigationSeq, meta.id, load, isNewTab ? () => reconcileTabRuntime(meta.id, { hydrateSessionData: false }) : undefined);
+    monitorNavigationHydration(navigationSeq, meta.id, load, isNewTab ? () => reconcileTabRuntime(meta.id, RUNTIME_STATUS_ONLY) : undefined);
     return meta;
   }, [beginActiveNavigation, bumpCheckpointRefreshSeq, confirmBackendActiveTab, dispatchRuntimeStatusForTab, dispatchTo, loadSessionDataForTab, monitorNavigationHydration, navigationCompletionCurrent, reassertVisibleTabAfterStaleNavigation, reconcileTabRuntime, snapshotNavigationSourceTab]);
 
@@ -4796,7 +4831,7 @@ export function useController() {
     dispatchTo(meta.id, { type: "optimistic_meta", meta: metaFromTab(meta, statesRef.current.get(meta.id)?.meta) });
     dispatchRuntimeStatusForTab(meta.id, meta, snapshotAt);
     const load = loadSessionDataForTab(meta.id, true, "new-session", { surfacePolicy: "replace-surface", sessionPath: meta.sessionPath, sessionGeneration: meta.sessionGeneration });
-    monitorNavigationHydration(navigationSeq, meta.id, load, () => reconcileTabRuntime(meta.id, { hydrateSessionData: false }));
+    monitorNavigationHydration(navigationSeq, meta.id, load, () => reconcileTabRuntime(meta.id, RUNTIME_STATUS_ONLY));
     return meta;
   }, [beginActiveNavigation, confirmBackendActiveTab, dispatchRuntimeStatusForTab, dispatchTo, loadSessionDataForTab, monitorNavigationHydration, navigationCompletionCurrent, reassertVisibleTabAfterStaleNavigation, reconcileTabRuntime, snapshotNavigationSourceTab]);
 
@@ -4822,7 +4857,7 @@ export function useController() {
       placeholderItems: sameSessionPlaceholderItems(meta, prevState), surfacePolicy: sameSession ? "preserve-current" : "replace-surface",
       sessionPath: meta.sessionPath, sessionRevision: meta.sessionRevision, sessionDigest: meta.sessionDigest, sessionGeneration: meta.sessionGeneration,
     });
-    monitorNavigationHydration(navigationSeq, meta.id, load, isNewTab ? () => reconcileTabRuntime(meta.id, { hydrateSessionData: false }) : undefined);
+    monitorNavigationHydration(navigationSeq, meta.id, load, isNewTab ? () => reconcileTabRuntime(meta.id, RUNTIME_STATUS_ONLY) : undefined);
     return result;
   }, [beginActiveNavigation, confirmBackendActiveTab, dispatchRuntimeStatusForTab, dispatchTo, loadSessionDataForTab, monitorNavigationHydration, navigationCompletionCurrent, reassertVisibleTabAfterStaleNavigation, reconcileTabRuntime, snapshotNavigationSourceTab]);
 

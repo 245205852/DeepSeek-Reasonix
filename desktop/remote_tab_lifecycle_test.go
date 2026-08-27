@@ -189,7 +189,7 @@ func TestRemoteTabReviveAppliesRequestedNamedSession(t *testing.T) {
 	a.remoteTabMu.Unlock()
 	fs.mu.Lock()
 	fs.eventFeed = feed
-	fs.resumeStarted = make(chan struct{}, 1)
+	fs.resumeStarted = make(chan string, 1)
 	fs.resumeRelease = make(chan struct{})
 	started, release := fs.resumeStarted, fs.resumeRelease
 	fs.mu.Unlock()
@@ -433,6 +433,7 @@ func TestRemoteResumeBusyKeepsCurrentSessionReady(t *testing.T) {
 	if _, err := a.OpenRemoteProjectTab("box", "~/app", RemoteTabOpenOptions{SessionName: "saved"}); err != nil {
 		t.Fatal(err)
 	}
+	waitForRemoteTabError(t, a, meta.ID, "Finish the current turn")
 	a.remoteTabMu.Lock()
 	state, message := a.remoteTabs[meta.ID].state, a.remoteTabs[meta.ID].err
 	a.remoteTabMu.Unlock()
@@ -501,7 +502,7 @@ func TestRemoteResumeBuffersTargetFramesUntilPostCommit(t *testing.T) {
 	fs.mu.Lock()
 	fs.eventFrames = []string{`{"kind":"ready","sessionPath":"/old.jsonl"}`}
 	fs.eventFeed = feed
-	fs.resumeStarted = make(chan struct{}, 1)
+	fs.resumeStarted = make(chan string, 1)
 	fs.resumeRelease = make(chan struct{})
 	started, release := fs.resumeStarted, fs.resumeRelease
 	fs.mu.Unlock()
@@ -523,6 +524,7 @@ func TestRemoteResumeBuffersTargetFramesUntilPostCommit(t *testing.T) {
 	meta := openReadyRemoteTab(t, a, RemoteTabOpenOptions{})
 	eventPrefix := "remote-tab:" + meta.ID + ":event"
 	readyPrefix := "remote-tab:" + meta.ID + ":state"
+	waitForRemoteEventCount(t, log, readyPrefix, 2)
 	eventsBefore, readyBefore := log.count(eventPrefix), log.count(readyPrefix)
 	done := make(chan struct{})
 	go func() {
@@ -619,6 +621,9 @@ func TestRemoteNewBusyKeepsCurrentSessionReady(t *testing.T) {
 	meta := openReadyRemoteTab(t, a, RemoteTabOpenOptions{SessionName: "saved"})
 	a.remoteTabMu.Lock()
 	previousTitle := a.remoteTabs[meta.ID].topicTitle
+	previousSession := a.remoteTabs[meta.ID].session
+	previousRoute := a.remoteTabs[meta.ID].routing.currentPath
+	previousRuntime := a.remoteTabs[meta.ID].runtime
 	a.remoteTabMu.Unlock()
 	fs.mu.Lock()
 	fs.failEnter = "cannot start a new session while a turn is running"
@@ -629,9 +634,13 @@ func TestRemoteNewBusyKeepsCurrentSessionReady(t *testing.T) {
 	a.remoteTabMu.Lock()
 	tab := a.remoteTabs[meta.ID]
 	state, message, title, client := tab.state, tab.err, tab.topicTitle, tab.client
+	session, route, runtime := tab.session, tab.routing.currentPath, tab.runtime
 	a.remoteTabMu.Unlock()
 	if state != "ready" || message != "" || title != previousTitle || client == nil {
 		t.Fatalf("busy new-session state/error/title/client = %q/%q/%q/%v, want ready current attachment", state, message, title, client)
+	}
+	if session != previousSession || route != previousRoute || runtime != previousRuntime {
+		t.Fatalf("busy new-session changed current identity/runtime: session=%+v route=%q runtime=%+v", session, route, runtime)
 	}
 }
 

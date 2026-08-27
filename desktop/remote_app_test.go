@@ -154,6 +154,7 @@ type fakeRemoteKernel struct {
 	ensureToken       string
 	ensureErr         error
 	ensureCalls       int
+	snapshotMiss      bool
 	switchProxyErr    error
 	switchProxyCalls  [][5]string
 	platformErr       error
@@ -253,7 +254,7 @@ func (f *fakeRemoteKernel) StopServer(_ string, workspace string) error {
 }
 func (f *fakeRemoteKernel) ServerStatus(string, string) RemoteServerView { return f.ensureView }
 func (f *fakeRemoteKernel) ServeSnapshot(string, string) (RemoteServerView, string, bool) {
-	if f.ensureErr != nil || f.ensureView.State != "ready" || f.ensureView.LocalURL == "" || f.ensureToken == "" {
+	if f.snapshotMiss || f.ensureErr != nil || f.ensureView.State != "ready" || f.ensureView.LocalURL == "" || f.ensureToken == "" {
 		return RemoteServerView{}, "", false
 	}
 	return f.ensureView, f.ensureToken, true

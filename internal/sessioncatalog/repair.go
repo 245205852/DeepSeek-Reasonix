@@ -96,7 +96,7 @@ func (c *Catalog) repairSession(workerCtx context.Context, path string) {
 	ctx, cancel := context.WithTimeout(workerCtx, 30*time.Second)
 	defer cancel()
 	// LoadSessionDisplayMessages is not yet context-aware; check before/after.
-	msgs, _, _, err := agent.LoadSessionDisplayMessages(path)
+	msgs, state, _, err := agent.LoadSessionDisplayMessages(path)
 	if ctx.Err() != nil || workerCtx.Err() != nil {
 		return
 	}
@@ -105,12 +105,8 @@ func (c *Catalog) repairSession(workerCtx context.Context, path string) {
 		return
 	}
 	preview, turns := agent.SessionPreviewFromMessages(msgs)
-	if err := agent.UpdateBranchMeta(path, false, func(meta *agent.BranchMeta) error {
-		meta.Preview = preview
-		meta.Turns = turns
-		meta.SchemaVersion = agent.BranchMetaCountsVersion
-		return nil
-	}); err != nil {
+	applied, err := agent.UpdateSessionListingProjectionIfCurrent(path, "", preview, turns, false, state)
+	if err != nil || !applied {
 		return
 	}
 	if ctx.Err() != nil || workerCtx.Err() != nil {
