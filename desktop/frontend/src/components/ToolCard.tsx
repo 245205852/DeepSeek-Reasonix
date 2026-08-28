@@ -1,4 +1,5 @@
 import { memo, useEffect, useRef, useState, type ReactNode } from "react";
+import { Suspense, lazy } from "react";
 import { ChevronRight, Compass } from "lucide-react";
 import { CodeViewer } from "./CodeViewer";
 import { DiffView } from "./DiffView";
@@ -6,6 +7,17 @@ import { useT } from "../lib/i18n";
 import { diffsFor, languageForToolArgs, subjectOf, summarize, summarizeFileDiff } from "../lib/tools";
 import { useShellExpand } from "../lib/shellExpand";
 import { app } from "../lib/bridge";
+import type { MCPAppInstanceView, MCPAppPresentation } from "../lib/types";
+
+const MCPAppCard = lazy(() => import("./MCPAppCard").then((m) => ({ default: m.MCPAppCard })));
+
+function MCPAppCardLazy({ instance }: { instance: MCPAppInstanceView }) {
+  return (
+    <Suspense fallback={null}>
+      <MCPAppCard instance={instance} />
+    </Suspense>
+  );
+}
 import { useCollapseAnimation } from "../lib/useCollapseAnimation";
 import { isBatchedReadOnlyTool, isTerminalSubagentPhase, type Item, type SubagentPhase } from "../lib/useController";
 import type { Translator } from "../lib/i18n";
@@ -255,7 +267,8 @@ export const ToolCard = memo(function ToolCard({ item, subcalls, tabId, displayN
   }, [reasoningDisplayMode, subagentReasoningRunning]);
   // Lazy-load full tool data from the backend when the card is expanded and
   // the in-memory copy was archived for memory efficiency.
-  const [fullData, setFullData] = useState<{ args: string; output?: string; execution?: ToolItem["execution"] } | null>(null);
+  const [fullData, setFullData] = useState<{ args: string; output?: string; execution?: ToolItem["execution"]; mcpApp?: MCPAppPresentation } | null>(null);
+  const [appInstance, setAppInstance] = useState<MCPAppInstanceView | null>(null);
   const archivedWithoutFullData = Boolean(item.dataArchived && !fullData);
   const effectiveArgs = archivedWithoutFullData ? "" : fullData?.args ?? item.args;
   const effectiveOutput = fullData?.output ?? item.output;
@@ -312,6 +325,7 @@ export const ToolCard = memo(function ToolCard({ item, subcalls, tabId, displayN
     void app.ToolResultForTab(tabId, item.id).then((d) => {
       if (!cancelled && d) setFullData(d);
     }).catch(() => {});
+    return () => { cancelled = true; setAppInstance(null); };
     return () => { cancelled = true; };
   }, [open, item.id, item.dataArchived, fullData, tabId]);
 
@@ -534,6 +548,31 @@ export const ToolCard = memo(function ToolCard({ item, subcalls, tabId, displayN
               </>
             )}
           </>
+        )}
+
+        {open && fullData?.mcpApp?.resourceUri && (
+          <div className="tool__mcp-app">
+            {appInstance ? (
+              <MCPAppCardLazy instance={appInstance} />
+            ) : (
+              <button
+                type="button"
+                className="tool__mcp-app-open"
+                onClick={() => {
+                  const mcpApp = fullData?.mcpApp as MCPAppPresentation | undefined;
+                  if (!mcpApp?.resourceUri) return;
+                  void app
+                    .MCPOpenAppInstance(mcpApp.server, mcpApp.tool, mcpApp.generation, item.id, mcpApp.resourceUri)
+                    .then((instance: MCPAppInstanceView | null) => {
+                      if (instance) setAppInstance(instance);
+                    })
+                    .catch(() => undefined);
+                }}
+              >
+                {t("mcp.app.open")}
+              </button>
+            )}
+          </div>
         )}
 
         {errorText && (

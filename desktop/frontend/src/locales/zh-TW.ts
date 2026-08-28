@@ -2774,6 +2774,7 @@ export const zhTW: Record<DictKey, string> = {
   "memory.globalDirectory": "全域作用域",
 
   // MCP elicitation prompts
+  "mcp.app.open": "開啟應用",
   "mcp.interaction.title": "MCP 伺服器需要你的輸入",
   "mcp.interaction.modeForm": "表單",
   "mcp.interaction.modeUrl": "連結",

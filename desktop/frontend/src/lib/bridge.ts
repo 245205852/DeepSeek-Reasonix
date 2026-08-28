@@ -133,6 +133,7 @@ import type {
   GitCommitDetailView,
   WorkspaceView,
   SessionClearResult,
+  MCPAppInstanceView,
 } from "./types";
 export * from "./remoteTabEvents";
 export const COMPACT_RATIO_MIN_PERCENT = 30, COMPACT_RATIO_MAX_PERCENT = 85;
@@ -278,6 +279,11 @@ export interface AppBindings extends SessionCatalogBindings, ProjectTreeOrganiza
   RecoveryCheckpointEnabledTab(tabID: string): Promise<boolean>;
   AnswerQuestion(id: string, answers: QuestionAnswer[]): Promise<void>;
   AnswerQuestionForTab(tabID: string, id: string, answers: QuestionAnswer[]): Promise<void>;
+  MCPOpenAppInstance(server: string, tool: string, generation: number, callID: string, resourceURI: string): Promise<MCPAppInstanceView>;
+  MCPAppResourceDigest(instanceToken: string): Promise<string>;
+  MCPCloseAppInstance(instanceToken: string): Promise<void>;
+  MCPOpenAppLink(url: string): Promise<void>;
+  MCPAppCallTool(instanceToken: string, toolName: string, args: Record<string, unknown> | unknown): Promise<string>;
   AnswerMCPInteractionForTab(
     tabID: string,
     id: string,
@@ -390,7 +396,7 @@ export interface AppBindings extends SessionCatalogBindings, ProjectTreeOrganiza
   WorkspaceConflictForTab(tabID: string): Promise<WorkspaceConflictView>;
   RevealWorkspaceWriterForTab(tabID: string): Promise<TabMeta>;
   CloseTabWithPolicy(tabID: string, policy: "keep_running" | "stop_and_close"): Promise<void>;
-  ToolResultForTab(tabID: string, toolID: string): Promise<{ args: string; output: string; execution?: import("./types").WireShellExecution } | null>;
+  ToolResultForTab(tabID: string, toolID: string): Promise<{ args: string; output: string; execution?: import("./types").WireShellExecution; mcpApp?: import("./types").MCPAppPresentation } | null>;
   Meta(): Promise<Meta>;
   MetaForTab(tabID: string): Promise<Meta>; DismissTodoBatchForTab(tabID: string, batchKey: string): Promise<void>;
   Commands(): Promise<CommandInfo[]>;
@@ -3092,6 +3098,21 @@ function makeMockApp(): AppBindings {
         },
         async AnswerMCPInteractionForTab(_tabID, _id, _action, _content) {
           return undefined;
+        },
+        async MCPOpenAppInstance() {
+          throw new Error("MCP Apps are unavailable in browser dev mode");
+        },
+        async MCPAppResourceDigest() {
+          return "";
+        },
+        async MCPCloseAppInstance() {
+          return undefined;
+        },
+        async MCPOpenAppLink(url) {
+          window.open(url, "_blank", "noopener");
+        },
+        async MCPAppCallTool() {
+          throw new Error("MCP Apps are unavailable in browser dev mode");
         },
         async AnswerQuestionForTab(_tabID, id, answers) {
           await withMockTabScope(_tabID, () => this.AnswerQuestion(id, answers));

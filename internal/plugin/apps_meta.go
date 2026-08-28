@@ -28,7 +28,9 @@ type mcpToolMeta struct {
 	Visibility []string `json:"visibility,omitempty"`
 	// ResourceURI is the pre-2026-01-26 flat key; ui.resourceUri wins.
 	ResourceURI string `json:"resourceUri,omitempty"`
-	UI          *struct {
+	// FlatResourceURI is the ext-apps "ui/resourceUri" flat key.
+	FlatResourceURI string `json:"ui/resourceUri,omitempty"`
+	UI              *struct {
 		ResourceURI string              `json:"resourceUri,omitempty"`
 		CSP         map[string][]string `json:"csp,omitempty"`
 	} `json:"ui,omitempty"`
@@ -73,6 +75,9 @@ func (m *mcpToolMeta) uiResource() (uri string, csp map[string][]string) {
 	}
 	if uri == "" {
 		uri = m.ResourceURI
+	}
+	if uri == "" {
+		uri = m.FlatResourceURI
 	}
 	return uri, csp
 }

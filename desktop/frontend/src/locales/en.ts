@@ -1542,6 +1542,7 @@ export const en = {
   "memory.globalDirectory": "global scope",
 
   // MCP elicitation prompts
+  "mcp.app.open": "Open app",
   "mcp.interaction.title": "MCP server needs your input",
   "mcp.interaction.modeForm": "form",
   "mcp.interaction.modeUrl": "link",

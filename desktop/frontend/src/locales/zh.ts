@@ -1543,6 +1543,7 @@ export const zh: Record<DictKey, string> = {
   "memory.globalDirectory": "全局作用域",
 
   // MCP elicitation prompts
+  "mcp.app.open": "打开应用",
   "mcp.interaction.title": "MCP 服务器需要你的输入",
   "mcp.interaction.modeForm": "表单",
   "mcp.interaction.modeUrl": "链接",

@@ -1,8 +1,11 @@
 package plugin
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
+	"fmt"
 	"sync"
 )
 
@@ -163,4 +166,49 @@ func (h *Host) AppInstanceTool(token, rawToolName string) (toolRef, bool) {
 type toolRef struct {
 	server string
 	tool   *remoteTool
+}
+
+// UITool exposes the App-callable tool for CSP assembly.
+func (r toolRef) UITool() *remoteTool { return r.tool }
+
+// ReadResourceForApp reads one ui resource for the Apps channel, returning the
+// text content and declared mime type.
+func (h *Host) ReadResourceForApp(ctx context.Context, server, uri string) (string, string, error) {
+	h.mu.RLock()
+	var client *Client
+	for _, c := range h.clients {
+		if c.name == server && !c.closed.Load() {
+			client = c
+			break
+		}
+	}
+	h.mu.RUnlock()
+	if client == nil {
+		return "", "", fmt.Errorf("server %q not connected", server)
+	}
+	return client.readResourceWithMime(ctx, uri)
+}
+
+// readResourceWithMime reads one resource and returns its text plus declared
+// mime type (empty when the server did not declare one).
+func (c *Client) readResourceWithMime(ctx context.Context, uri string) (string, string, error) {
+	res, err := c.call(ctx, "resources/read", map[string]any{"uri": uri})
+	if err != nil {
+		return "", "", err
+	}
+	var wire struct {
+		Contents []struct {
+			URI      string `json:"uri"`
+			MimeType string `json:"mimeType"`
+			Text     string `json:"text"`
+		} `json:"contents"`
+	}
+	if err := json.Unmarshal(res, &wire); err != nil {
+		return "", "", err
+	}
+	if len(wire.Contents) == 0 {
+		return "", "", fmt.Errorf("resource %q returned no contents", uri)
+	}
+	first := wire.Contents[0]
+	return first.Text, first.MimeType, nil
 }

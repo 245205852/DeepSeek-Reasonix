@@ -134,7 +134,7 @@
       "file-size": 180
     },
     "desktop/frontend/src/lib/bridge.ts": {
-      "file-size": 4881
+      "file-size": 4902
     },
     "desktop/frontend/src/lib/crash.ts": {
       "file-size": 225
@@ -143,7 +143,7 @@
       "file-size": 265
     },
     "desktop/frontend/src/lib/types.ts": {
-      "file-size": 1511
+      "file-size": 1531
     },
     "desktop/frontend/src/lib/useController.ts": {
       "file-size": 4268

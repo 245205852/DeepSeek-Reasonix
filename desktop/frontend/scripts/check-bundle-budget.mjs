@@ -140,9 +140,11 @@ console.log("\nbundle budgets");
 // native validation hosts and test fixtures stay outside the production graph.
 // MCP 2026 elicitation adds the mcp_interaction prompt surface to the initial
 // reducer graph (state field, event case, prompt teardown, resolve callback);
-// the card itself stays lazy. Measured +0.132 KiB gzip (447.932 KiB), carry
-// 0.268 KiB headroom.
-const initialJSBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 448.2 : 448.2;
+// the card itself stays lazy. Measured +0.132 KiB gzip (447.932 KiB).
+// The inline Apps surface in ToolCard (expand-to-open state plus the lazy
+// mount wrapper) adds another +0.286 KiB gzip (448.46 KiB); the AppBridge
+// dependency itself stays in the lazy chunk. Carry 0.14 KiB headroom.
+const initialJSBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 448.6 : 448.6;
 assertBudget("initial JavaScript gzip", initialJSGzip, initialJSBudgetKiB * 1024);
 assertBudget("largest initial JavaScript chunk gzip", largestInitialJS, 280 * 1024);
 // Render-blocking CSS is intentionally absent: styles.css loads deferred via
@@ -223,7 +225,7 @@ const rawInitialBytes = [...initialJS, ...initialCSS, ...appShellCSS]
 // The same transcript transaction measures 2413.012 KiB raw (+0.28%) against
 // the 2406.204 KiB baseline. Retain 0.188 KiB of bounded headroom.
 // MCP 2026 elicitation's reducer wiring measures 2415.032 KiB raw (+0.08%);
-// bounded headroom retained with the gzip ratchet above.
-const rawInitialBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 2_415.2 : 2_415.2;
+// the ToolCard Apps surface brings it to 2416.8 KiB raw (+0.07% more).
+const rawInitialBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 2_417.0 : 2_417.0;
 assertBudget("initial raw JavaScript and CSS", rawInitialBytes, rawInitialBudgetKiB * 1024);
 assertBudget("largest initial JavaScript chunk raw", largestInitialJSRaw, 1_000 * 1024);

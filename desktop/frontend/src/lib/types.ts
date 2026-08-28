@@ -258,6 +258,26 @@ export interface WireAsk {
   questions: WireAskQuestion[];
 }
 
+// The provider-excluded MCP Apps presentation a tool result can carry.
+export interface MCPAppPresentation {
+  server: string;
+  tool: string;
+  generation: number;
+  resourceUri?: string;
+  csp?: Record<string, string[]>;
+  rawResult?: unknown;
+  structured?: unknown;
+}
+
+// One live MCP Apps instance mounted in the double-iframe sandbox.
+export interface MCPAppInstanceView {
+  instanceToken: string;
+  server: string;
+  tool: string;
+  outerUrl: string;
+  resourceQuery: string;
+}
+
 // One server-initiated MCP elicitation awaiting accept/decline/cancel. Form
 // mode carries a flat primitive JSON schema; url mode a credential-free target.
 export interface WireMCPInteraction {
