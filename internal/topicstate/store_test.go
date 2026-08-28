@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -59,7 +60,7 @@ func TestStorePersistsAtomicTopicRecord(t *testing.T) {
 	}
 	if info, err := os.Stat(path); err != nil {
 		t.Fatal(err)
-	} else if info.Mode().Perm() != 0o600 {
+	} else if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
 		t.Fatalf("database mode = %o, want 600", info.Mode().Perm())
 	}
 }

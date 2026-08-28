@@ -320,7 +320,7 @@ try {
     max: element.scrollHeight - element.clientHeight,
   }));
   assert(hydrationStart.max > 0, `async hydration fixture is scrollable (${hydrationStart.max}px)`);
-  await page.mouse.move(hydrationBox.x + hydrationBox.width / 2, hydrationBox.y + hydrationBox.height / 2);
+  await moveToOuterReaderGutter(page, hydrationTranscript);
   await page.mouse.wheel(0, hydrationStart.top < hydrationStart.max / 2 ? 360 : -360);
   await page.waitForFunction(
     (startTop) => {
@@ -996,18 +996,39 @@ try {
       await page.mouse.move(nativeThumbProbe.x, candidateY);
       await page.mouse.down();
       await page.waitForFunction(() => document.querySelector(".transcript")?.dataset.nativeScrollbarDrag === "true");
-      await page.mouse.move(nativeThumbProbe.x, candidateY + 48, { steps: 2 });
-      await page.waitForTimeout(150);
+      await page.mouse.move(nativeThumbProbe.x, candidateY + 24);
+      await page.waitForTimeout(24);
+      const midpoint = await transcript.evaluate((element) => ({
+        scrollTop: element.scrollTop,
+        clientHeight: element.clientHeight,
+      }));
+      await page.mouse.move(nativeThumbProbe.x, candidateY + 48);
+      await page.waitForTimeout(24);
       const motion = await transcript.evaluate((element) => ({
         scrollTop: element.scrollTop,
         clientHeight: element.clientHeight,
       }));
-      thumbCandidateMotions.push({ offset, scrollTop: motion.scrollTop });
-      // A 48px thumb move traverses several viewports in this fixture. A
-      // track/button press moves at most one page and is not a valid drag hit.
-      if (motion.scrollTop > motion.clientHeight * 2.5) {
+      await page.mouse.move(nativeThumbProbe.x, candidateY + 96);
+      await page.waitForTimeout(24);
+      const confirmation = await transcript.evaluate((element) => ({
+        scrollTop: element.scrollTop,
+        clientHeight: element.clientHeight,
+      }));
+      thumbCandidateMotions.push({
+        offset,
+        midpoint: midpoint.scrollTop,
+        scrollTop: motion.scrollTop,
+        confirmation: confirmation.scrollTop,
+      });
+      // A real thumb follows every pointer increment. A held track/button can
+      // auto-repeat across several pages and can satisfy the first two distance
+      // checks before stopping. Require a third, farther move to prove that the
+      // browser-owned control keeps following the pointer transaction.
+      if (motion.scrollTop > motion.clientHeight * 2.5
+        && motion.scrollTop - midpoint.scrollTop > motion.clientHeight
+        && confirmation.scrollTop - motion.scrollTop > confirmation.clientHeight * 2) {
         nativeThumbY = candidateY;
-        nativeThumbDragY = candidateY + 48;
+        nativeThumbDragY = candidateY + 96;
         break;
       }
       await page.mouse.up();
@@ -1019,6 +1040,31 @@ try {
     // Continue the same pointer transaction that proved native input was
     // delivered. Releasing, resetting, and reusing the old Y coordinate does
     // not prove the browser theme exposed the thumb at that coordinate again.
+    // Finish the browser-owned drag before asynchronous DOM probes: Chromium
+    // can stop delivering native-track movement after a held transaction is
+    // interrupted by fixture mutations even though pointer ownership remains.
+    const nativeTailSamples = [];
+    const nativeDragStepCount = 24;
+    for (let step = 1; step <= nativeDragStepCount; step += 1) {
+      const y = nativeThumbDragY + ((nativeThumbProbe.bottomY - nativeThumbDragY) * step) / nativeDragStepCount;
+      await page.mouse.move(nativeThumbProbe.x, y);
+      // Give Chromium one frame to apply each browser-owned thumb movement;
+      // coalescing one large synthetic move can skip the native track's
+      // intermediate geometry while Virtuoso swaps its mounted range.
+      await page.waitForTimeout(24);
+      const sample = await transcript.evaluate((element) => ({
+        scrollTop: element.scrollTop,
+        scrollHeight: element.scrollHeight,
+        clientHeight: element.clientHeight,
+        bottomDistance: element.scrollHeight - element.scrollTop - element.clientHeight,
+        mode: element.dataset.scrollMode,
+      }));
+      nativeTailSamples.push({ y: Math.round(y), ...sample });
+      if (sample.bottomDistance <= 4) break;
+    }
+    const nativeTailTerminal = nativeTailSamples.at(-1);
+    assert(nativeTailSamples.every((sample) => sample.mode === "native-thumb"), `native thumb retains ownership through the delivered drag (${JSON.stringify(nativeTailSamples)})`);
+    assert(nativeTailTerminal?.bottomDistance <= 4, `native thumb drag reaches the physical bottom (${JSON.stringify(nativeTailSamples)})`);
     nativeThumbProbe = await transcript.evaluate((element, input) => {
       element.querySelectorAll('[data-native-scrollbar-probe="true"]').forEach((node) => {
         if (node instanceof HTMLElement) delete node.dataset.nativeScrollbarProbe;
@@ -1091,28 +1137,6 @@ try {
     assert(duringNativeThumbDrag.knownSize === nativeDragBaseline.knownSize, `native thumb drag freezes new row measurements (${duringNativeThumbDrag.knownSize}px)`);
     assert(duringNativeThumbDrag.fixedHeight === nativeDragBaseline.fixedHeight, `native thumb drag fixes mounted row layout (${duringNativeThumbDrag.fixedHeight})`);
     assert(Math.abs(duringNativeThumbDrag.scrollHeight - nativeDragBaseline.scrollHeight) <= 8, `native thumb drag keeps the physical scroll range stable (${nativeDragBaseline.scrollHeight} → ${duringNativeThumbDrag.scrollHeight}; row ${duringNativeThumbDrag.rowHeight}; list ${duringNativeThumbDrag.listHeight})`);
-    const nativeTailSamples = [];
-    const nativeDragStepCount = 24;
-    for (let step = 1; step <= nativeDragStepCount; step += 1) {
-      const y = nativeThumbDragY + ((nativeThumbProbe.bottomY - nativeThumbDragY) * step) / nativeDragStepCount;
-      await page.mouse.move(nativeThumbProbe.x, y);
-      // Give Chromium one frame to apply each browser-owned thumb movement;
-      // coalescing one large synthetic move can skip the native track's
-      // intermediate geometry while Virtuoso swaps its mounted range.
-      await page.waitForTimeout(24);
-      const sample = await transcript.evaluate((element) => ({
-        scrollTop: element.scrollTop,
-        scrollHeight: element.scrollHeight,
-        clientHeight: element.clientHeight,
-        bottomDistance: element.scrollHeight - element.scrollTop - element.clientHeight,
-        mode: element.dataset.scrollMode,
-      }));
-      nativeTailSamples.push({ y: Math.round(y), ...sample });
-      if (sample.bottomDistance <= 4) break;
-    }
-    const nativeTailTerminal = nativeTailSamples.at(-1);
-    assert(nativeTailSamples.every((sample) => sample.mode === "native-thumb"), `native thumb retains ownership through the delivered drag (${JSON.stringify(nativeTailSamples)})`);
-    assert(nativeTailTerminal?.bottomDistance <= 4, `native thumb drag reaches the physical bottom (${JSON.stringify(nativeTailSamples)})`);
     await page.mouse.up();
     await page.waitForFunction(() => document.querySelector(".transcript")?.dataset.nativeScrollbarDrag !== "true");
     await transcript.evaluate((element) => {

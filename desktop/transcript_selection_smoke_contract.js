@@ -21,23 +21,50 @@
     const scoped = [...document.querySelectorAll('.transcript-selection-action[data-surface="transcript"]')];
     return scoped.length > 0 ? scoped : [...document.querySelectorAll("body > .transcript-selection-action")];
   };
+  const selectionTableTopic = () => [...document.querySelectorAll(".project-tree__topic-main")]
+    .find((element) => element.textContent?.includes("bench:selection-table"));
+  const activateSelectionTableTopic = async (timeout = 30000) => {
+    const deadline = Date.now() + timeout;
+    while (Date.now() < deadline) {
+      const topic = selectionTableTopic();
+      if (topic?.closest(".project-tree__topic--active")) return topic;
+      if (topic) {
+        topic.click();
+        // ProjectTree intentionally delays single-click opening by 200ms so a
+        // double click can become rename. It can also render the topic before
+        // its openRequest is ready, in which case the click is ignored. Wait
+        // beyond that decision window, then retry only while still inactive.
+        const attemptDeadline = Math.min(deadline, Date.now() + 750);
+        while (Date.now() < attemptDeadline) {
+          if (selectionTableTopic()?.closest(".project-tree__topic--active")) {
+            return selectionTableTopic();
+          }
+          await wait(50);
+        }
+      } else {
+        await wait(50);
+      }
+    }
+    throw new Error("timed out activating selection table topic");
+  };
 
   const start = async () => {
-    const topic = await waitFor(
-      () => [...document.querySelectorAll(".project-tree__topic-main")]
-        .find((element) => element.textContent?.includes("bench:selection-table")),
-      "selection table topic",
-    );
-    topic.click();
+    await activateSelectionTableTopic();
     const target = await waitFor(
-      () => [...document.querySelectorAll("strong")]
-        .find((element) => element.textContent?.includes("SELECTION REPAINT TARGET")),
+      () => {
+        const target = [...document.querySelectorAll("strong")]
+          .find((element) => element.textContent?.includes("SELECTION REPAINT TARGET"));
+        if (target) return target;
+        // The marker is in the fixture's final virtual row. WebView2 can
+        // publish the active topic before Virtuoso performs its initial tail
+        // landing, leaving that row unmounted indefinitely. Keep setup on the
+        // physical bottom until the final row exists; all compositor captures
+        // still begin only after the target is centered and settled below.
+        const transcript = document.querySelector(".transcript");
+        if (transcript instanceof HTMLElement) transcript.scrollTop = transcript.scrollHeight;
+        return null;
+      },
       "selection repaint target",
-    );
-    await waitFor(
-      () => document.querySelector(".project-tree__topic--active .project-tree__topic-label")
-        ?.textContent?.includes("bench:selection-table"),
-      "active selection table topic",
     );
     await waitFor(() => !document.querySelector(".transcript-navigation-overlay"), "settled transcript navigation");
     target.scrollIntoView({ block: "center", inline: "nearest" });
