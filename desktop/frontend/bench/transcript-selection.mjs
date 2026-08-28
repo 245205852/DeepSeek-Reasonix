@@ -104,9 +104,28 @@ async function findVisibleTurnTarget(page, turnPredicate) {
         && rect.height > 0 && rect.bottom > viewport.top && rect.top < viewport.bottom;
     });
     if (!root) return null;
-    const rect = root.getBoundingClientRect();
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    const textRects = [];
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      if (!node.textContent?.trim()) continue;
+      const range = document.createRange();
+      range.selectNodeContents(node);
+      textRects.push(...range.getClientRects());
+    }
+    const rect = textRects.find((candidate) =>
+      candidate.width > 8
+      && candidate.height > 0
+      && candidate.bottom > viewport.top
+      && candidate.top < viewport.bottom
+    );
+    if (!rect) return null;
+    const visibleLeft = Math.max(rect.left, viewport.left);
+    const visibleRight = Math.min(rect.right, viewport.right);
+    if (visibleRight - visibleLeft < 4) return null;
+    const width = visibleRight - visibleLeft;
     return {
-      x: Math.min(rect.right - 2, rect.left + Math.max(rect.width * 0.45, 24)),
+      x: visibleLeft + width * 0.7,
+      probeX: visibleLeft + width * 0.35,
       y: (Math.max(rect.top, viewport.top) + Math.min(rect.bottom, viewport.bottom)) / 2,
     };
   }, turnPredicate);
@@ -633,7 +652,11 @@ try {
   assert(forwardFocus != null, "downward logical drag settles over a visible 20+ turn target");
   let forwardPromoted = false;
   for (let attempt = 0; attempt < 5 && !forwardPromoted; attempt += 1) {
-    await page.mouse.move(forwardFocus.x + 24, forwardFocus.y, { steps: 4 });
+    // Stay inside a real text client rect. The selectable row is a full-width
+    // block, so its geometric center can be empty padding on slower layouts;
+    // moving there does not extend the browser Range and cannot promote the
+    // cross-row gesture to the logical selection owner.
+    await page.mouse.move(forwardFocus.probeX, forwardFocus.y, { steps: 4 });
     await page.mouse.move(forwardFocus.x, forwardFocus.y, { steps: 8 });
     forwardPromoted = await waitForLogicalSelection(page, 3_000);
     if (!forwardPromoted) forwardFocus = (await findVisibleTurnTarget(page, { min: forwardTargetTurn })) ?? forwardFocus;

@@ -51,6 +51,12 @@ type ActiveReaderTransaction = TranscriptReaderTransaction & {
   /** Last tick's native height: a rebound correction spends its budget only
    *  after one unchanged-height interval with mounted viewport coverage. */
   correctionHeightSample: number;
+  /** A blank rebound scroll delivery spends the single correction budget
+   *  synchronously before the next paint instead of waiting for a frame. */
+  prepaint: boolean;
+  /** The scheduled tick, exposed so a blank rebound delivery can run it
+   *  synchronously before paint. */
+  tick?: () => void;
 };
 
 function collapseThreshold(element: HTMLDivElement): number {
@@ -119,6 +125,9 @@ export function useTranscriptReaderExtentStability({
   const transactionRef = useRef<ActiveReaderTransaction | null>(null);
   const nextIdRef = useRef(0);
   const mountedRef = useRef(true);
+  /** Guards the blank-rebound synchronous tick against re-entering itself
+   *  through the tick's own observe() call. */
+  const syncTickInFlightRef = useRef(false);
   const [active, setActive] = useState(false);
   // Reader writer ownership is bounded, but its measured mount corridor is
   // not timer-owned. WKWebView can commit a delayed Virtuoso range replacement
@@ -135,6 +144,7 @@ export function useTranscriptReaderExtentStability({
     transactionRef.current = null;
     if (transaction.frame !== null) cancelAnimationFrame(transaction.frame);
     transaction.frame = null;
+    transaction.tick = undefined;
     clearVisualGuard(transaction);
     recordTranscriptScrollDiagnostic("reader-transaction", { transactionId: transaction.id, phase: "end", result: reason });
     if (notify) callbacksRef.current.onEnd(transaction, reason);
@@ -228,6 +238,29 @@ export function useTranscriptReaderExtentStability({
         extentDelta: element.scrollHeight - transaction.baselineHeight,
         result: transaction.transient ? "wait-extent" : "restore-anchor",
       });
+      // A rebound delivery landing on a blank viewport cannot wait for the
+      // next animation frame: it would paint the transient empty range. Spend
+      // the single correction budget synchronously before paint; the tick's
+      // prepaint lane shares the same budget as the covered-frame fallback.
+      if (
+        !transaction.correctionWritten
+        && transaction.collapseObserved
+        && !transaction.transient
+        && reverse >= threshold
+        && element.scrollHeight >= transaction.baselineHeight - threshold
+        && transcriptElementViewportIsBlank(element)
+        && !syncTickInFlightRef.current
+      ) {
+        transaction.prepaint = true;
+        if (transaction.frame !== null) cancelAnimationFrame(transaction.frame);
+        transaction.frame = null;
+        syncTickInFlightRef.current = true;
+        try {
+          transaction.tick?.();
+        } finally {
+          syncTickInFlightRef.current = false;
+        }
+      }
       return true;
     }
     if (!extentCollapsed && !anchorDisplaced && transaction.visualOffset !== 0) clearVisualGuard(transaction);
@@ -291,6 +324,8 @@ export function useTranscriptReaderExtentStability({
   const schedule = useCallback((transaction: ActiveReaderTransaction) => {
     const tick = () => {
       transaction.frame = null;
+      const prepaint = transaction.prepaint;
+      transaction.prepaint = false;
       if (
         transactionRef.current !== transaction
         || generationRef.current !== transaction.surfaceGeneration
@@ -351,14 +386,17 @@ export function useTranscriptReaderExtentStability({
         }
         // A recovered extent can publish its restored native height one or two
         // paints before Virtuoso mounts rows for it. Writing during that gap
-        // moves the viewport into an empty size tree. Wait for mounted
-        // coverage and one unchanged-height interval before spending the
-        // correction budget (the mount-anchor step above is exempt: it creates
-        // the coverage instead of moving into it).
+        // moves the viewport into an empty size tree: a blank rebound scroll
+        // delivery spends the correction synchronously before paint (the
+        // prepaint lane), while the frame fallback waits for mounted coverage
+        // and one unchanged-height interval. The mount-anchor step above is
+        // exempt: it creates the coverage instead of moving into it.
         if (
           transaction.collapseObserved
           && !extentStillCollapsed
-          && (transcriptElementViewportIsBlank(element) || !correctionHeightStable)
+          && (prepaint
+            ? !transcriptElementViewportIsBlank(element)
+            : transcriptElementViewportIsBlank(element) || !correctionHeightStable)
         ) {
           transaction.frame = requestAnimationFrame(tick);
           return;
@@ -469,6 +507,8 @@ export function useTranscriptReaderExtentStability({
       }
       transaction.frame = requestAnimationFrame(tick);
     };
+    // Exposed so a blank rebound delivery can run the correction before paint.
+    transaction.tick = tick;
     if (transaction.frame === null) transaction.frame = requestAnimationFrame(tick);
   }, [finish, generationRef, geometryRevisionRef, modeRef, observe, ownershipEpochRef, scrollRef, writeCorrection]);
 
@@ -552,6 +592,7 @@ export function useTranscriptReaderExtentStability({
       visualOffset: 0,
       postCorrectionSettleDeadline: 0,
       correctionHeightSample: element.scrollHeight,
+      prepaint: false,
     };
     transactionRef.current = transaction;
     setActive(true);
