@@ -84,8 +84,12 @@ type Approvals interface {
 	// ResolveRecovery answers an Auto Guard card: continue|continue_task|revise. Revise
 	// refuses the mutation and steers feedback.
 	ResolveRecovery(id string, action agent.RecoveryAction, feedback string) error
+	AnswerMCPInteraction(id, action string, content map[string]any)
 	AnswerQuestion(id string, answers []event.AskAnswer)
 	AnswerQuestionChecked(id string, answers []event.AskAnswer) error
+	// AnswerMCPInteractionChecked resolves an mcp_interaction prompt after its
+	// durable transition (serve /mcp-interaction, desktop bridge).
+	AnswerMCPInteractionChecked(id, action string, content map[string]any) error
 	Ask(ctx context.Context, questions []event.AskQuestion) ([]event.AskAnswer, error)
 	ReplayPendingPrompts()
 	ReplayPendingPromptsTo(sink event.Sink)

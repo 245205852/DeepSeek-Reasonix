@@ -1541,6 +1541,22 @@ export const en = {
   "memory.instructionImports": "Resolved imports",
   "memory.globalDirectory": "global scope",
 
+  // MCP elicitation prompts
+  "mcp.interaction.title": "MCP server needs your input",
+  "mcp.interaction.modeForm": "form",
+  "mcp.interaction.modeUrl": "link",
+  "mcp.interaction.chooseOption": "Choose…",
+  "mcp.interaction.submit": "Submit",
+  "mcp.interaction.accept": "Accept",
+  "mcp.interaction.decline": "Decline",
+  "mcp.interaction.cancel": "Cancel",
+  "mcp.interaction.required": "Required: {label}",
+  "mcp.interaction.invalidValue": "Invalid value: {label}",
+  "mcp.interaction.urlHint": "Open the link, finish in your browser, then accept.",
+  "mcp.interaction.urlOpenedHint": "Finish in your browser, then accept.",
+  "mcp.interaction.openUrl": "Open {host}",
+  "mcp.interaction.confirmOnly": "This server asks you to confirm the request.",
+
   // settings drawer
   "settings.title": "Settings",
   "settings.loading": "Loading…",

@@ -138,7 +138,11 @@ console.log("\nbundle budgets");
 // The final 0.266 KiB retains jump ownership through paint-ready instead of
 // allowing a native scrollend to release it. Keep only 0.213 KiB headroom;
 // native validation hosts and test fixtures stay outside the production graph.
-const initialJSBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 447.8 : 447.8;
+// MCP 2026 elicitation adds the mcp_interaction prompt surface to the initial
+// reducer graph (state field, event case, prompt teardown, resolve callback);
+// the card itself stays lazy. Measured +0.132 KiB gzip (447.932 KiB), carry
+// 0.268 KiB headroom.
+const initialJSBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 448.2 : 448.2;
 assertBudget("initial JavaScript gzip", initialJSGzip, initialJSBudgetKiB * 1024);
 assertBudget("largest initial JavaScript chunk gzip", largestInitialJS, 280 * 1024);
 // Render-blocking CSS is intentionally absent: styles.css loads deferred via
@@ -185,7 +189,9 @@ for (const path of localeChunks) {
   // choices from the primary UI; keep that complete guidance with a bounded
   // 0.4–0.5 KiB locale-only ratchet.
   // Remote-session actions and disconnected-shell guidance add bounded copy.
-  const budget = name.startsWith("zh-TW-") ? 58.5 * 1024 : 57.8 * 1024;
+  // MCP elicitation prompts add fourteen short labels per locale (title, form
+  // actions, URL guidance); measured ~40 B gzip each.
+  const budget = name.startsWith("zh-TW-") ? 58.7 * 1024 : 58.0 * 1024;
   assertBudget(`${name} gzip`, gzipBytes(path), budget);
 }
 
@@ -216,6 +222,8 @@ const rawInitialBytes = [...initialJS, ...initialCSS, ...appShellCSS]
 // raw/toolchain headroom for both owners.
 // The same transcript transaction measures 2413.012 KiB raw (+0.28%) against
 // the 2406.204 KiB baseline. Retain 0.188 KiB of bounded headroom.
-const rawInitialBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 2_413.2 : 2_413.2;
+// MCP 2026 elicitation's reducer wiring measures 2415.032 KiB raw (+0.08%);
+// bounded headroom retained with the gzip ratchet above.
+const rawInitialBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 2_415.2 : 2_415.2;
 assertBudget("initial raw JavaScript and CSS", rawInitialBytes, rawInitialBudgetKiB * 1024);
 assertBudget("largest initial JavaScript chunk raw", largestInitialJSRaw, 1_000 * 1024);

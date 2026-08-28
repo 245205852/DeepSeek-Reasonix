@@ -52,8 +52,9 @@ const UndoRewindBanner = lazy(() => import("./components/UndoRewindBanner").then
 const ProjectTree = lazy(() => import("./components/ProjectTree").then((module) => ({ default: module.ProjectTree })));
 const RemoteSessionSurface = lazy(() => import("./components/RemoteSessionSurface").then((module) => ({ default: module.RemoteSessionSurface })));
 const ExtensionFormDialog = lazy(() => import("./components/ExtensionFormDialog").then((module) => ({ default: module.ExtensionFormDialog })));
+const MCPInteractionCard = lazy(() => import("./components/MCPInteractionCard").then((module) => ({ default: module.MCPInteractionCard })));
 /** Footer decision surface kinds. Runtime blockers are explicit recovery choices. */
-type DecisionSurfaceKind = MockDecisionSurfaceKind | "extension_form";
+type DecisionSurfaceKind = MockDecisionSurfaceKind | "extension_form" | "mcp_interaction";
 import { StatusBar } from "./components/StatusBar";
 import { RemoteHostKeyDialog } from "./components/RemoteHostKeyDialog";
 import { RemoteSecretDialog } from "./components/RemoteSecretDialog";
@@ -1068,6 +1069,7 @@ export default function App() {
     resolvePlanDecision,
     resolveRecovery,
     answerQuestion,
+    answerMCPInteraction,
     setControllerMode,
     dismissExtensionForm,
     drainExtensionNotifications,
@@ -1788,6 +1790,7 @@ export default function App() {
       return state.approval.tool === "exit_plan_mode" ? "plan_approval" : "tool_approval";
     }
     if (state.ask) return "ask";
+    if (state.mcpInteraction) return "mcp_interaction";
     if (state.extensionForm) return "extension_form";
     if (workspaceConflict) return "workspace_conflict";
     if (pendingClose) return "close_active";
@@ -5048,6 +5051,18 @@ export default function App() {
                   cancel();
                 }}
               />
+              )
+            : visibleDecisionSurface === "mcp_interaction"
+              ? state.mcpInteraction && (
+              <Suspense fallback={null}>
+                <MCPInteractionCard
+                  key={`${activeTabId ?? ""}:${state.mcpInteraction.id}`}
+                  interaction={state.mcpInteraction}
+                  busy={false}
+                  onAnswer={(id, action, content) => answerMCPInteraction(id, action, content)}
+                  onOpenLink={(url) => openExternal(url)}
+                />
+              </Suspense>
               )
             : visibleDecisionSurface === "extension_form"
               ? state.extensionForm && (

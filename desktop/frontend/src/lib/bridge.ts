@@ -278,6 +278,12 @@ export interface AppBindings extends SessionCatalogBindings, ProjectTreeOrganiza
   RecoveryCheckpointEnabledTab(tabID: string): Promise<boolean>;
   AnswerQuestion(id: string, answers: QuestionAnswer[]): Promise<void>;
   AnswerQuestionForTab(tabID: string, id: string, answers: QuestionAnswer[]): Promise<void>;
+  AnswerMCPInteractionForTab(
+    tabID: string,
+    id: string,
+    action: "accept" | "decline" | "cancel",
+    content: Record<string, unknown> | null,
+  ): Promise<void>;
   AnswerPromptForTab?(tabID: string, turnID: string, id: string, answers: QuestionAnswer[]): Promise<void>;
   ReplayPendingPrompts(): Promise<void>;
   ReplayPendingPromptsForTab(tabID: string): Promise<void>;
@@ -3083,6 +3089,9 @@ function makeMockApp(): AppBindings {
         .join("\n");
       emit({ kind: "message", text: `ask preview answered:\n\n${summary}` });
           emitMockTurnDone();
+        },
+        async AnswerMCPInteractionForTab(_tabID, _id, _action, _content) {
+          return undefined;
         },
         async AnswerQuestionForTab(_tabID, id, answers) {
           await withMockTabScope(_tabID, () => this.AnswerQuestion(id, answers));

@@ -563,6 +563,7 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("POST /goal/resume", s.foregroundMutation(s.goalResume))
 	mux.HandleFunc("POST /jobs/cancel", s.foregroundMutation(s.jobsCancel))
 	mux.HandleFunc("POST /answer", s.foregroundMutation(s.answer))
+	mux.HandleFunc("POST /mcp-interaction", s.foregroundMutation(s.mcpInteraction))
 	mux.HandleFunc("POST /resume", s.resume)
 	mux.HandleFunc("POST /forget", s.foregroundMutation(s.forget))
 	mux.HandleFunc("GET /checkpoints", s.checkpoints)

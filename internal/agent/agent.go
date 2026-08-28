@@ -23,6 +23,7 @@ import (
 	"reasonix/internal/extension/dispatch"
 	"reasonix/internal/instruction"
 	"reasonix/internal/jobs"
+	"reasonix/internal/mcpinteraction"
 	"reasonix/internal/memory"
 	"reasonix/internal/nilutil"
 	"reasonix/internal/plancontract"
@@ -541,6 +542,10 @@ func (a *Agent) withTurnPreferences(input string) string {
 // SetAsker installs the asker the `ask` tool uses to question the user.
 // Interactive frontends wire one in; headless runs leave it nil.
 func (a *Agent) SetAsker(as Asker) { a.svc.asker = as }
+
+// SetInteractionBroker installs the broker that carries MCP server-initiated
+// elicitations to the user. Headless runs leave it nil so requests cancel.
+func (a *Agent) SetInteractionBroker(b mcpinteraction.Broker) { a.svc.interactionBroker = b }
 
 // SetMemoryQueue installs the sink the remember/forget tools use to apply a
 // memory change in the current session. The controller wires itself in.

@@ -46,6 +46,7 @@ import (
 	"reasonix/internal/hook"
 	"reasonix/internal/i18n"
 	"reasonix/internal/jobs"
+	"reasonix/internal/mcpinteraction"
 	"reasonix/internal/memory"
 	"reasonix/internal/nilutil"
 	"reasonix/internal/permission"
@@ -2238,6 +2239,7 @@ func (c *Controller) EnableInteractiveApproval() {
 		c.executor.SetWriteAccessGate(c)
 		c.executor.SetWriteRoots(c.writeAccess.roots)
 		c.executor.SetAsker(c)
+		c.executor.SetInteractionBroker(c)
 	}
 	if setter, ok := c.runner.(interface {
 		SetPlanModeReadOnlyTrustGate(agent.PlanModeReadOnlyTrustGate)
@@ -2273,6 +2275,9 @@ func (c *Controller) EnableInteractiveApproval() {
 	// surface the executor does instead of a parallel prose-question path.
 	if setter, ok := c.runner.(interface{ SetAsker(agent.Asker) }); ok {
 		setter.SetAsker(c)
+	}
+	if setter, ok := c.runner.(interface{ SetInteractionBroker(mcpinteraction.Broker) }); ok {
+		setter.SetInteractionBroker(c)
 	}
 }
 
@@ -2666,11 +2671,12 @@ func (c *Controller) ReplayPendingPromptsWith(sinkFactory func() event.Sink) {
 
 func (c *Controller) replayPendingPromptsTo(sink event.Sink) bool {
 	approvals, asks := c.approval.snapshotPrompts()
-	c.emitPendingPrompts(sink, approvals, asks)
+	interactions := c.approval.snapshotMCPInteractions()
+	c.emitPendingPrompts(sink, approvals, asks, interactions)
 	return len(approvals) == 0
 }
 
-func (c *Controller) emitPendingPrompts(sink event.Sink, approvals []event.Approval, asks []event.Ask) {
+func (c *Controller) emitPendingPrompts(sink event.Sink, approvals []event.Approval, asks []event.Ask, interactions []event.MCPInteraction) {
 	if sink == nil {
 		return
 	}
@@ -2679,6 +2685,9 @@ func (c *Controller) emitPendingPrompts(sink event.Sink, approvals []event.Appro
 	}
 	for _, a := range asks {
 		sink.Emit(event.Event{Kind: event.AskRequest, ItemID: a.ID, Ask: a})
+	}
+	for _, i := range interactions {
+		sink.Emit(event.Event{Kind: event.MCPInteractionRequest, ItemID: i.ID, MCPInteraction: i})
 	}
 }
 

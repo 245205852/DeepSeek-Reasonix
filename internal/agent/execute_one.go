@@ -11,6 +11,7 @@ import (
 	"reasonix/internal/evidence"
 	"reasonix/internal/instruction"
 	"reasonix/internal/jobs"
+	"reasonix/internal/mcpinteraction"
 	"reasonix/internal/memory"
 	"reasonix/internal/planmode"
 	"reasonix/internal/provider"
@@ -583,6 +584,9 @@ func (a *Agent) prepareToolExecution(ctx context.Context, plan *toolCallPlan) (t
 		}
 	}
 	cctx := tool.WithContextCompressor(withCallContext(ctx, plan.call.ID, a.svc.sink, a.svc.asker, a.planMode.Load()), a)
+	if a.svc.interactionBroker != nil {
+		cctx = mcpinteraction.WithBroker(cctx, a.svc.interactionBroker)
+	}
 	cctx = WithSubagentDepth(cctx, a.subagentDepth)
 	if a.task.ledger != nil {
 		cctx = evidence.WithLedger(cctx, a.task.ledger)

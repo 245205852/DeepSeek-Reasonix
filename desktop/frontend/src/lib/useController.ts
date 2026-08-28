@@ -71,6 +71,7 @@ import type {
   TurnEventReplayView,
   WireApproval,
   WireAsk,
+  WireMCPInteraction,
   WireCompletionSummary,
   WireDecisionReceipt,
   WireEvent,
@@ -376,6 +377,7 @@ export interface State {
   completionSummary?: WireCompletionSummary;
   approval?: WireApproval;
   ask?: WireAsk;
+  mcpInteraction?: WireMCPInteraction;
   usage?: WireUsage;
   context: ContextInfo;
   meta?: Meta;
@@ -1519,7 +1521,7 @@ function applyEvent(s: State, e: WireEvent, preserveToolPayloads = false): State
             cancellable: true,
           };
         case "cancelling":
-          return endPromptWait({ ...s, cancelRequested: true, pendingPrompt: false, approval: undefined, ask: undefined, cancellable: true });
+          return endPromptWait({ ...s, cancelRequested: true, pendingPrompt: false, approval: undefined, ask: undefined, mcpInteraction: undefined, cancellable: true });
         case "waiting_user":
           return { ...s, running: true, turnActive: true, pendingPrompt: true, cancellable: true };
         case "in_progress":
@@ -1530,11 +1532,12 @@ function applyEvent(s: State, e: WireEvent, preserveToolPayloads = false): State
     }
     case "prompt_answered": {
       if (e.turnId && s.activeTurnId && e.turnId !== s.activeTurnId) return s;
-      if (e.itemId && s.approval?.id !== e.itemId && s.ask?.id !== e.itemId) return s;
+      if (e.itemId && s.approval?.id !== e.itemId && s.ask?.id !== e.itemId && s.mcpInteraction?.id !== e.itemId) return s;
       return endPromptWait({
         ...s,
         approval: undefined,
         ask: undefined,
+        mcpInteraction: undefined,
         pendingPrompt: false,
         running: true,
         turnActive: true,
@@ -1848,6 +1851,21 @@ function applyEvent(s: State, e: WireEvent, preserveToolPayloads = false): State
         cancellable: true,
       });
     }
+    case "mcp_interaction": {
+      if (s.cancelRequested) return s;
+      if (e.mcpInteraction?.id !== undefined && e.mcpInteraction.id === s.resolvedPromptId) return s;
+      return beginPromptWait({
+        ...s,
+        activeTurnId: e.turnId ?? s.activeTurnId,
+        mcpInteraction: e.mcpInteraction,
+        promptArrivedAt: e.mcpInteraction?.id === s.promptArrivedId ? s.promptArrivedAt : promptEventClock(),
+        promptArrivedId: e.mcpInteraction?.id,
+        pendingPrompt: true,
+        running: true,
+        turnActive: true,
+        cancellable: true,
+      });
+    }
     case "guardian_assessment": {
       if (!e.guardian) return s;
       const level = e.guardian.outcome === "deny" ? "warn" : "info";
@@ -1956,6 +1974,7 @@ function applyEvent(s: State, e: WireEvent, preserveToolPayloads = false): State
         activeTurnId: undefined,
         approval: keepPlanApproval ? s.approval : undefined,
         ask: undefined,
+        mcpInteraction: undefined,
         deliveryRecoveryActive: false,
         turnLifecycleObservedAt: promptEventClock(),
         seq: s.seq + 1,
@@ -2005,6 +2024,7 @@ export function reducer(s: State, a: Action): State {
         cancellable: false,
         approval: undefined,
         ask: undefined,
+        mcpInteraction: undefined,
         promptArrivedAt: undefined,
         promptArrivedId: undefined,
         live: undefined,
@@ -2019,6 +2039,7 @@ export function reducer(s: State, a: Action): State {
         cancelRequested: true,
         approval: undefined,
         ask: undefined,
+        mcpInteraction: undefined,
         promptArrivedAt: undefined,
         promptArrivedId: undefined,
         cancellable: s.running || s.turnActive,
@@ -2096,6 +2117,7 @@ export function reducer(s: State, a: Action): State {
         currentAssistant: undefined,
         approval: undefined,
         ask: undefined,
+        mcpInteraction: undefined,
         retry: undefined,
       });
     }
@@ -2271,7 +2293,13 @@ export function reducer(s: State, a: Action): State {
       return endPromptWaitIfIdle(next);
     }
     case "clearAsk": {
-      const next = { ...s, ask: undefined, pendingPrompt: Boolean(s.approval), resolvedPromptId: s.ask?.id ?? s.resolvedPromptId };
+      const next = {
+        ...s,
+        ask: undefined,
+        mcpInteraction: undefined,
+        pendingPrompt: Boolean(s.approval),
+        resolvedPromptId: s.ask?.id ?? s.mcpInteraction?.id ?? s.resolvedPromptId,
+      };
       return endPromptWaitIfIdle(next);
     }
     case "clearExtensionForm": return s.extensionForm ? { ...s, extensionForm: undefined } : s;
@@ -3880,6 +3908,18 @@ export function useController() {
     });
   }, [activeTabId, dispatchTo]);
 
+  const answerMCPInteraction = useCallback(
+    (id: string, action: "accept" | "decline" | "cancel", content?: Record<string, unknown>) => {
+      if (!activeTabId) return;
+      const tabId = activeTabId;
+      dispatchTo(tabId, { type: "clearAsk" });
+      app.AnswerMCPInteractionForTab(tabId, id, action, content ?? null).catch(() => {
+        replayPendingPromptsForActiveTab(tabId);
+      });
+    },
+    [activeTabId, dispatchTo],
+  );
+
   const setControllerMode = useCallback((mode: Mode): Promise<void> => {
     if (!activeTabId) return Promise.resolve();
     const tabId = activeTabId;
@@ -4904,7 +4944,7 @@ export function useController() {
     state: activeState,
     liveStore,
     activeTabId,
-    send, sendToTab, recoverDeliveryToTab, runShell, runShellForTab, steer, steerForTab, notice, cancel, approve, resolvePlanDecision, resolveRecovery, answerQuestion, setControllerMode,
+    send, sendToTab, recoverDeliveryToTab, runShell, runShellForTab, steer, steerForTab, notice, cancel, approve, resolvePlanDecision, resolveRecovery, answerQuestion, answerMCPInteraction, setControllerMode,
     dismissExtensionForm, drainExtensionNotifications,
     setCollaborationMode, setCollaborationModeForTab, setToolApprovalMode, setToolApprovalModeForTab, setQualityFloor, setComposerProfileForTab, setGoal, setGoalForTab, clearGoal, clearGoalForTab, resumeGoal, resumeGoalForTab, pauseGoal, pauseGoalForTab,
     newSession, clearSession, listSessions, listTrashedSessions, retrySessionHistory, resumeSession, openChannelSession, previewSession, deleteSession, restoreSession, purgeTrashedSession, renameSession,

@@ -1542,6 +1542,22 @@ export const zh: Record<DictKey, string> = {
   "memory.instructionImports": "已解析导入",
   "memory.globalDirectory": "全局作用域",
 
+  // MCP elicitation prompts
+  "mcp.interaction.title": "MCP 服务器需要你的输入",
+  "mcp.interaction.modeForm": "表单",
+  "mcp.interaction.modeUrl": "链接",
+  "mcp.interaction.chooseOption": "请选择…",
+  "mcp.interaction.submit": "提交",
+  "mcp.interaction.accept": "接受",
+  "mcp.interaction.decline": "拒绝",
+  "mcp.interaction.cancel": "取消",
+  "mcp.interaction.required": "必填:{label}",
+  "mcp.interaction.invalidValue": "无效值:{label}",
+  "mcp.interaction.urlHint": "先打开链接在浏览器中完成后,再点接受。",
+  "mcp.interaction.urlOpenedHint": "在浏览器中完成后,点接受。",
+  "mcp.interaction.openUrl": "打开 {host}",
+  "mcp.interaction.confirmOnly": "该服务器请求你确认此次操作。",
+
 
   // 设置抽屉
   "settings.title": "设置",
