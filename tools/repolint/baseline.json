@@ -12,7 +12,7 @@
     "desktop/app.go": {
       "complexity": 58,
       "essay": 64,
-      "file-size": 11109,
+      "file-size": 11113,
       "function-size": 360,
       "struct-state": 15
     },
@@ -110,7 +110,7 @@
       "file-size": 141
     },
     "desktop/frontend/src/components/SettingsPanel.tsx": {
-      "file-size": 7269
+      "file-size": 7284
     },
     "desktop/frontend/src/components/StatusBar.tsx": {
       "file-size": 43

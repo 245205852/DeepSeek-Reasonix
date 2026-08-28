@@ -147,7 +147,10 @@ console.log("\nbundle budgets");
 // Tab-bound lifecycle props and instance cleanup add 0.213 KiB gzip to that
 // always-mounted wrapper (448.673 KiB measured); the AppBridge implementation,
 // link confirmation, and result normalization remain in the lazy chunk.
-const initialJSBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 448.8 : 448.8;
+// Notification volume plus per-source loudness normalization adds 0.243 KiB
+// gzip on main-v2. The exact combined MCP + notification path measures
+// 449.049 KiB; retain 0.151 KiB of bounded build/toolchain headroom.
+const initialJSBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 449.2 : 449.2;
 assertBudget("initial JavaScript gzip", initialJSGzip, initialJSBudgetKiB * 1024);
 assertBudget("largest initial JavaScript chunk gzip", largestInitialJS, 280 * 1024);
 // Render-blocking CSS is intentionally absent: styles.css loads deferred via
@@ -234,6 +237,10 @@ const rawInitialBytes = [...initialJS, ...initialCSS, ...appShellCSS]
 // The merged main-v2 Todo shelf retirement changes the shared startup graph;
 // the exact combined path measures 2417.840 KiB. Retain 0.060 KiB of bounded
 // toolchain headroom with the smallest existing decimal ratchet.
-const rawInitialBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 2_417.9 : 2_417.9;
+// The notification-volume control adds one persisted master gain, per-source
+// loudness trims, and its accessible Settings surface. The exact combined MCP
+// + notification path measures 2419.536 KiB raw; retain 0.164 KiB of bounded
+// build/toolchain headroom.
+const rawInitialBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 2_419.7 : 2_419.7;
 assertBudget("initial raw JavaScript and CSS", rawInitialBytes, rawInitialBudgetKiB * 1024);
 assertBudget("largest initial JavaScript chunk raw", largestInitialJSRaw, 1_000 * 1024);
