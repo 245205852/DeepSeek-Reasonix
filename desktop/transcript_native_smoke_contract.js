@@ -267,6 +267,19 @@
     // before the host begins the platform-native downward traversal.
     element.dispatchEvent(new WheelEvent("wheel", { deltaY: -1, bubbles: true, cancelable: true }));
     await waitFor(() => element.dataset.scrollMode === "reader-gesture" || element.dataset.scrollMode === "manual", 5000);
+    state.phase = "waiting-reader-geometry";
+    // A bounded manual-reading window may deliberately mount every row in the
+    // current history page. Do not classify that first estimate-to-measurement
+    // pass as a stable native extent: wait until the whole bounded page is
+    // mounted, asynchronous Markdown geometry has resolved, and the painted
+    // extent is quiet before establishing the smoke baseline. A later collapse
+    // during native input still fails against the unchanged max-extent gate.
+    const logicalRows = Number.parseInt(element.dataset.transcriptRowCount ?? "0", 10);
+    await waitFor(() => (
+      element.querySelectorAll(".transcript__row[data-index]").length >= logicalRows
+        && element.querySelector("[data-transcript-geometry-pending]") === null
+    ), 30000);
+    await waitForStableViewport(element, 8, 15000);
     const virtualList = element.querySelector(".transcript__virtual-sizer");
     const footer = virtualList?.nextElementSibling;
     if (!(footer instanceof HTMLElement)) throw new Error("native transcript fixture footer is unavailable");
