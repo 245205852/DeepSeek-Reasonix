@@ -958,6 +958,7 @@ export function Transcript({
             ref={virtuosoRef}
             className={`transcript${creationMode ? " transcript--creation-scrollbar" : ""}${creationMode && creationScrollbar.hot ? " transcript--scrollbar-hot" : ""}`}
             data-transcript-hydrating={hydrating ? "true" : "false"}
+            data-transcript-reader-layout-lease={readerTransactionActive ? "true" : "false"}
             data-transcript-row-count={virtualRows.length}
             data-transcript-estimated-total={estimatedTotalHeight}
             data-transcript-reset-key={virtuosoResetKey}

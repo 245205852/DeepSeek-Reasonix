@@ -102,6 +102,7 @@
       occupied: rows.length > 0,
       mode: element.dataset.scrollMode ?? "missing",
       readerIntent: element.dataset.transcriptReaderIntent ?? "missing",
+      readerLayoutLease: element.dataset.transcriptReaderLayoutLease ?? "missing",
       mountedFirst: mounted.length > 0 ? Math.min(...mounted) : null,
       mountedLast: mounted.length > 0 ? Math.max(...mounted) : null,
       mountedCount: mounted.length,
