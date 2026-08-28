@@ -25,16 +25,16 @@ import {
   foldMapWithToggle,
   foldSegmentStates,
   reconcileFoldEntries,
-  splitTranscriptLiveRows,
   EMPTY_FOLDS,
   NO_LIVE,
-  type AssistantItem,
   type FoldMap,
   type ToolItem,
   type TranscriptLiveFlags,
   type TranscriptRow,
   transcriptRowMeasurementVersion,
 } from "../lib/transcriptRows";
+import { assistantAnswerOnly } from "../lib/transcriptLiveTurn";
+import { useTranscriptLiveTurnStability } from "../lib/useTranscriptLiveTurnStability";
 import { createTranscriptMeasuredSizes, type TranscriptSynthesizedSizes } from "../lib/transcriptMeasuredSizes";
 import {
   transcriptRowLayoutVariant,
@@ -94,9 +94,6 @@ const READER_MOUNT_CORRIDOR_VIEWPORTS = 7;
 // non-overlapping ranges without an anchor; large sessions keep a bounded corridor.
 const READER_FULL_MOUNT_ROW_LIMIT = 1_000;
 
-function assistantAnswerOnly(item: AssistantItem): AssistantItem {
-  return { ...item, reasoning: "", reasoningComplete: true, reasoningDurationMs: undefined };
-}
 export function Transcript({
   items,
   live: liveProp,
@@ -245,9 +242,10 @@ export function Transcript({
     atBottomStateChange,
     deliverScroll,
     scrollToBottom,
+    pinLiveTailBeforePaint,
     followGrowingTail,
     revalidateTail,
-    beginUserResize,
+    beginUserResize, userResizeRevision,
     scrollToDataIndex, beginQuestionJump, finishQuestionJump,
     releaseTailFollow,
     setMode: setScrollMode,
@@ -444,14 +442,10 @@ export function Transcript({
     }),
     [turnModels, folds, foldPreference, hasOlderHistory, creationMode, turnForUser, hasCheckpointForTurn, reasoningDisplayMode, subcallsByParent],
   );
-  // The active (streaming) turn renders as the list's in-flow Footer, outside
-  // the measured size tree: the list only ever owns static, bounded rows, so
-  // streaming never churns Virtuoso's measurements or scroll anchoring
-  // (#8657/#8688).
-  const liveSplit = useMemo(
-    () => splitTranscriptLiveRows(turnModels, rows, liveId, running),
-    [turnModels, rows, liveId, running],
-  );
+  const { liveSplit, liveMinHeight } = useTranscriptLiveTurnStability({
+    turnModels, rows, liveId, running, stabilityKey: `${layoutSurfaceKey}:${userResizeRevision}`,
+    scrollElement, hydrating, tailOwnedRef: stick, pinLiveTailBeforePaint,
+  });
   // Keep the load-older affordance in Virtuoso's measured Header slot so an
   // older page is a true data prepend, rather than an insertion after row 0.
   const virtualRows = useMemo(
@@ -676,7 +670,11 @@ export function Transcript({
       case "reasoning":
         return (
           <div className="turn-collapse__body">
-            <InlineAssistantReasoning item={row.item} onManualOpen={() => handleReasoningManualOpen(row.segmentKey)} />
+            <InlineAssistantReasoning
+              item={row.item}
+              autoFollowActive={row.autoFollowActive}
+              onManualOpen={() => handleReasoningManualOpen(row.segmentKey)}
+            />
           </div>
         );
       case "tool":
@@ -884,6 +882,7 @@ export function Transcript({
           showStatus: liveSplit.liveActive,
           overlay: !liveSplit.liveActive,
           turnStartAt,
+          minHeight: liveMinHeight ?? undefined,
           onPointerDownCapture: selectionRetention.onPointerDownCapture,
         }
       : null,
@@ -902,6 +901,7 @@ export function Transcript({
     heldLiveRows,
     liveSplit.liveActive,
     liveSplit.liveRows,
+    liveMinHeight,
     loadingOlderHistory,
     contentRevision,
     nativeScrollbarDragging,

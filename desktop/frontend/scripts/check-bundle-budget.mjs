@@ -138,23 +138,15 @@ console.log("\nbundle budgets");
 // The final 0.266 KiB retains jump ownership through paint-ready instead of
 // allowing a native scrollend to release it. Keep only 0.213 KiB headroom;
 // native validation hosts and test fixtures stay outside the production graph.
-// Reader transactions, geometry revisions, and generation-fenced writer
-// requests add 2.657 KiB gzip (+0.59%) to that exact baseline. This is the
-// production ownership state machine; replay fixtures and native hosts remain
-// outside the bundle. The measured path is 450.244 KiB; retain 0.256 KiB of
-// bounded toolchain headroom. Cross-frame tail-write confirmation and its
-// single LAST/quiet fallback plus the accepted-extent baseline bring the exact
-// path to 450.765 KiB. Retain only 0.035 KiB of build-hash headroom rather than
-// weakening either retry bound. Logical-anchor screen displacement protection
-// brings the measured path to 450.876 KiB while closing the same-scrollTop
-// WKWebView range-swap gap. The bounded post-correction observation window
-// measures 450.960 KiB. Synchronous idle-reader anchoring plus the pre-paint
-// reader sample and stale-overscan-anchor fence measure 451.199 KiB; retain
-// only 0.101 KiB of bounded toolchain headroom. Notification volume plus
-// per-source loudness normalization adds another measured 0.243 KiB on the
-// updated main-v2 baseline. Retain bounded build/toolchain headroom for the
-// combined path.
-const initialJSBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 451.8 : 451.8;
+// Notification volume plus per-source loudness normalization moves current
+// main-v2 from 447.639 to 447.882 KiB gzip (+0.243 KiB). Retain 0.118 KiB of
+// bounded build/toolchain headroom.
+// Pre-paint live-tail stabilization and its monotonic live-footer guard then
+// add 0.695 KiB after extracting ownership modules below repolint's source
+// ceilings. Surface- and resize-scoped floor fencing adds another 0.113 KiB;
+// the combined path measures 448.692 KiB. Retain 0.108 KiB of bounded
+// build/toolchain headroom.
+const initialJSBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 448.8 : 448.8;
 assertBudget("initial JavaScript gzip", initialJSGzip, initialJSBudgetKiB * 1024);
 assertBudget("largest initial JavaScript chunk gzip", largestInitialJS, 280 * 1024);
 // Render-blocking CSS is intentionally absent: styles.css loads deferred via
@@ -232,22 +224,15 @@ const rawInitialBytes = [...initialJS, ...initialCSS, ...appShellCSS]
 // raw/toolchain headroom for both owners.
 // The same transcript transaction measures 2413.012 KiB raw (+0.28%) against
 // the 2406.204 KiB baseline. Retain 0.188 KiB of bounded headroom.
-// The reader/geometry/writer contract brings the measured raw path to
-// 2424.562 KiB while leaving all browser replay and native validation code
-// outside the production graph. The bounded tail range confirmation brings
-// this to 2425.341 KiB with the accepted-extent baseline. The reader-to-tail
-// layout-safe handoff measures 2425.420 KiB (+0.079 KiB) and prevents
-// WKWebView from contracting the measured mount window during ownership
-// transfer. The logical-anchor drift guard brings that path to 2425.651 KiB;
-// the post-correction observation window measures 2425.969 KiB. The idle
-// manual-anchor handoff and reader pre-paint anchor eligibility checks bring
-// the measured path to 2426.921 KiB. The notification-volume control adds
-// another measured 1.696 KiB raw on current main-v2; retain bounded headroom
-// for the combined production graph.
-// The stabilized-shrink extent acceptance (gesture travel proof plus the
-// reader-transaction diagnostic and its bench hook) adds a measured 0.554 KiB
-// raw on the reader transaction path, bringing it to 2429.754 KiB against the
-// 2429.2 KiB baseline; retain 0.046 KiB of bounded headroom.
-const rawInitialBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 2_429.8 : 2_429.8;
+// The notification-volume control adds one persisted master gain, per-source
+// loudness trims, and its accessible Settings surface. Current main-v2 moves
+// from 2413.183 to 2414.879 KiB raw (+1.696 KiB); retain 0.121 KiB of bounded
+// headroom.
+// Owner-lifecycle reasoning disclosure, pre-paint tail pinning, and the live
+// footer growth floor then add 2.390 KiB after extracting ownership modules
+// below repolint's source ceilings. Lifecycle fencing adds 0.258 KiB; the
+// combined path measures 2417.526 KiB. Retain 0.074 KiB while preventing
+// phase-boundary reverse flashes and cross-surface floor leaks.
+const rawInitialBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 2_417.6 : 2_417.6;
 assertBudget("initial raw JavaScript and CSS", rawInitialBytes, rawInitialBudgetKiB * 1024);
 assertBudget("largest initial JavaScript chunk raw", largestInitialJSRaw, 1_000 * 1024);
