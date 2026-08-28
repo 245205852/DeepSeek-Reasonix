@@ -20,6 +20,13 @@ branch.
 
 ### Fixed
 
+- **Compact MCP discovery:** `use_capability(action=list)` now returns one
+  compact summary per configured MCP server instead of expanding every cached
+  tool description, including tools from disabled servers. Inspecting one
+  enabled `mcp-server:<name>` still returns its live or cached directory
+  without starting it, while direct known-ID calls, routing, authorization,
+  and the fixed provider-visible tool schema remain unchanged.
+
 - **Project MCP session reliability:** The MCP client now uses the official Go
   SDK for stdio, legacy SSE, and Streamable HTTP while retaining Reasonix's
   existing configuration, OAuth, process isolation, and schema-cache contracts.
