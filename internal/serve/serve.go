@@ -28,6 +28,7 @@ import (
 	"reasonix/internal/event"
 	"reasonix/internal/jobs"
 	"reasonix/internal/nilutil"
+	"reasonix/internal/plugin"
 	"reasonix/internal/provider"
 	"reasonix/internal/sandbox"
 	"reasonix/internal/stats"
@@ -200,14 +201,10 @@ func titleProviderConfig(entry *config.ProviderEntry) provider.Config {
 // switchModel rebuilds the controller with a new model, carrying over the
 // conversation history. This replicates the TUI/desktop model-switch path.
 //
-// The heavy steps — Snapshot (may touch disk), Build (provider init IO), and the
-// old controller's Close (jobs.CloseWithGrace up to 15s + SessionEnd hook) — all
-// run OFF s.mu. Holding the write lock across them would wedge every HTTP handler
-// on s.ctl()'s RLock for the duration, stalling the whole serve frontend
-// (mirrors the acp rebuildSession fix and PR #5920). bindMu serializes the
-// switch against every other session-path-changing entry point (/resume,
-// /new, /fork), preserving the old "second switch waits" semantics without
-// pinning s.mu.
+// The heavy steps (Snapshot, Build, the old controller's Close) all run OFF
+// s.mu — holding the write lock would wedge every HTTP handler on s.ctl()'s
+// RLock for the duration (mirrors the acp rebuildSession fix and PR #5920).
+// bindMu serializes the switch against /resume, /new, /fork.
 func (s *Server) switchModel(ctx context.Context, ref string) error {
 	return s.switchModelExpected(ctx, ref, "")
 }
@@ -402,12 +399,13 @@ func (s *Server) rebuild(ctx context.Context, old *control.Controller, ref strin
 	tag := newSessionTagSink(s.bc)
 	tag.PrimePath(old.SessionPath())
 	opts := boot.Options{
-		Model:         ref,
-		Sink:          tag,
-		Stderr:        os.Stderr,
-		StatsSource:   "serve",
-		SessionDir:    old.SessionDir(),
-		WorkspaceRoot: old.WorkspaceRoot(),
+		Model:          ref,
+		Sink:           tag,
+		Stderr:         os.Stderr,
+		StatsSource:    "serve",
+		SessionDir:     old.SessionDir(),
+		WorkspaceRoot:  old.WorkspaceRoot(),
+		MCPHostProfile: plugin.HostProfileInteractive,
 	}
 	if s.rebuildControllerWithOptions != nil {
 		ctrl, err := s.rebuildControllerWithOptions(ctx, old, ref, opts)
@@ -424,12 +422,13 @@ func (s *Server) rebuild(ctx context.Context, old *control.Controller, ref strin
 		return ctrl, err
 	}
 	res, err := boot.Rebuild(ctx, old, boot.Options{
-		Model:         ref,
-		Sink:          tag,
-		Stderr:        os.Stderr,
-		StatsSource:   "serve",
-		SessionDir:    old.SessionDir(),
-		WorkspaceRoot: old.WorkspaceRoot(),
+		Model:          ref,
+		Sink:           tag,
+		Stderr:         os.Stderr,
+		StatsSource:    "serve",
+		SessionDir:     old.SessionDir(),
+		WorkspaceRoot:  old.WorkspaceRoot(),
+		MCPHostProfile: plugin.HostProfileInteractive,
 	})
 	if err != nil {
 		return nil, err

@@ -189,6 +189,10 @@ type Capabilities interface {
 	HookRunner() *hook.Runner
 	CustomCommand(input string) (sent string, found bool)
 	MCPPrompt(ctx context.Context, input string) (sent string, found bool, err error)
+	// MCPCapabilityViews returns the host's four-layer capability matrix
+	// (Protocol Connection, Core Host, Interactive Host, Apps Host) as
+	// read-only diagnostics for MCP status surfaces.
+	MCPCapabilityViews() []plugin.CapabilityView
 	RunSkill(input string) (sent string, found bool)
 	AddMCPServer(e config.PluginEntry) (int, error)
 	ConnectMCPServer(e config.PluginEntry) (int, error)

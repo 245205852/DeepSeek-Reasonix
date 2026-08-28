@@ -193,6 +193,10 @@ type Host struct {
 	// changing provider-visible tool prefixes (spatiotemporal composability).
 	proxies map[string]*serverProxy
 
+	// profile is the host's semantic client-capability surface, fixed at
+	// creation; cache identity and the capability matrix derive from it.
+	profile HostProfile
+
 	// Detached stats/schema-cache writers from Start; off the boot path but
 	// drained by Close so cleanup can't race a still-open cache file.
 	bgWrites  sync.WaitGroup
@@ -365,7 +369,7 @@ func Start(ctx context.Context, specs []Spec, p StartPolicy) (*Host, []tool.Tool
 			// Transport on the parent ctx, startup RPCs on the timed callCtx: the
 			// per-plugin timeout caps initialize+listTools, but the long-lived
 			// stdio child must outlive the startup scope and later phase-B calls.
-			c, err := start(ctx, callCtx, spec)
+			c, err := start(ctx, callCtx, spec, h.profile)
 			if err != nil {
 				phaseADur := recordedPhaseADur()
 				cancelStartup()
@@ -396,7 +400,7 @@ func Start(ctx context.Context, specs []Spec, p StartPolicy) (*Host, []tool.Tool
 			if !p.SkipPersistence {
 				h.bgWrites.Go(func() {
 					_ = RecordStartup(spec.Name, phaseADur)
-					_ = SaveCachedSchema(spec.Name, CachedSchema{
+					_ = SaveCachedSchemaForProfile(h.profile, spec.Name, CachedSchema{
 						CacheKey: SchemaCacheKey(spec),
 						Capabilities: map[string]bool{
 							"tools":     c.capabilities.tools,
@@ -635,9 +639,9 @@ type Client struct {
 
 	// Advertised surface and list-changed capabilities are kept together so
 	// initialization publishes one coherent capability snapshot.
-	capabilities clientCapabilities
-
-	transport string // declared transport type, for /mcp status ("stdio"/"http")
+	capabilities    clientCapabilities
+	protocolVersion string
+	transport       string // declared transport type, for /mcp status ("stdio"/"http")
 
 	// Prompts and resources discovered during StartAll, stored here so the
 	// parallel startup can collect them per-client before merging into Host.
@@ -691,6 +695,15 @@ type ServerStatus struct {
 	ReconnectAttempts int
 	LastErrorKind     SessionErrorKind
 	LastError         string
+	// HostProfile is the client-capability profile this host declares
+	// ("core-v1", "interactive-v1", "desktop-apps-2026-01-26-v1").
+	HostProfile string
+	// ElicitationNegotiated reports that the client declared elicitation and
+	// the session runs a protocol revision where the server can use it.
+	ElicitationNegotiated bool
+	// AppsNegotiated reports two-way MCP Apps agreement: the client declared
+	// io.modelcontextprotocol/ui and the server answered with the extension.
+	AppsNegotiated bool
 }
 
 // AuthorizeSpecLaunch records durable consent for an explicitly user-installed
@@ -787,6 +800,7 @@ func (h *Host) Servers() []ServerStatus {
 			Tools:        len(c.toolCatalog.adapters),
 			HasTools:     c.capabilities.tools,
 		}
+		fillServerNegotiation(&s, h.profile, c)
 		s.ToolList = append([]ToolInfo(nil), c.toolCatalog.infos...)
 		c.toolsMu.RUnlock()
 		if provider, ok := c.t.(sessionDiagnosticsProvider); ok {
@@ -862,10 +876,20 @@ func (h *Host) clearFailure(name string) {
 	h.failures = kept
 }
 
-// NewHost returns an empty Host. Boot always constructs one — even with no
-// plugins configured — so servers can be hot-added later via Add (the `/mcp add`
-// command), which keeps the controller's host pointer stable for the session.
-func NewHost() *Host { return &Host{} }
+// NewHost returns an empty core-v1 Host. Boot always constructs one — even
+// with no plugins configured — so servers can be hot-added later via Add (the
+// `/mcp add` command), keeping the controller's host pointer stable.
+func NewHost() *Host { return NewHostWithProfile(HostProfileCore) }
+
+// NewHostWithProfile returns an empty Host declaring the given profile's
+// client capabilities. Immutable once set; a degraded frontend constructs
+// the Host with a lower profile instead of mutating a live one.
+func NewHostWithProfile(profile HostProfile) *Host {
+	return &Host{profile: profile.Normalize()}
+}
+
+// Profile returns the host's semantic capability profile, fixed at creation.
+func (h *Host) Profile() HostProfile { return h.profile.Normalize() }
 
 func (h *Host) registerDeferredCancel(name string, cancel context.CancelFunc) uint64 {
 	h.mu.Lock()
@@ -1289,7 +1313,7 @@ func (h *Host) addConnectedWithLifecycle(lifeCtx, callCtx context.Context, s Spe
 	}
 	h.mu.RUnlock()
 
-	c, err := start(lifeCtx, callCtx, s)
+	c, err := start(lifeCtx, callCtx, s, h.profile)
 	if err != nil {
 		return nil, err
 	}
@@ -1401,7 +1425,7 @@ var ErrDeferredSpawnCancelled = errors.New("deferred MCP spawn cancelled")
 // registered stdio server; the child also has to outlive phase A so phase B
 // (prompts + resources) can still call it later. Callers that don't care pass
 // the same ctx for both.
-func start(lifeCtx, callCtx context.Context, s Spec) (*Client, error) {
+func start(lifeCtx, callCtx context.Context, s Spec, profile HostProfile) (*Client, error) {
 	started := time.Now()
 	var err error
 	s, err = applyStoredLauncherLock(s)
@@ -1412,7 +1436,7 @@ func start(lifeCtx, callCtx context.Context, s Spec) (*Client, error) {
 	if err != nil {
 		return nil, newStartupFailure("authorization", started, "", err)
 	}
-	t, err := newTransport(lifeCtx, s)
+	t, err := newTransport(lifeCtx, s, profile)
 	if err != nil {
 		return nil, newStartupFailure("launch", started, "", err)
 	}
@@ -1509,8 +1533,8 @@ func (s Spec) ServerAuthorized() bool {
 
 // newTransport builds the transport for a spec's declared type. Empty / unknown
 // defaults to stdio.
-func newTransport(ctx context.Context, s Spec) (transport, error) {
-	return newSDKSessionTransport(ctx, s)
+func newTransport(ctx context.Context, s Spec, profile HostProfile) (transport, error) {
+	return newSDKSessionTransport(ctx, s, profile)
 }
 
 func (c *Client) call(ctx context.Context, method string, params any) (json.RawMessage, error) {
@@ -1619,52 +1643,6 @@ func formatTimeout(timeout time.Duration) string {
 		return fmt.Sprintf("%ds", int(timeout/time.Second))
 	}
 	return timeout.String()
-}
-
-func (c *Client) initialize(ctx context.Context) error {
-	res, err := c.call(ctx, "initialize", nil)
-	if err != nil {
-		return err
-	}
-	// Record which optional capabilities the server advertises. Presence of the
-	// key (even with an empty object) signals support.
-	var ir struct {
-		Capabilities map[string]json.RawMessage `json:"capabilities"`
-	}
-	if err := json.Unmarshal(res, &ir); err != nil {
-		slog.Warn("plugin: parse initialize capabilities", "server", c.name, "err", err)
-	}
-	toolsCapability, hasTools := ir.Capabilities["tools"]
-	c.capabilities.tools = hasTools
-	c.capabilities.toolsListChanged = false
-	if hasTools && len(toolsCapability) > 0 {
-		var advertised struct {
-			ListChanged bool `json:"listChanged"`
-		}
-		if err := json.Unmarshal(toolsCapability, &advertised); err != nil {
-			slog.Warn("plugin: parse tools capability", "server", c.name, "err", err)
-		} else {
-			c.capabilities.toolsListChanged = advertised.ListChanged
-		}
-	}
-	promptsCapability, hasPrompts := ir.Capabilities["prompts"]
-	c.capabilities.prompts = hasPrompts
-	c.capabilities.promptsListChanged = capabilityListChanged(promptsCapability)
-	resourcesCapability, hasResources := ir.Capabilities["resources"]
-	c.capabilities.resources = hasResources
-	c.capabilities.resourcesListChanged = capabilityListChanged(resourcesCapability)
-
-	return nil
-}
-
-func capabilityListChanged(capability json.RawMessage) bool {
-	if len(capability) == 0 {
-		return false
-	}
-	var advertised struct {
-		ListChanged bool `json:"listChanged"`
-	}
-	return json.Unmarshal(capability, &advertised) == nil && advertised.ListChanged
 }
 
 type mcpTool struct {

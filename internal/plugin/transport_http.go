@@ -19,7 +19,8 @@ func newHTTPTransport(s Spec) (*sdkSessionTransport, error) {
 	if strings.TrimSpace(s.Type) == "" {
 		s.Type = "http"
 	}
-	return newSDKSessionTransport(context.Background(), s)
+	// Transient OAuth/probe connections declare no optional capabilities.
+	return newSDKSessionTransport(context.Background(), s, HostProfileCore)
 }
 
 func validateMCPURL(name, transport, raw string) error {

@@ -56,7 +56,14 @@ type clientCapabilities struct {
 	toolsListChanged     bool
 	promptsListChanged   bool
 	resourcesListChanged bool
+	// serverExtensions records extension IDs the server declared in its
+	// initialize capabilities. MCP Apps needs two-way agreement: the client
+	// declares io.modelcontextprotocol/ui, the server answers with it.
+	serverExtensions map[string]bool
 }
+
+// appsUI reports two-way MCP Apps agreement for this server.
+func (cc clientCapabilities) appsUI() bool { return cc.serverExtensions[AppsUIExtensionID] }
 
 // toolCatalogSnapshot is immutable after publication. All slices are built off
 // lock and replaced together under toolsMu, so readers see either the complete
