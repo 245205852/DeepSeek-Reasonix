@@ -277,8 +277,14 @@ export function useTranscriptReaderExtentStability({
         : element.scrollTop - transaction.lastAcceptedTop;
       const correctionReady = (collapseReady && reverse >= threshold)
         || transaction.anchorDisplacementObserved;
+      const extentStillCollapsed = element.scrollHeight < transaction.baselineHeight - threshold;
       let correctionWrittenThisFrame = false;
-      if (!transaction.correctionWritten && correctionReady) {
+      // Two quiet frames can fit inside a short native extent rebound. Keep
+      // the visual guard during the active gesture and only commit geometry
+      // from a still-collapsed range once the reader idle deadline has passed.
+      // A recovered extent or a row-only displacement remains immediately
+      // correctable, so ordinary measurement drift does not linger onscreen.
+      if (!transaction.correctionWritten && correctionReady && (!extentStillCollapsed || !beforeIdleDeadline)) {
         const anchorRow = rowForAnchor(element, transaction.anchor);
         if (!anchorRow && transaction.anchor && !transaction.mountAnchorWritten) {
           transaction.mountAnchorWritten = writeCorrection({

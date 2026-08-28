@@ -162,6 +162,9 @@ check(arbiter?.modeRef.current === "manual", "the correction preserves manual re
 // A long same-direction transaction spans many streaming revisions. Its
 // accepted extent must advance with growth so a later collapse that remains
 // above the mount-time height is still visible to the guard.
+const growthRaceRealNow = Date.now;
+let growthRaceNow = growthRaceRealNow();
+Date.now = () => growthRaceNow;
 await act(async () => arbiter?.reset());
 scrollExtent = 20_000;
 scrollElement.scrollTop = 1_000;
@@ -187,11 +190,15 @@ rowElement.getBoundingClientRect = () => rectAt(1_720 + (Number.parseFloat(
 ) || 0));
 await act(async () => arbiter?.deliverScroll());
 for (let frame = 0; frame < 4; frame += 1) await flushFrames();
+check(scrollByCalls === 0, "a persistent collapsed range waits for the reader idle deadline");
+growthRaceNow += 181;
+await flushFrames();
 check(scrollByCalls === 1, "streaming growth advances the accepted extent before a later collapse");
 check(
   scrollWrites.filter((write) => write.owner === "reader-stability" && write.kind === "scrollBy").length === 1,
   "the post-growth collapse receives one reader-owned anchor correction",
 );
+Date.now = growthRaceRealNow;
 
 // WKWebView can replace estimates above the viewport without moving native
 // scrollTop. The logical rows still jump backwards on screen, so the reader

@@ -1530,24 +1530,36 @@ try {
     requestAnimationFrame(sample);
   });
   let stormReached = false;
-  for (let attempt = 0; attempt < 60 && !stormReached; attempt += 1) {
+  for (let attempt = 0; attempt < 120 && !stormReached; attempt += 1) {
     await page.mouse.wheel(0, 640);
     await page.waitForTimeout(60);
     // Every sixth gesture, pause into scroll idle — the moment the pre-fix
     // chain fired its revision-driven remount mid-approach.
     if (attempt % 6 === 5) await page.waitForTimeout(500);
     stormReached = await stormTranscript.evaluate((element) =>
-      element.dataset.scrollMode === "tail-follow"
-      && element.scrollHeight - element.scrollTop - element.clientHeight <= 1);
+      element.scrollHeight - element.scrollTop - element.clientHeight <= 1);
   }
-  assert(stormReached, "repeated downward wheels reach the physical bottom through the ref-resolution storm (#8657)");
-  await page.waitForFunction(() => document.querySelector(".transcript")?.dataset.scrollMode === "tail-follow", undefined, { timeout: 5_000 });
-  // The storm keeps resolving after the user lands; the tail must hold.
+  const stormFailure = stormReached ? null : await stormTranscript.evaluate((element) => ({
+    mode: element.dataset.scrollMode,
+    top: element.scrollTop,
+    height: element.scrollHeight,
+    clientHeight: element.clientHeight,
+    bottomDistance: element.scrollHeight - element.scrollTop - element.clientHeight,
+    writes: window.__stormProbe.writes.slice(-8),
+  }));
+  assert(stormReached,
+    `repeated downward wheels reach the physical bottom through the ref-resolution storm (#8657)${stormFailure ? ` (${JSON.stringify(stormFailure)})` : ""}`);
+  // The storm keeps resolving after the user lands. Reader ownership must not
+  // hand off on unstable geometry; once the final ref resolves, one continued
+  // downward gesture claims the now-stable physical tail.
   await page.waitForFunction(
     () => document.querySelector(".transcript")?.textContent?.includes("storm-40-FINAL"),
     undefined,
     { timeout: 30_000 },
   );
+  const stormMode = await stormTranscript.getAttribute("data-scroll-mode");
+  if (stormMode !== "tail-follow") await page.mouse.wheel(0, 120);
+  await page.waitForFunction(() => document.querySelector(".transcript")?.dataset.scrollMode === "tail-follow", undefined, { timeout: 5_000 });
   await page.waitForTimeout(600);
   const stormTail = await stormTranscript.evaluate((element) => element.scrollHeight - element.scrollTop - element.clientHeight);
   assert(stormTail <= 1, `tail-follow holds at the newest content until the storm fully resolves (${stormTail}px)`);

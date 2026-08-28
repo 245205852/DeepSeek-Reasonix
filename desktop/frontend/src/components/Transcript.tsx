@@ -90,11 +90,8 @@ const FrontendDiagnosticsPanel = SHOW_FRONTEND_DIAGNOSTICS
 const VIRTUAL_OVERSCAN_ROWS = 8;
 const READER_MOUNT_CORRIDOR_ROWS = 112;
 const READER_MOUNT_CORRIDOR_VIEWPORTS = 7;
-// For the ordinary paged history window, keep every loaded row measured while
-// manual reading owns the viewport. A fixed-size corridor can still replace
-// one non-overlapping 450-row range with another in WKWebView, leaving no
-// common logical anchor for the visual guard. Very large sessions retain the
-// bounded virtual corridor instead of mounting an unbounded transcript.
+// Keep paged history measured during manual reading so WKWebView cannot replace
+// non-overlapping ranges without an anchor; large sessions keep a bounded corridor.
 const READER_FULL_MOUNT_ROW_LIMIT = 1_000;
 
 function assistantAnswerOnly(item: AssistantItem): AssistantItem {
