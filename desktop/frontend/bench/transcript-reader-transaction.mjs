@@ -164,13 +164,18 @@ async function runIteration(page, transcript, label, iteration) {
     if (!(document.querySelector(".transcript") instanceof HTMLElement)) throw new Error("transcript missing");
     window.__readerTransactionProbe = { active: true, frames: [], writes: [] };
     window.__REASONIX_TRANSCRIPT_SCROLL_WRITE__ = (write) => window.__readerTransactionProbe?.writes.push(write);
+    // Sample after the animation-frame callbacks have committed their visual
+    // guards. Reading in an earlier rAF callback can observe Virtuoso's new
+    // row geometry before the geometry controller's later callback applies
+    // its same-paint transform, reporting a jump the user never sees.
+    const schedulePaintSample = () => requestAnimationFrame(() => setTimeout(sample, 0));
     const sample = () => {
       const probe = window.__readerTransactionProbe;
       if (!probe?.active) return;
       const element = document.querySelector(".transcript");
       if (!(element instanceof HTMLElement)) {
         probe.frames.push({ top: 0, height: 0, occupied: false, mode: "missing", guard: "", visible: [], connected: false });
-        requestAnimationFrame(sample);
+        schedulePaintSample();
         return;
       }
       const viewport = element.getBoundingClientRect();
@@ -186,9 +191,9 @@ async function runIteration(page, transcript, label, iteration) {
         connected: element.isConnected,
         visible: rows.map((row) => ({ index: row.dataset.index ?? row.dataset.logicalIndex ?? "", top: row.getBoundingClientRect().top - viewport.top })),
       });
-      requestAnimationFrame(sample);
+      schedulePaintSample();
     };
-    requestAnimationFrame(sample);
+    schedulePaintSample();
   });
 
   for (let tick = 0; tick < 6; tick += 1) {

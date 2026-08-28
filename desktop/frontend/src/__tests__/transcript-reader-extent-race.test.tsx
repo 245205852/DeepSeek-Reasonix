@@ -446,8 +446,13 @@ check(arbiter?.readerTransactionActive === true,
 fakeNow += 1_001;
 await flushFrames();
 await flushFrames();
+check(scrollElement.dataset.transcriptReaderIntent === "false",
+  "the reader writer transaction ends after the bounded quiet window");
+check(arbiter?.readerTransactionActive === true,
+  "manual ownership retains the layout-only mount corridor after the writer transaction ends");
+await act(async () => arbiter?.setMode("selection", "test-manual-layout-lease-release"));
 check(arbiter?.readerTransactionActive === false,
-  "the observational mount corridor expires after the bounded quiet window");
+  "an explicit owner releases the idle manual layout lease");
 
 // A same-direction wheel arriving after the 180ms idle boundary must start a
 // new ownership epoch while inheriting the prior transaction's high-water.
@@ -493,6 +498,8 @@ fakeNow += 181;
 for (let frame = 0; frame < 4; frame += 1) await flushFrames();
 check(String(arbiter?.modeRef.current) === "manual",
   "a new same-direction epoch cannot claim tail from an inherited collapsed extent");
+check(arbiter?.readerTransactionActive === true,
+  "a new reader epoch reuses the manual layout lease without contracting the mount corridor");
 delete rowElement.dataset.transcriptLastRow;
 Date.now = realDateNow;
 setTranscriptScrollDiagnosticSink(() => {});

@@ -111,12 +111,14 @@ export function useTranscriptReaderExtentStability({
   const nextIdRef = useRef(0);
   const mountedRef = useRef(true);
   const [active, setActive] = useState(false);
-  // The reader can hand ownership to tail-follow while Virtuoso still has the
-  // transaction's enlarged mount window. Contracting that window in the same
-  // commit has made WKWebView replace a measured tail range with estimates,
-  // producing a 1k+ reverse jump and an empty painted frame. Keep only the
-  // layout-safe window (not the reader writer) until a new owner takes over.
-  const [handoffLayoutSafe, setHandoffLayoutSafe] = useState(false);
+  // Reader writer ownership is bounded, but its measured mount corridor is
+  // not timer-owned. WKWebView can commit a delayed Virtuoso range replacement
+  // after the 1s observation window; contracting overscan at that deadline
+  // replaces measured rows with estimates and can manufacture a false extent.
+  // Keep the layout-only lease until an explicit owner or surface reset calls
+  // cancel(). A new reader epoch must inherit the same lease without toggling
+  // the Virtuoso range in between.
+  const [readerLayoutLease, setReaderLayoutLease] = useState(false);
   const callbacksRef = useRef({ onStart, onIdleDeadline, onStabilitySample, onTailHandoff, onEnd });
   callbacksRef.current = { onStart, onIdleDeadline, onStabilitySample, onTailHandoff, onEnd };
   const finish = useCallback((transaction: ActiveReaderTransaction, reason: "stable-manual" | "timeout" | "cancelled", notify = true) => {
@@ -137,7 +139,7 @@ export function useTranscriptReaderExtentStability({
   }, []);
 
   const cancel = useCallback((notify = true) => {
-    setHandoffLayoutSafe(false);
+    setReaderLayoutLease(false);
     const transaction = transactionRef.current;
     if (transaction) finish(transaction, "cancelled", notify);
   }, [finish]);
@@ -371,7 +373,6 @@ export function useTranscriptReaderExtentStability({
         }
         if (tailEligible) {
           transaction.phase = "handoff-pending";
-          setHandoffLayoutSafe(true);
           callbacksRef.current.onTailHandoff(transaction);
           finish(transaction, "stable-manual", false);
           return;
@@ -408,9 +409,9 @@ export function useTranscriptReaderExtentStability({
   const arm = useCallback((deltaY: number, canClaimTail: boolean) => {
     const element = scrollRef.current;
     if (!element || !Number.isFinite(deltaY) || deltaY === 0) return { started: false as const };
-    setHandoffLayoutSafe(false);
     const direction = transcriptReaderDirection(deltaY);
     if (direction === undefined) return { started: false as const };
+    setReaderLayoutLease(true);
     const current = transactionRef.current;
     const now = Date.now();
     if (
@@ -508,6 +509,6 @@ export function useTranscriptReaderExtentStability({
     cancel,
     observe,
     isActive,
-    active: active || handoffLayoutSafe,
-  }), [active, arm, cancel, handoffLayoutSafe, observe, isActive]);
+    active: active || readerLayoutLease,
+  }), [active, arm, cancel, readerLayoutLease, observe, isActive]);
 }
