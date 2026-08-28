@@ -55,9 +55,9 @@ async function moveToOuterReaderGutter(page, transcript, announce = true) {
 
 async function waitForStableTranscriptGeometry(
   page,
-  { timeout = 15_000, frames = 8, requireTail = false } = {},
+  { timeout = 15_000, frames = 8, requireTail = false, maxTailDistance = 4 } = {},
 ) {
-  await page.evaluate(({ timeout, frames, requireTail }) => new Promise((resolve, reject) => {
+  await page.evaluate(({ timeout, frames, requireTail, maxTailDistance }) => new Promise((resolve, reject) => {
     const startedAt = performance.now();
     let previous = null;
     let stableFrames = 0;
@@ -80,7 +80,7 @@ async function waitForStableTranscriptGeometry(
         stableFrames = unchanged ? stableFrames + 1 : 0;
         previous = current;
         const distance = current.height - current.top - current.clientHeight;
-        const expectedPosition = !requireTail || (current.mode === "tail-follow" && distance <= 4);
+        const expectedPosition = !requireTail || (current.mode === "tail-follow" && distance <= maxTailDistance);
         if (expectedPosition && stableFrames >= frames) {
           resolve();
           return;
@@ -96,7 +96,7 @@ async function waitForStableTranscriptGeometry(
       requestAnimationFrame(sample);
     };
     requestAnimationFrame(sample);
-  }), { timeout, frames, requireTail });
+  }), { timeout, frames, requireTail, maxTailDistance });
 }
 
 async function openGeometryContractFixture(page) {
@@ -399,7 +399,7 @@ try {
     // A hydration resize intentionally guards the reader's previous extent
     // for one intent burst. Start a fresh burst after the 180ms idle lease
     // when that boundary is reached, matching a real user's next wheel turn.
-    const stalled = Math.abs(position.top - previousDownwardTop) <= 1;
+    const stalled = position.top <= previousDownwardTop + 1;
     previousDownwardTop = position.top;
     await page.waitForTimeout(stalled ? 220 : 16);
   }
@@ -623,10 +623,11 @@ try {
   // physical bottom. Keep the crop assertions tight; only the post-resize
   // stick-to-tail check gets this slack (CI saw 7px after collapse).
   const tailAfterResizePx = 16;
-  const waitNearTailAfterResize = () => page.waitForFunction((limit) => {
-    const scroller = document.querySelector(".transcript");
-    return Boolean(scroller && scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight <= limit);
-  }, tailAfterResizePx);
+  const waitNearTailAfterResize = () => waitForStableTranscriptGeometry(page, {
+    frames: 4,
+    requireTail: true,
+    maxTailDistance: tailAfterResizePx,
+  });
 
   const collapse = page.getByRole("button", { name: /Collapse workspace|收起工作区/ });
   if (await collapse.count()) {
@@ -829,8 +830,11 @@ try {
     : `transient extent rebound uses one bounded reader-stability write (${readerStabilityWrites.length}; ${JSON.stringify(afterExtentReplay.samples)})`);
   assert(afterExtentReplay.writes.every((write) => write.owner !== "recovery"),
     "nonblank extent rebound never enters blank recovery");
-  assert(afterExtentReplay.samples.every((sample) => sample.occupied),
-    "transient extent rebound keeps mounted coverage in every sampled frame");
+  const hasContinuousExtentCoverage = afterExtentReplay.samples.every((sample) => sample.occupied);
+  assert(hasContinuousExtentCoverage,
+    hasContinuousExtentCoverage
+      ? "transient extent rebound keeps mounted coverage in every sampled frame"
+      : `transient extent rebound keeps mounted coverage in every sampled frame (${JSON.stringify(afterExtentReplay.samples)})`);
   await transcript.evaluate((element) => {
     delete element.dataset.extentReplayExpanded;
     document.getElementById("reader-extent-replay-style")?.remove();
