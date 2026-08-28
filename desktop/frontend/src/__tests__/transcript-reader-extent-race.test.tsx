@@ -441,8 +441,61 @@ check(
   "later geometry revisions cannot re-arm reader tail pinning",
 );
 check(arbiter?.modeRef.current === "manual", "a post-settle growth revision exits to stable manual ownership");
-Date.now = realDateNow;
+check(arbiter?.readerTransactionActive === true,
+  "stable manual reading keeps an observational mount corridor across a short native-input gap");
+fakeNow += 1_001;
+await flushFrames();
+await flushFrames();
+check(arbiter?.readerTransactionActive === false,
+  "the observational mount corridor expires after the bounded quiet window");
+
+// A same-direction wheel arriving after the 180ms idle boundary must start a
+// new ownership epoch while inheriting the prior transaction's high-water.
+// Otherwise the smaller replacement range becomes a fresh baseline and can
+// manufacture a false tail handoff.
+const readerStarts: Array<Record<string, unknown>> = [];
+setTranscriptScrollDiagnosticSink((type, fields) => {
+  if (type === "reader-transaction" && fields.result === "started") readerStarts.push(fields);
+});
+await act(async () => arbiter?.reset());
+scrollExtent = 26_000;
+scrollElement.scrollTop = 20_000;
+rowElement.getBoundingClientRect = () => rectAt(20);
+await act(async () => arbiter?.deliverScroll());
+await act(async () => arbiter?.setMode("manual", "test-passive-reader-high-water"));
+await act(async () => arbiter?.onWheelIntent({
+  ctrlKey: false,
+  deltaMode: 0,
+  deltaX: 0,
+  deltaY: 120,
+  target: scrollElement,
+} as React.WheelEvent<HTMLElement>));
+fakeNow += 181;
+for (let frame = 0; frame < 4; frame += 1) await flushFrames();
+check(arbiter?.readerTransactionActive === true,
+  "the first transaction keeps its measured high-water through bounded settling");
+scrollExtent = 24_000;
+scrollElement.scrollTop = 23_275;
+rowElement.dataset.transcriptLastRow = "true";
+await act(async () => arbiter?.onWheelIntent({
+  ctrlKey: false,
+  deltaMode: 0,
+  deltaX: 0,
+  deltaY: 120,
+  target: scrollElement,
+} as React.WheelEvent<HTMLElement>));
+await act(async () => arbiter?.deliverScroll());
+check(
+  readerStarts.length >= 2 && readerStarts.at(-2)?.ownershipEpoch !== readerStarts.at(-1)?.ownershipEpoch,
+  "input after 180ms starts a new reader ownership epoch",
+);
+fakeNow += 181;
+for (let frame = 0; frame < 4; frame += 1) await flushFrames();
+check(String(arbiter?.modeRef.current) === "manual",
+  "a new same-direction epoch cannot claim tail from an inherited collapsed extent");
 delete rowElement.dataset.transcriptLastRow;
+Date.now = realDateNow;
+setTranscriptScrollDiagnosticSink(() => {});
 
 // A real reader-to-tail handoff keeps the enlarged mount window after writer
 // ownership changes. WKWebView otherwise contracts the overscan in that

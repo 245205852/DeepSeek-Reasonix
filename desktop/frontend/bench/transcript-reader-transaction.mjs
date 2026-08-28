@@ -181,6 +181,7 @@ async function runIteration(page, transcript, label, iteration) {
         height: element.scrollHeight,
         occupied: rows.length > 0,
         mode: element.dataset.scrollMode,
+        readerIntent: element.dataset.transcriptReaderIntent,
         guard: element.style.getPropertyValue("--transcript-reader-visual-offset"),
         connected: element.isConnected,
         visible: rows.map((row) => ({ index: row.dataset.index ?? row.dataset.logicalIndex ?? "", top: row.getBoundingClientRect().top - viewport.top })),
@@ -263,7 +264,9 @@ async function runIteration(page, transcript, label, iteration) {
   const correctionsByTransaction = new Map();
   for (const write of acceptedCorrections) correctionsByTransaction.set(write.transactionId, (correctionsByTransaction.get(write.transactionId) ?? 0) + 1);
   const blankFrames = probe.frames.filter((frame) => !frame.occupied);
-  const reverseDetail = maxReverse > 96 ? `; ${JSON.stringify(maxReversePair)}` : "";
+  const reverseDetail = maxReverse > 96
+    ? `; ${JSON.stringify(maxReversePair)}; writes=${JSON.stringify(probe.writes.filter((write) => write.owner === "reader-stability"))}`
+    : "";
   const blankDetail = blankFrames.length > 0
     ? `; first=${JSON.stringify(blankFrames[0])}; writes=${JSON.stringify(probe.writes.filter((write) => write.owner === "reader-stability"))}`
     : "";

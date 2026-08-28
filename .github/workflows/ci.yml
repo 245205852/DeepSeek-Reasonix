@@ -753,6 +753,7 @@ jobs:
             .github/workflows/release-desktop.yml \
             .github/workflows/release-verify-issues.yml \
             .github/workflows/docs-impact.yml \
+            .github/workflows/transcript-native-smoke.yml \
             .github/workflows/ci.yml
           bash scripts/release-workflows.test.sh
           node scripts/check-single-release-public-contract.mjs

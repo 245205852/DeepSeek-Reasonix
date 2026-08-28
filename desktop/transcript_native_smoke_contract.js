@@ -93,11 +93,18 @@
     const element = state.transcript;
     const viewport = element.getBoundingClientRect();
     const rows = visibleRows(element);
+    const mounted = [...element.querySelectorAll(".transcript__row[data-index]")]
+      .map((row) => Number.parseInt(row.dataset.index ?? "", 10))
+      .filter(Number.isFinite);
     state.frames.push({
       top: element.scrollTop,
       height: element.scrollHeight,
       occupied: rows.length > 0,
       mode: element.dataset.scrollMode ?? "missing",
+      readerIntent: element.dataset.transcriptReaderIntent ?? "missing",
+      mountedFirst: mounted.length > 0 ? Math.min(...mounted) : null,
+      mountedLast: mounted.length > 0 ? Math.max(...mounted) : null,
+      mountedCount: mounted.length,
       visible: rows.map((row) => ({
         index: row.dataset.index ?? "",
         top: row.getBoundingClientRect().top - viewport.top,

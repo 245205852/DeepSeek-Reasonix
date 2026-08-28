@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import type { TranscriptScrollMode } from "./transcriptScrollArbiter";
-import { MIN_REVERSE_JUMP_PX, TRANSCRIPT_READER_IDLE_MS, TRANSCRIPT_READER_SETTLE_MS, transcriptReaderDirection, transcriptReaderTransactionCanReuse } from "./transcriptReaderExtentStability";
+import { MIN_REVERSE_JUMP_PX, TRANSCRIPT_READER_IDLE_MS, TRANSCRIPT_READER_SETTLE_MS, transcriptReaderDirection } from "./transcriptReaderExtentStability";
 import { nativeTranscriptDistanceFromBottom, TRANSCRIPT_AT_BOTTOM_THRESHOLD_PX } from "./transcriptScrollGeometry";
 import { recordTranscriptScrollDiagnostic, type TranscriptScrollWriteRecord } from "./transcriptScrollProbe";
 
@@ -119,7 +119,6 @@ export function useTranscriptReaderExtentStability({
   const [handoffLayoutSafe, setHandoffLayoutSafe] = useState(false);
   const callbacksRef = useRef({ onStart, onIdleDeadline, onStabilitySample, onTailHandoff, onEnd });
   callbacksRef.current = { onStart, onIdleDeadline, onStabilitySample, onTailHandoff, onEnd };
-
   const finish = useCallback((transaction: ActiveReaderTransaction, reason: "stable-manual" | "timeout" | "cancelled", notify = true) => {
     if (transactionRef.current !== transaction) return;
     transactionRef.current = null;
@@ -352,6 +351,8 @@ export function useTranscriptReaderExtentStability({
       const tailEligible = transaction.direction > 0
         && transaction.canClaimTail
         && !transaction.transient
+        && (!transaction.collapseObserved
+          || element.scrollHeight >= transaction.baselineHeight - collapseThreshold(element))
         && bottomDistance <= TRANSCRIPT_AT_BOTTOM_THRESHOLD_PX
         && tailNodesMounted(element);
       callbacksRef.current.onStabilitySample(transaction, stable, tailEligible);
@@ -368,10 +369,6 @@ export function useTranscriptReaderExtentStability({
           transaction.frame = requestAnimationFrame(tick);
           return;
         }
-        const awaitingTail = transaction.direction > 0
-          && transaction.canClaimTail
-          && !transaction.transient
-          && bottomDistance <= MIN_REVERSE_JUMP_PX;
         if (tailEligible) {
           transaction.phase = "handoff-pending";
           setHandoffLayoutSafe(true);
@@ -379,10 +376,13 @@ export function useTranscriptReaderExtentStability({
           finish(transaction, "stable-manual", false);
           return;
         }
-        // The physical tail can become reachable before Virtuoso commits its
-        // final row. Keep the bounded transaction observationally alive, but
-        // never write toward the tail while manual reader ownership is active.
-        if (awaitingTail && now < transaction.settleDeadline) {
+        // Two quiet frames prove only that this paint is stable. Virtuoso can
+        // still commit a delayed measurement/range replacement later in the
+        // same bounded settle window (especially in WKWebView). Keep the
+        // transaction observationally alive so its logical anchor and visual
+        // guard survive that commit; the writer budget remains closed after
+        // its first correction.
+        if (now < transaction.settleDeadline) {
           transaction.frame = requestAnimationFrame(tick);
           return;
         }
@@ -417,7 +417,8 @@ export function useTranscriptReaderExtentStability({
       current
       && current.element === element
       && current.surfaceGeneration === generationRef.current
-      && transcriptReaderTransactionCanReuse(current.direction, deltaY)
+      && now <= current.deadline
+      && current.direction === direction
     ) {
       current.deadline = now + TRANSCRIPT_READER_IDLE_MS;
       current.settleDeadline = current.deadline + TRANSCRIPT_READER_SETTLE_MS;
@@ -437,7 +438,15 @@ export function useTranscriptReaderExtentStability({
       schedule(current);
       return { started: false as const, transactionId: current.id };
     }
+    const inheritedHeight = current
+      && current.element === element
+      && current.surfaceGeneration === generationRef.current
+      && current.direction === direction
+      && now <= current.settleDeadline
+      ? Math.max(element.scrollHeight, current.baselineHeight)
+      : element.scrollHeight;
     if (current) finish(current, "cancelled");
+    const inheritedCollapse = inheritedHeight - element.scrollHeight >= collapseThreshold(element);
     nextIdRef.current += 1;
     ownershipEpochRef.current += 1;
     const transaction: ActiveReaderTransaction = {
@@ -449,7 +458,7 @@ export function useTranscriptReaderExtentStability({
       deadline: now + TRANSCRIPT_READER_IDLE_MS,
       settleDeadline: now + TRANSCRIPT_READER_IDLE_MS + TRANSCRIPT_READER_SETTLE_MS,
       baselineTop: element.scrollTop,
-      baselineHeight: element.scrollHeight,
+      baselineHeight: inheritedHeight,
       minimumHeight: element.scrollHeight,
       lastAcceptedTop: element.scrollTop,
       expectedTop: Math.max(0, Math.min(element.scrollHeight - element.clientHeight, element.scrollTop + deltaY)),
@@ -462,13 +471,13 @@ export function useTranscriptReaderExtentStability({
       idleDelivered: false,
       correctionWritten: false,
       mountAnchorWritten: false,
-      collapseObserved: false,
+      collapseObserved: inheritedCollapse,
       anchorDisplacementObserved: false,
       transientCandidateHeight: element.scrollHeight,
       transientStableFrames: 0,
       lastHeight: element.scrollHeight,
       lastBottomDistance: nativeTranscriptDistanceFromBottom(element),
-      transient: false,
+      transient: inheritedCollapse,
       visualOffset: 0,
       postCorrectionSettleDeadline: 0,
     };

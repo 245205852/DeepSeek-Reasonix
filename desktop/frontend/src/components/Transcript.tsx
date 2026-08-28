@@ -88,6 +88,8 @@ const FrontendDiagnosticsPanel = SHOW_FRONTEND_DIAGNOSTICS
   ? lazy(() => import("./FrontendDiagnosticsPanel"))
   : null;
 const VIRTUAL_OVERSCAN_ROWS = 8;
+const READER_MOUNT_CORRIDOR_ROWS = 112;
+const READER_MOUNT_CORRIDOR_VIEWPORTS = 7;
 
 function assistantAnswerOnly(item: AssistantItem): AssistantItem {
   return { ...item, reasoning: "", reasoningComplete: true, reasoningDurationMs: undefined };
@@ -972,10 +974,13 @@ export function Transcript({
             heightEstimates={heightEstimates}
             itemSize={itemSize}
             minOverscanItemCount={layoutSafeMode || readerTransactionActive
-              ? { top: 32, bottom: 32 }
+              ? { top: READER_MOUNT_CORRIDOR_ROWS, bottom: READER_MOUNT_CORRIDOR_ROWS }
               : { top: VIRTUAL_OVERSCAN_ROWS, bottom: VIRTUAL_OVERSCAN_ROWS }}
             increaseViewportBy={layoutSafeMode || readerTransactionActive
-              ? { top: (scrollElement?.clientHeight ?? 0) * 2, bottom: (scrollElement?.clientHeight ?? 0) * 2 }
+              ? {
+                  top: (scrollElement?.clientHeight ?? 0) * READER_MOUNT_CORRIDOR_VIEWPORTS,
+                  bottom: (scrollElement?.clientHeight ?? 0) * READER_MOUNT_CORRIDOR_VIEWPORTS,
+                }
               : { top: 480, bottom: 480 }}
             scrollerRef={handleScrollerRef}
             itemsRendered={handleItemsRendered}
