@@ -53,7 +53,7 @@ jobs:
           go install "github.com/wailsapp/wails/v2/cmd/wails@$(cat "$GITHUB_WORKSPACE/.wails-version")"
           wails generate module
           pnpm --dir frontend install --frozen-lockfile
-          pnpm --dir frontend build
+          pnpm --dir frontend exec vite build
 
       - name: Test sustained WKWebView transcript reading
         timeout-minutes: 5
