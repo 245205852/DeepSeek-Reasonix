@@ -90,6 +90,12 @@ const FrontendDiagnosticsPanel = SHOW_FRONTEND_DIAGNOSTICS
 const VIRTUAL_OVERSCAN_ROWS = 8;
 const READER_MOUNT_CORRIDOR_ROWS = 112;
 const READER_MOUNT_CORRIDOR_VIEWPORTS = 7;
+// For the ordinary paged history window, keep every loaded row measured while
+// manual reading owns the viewport. A fixed-size corridor can still replace
+// one non-overlapping 450-row range with another in WKWebView, leaving no
+// common logical anchor for the visual guard. Very large sessions retain the
+// bounded virtual corridor instead of mounting an unbounded transcript.
+const READER_FULL_MOUNT_ROW_LIMIT = 1_000;
 
 function assistantAnswerOnly(item: AssistantItem): AssistantItem {
   return { ...item, reasoning: "", reasoningComplete: true, reasoningDurationMs: undefined };
@@ -851,6 +857,9 @@ export function Transcript({
   }, [contentRevision, holdingLiveRegion, scrollRef, virtualRows.length]);
   const heldLiveRows = heldSurfaceRef.current === layoutSurfaceKey ? heldLiveRowsRef.current : NO_HELD_ROWS;
   const showLiveRegion = liveSplit.liveActive || (holdingLiveRegion && heldLiveRows.length > 0);
+  const readerMountCorridorRows = readerTransactionActive && virtualRows.length <= READER_FULL_MOUNT_ROW_LIMIT
+    ? Math.max(READER_MOUNT_CORRIDOR_ROWS, virtualRows.length)
+    : READER_MOUNT_CORRIDOR_ROWS;
 
   const { handleItemsRendered, handleTotalListHeightChanged } = useTranscriptGeometryLifecycle({
     virtualRowCount: virtualRows.length, hydrating, readerTransactionActive, historyMutation, scrollModeRef,
@@ -974,7 +983,7 @@ export function Transcript({
             heightEstimates={heightEstimates}
             itemSize={itemSize}
             minOverscanItemCount={layoutSafeMode || readerTransactionActive
-              ? { top: READER_MOUNT_CORRIDOR_ROWS, bottom: READER_MOUNT_CORRIDOR_ROWS }
+              ? { top: readerMountCorridorRows, bottom: readerMountCorridorRows }
               : { top: VIRTUAL_OVERSCAN_ROWS, bottom: VIRTUAL_OVERSCAN_ROWS }}
             increaseViewportBy={layoutSafeMode || readerTransactionActive
               ? {
