@@ -163,6 +163,22 @@
               "desktop"
             ],
             "title": {
+              "en": "Reliable in-memory history indexing",
+              "zh": "可靠的内存历史索引"
+            },
+            "body": {
+              "en": "Background history and session indexes now use isolated in-memory SQLite databases, and history flushes finish every registered root before reporting completion, preventing migration collisions and skipped rescans under Windows load.",
+              "zh": "后台历史记录和会话索引现在使用相互隔离的内存 SQLite 数据库，历史记录排空会在报告完成前处理所有已登记根目录，避免在 Windows 负载下发生迁移冲突或漏掉重新扫描。"
+            },
+            "refs": [
+              9557
+            ]
+          },
+          {
+            "targets": [
+              "desktop"
+            ],
+            "title": {
               "en": "Wait for mounted extent rebound",
               "zh": "等待高度恢复后的挂载覆盖"
             },
