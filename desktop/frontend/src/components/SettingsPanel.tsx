@@ -1,6 +1,7 @@
 import { lazy, memo, Suspense, startTransition, useCallback, useDeferredValue, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import { ArrowRight, BrainCircuit, Check, CheckCircle2, ChevronDown, ChevronUp, CircleDollarSign, Clipboard, ExternalLink, KeyRound, Languages, ListChecks, Loader2, Monitor, MoreHorizontal, PanelBottom, Play, Power, QrCode, RefreshCw, Send, ShieldCheck, SlidersHorizontal, Trash2, Volume2 } from "lucide-react";
 import { asArray } from "../lib/array";
+import { ShellInterpreterFields } from "./SettingsShellSupport";
 import { CHANNEL_ICONS } from "./channelIcons";
 import { botAccessEntryCount, botAccessReady, botConnectionCredentialSummary, botConnectionLabel, botConnectionScopeLabel, botConnectionSecretEnv, botConnectionSecretPatch, botInstallTargetForConnection, botInstallTargetMatchesConnection, botTargetHint, botTargetLabel, diagnosticMessage, diagnosticReportDetail, firstConnectionRemote, formatInstallTimeLeft, formatInstallUserCode, qqBotAdded, type BotInstallTarget, type BotOfficialInstallTarget } from "./botConnectionSettings";
 import { useDeferredClose } from "../lib/useMountTransition";
@@ -7697,26 +7698,14 @@ function normalizeHookConfig(h: HookConfigView): HookConfigView {
   };
 }
 
-function effectiveShellLabel(value: string, t: ReturnType<typeof useT>): string {
-  switch (value) {
-    case "git-bash": return t("settings.effectiveShellGitBash");
-    case "pwsh": return t("settings.effectiveShellPwsh");
-    case "powershell": return t("settings.effectiveShellPowershell");
-    case "bash": return t("settings.effectiveShellBash");
-    case "auto": return t("common.auto");
-    default: return value.trim() || t("common.none");
-  }
-}
-
 function SandboxSection({ s, busy, apply, windows }: SectionProps & { windows: boolean }) {
   const t = useT();
   const sb = s.sandbox;
   const [root, setRoot] = useState(sb.workspaceRoot);
   const effectiveWriteRoots = asArray(sb.effectiveWriteRoots).filter((path) => String(path).trim());
-  const effectiveShell = effectiveShellLabel(String(sb.effectiveShell || sb.shell || ""), t);
   const set = (next: Partial<typeof sb>) =>
     apply(() => app.SetSandbox(next.bash ?? sb.bash, next.network ?? sb.network, next.workspaceRoot ?? sb.workspaceRoot, next.allowWrite ?? sb.allowWrite, next.shell ?? sb.shell));
-  const reload = () => apply(() => app.ReloadSettings());
+  const reloadSession = () => apply(() => app.ReloadSettings());
 
   return (
     <SettingsSection
@@ -7724,24 +7713,14 @@ function SandboxSection({ s, busy, apply, windows }: SectionProps & { windows: b
       description={t("settings.sandboxBoundaryHint")}
       actions={
         <Tooltip label={t("settings.reloadSessionConfigHint")}>
-          <button className="btn btn--small" disabled={busy} title={t("settings.reloadSessionConfigHint")} onClick={() => void reload()}>
+          <button className="btn btn--small" disabled={busy} title={t("settings.reloadSessionConfigHint")} onClick={() => void reloadSession()}>
             <RefreshCw size={14} aria-hidden="true" />
             <span>{t("settings.reloadSessionConfig")}</span>
           </button>
         </Tooltip>
       }
     >
-      <SettingsField label={t("settings.shellInterpreter")}>
-        <select className="mem-select set-grow" value={sb.shell || "auto"} disabled={busy} onChange={(e) => void set({ shell: e.target.value })}>
-          <option value="auto">{windows ? t("settings.shellAutoWindows") : t("settings.shellAuto")}</option>
-          <option value="bash">{t("settings.shellBash")}</option>
-          <option value="powershell">{t("settings.shellPowershell")}</option>
-          <option value="pwsh">{t("settings.shellPwsh")}</option>
-        </select>
-      </SettingsField>
-      <SettingsField label={t("settings.effectiveShell")}>
-        <div className="settings-readonly-field">{effectiveShell}</div>
-      </SettingsField>
+      <ShellInterpreterFields sb={sb} windows={windows} busy={busy} setShell={(prefer) => void apply(() => app.SetShellPreference(prefer))} reloadSession={() => void reloadSession()} />
       <SettingsField label={t("settings.bashSandbox")} hint={windows ? t("settings.bashUnavailableWindows") : undefined}>
         {/* Windows has no OS-level Bash backend and config.BashModeForGOOS fixes
             the effective value to off. Keep the control visibly immutable and

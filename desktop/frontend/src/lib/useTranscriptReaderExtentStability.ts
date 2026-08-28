@@ -3,6 +3,7 @@ import type { TranscriptScrollMode } from "./transcriptScrollArbiter";
 import { MIN_REVERSE_JUMP_PX, TRANSCRIPT_READER_IDLE_MS, TRANSCRIPT_READER_SETTLE_MS, transcriptReaderDirection } from "./transcriptReaderExtentStability";
 import { nativeTranscriptDistanceFromBottom, TRANSCRIPT_AT_BOTTOM_THRESHOLD_PX } from "./transcriptScrollGeometry";
 import { recordTranscriptScrollDiagnostic, type TranscriptScrollWriteRecord } from "./transcriptScrollProbe";
+import { transcriptElementViewportIsBlank } from "./transcriptVirtuosoRecovery";
 
 const STABLE_FRAMES_REQUIRED = 2;
 const GEOMETRY_EPSILON_PX = 1;
@@ -47,6 +48,9 @@ type ActiveReaderTransaction = TranscriptReaderTransaction & {
   transient: boolean;
   visualOffset: number;
   postCorrectionSettleDeadline: number;
+  /** Last tick's native height: a rebound correction spends its budget only
+   *  after one unchanged-height interval with mounted viewport coverage. */
+  correctionHeightSample: number;
 };
 
 function collapseThreshold(element: HTMLDivElement): number {
@@ -299,6 +303,11 @@ export function useTranscriptReaderExtentStability({
       }
       const element = transaction.element;
       observe(element);
+      // One unchanged-height interval per tick: a restored native extent can
+      // surface one or two paints before Virtuoso mounts rows for it, so the
+      // correction below must not spend its budget on the appearance frame.
+      const correctionHeightStable = transaction.correctionHeightSample === element.scrollHeight;
+      transaction.correctionHeightSample = element.scrollHeight;
       const now = Date.now();
       const beforeIdleDeadline = now < transaction.deadline;
       if (!beforeIdleDeadline && !transaction.idleDelivered) {
@@ -337,6 +346,20 @@ export function useTranscriptReaderExtentStability({
             bottomDistance: nativeTranscriptDistanceFromBottom(element),
             mode: modeRef.current,
           });
+          transaction.frame = requestAnimationFrame(tick);
+          return;
+        }
+        // A recovered extent can publish its restored native height one or two
+        // paints before Virtuoso mounts rows for it. Writing during that gap
+        // moves the viewport into an empty size tree. Wait for mounted
+        // coverage and one unchanged-height interval before spending the
+        // correction budget (the mount-anchor step above is exempt: it creates
+        // the coverage instead of moving into it).
+        if (
+          transaction.collapseObserved
+          && !extentStillCollapsed
+          && (transcriptElementViewportIsBlank(element) || !correctionHeightStable)
+        ) {
           transaction.frame = requestAnimationFrame(tick);
           return;
         }
@@ -528,6 +551,7 @@ export function useTranscriptReaderExtentStability({
       transient: inheritedCollapse,
       visualOffset: 0,
       postCorrectionSettleDeadline: 0,
+      correctionHeightSample: element.scrollHeight,
     };
     transactionRef.current = transaction;
     setActive(true);

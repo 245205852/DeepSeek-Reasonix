@@ -146,7 +146,15 @@ console.log("\nbundle budgets");
 // ceilings. Surface- and resize-scoped floor fencing adds another 0.113 KiB;
 // the combined path measures 448.692 KiB. Retain 0.108 KiB of bounded
 // build/toolchain headroom.
-const initialJSBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 448.8 : 448.8;
+// Cross-platform shell inventory, current-session vs after-reload rows,
+// manual repair guidance, and exact download-host allowlisting move the merged
+// path from 448.692 to 449.758 KiB (+1.066 KiB). Retain 0.142 KiB of bounded
+// build/toolchain headroom.
+// The reader transaction contract (geometry revisions, generation-fenced
+// writer requests, gesture travel proof, and the stabilized-shrink extent
+// acceptance) adds a measured 3.850 KiB gzip on the merged main-v2 baseline,
+// bringing the path to 453.608 KiB; retain 0.092 KiB of bounded headroom.
+const initialJSBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 453.7 : 453.7;
 assertBudget("initial JavaScript gzip", initialJSGzip, initialJSBudgetKiB * 1024);
 assertBudget("largest initial JavaScript chunk gzip", largestInitialJS, 280 * 1024);
 // Render-blocking CSS is intentionally absent: styles.css loads deferred via
@@ -192,8 +200,8 @@ for (const path of localeChunks) {
   // connection, fallback, and legacy-state copy while removing protocol
   // choices from the primary UI; keep that complete guidance with a bounded
   // 0.4–0.5 KiB locale-only ratchet.
-  // Remote-session actions and disconnected-shell guidance add bounded copy.
-  const budget = name.startsWith("zh-TW-") ? 58.5 * 1024 : 57.8 * 1024;
+  // Git-Bash installation guidance adds localized copy across dialects.
+  const budget = name.startsWith("zh-TW-") ? 59.0 * 1024 : 58.5 * 1024;
   assertBudget(`${name} gzip`, gzipBytes(path), budget);
 }
 
@@ -233,6 +241,12 @@ const rawInitialBytes = [...initialJS, ...initialCSS, ...appShellCSS]
 // below repolint's source ceilings. Lifecycle fencing adds 0.258 KiB; the
 // combined path measures 2417.526 KiB. Retain 0.074 KiB while preventing
 // phase-boundary reverse flashes and cross-surface floor leaks.
-const rawInitialBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 2_417.6 : 2_417.6;
+// The same shell-support surface moves the merged path from 2417.526 to
+// 2422.371 KiB raw (+4.845 KiB). Retain 0.129 KiB of bounded headroom without
+// widening unrelated chunk ceilings.
+// The reader transaction contract then adds a measured 15.127 KiB raw on the
+// merged main-v2 baseline, bringing the path to 2437.498 KiB; retain 0.102
+// KiB of bounded headroom.
+const rawInitialBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 2_437.6 : 2_437.6;
 assertBudget("initial raw JavaScript and CSS", rawInitialBytes, rawInitialBudgetKiB * 1024);
 assertBudget("largest initial JavaScript chunk raw", largestInitialJSRaw, 1_000 * 1024);

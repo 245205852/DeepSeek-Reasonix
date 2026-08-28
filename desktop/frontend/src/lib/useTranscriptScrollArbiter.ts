@@ -313,9 +313,7 @@ export function useTranscriptScrollArbiter({
   });
   const anchorCompensation = anchorCompensationRef.current;
 
-  const endReaderIntent = useCallback(() => {
-    cancelReaderTransaction();
-  }, [cancelReaderTransaction]);
+  const endReaderIntent = useCallback(() => cancelReaderTransaction(), [cancelReaderTransaction]);
   questionJumpOwnershipRef.current ??= createTranscriptQuestionJumpOwnership({ invalidateAsyncFrames, endReaderIntent, dispatch });
   const questionJumpOwnership = questionJumpOwnershipRef.current;
 
@@ -743,9 +741,7 @@ export function useTranscriptScrollArbiter({
     return false;
   }, [releaseTailFollow, restoreTailIfNotScrollable]);
 
-  const onTouchEndIntent = useCallback(() => {
-    touchStartYRef.current = null;
-  }, []);
+  const onTouchEndIntent = useCallback(() => { touchStartYRef.current = null; }, []);
 
   const onKeyScrollIntent = useCallback((event: ReactKeyboardEvent<HTMLElement>) => {
     if (isEditableTarget(event.target)) return false;
