@@ -17,10 +17,6 @@ type turnRuntime struct {
 	handoffNudges      int
 	usedAnyTool        bool
 	contextToolRepairs int
-	protocolRepairs    int
-	finishCalls        int
-	pendingFinalAnswer bool
-	finishOutcome      FinishOutcome
 	graceRound         bool
 	recoveryGraceRound bool
 
@@ -100,15 +96,6 @@ type turnRuntime struct {
 	// lastReasoning is the previous executor round's reasoning-token spend,
 	// read by the governor trigger (live policy and fork capture alike).
 	lastReasoning int
-}
-
-// TurnFinishOutcome is read while emitting TurnDone, before the next admission
-// can reset the per-run state.
-func (a *Agent) TurnFinishOutcome() FinishOutcome {
-	if a == nil {
-		return ""
-	}
-	return a.turn.finishOutcome
 }
 
 // pendingTurn is what someone outside the Run arms for the next one: a

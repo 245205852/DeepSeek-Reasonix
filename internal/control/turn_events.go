@@ -274,9 +274,6 @@ func terminalTurnStatus(e event.Event) event.TurnStatus {
 	if e.Cancelled || errors.Is(e.Err, context.Canceled) {
 		return event.TurnInterrupted
 	}
-	if agent.IsProtocolFailed(e.Err) {
-		return event.TurnProtocolFailed
-	}
 	if e.Err != nil {
 		return event.TurnFailed
 	}
@@ -324,9 +321,6 @@ func (c *Controller) applyTurnDoneProtocol(done event.Event, cancelRequested boo
 		// Interruption is a terminal state, not a send failure; partial text is
 		// already display-only by this point.
 		done.Err = nil
-	}
-	if done.Outcome == "" && c.executor != nil {
-		done.Outcome = string(c.executor.TurnFinishOutcome())
 	}
 	return done
 }

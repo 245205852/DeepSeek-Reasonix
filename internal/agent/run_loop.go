@@ -563,9 +563,6 @@ func (a *Agent) handleFinalResponse(ctx context.Context, state *turnRuntime, tex
 		}
 		event.RecordReadinessAudit(a.svc.sink, readiness.audit(evidence.ReadinessAllowed, a.turn.readinessRecovered))
 	}
-	if cont, err, handled := a.finishRequiredAtResponseEnd(ctx, state, text, usage); handled {
-		return cont, err
-	}
 	if !hasVisibleFinalAnswer(text) {
 		// DeepSeek thinking mode can stream a long reasoning_content and
 		// then finish with finish_reason="stop" but an empty content
@@ -618,9 +615,6 @@ func (a *Agent) handleFinalResponse(ctx context.Context, state *turnRuntime, tex
 func (a *Agent) handleToolRound(ctx context.Context, state *turnRuntime, step int, text, reasoning string, calls []provider.ToolCall, usage *provider.Usage) (cont bool, err error) {
 	state.emptyFinalBlocks = 0
 	state.usedAnyTool = true
-	if cont, err, handled := a.rejectMixedFinishBatch(state, text, calls, usage); handled {
-		return cont, err
-	}
 	unavailableContextTools := a.unavailableContextualToolCalls(ctx, calls)
 	if len(unavailableContextTools) > 0 && state.contextToolRepairs > 0 {
 		msg := fmt.Sprintf("blocked: context-unavailable tools were called again after the repair instruction: %s", strings.Join(unavailableContextTools, ", "))
@@ -677,19 +671,11 @@ func (a *Agent) handleToolRound(ctx context.Context, state *turnRuntime, step in
 		return false, ctx.Err()
 	}
 	if a.successfulTurnFinalizer(ctx, calls, batch) {
-		if a.finalizerName(calls) == "finish" {
-			if cont, err := a.acceptFinishCall(state, text, calls); cont || err != nil {
-				return cont, err
-			}
-		}
 		// submit_plan is the planner's data-bearing final answer. Its paired tool
 		// result is stored, so another acknowledgement adds no host value and can
 		// turn a valid bounded plan into a max-steps pause.
 		a.contextManager().ObserveUsage(usage)
 		return false, nil
-	}
-	if cont, err, handled := a.repairRejectedFinish(state, text, calls, usage); handled {
-		return cont, err
 	}
 	if boundaryFinalizer {
 		// The one allowed boundary finalizer ran but was rejected or blocked.
