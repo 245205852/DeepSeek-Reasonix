@@ -150,8 +150,11 @@ console.log("\nbundle budgets");
 // WKWebView range-swap gap. The bounded post-correction observation window
 // measures 450.960 KiB. Synchronous idle-reader anchoring plus the pre-paint
 // reader sample and stale-overscan-anchor fence measure 451.199 KiB; retain
-// only 0.101 KiB of bounded toolchain headroom.
-const initialJSBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 451.3 : 451.3;
+// only 0.101 KiB of bounded toolchain headroom. Notification volume plus
+// per-source loudness normalization adds another measured 0.243 KiB on the
+// updated main-v2 baseline. Retain bounded build/toolchain headroom for the
+// combined path.
+const initialJSBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 451.8 : 451.8;
 assertBudget("initial JavaScript gzip", initialJSGzip, initialJSBudgetKiB * 1024);
 assertBudget("largest initial JavaScript chunk gzip", largestInitialJS, 280 * 1024);
 // Render-blocking CSS is intentionally absent: styles.css loads deferred via
@@ -238,7 +241,9 @@ const rawInitialBytes = [...initialJS, ...initialCSS, ...appShellCSS]
 // transfer. The logical-anchor drift guard brings that path to 2425.651 KiB;
 // the post-correction observation window measures 2425.969 KiB. The idle
 // manual-anchor handoff and reader pre-paint anchor eligibility checks bring
-// the measured path to 2426.921 KiB; retain 0.179 KiB of bounded headroom.
-const rawInitialBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 2_427.1 : 2_427.1;
+// the measured path to 2426.921 KiB. The notification-volume control adds
+// another measured 1.696 KiB raw on current main-v2; retain bounded headroom
+// for the combined production graph.
+const rawInitialBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 2_429.2 : 2_429.2;
 assertBudget("initial raw JavaScript and CSS", rawInitialBytes, rawInitialBudgetKiB * 1024);
 assertBudget("largest initial JavaScript chunk raw", largestInitialJSRaw, 1_000 * 1024);
