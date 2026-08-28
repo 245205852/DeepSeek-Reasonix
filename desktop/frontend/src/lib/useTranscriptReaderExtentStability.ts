@@ -34,6 +34,11 @@ type ActiveReaderTransaction = TranscriptReaderTransaction & {
   correctionWritten: boolean;
   mountAnchorWritten: boolean;
   collapseObserved: boolean;
+  /** Accepted direction-consistent native travel accumulated across the
+   *  continuous gesture (inherited by same-direction follow-up epochs). The
+   *  proof that the reader genuinely navigated this range; a collapse clamp
+   *  or in-place wheel at a fabricated bottom adds nothing. */
+  directionalTravelPx: number;
   anchorDisplacementObserved: boolean;
   transientCandidateHeight: number;
   transientStableFrames: number;
@@ -229,6 +234,10 @@ export function useTranscriptReaderExtentStability({
       ? element.scrollTop > transaction.lastAcceptedTop + 1
       : element.scrollTop < transaction.lastAcceptedTop - 1;
     if (directionConsistent && movedInDirection && !transaction.mountAnchorWritten) {
+      // Accumulate the gesture's accepted directional travel: the proof that
+      // the reader genuinely navigated this range. A collapse clamp or an
+      // in-place wheel at a fabricated bottom adds nothing.
+      transaction.directionalTravelPx += transaction.direction * (element.scrollTop - transaction.lastAcceptedTop);
       transaction.lastAcceptedTop = element.scrollTop;
       transaction.anchor = captureLogicalAnchor(element) ?? transaction.anchor;
       // A continuous same-direction gesture can outlive many streaming
@@ -243,6 +252,34 @@ export function useTranscriptReaderExtentStability({
         transaction.transientStableFrames = 0;
         transaction.transient = false;
       }
+    }
+    // A shrunken extent that holds for two painted samples is real geometry,
+    // not a transient fault. Once the continuous gesture has also produced
+    // real directional travel, accept the smaller range as the new baseline so
+    // the physical tail of the shrunken transcript remains claimable; the
+    // stale high-water would otherwise veto every tail handoff forever — even
+    // for a reader the collapse clamped onto the bottom, who cannot produce
+    // further downward displacement. Without any travel proof the high-water
+    // stays, so an unread or still-transient range cannot be laundered into a
+    // false tail claim.
+    if (
+      transaction.collapseObserved
+      && remainsCollapsed
+      && !transaction.transient
+      && transaction.directionalTravelPx >= MIN_REVERSE_JUMP_PX
+    ) {
+      transaction.baselineHeight = element.scrollHeight;
+      transaction.minimumHeight = element.scrollHeight;
+      transaction.collapseObserved = false;
+      transaction.transientCandidateHeight = element.scrollHeight;
+      transaction.transientStableFrames = 0;
+      recordTranscriptScrollDiagnostic("reader-transaction", {
+        transactionId: transaction.id,
+        ownershipEpoch: transaction.ownershipEpoch,
+        direction: transaction.direction,
+        phase: transaction.phase,
+        result: "extent-accepted",
+      });
     }
     return transaction.transient;
   }, [scrollRef]);
@@ -445,11 +482,12 @@ export function useTranscriptReaderExtentStability({
       schedule(current);
       return { started: false as const, transactionId: current.id };
     }
-    const inheritedHeight = current
+    const inheritsGesture = current
       && current.element === element
       && current.surfaceGeneration === generationRef.current
       && current.direction === direction
-      && now <= current.settleDeadline
+      && now <= current.settleDeadline;
+    const inheritedHeight = inheritsGesture
       ? Math.max(element.scrollHeight, current.baselineHeight)
       : element.scrollHeight;
     if (current) finish(current, "cancelled");
@@ -479,6 +517,9 @@ export function useTranscriptReaderExtentStability({
       correctionWritten: false,
       mountAnchorWritten: false,
       collapseObserved: inheritedCollapse,
+      // A follow-up epoch of one continuous same-direction gesture keeps the
+      // travel proof the gesture already earned; a fresh gesture starts at 0.
+      directionalTravelPx: inheritsGesture ? current.directionalTravelPx : 0,
       anchorDisplacementObserved: false,
       transientCandidateHeight: element.scrollHeight,
       transientStableFrames: 0,

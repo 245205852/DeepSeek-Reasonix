@@ -406,25 +406,38 @@ try {
   // to ~30k CSS px. Keep driving the same outer-reader gesture until the
   // physical tail is reached instead of assuming the old underestimated tree.
   let previousDownwardTop = -1;
-  for (let attempt = 0; attempt < 128; attempt += 1) {
+  let hydrationReachedBottom = false;
+  for (let attempt = 0; attempt < 160; attempt += 1) {
     await moveToOuterReaderGutter(page, hydrationTranscript, false);
-    await page.mouse.wheel(0, 10_000);
+    // A 10k synthetic delta is coalesced on fast Windows Chromium runners and
+    // can resolve before the compositor commits any native scroll. Use a
+    // realistic bounded wheel and sample after one frame, like the later
+    // sustained-reader contracts in this file.
+    await page.mouse.wheel(0, 720);
+    await page.waitForTimeout(32);
     const position = await hydrationTranscript.evaluate((element) => ({
       top: element.scrollTop,
       atBottom: element.scrollHeight - element.scrollTop - element.clientHeight <= 1,
     }));
-    if (position.atBottom) break;
+    if (position.atBottom) {
+      hydrationReachedBottom = true;
+      break;
+    }
     // A hydration resize intentionally guards the reader's previous extent
     // for one intent burst. Start a fresh burst after the 180ms idle lease
     // when that boundary is reached, matching a real user's next wheel turn.
     const stalled = Math.abs(position.top - previousDownwardTop) <= 1;
     previousDownwardTop = position.top;
-    await page.waitForTimeout(stalled ? 220 : 16);
+    if (stalled) await page.waitForTimeout(220);
   }
   const preHandoff = await hydrationTranscript.evaluate((element) => ({
     mode: element.dataset.scrollMode,
+    top: element.scrollTop,
+    height: element.scrollHeight,
     distance: element.scrollHeight - element.scrollTop - element.clientHeight,
   }));
+  assert(hydrationReachedBottom,
+    `paced downward wheels reach the hydrated physical tail (${JSON.stringify(preHandoff)})`);
   if (preHandoff.mode === "manual" && preHandoff.distance <= 96) {
     // A geometry-churning burst may exhaust its bounded 1s settle lease at
     // the physical tail. A fresh user wheel after the 180ms idle boundary is
@@ -1497,8 +1510,11 @@ try {
   await page.waitForTimeout(100);
   await page.waitForFunction(() => document.querySelector(".transcript")?.dataset.scrollMode === "manual", undefined, { timeout: 5_000 });
   await stormTranscript.evaluate(() => {
-    window.__stormProbe = { writes: [], snaps: [], remounts: 0, done: false };
+    window.__stormProbe = { writes: [], snaps: [], remounts: 0, diagnostics: [], done: false };
     window.__REASONIX_TRANSCRIPT_SCROLL_WRITE__ = (write) => window.__stormProbe.writes.push(write);
+    window.__REASONIX_TRANSCRIPT_SCROLL_DIAGNOSTIC__ = (type, fields) => {
+      window.__stormProbe.diagnostics.push({ type, ...fields });
+    };
     // Re-query the scroller every frame: a remount (blank-watchdog rebuild)
     // replaces the element, and sampling a detached node reads scrollTop 0.
     let scroller = document.querySelector(".transcript");
@@ -1557,15 +1573,57 @@ try {
     undefined,
     { timeout: 30_000 },
   );
+  // Resolving the final refs can expand the document again after the first
+  // temporary bottom. Manual-reader ownership must preserve that position;
+  // model the user's continued downward wheels instead of expecting the new
+  // content to drag the viewport to its later physical tail.
+  let resolvedStormReached = await stormTranscript.evaluate((element) =>
+    element.scrollHeight - element.scrollTop - element.clientHeight <= 1);
+  for (let attempt = 0; attempt < 120 && !resolvedStormReached; attempt += 1) {
+    await moveToOuterReaderGutter(page, stormTranscript, false);
+    await page.mouse.wheel(0, 640);
+    await page.waitForTimeout(60);
+    resolvedStormReached = await stormTranscript.evaluate((element) =>
+      element.scrollHeight - element.scrollTop - element.clientHeight <= 1);
+  }
+  const resolvedStormState = await stormTranscript.evaluate((element) => ({
+    mode: element.dataset.scrollMode,
+    top: element.scrollTop,
+    height: element.scrollHeight,
+    distance: element.scrollHeight - element.scrollTop - element.clientHeight,
+  }));
+  assert(resolvedStormReached,
+    `continued downward wheels reach the final resolved storm tail (${JSON.stringify(resolvedStormState)})`);
+  await page.waitForTimeout(220);
   const stormMode = await stormTranscript.getAttribute("data-scroll-mode");
-  if (stormMode !== "tail-follow") await page.mouse.wheel(0, 120);
-  await page.waitForFunction(() => document.querySelector(".transcript")?.dataset.scrollMode === "tail-follow", undefined, { timeout: 5_000 });
+  if (stormMode !== "tail-follow") {
+    await page.waitForTimeout(220);
+    await moveToOuterReaderGutter(page, stormTranscript, false);
+    await page.mouse.wheel(0, 640);
+  }
+  await page.waitForFunction(
+    () => document.querySelector(".transcript")?.dataset.scrollMode === "tail-follow",
+    undefined,
+    { timeout: 5_000 },
+  ).catch(async (error) => {
+    const state = await stormTranscript.evaluate((element) => ({
+      mode: element.dataset.scrollMode,
+      readerIntent: element.dataset.transcriptReaderIntent,
+      top: element.scrollTop,
+      height: element.scrollHeight,
+      distance: element.scrollHeight - element.scrollTop - element.clientHeight,
+      writes: window.__stormProbe.writes.slice(-8),
+      diagnostics: window.__stormProbe.diagnostics.slice(-24),
+    }));
+    throw new Error(`stable storm tail handoff timed out: ${JSON.stringify(state)}: ${error.message}`);
+  });
   await page.waitForTimeout(600);
   const stormTail = await stormTranscript.evaluate((element) => element.scrollHeight - element.scrollTop - element.clientHeight);
   assert(stormTail <= 1, `tail-follow holds at the newest content until the storm fully resolves (${stormTail}px)`);
   const stormProbe = await stormTranscript.evaluate(() => {
     window.__stormProbe.done = true;
     window.__REASONIX_TRANSCRIPT_SCROLL_WRITE__ = undefined;
+    window.__REASONIX_TRANSCRIPT_SCROLL_DIAGNOSTIC__ = undefined;
     return window.__stormProbe;
   });
   assert(

@@ -539,6 +539,118 @@ check(arbiter?.readerTransactionActive === false, "the next explicit owner relea
 Date.now = realDateNow;
 delete rowElement.dataset.transcriptLastRow;
 
+// A stable real shrink must not veto the tail handoff forever. Once the
+// smaller extent has held for two painted samples and the reader produces
+// direction-consistent native displacement inside it, the transaction accepts
+// the shrunken extent as its new baseline and the physical tail of that range
+// becomes claimable again (#9513 storm replay).
+const extentAcceptances: Array<Record<string, unknown>> = [];
+setTranscriptScrollDiagnosticSink((type, fields) => {
+  if (type === "reader-transaction" && fields.result === "extent-accepted") extentAcceptances.push(fields);
+});
+await act(async () => arbiter?.reset());
+scrollExtent = 26_000;
+scrollElement.scrollTop = 20_000;
+rowElement.getBoundingClientRect = () => rectAt(20);
+await act(async () => arbiter?.deliverScroll());
+await act(async () => arbiter?.setMode("manual", "test-stable-shrink-acceptance"));
+let shrinkNow = realDateNow();
+Date.now = () => shrinkNow;
+await act(async () => arbiter?.onWheelIntent({
+  ctrlKey: false,
+  deltaMode: 0,
+  deltaX: 0,
+  deltaY: 640,
+  target: scrollElement,
+} as React.WheelEvent<HTMLElement>));
+scrollExtent = 24_000;
+scrollElement.scrollTop = 20_640;
+await act(async () => arbiter?.onWheelIntent({
+  ctrlKey: false,
+  deltaMode: 0,
+  deltaX: 0,
+  deltaY: 640,
+  target: scrollElement,
+} as React.WheelEvent<HTMLElement>));
+await act(async () => arbiter?.deliverScroll());
+// The shrunken extent must prove stable across two painted samples before any
+// acceptance; movement delivered while it is still transient keeps waiting.
+await act(async () => arbiter?.deliverScroll());
+await act(async () => arbiter?.deliverScroll());
+await act(async () => arbiter?.onWheelIntent({
+  ctrlKey: false,
+  deltaMode: 0,
+  deltaX: 0,
+  deltaY: 640,
+  target: scrollElement,
+} as React.WheelEvent<HTMLElement>));
+scrollElement.scrollTop = 21_280;
+await act(async () => arbiter?.deliverScroll());
+check(extentAcceptances.length === 1,
+  "direction-consistent displacement inside a stabilized shrink accepts the new extent");
+await act(async () => arbiter?.onWheelIntent({
+  ctrlKey: false,
+  deltaMode: 0,
+  deltaX: 0,
+  deltaY: 640,
+  target: scrollElement,
+} as React.WheelEvent<HTMLElement>));
+scrollElement.scrollTop = 23_275;
+rowElement.dataset.transcriptLastRow = "true";
+await act(async () => arbiter?.deliverScroll());
+shrinkNow += 181;
+for (let frame = 0; frame < 6; frame += 1) await flushFrames();
+check(String(arbiter?.modeRef.current) === "tail-follow",
+  "the accepted shrunken extent hands ownership to its physical tail");
+Date.now = realDateNow;
+delete rowElement.dataset.transcriptLastRow;
+
+// The mirror contract: a collapse-fabricated bottom reached only by the
+// browser's own clamp earns no directional displacement proof, so the
+// high-water is never rebased and the handoff stays closed even after the
+// shrink stabilizes — in-place wheeling changes nothing.
+await act(async () => arbiter?.reset());
+scrollExtent = 26_000;
+scrollElement.scrollTop = 25_275;
+rowElement.getBoundingClientRect = () => rectAt(20);
+rowElement.dataset.transcriptLastRow = "true";
+await act(async () => arbiter?.deliverScroll());
+await act(async () => arbiter?.setMode("manual", "test-fake-bottom-no-handoff"));
+extentAcceptances.length = 0;
+let parkedNow = realDateNow();
+Date.now = () => parkedNow;
+await act(async () => arbiter?.onWheelIntent({
+  ctrlKey: false,
+  deltaMode: 0,
+  deltaX: 0,
+  deltaY: 640,
+  target: scrollElement,
+} as React.WheelEvent<HTMLElement>));
+// The extent really shrinks and the browser clamps the parked reader onto the
+// fabricated bottom; that clamp is reverse motion, never reader displacement.
+scrollExtent = 24_000;
+scrollElement.scrollTop = 23_275;
+await act(async () => arbiter?.deliverScroll());
+await act(async () => arbiter?.deliverScroll());
+await act(async () => arbiter?.deliverScroll());
+await act(async () => arbiter?.onWheelIntent({
+  ctrlKey: false,
+  deltaMode: 0,
+  deltaX: 0,
+  deltaY: 640,
+  target: scrollElement,
+} as React.WheelEvent<HTMLElement>));
+await act(async () => arbiter?.deliverScroll());
+parkedNow += 181;
+for (let frame = 0; frame < 6; frame += 1) await flushFrames();
+check(extentAcceptances.length === 0,
+  "in-place wheeling at a collapse-fabricated bottom never accepts the shrunken extent");
+check(String(arbiter?.modeRef.current) === "manual",
+  "in-place wheeling at a collapse-fabricated bottom cannot claim the tail");
+Date.now = realDateNow;
+delete rowElement.dataset.transcriptLastRow;
+setTranscriptScrollDiagnosticSink(() => {});
+
 // A large extent contraction is transient for its first painted sample and is
 // accepted only after two consecutive stable frames.
 const geometryEvents: Array<Record<string, unknown>> = [];

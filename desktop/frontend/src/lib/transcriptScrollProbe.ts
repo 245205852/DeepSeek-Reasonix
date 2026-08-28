@@ -55,11 +55,15 @@ export function recordTranscriptScrollDiagnostic(type: string, fields: Record<st
   // Keep the legacy scroll trace intact while forwarding the same content-free
   // geometry into the broader frontend interaction timeline.
   recordFrontendDiagnostic("transcript", `transcript.${type}`, fields);
+  // The bench harness (desktop/frontend/bench) installs this page-side hook to
+  // attach the diagnostic stream to replay failure output.
+  if (typeof window !== "undefined") window.__REASONIX_TRANSCRIPT_SCROLL_DIAGNOSTIC__?.(type, fields);
 }
 
 declare global {
   interface Window {
     __REASONIX_TRANSCRIPT_SCROLL_WRITE__?: (write: TranscriptScrollWriteRecord) => void;
+    __REASONIX_TRANSCRIPT_SCROLL_DIAGNOSTIC__?: (type: string, fields: Record<string, unknown>) => void;
   }
 }
 

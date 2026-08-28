@@ -244,6 +244,10 @@ const rawInitialBytes = [...initialJS, ...initialCSS, ...appShellCSS]
 // the measured path to 2426.921 KiB. The notification-volume control adds
 // another measured 1.696 KiB raw on current main-v2; retain bounded headroom
 // for the combined production graph.
-const rawInitialBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 2_429.2 : 2_429.2;
+// The stabilized-shrink extent acceptance (gesture travel proof plus the
+// reader-transaction diagnostic and its bench hook) adds a measured 0.554 KiB
+// raw on the reader transaction path, bringing it to 2429.754 KiB against the
+// 2429.2 KiB baseline; retain 0.046 KiB of bounded headroom.
+const rawInitialBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 2_429.8 : 2_429.8;
 assertBudget("initial raw JavaScript and CSS", rawInitialBytes, rawInitialBudgetKiB * 1024);
 assertBudget("largest initial JavaScript chunk raw", largestInitialJSRaw, 1_000 * 1024);
