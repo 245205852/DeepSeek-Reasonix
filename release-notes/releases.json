@@ -2,6 +2,37 @@
   "schemaVersion": 1,
   "releases": [
     {
+      "version": "1.33.0",
+      "date": "2026-08-28",
+      "channel": "beta",
+      "targetingVersion": 1,
+      "title": {
+        "en": "Reasonix 1.33.0 - MCP 2026",
+        "zh": "Reasonix 1.33.0 - MCP 2026"
+      },
+      "summary": {
+        "en": "Speaks the MCP 2026-07-28 protocol (multi-round-trip form/URL elicitation) and adds stable MCP Apps 2026-01-26 on Desktop. No new settings: capability follows the frontend, and every server keeps its existing switches.",
+        "zh": "支持 MCP 2026-07-28 协议(多轮表单/URL 交互),并在桌面端新增稳定版 MCP Apps 2026-01-26。无新增设置:能力随前端而定,服务器保持现有开关。"
+      },
+      "surfaces": [
+        "desktop",
+        "cli"
+      ],
+      "guides": [
+        {
+          "title": {
+            "en": "MCP 2026 capability surface",
+            "zh": "MCP 2026 能力面"
+          },
+          "body": {
+            "en": "Host capability profiles, the four-layer capability matrix, elicitation flow, Apps sandboxing, and the cross-version cache contract.",
+            "zh": "宿主能力分层、四层能力矩阵、交互流程、Apps 沙箱与跨版本缓存契约。"
+          },
+          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/main-v2/docs/mcp-2026-apps.md"
+        }
+      ]
+    },
+    {
       "version": "1.32.1",
       "date": "2026-08-28",
       "channel": "stable",
