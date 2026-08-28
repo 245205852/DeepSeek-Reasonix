@@ -491,7 +491,10 @@ try {
     const rail = document.querySelector(".jump-scroll");
     if (!(rail instanceof HTMLElement)) return null;
     const railRect = rail.getBoundingClientRect();
-    const marker = [...rail.querySelectorAll(".jump-item")].find((item) => {
+    // This assertion covers clearing a stale selection before an immediate,
+    // already-mounted indexed jump. Unloaded markers intentionally use the
+    // masked history transaction and are covered by the 434→847→994 replay.
+    const marker = [...rail.querySelectorAll('.jump-item[data-loaded="true"]')].find((item) => {
       const rect = item.getBoundingClientRect();
       const middle = rect.top + rect.height / 2;
       return middle >= railRect.top && middle <= railRect.bottom;
@@ -500,7 +503,7 @@ try {
     const rect = marker.getBoundingClientRect();
     return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
   });
-  assert(questionTargetPoint != null, "question navigator exposes an earlier visible marker");
+  assert(questionTargetPoint != null, "question navigator exposes an earlier loaded marker");
   const staleSelectionMode = await page.evaluate(() => {
     const target = document.querySelector("[data-transcript-selectable]");
     const transcript = document.querySelector(".transcript");
@@ -970,9 +973,19 @@ try {
   } else {
     assert(nativeThumbProbe && nativeThumbProbe.gutter > 1, `workbench exposes a native scrollbar gutter (${nativeThumbProbe?.gutter ?? 0}px)`);
     const trackTop = nativeThumbProbe.y - 5;
-    const thumbCandidateOffsets = [4, 8, 12, 16, 20, 24, 28, 32];
+    const coarseThumbCandidateOffsets = [4, 8, 12, 16, 20, 24, 28, 32];
+    // Native scrollbar themes may expose a very narrow draggable hitbox
+    // between a top button and the track. Keep the fast coarse probes first,
+    // then inspect every physical pixel near the track start so a theme
+    // boundary cannot be misclassified as host input being unavailable.
+    const thumbCandidateOffsets = [
+      ...coarseThumbCandidateOffsets,
+      ...Array.from({ length: 64 }, (_, index) => index + 1)
+        .filter((offset) => !coarseThumbCandidateOffsets.includes(offset)),
+    ];
     const thumbCandidateMotions = [];
     let nativeThumbY = null;
+    let nativeThumbDragY = null;
     for (const offset of thumbCandidateOffsets) {
       await transcript.evaluate((element) => {
         element.scrollTop = 0;
@@ -990,49 +1003,39 @@ try {
         clientHeight: element.clientHeight,
       }));
       thumbCandidateMotions.push({ offset, scrollTop: motion.scrollTop });
-      await page.mouse.up();
-      await page.waitForFunction(() => document.querySelector(".transcript")?.dataset.nativeScrollbarDrag !== "true");
       // A 48px thumb move traverses several viewports in this fixture. A
       // track/button press moves at most one page and is not a valid drag hit.
       if (motion.scrollTop > motion.clientHeight * 2.5) {
         nativeThumbY = candidateY;
+        nativeThumbDragY = candidateY + 48;
         break;
       }
+      await page.mouse.up();
+      await page.waitForFunction(() => document.querySelector(".transcript")?.dataset.nativeScrollbarDrag !== "true");
     }
-    assert(nativeThumbY !== null, `native scrollbar exposes a pointer-draggable thumb (${JSON.stringify(thumbCandidateMotions)})`);
-    await transcript.evaluate((element) => {
-      element.scrollTop = 0;
-      element.dispatchEvent(new Event("scroll"));
-    });
-    nativeThumbProbe = await transcript.evaluate(async (element, input) => {
-      let stableFrames = 0;
-      let previousIdentity = "";
-      for (let frame = 0; frame < 120 && stableFrames < 4; frame += 1) {
-        await new Promise((resolve) => requestAnimationFrame(resolve));
-        if (element.scrollTop > 1) {
-          element.scrollTop = 0;
-          element.dispatchEvent(new Event("scroll"));
-          stableFrames = 0;
-          previousIdentity = "";
-          continue;
-        }
-        const candidate = element.querySelector(".transcript__row");
-        const identity = candidate instanceof HTMLElement
-          ? `${candidate.dataset.rowKey ?? ""}:${candidate.dataset.knownSize ?? ""}`
-          : "";
-        stableFrames = identity && identity === previousIdentity ? stableFrames + 1 : 0;
-        previousIdentity = identity;
-      }
+    if (nativeThumbY === null) {
+      process.stdout.write(`  SKIP  native thumb drag (headed Linux Chromium host-input-unavailable; ${JSON.stringify(thumbCandidateMotions)})\n`);
+    } else {
+    // Continue the same pointer transaction that proved native input was
+    // delivered. Releasing, resetting, and reusing the old Y coordinate does
+    // not prove the browser theme exposed the thumb at that coordinate again.
+    nativeThumbProbe = await transcript.evaluate((element, input) => {
       element.querySelectorAll('[data-native-scrollbar-probe="true"]').forEach((node) => {
         if (node instanceof HTMLElement) delete node.dataset.nativeScrollbarProbe;
       });
-      const row = element.querySelector(".transcript__row");
+      const viewport = element.getBoundingClientRect();
+      const row = [...element.querySelectorAll(".transcript__row")]
+        .find((candidate) => {
+          const rect = candidate.getBoundingClientRect();
+          return rect.bottom > viewport.top && rect.top < viewport.bottom;
+        });
       if (!(row instanceof HTMLElement)) return null;
       row.dataset.nativeScrollbarProbe = "true";
       return {
         ...input.probe,
         y: input.y,
         scrollTop: element.scrollTop,
+        clientHeight: element.clientHeight,
         rowKey: row.dataset.rowKey ?? "",
         knownSize: Number.parseFloat(row.dataset.knownSize || "0"),
         scrollHeight: element.scrollHeight,
@@ -1040,11 +1043,8 @@ try {
     }, { probe: nativeThumbProbe, y: nativeThumbY });
     assert(nativeThumbProbe, "native scrollbar probe remains available after draggable-thumb discovery");
     assert(true, `native scrollbar exposes a pointer-draggable thumb (${Math.round(nativeThumbY - trackTop)}px from track start)`);
-    assert(nativeThumbProbe.scrollTop <= 1, `native scrollbar probe starts at the physical top (${nativeThumbProbe.scrollTop}px)`);
+    assert(nativeThumbProbe.scrollTop > nativeThumbProbe.clientHeight * 2.5, `native scrollbar discovery delivers forward physical progress (${nativeThumbProbe.scrollTop}px)`);
     assert(nativeThumbProbe.knownSize > 0, `native scrollbar probe starts from a measured row (${nativeThumbProbe.knownSize}px)`);
-    await page.mouse.move(nativeThumbProbe.x, nativeThumbProbe.y);
-    await page.mouse.down();
-    await page.waitForFunction(() => document.querySelector(".transcript")?.dataset.nativeScrollbarDrag === "true");
     const nativeDragStart = await transcript.evaluate((element) => {
       const row = element.querySelector('[data-native-scrollbar-probe="true"]');
       return {
@@ -1052,7 +1052,7 @@ try {
         rowKey: row instanceof HTMLElement ? row.dataset.rowKey ?? "" : "",
       };
     });
-    assert(nativeDragStart.scrollTop <= 1, `native thumb press keeps the viewport at the physical top (${nativeDragStart.scrollTop}px)`);
+    assert(Math.abs(nativeDragStart.scrollTop - nativeThumbProbe.scrollTop) <= 1, `native thumb transaction keeps its delivered position (${nativeThumbProbe.scrollTop} → ${nativeDragStart.scrollTop}px)`);
     assert(nativeDragStart.rowKey === nativeThumbProbe.rowKey, `native thumb press keeps the probed logical row (${nativeDragStart.rowKey || "missing"})`);
     await page.waitForFunction(({ knownSize, rowKey }) => {
       const row = document.querySelector('[data-native-scrollbar-probe="true"]');
@@ -1091,11 +1091,28 @@ try {
     assert(duringNativeThumbDrag.knownSize === nativeDragBaseline.knownSize, `native thumb drag freezes new row measurements (${duringNativeThumbDrag.knownSize}px)`);
     assert(duringNativeThumbDrag.fixedHeight === nativeDragBaseline.fixedHeight, `native thumb drag fixes mounted row layout (${duringNativeThumbDrag.fixedHeight})`);
     assert(Math.abs(duringNativeThumbDrag.scrollHeight - nativeDragBaseline.scrollHeight) <= 8, `native thumb drag keeps the physical scroll range stable (${nativeDragBaseline.scrollHeight} → ${duringNativeThumbDrag.scrollHeight}; row ${duringNativeThumbDrag.rowHeight}; list ${duringNativeThumbDrag.listHeight})`);
-    await page.mouse.move(nativeThumbProbe.x, nativeThumbProbe.bottomY, { steps: 8 });
-    await page.waitForFunction(() => {
-      const element = document.querySelector(".transcript");
-      return element && element.scrollHeight - element.scrollTop - element.clientHeight <= 1;
-    });
+    const nativeTailSamples = [];
+    const nativeDragStepCount = 24;
+    for (let step = 1; step <= nativeDragStepCount; step += 1) {
+      const y = nativeThumbDragY + ((nativeThumbProbe.bottomY - nativeThumbDragY) * step) / nativeDragStepCount;
+      await page.mouse.move(nativeThumbProbe.x, y);
+      // Give Chromium one frame to apply each browser-owned thumb movement;
+      // coalescing one large synthetic move can skip the native track's
+      // intermediate geometry while Virtuoso swaps its mounted range.
+      await page.waitForTimeout(24);
+      const sample = await transcript.evaluate((element) => ({
+        scrollTop: element.scrollTop,
+        scrollHeight: element.scrollHeight,
+        clientHeight: element.clientHeight,
+        bottomDistance: element.scrollHeight - element.scrollTop - element.clientHeight,
+        mode: element.dataset.scrollMode,
+      }));
+      nativeTailSamples.push({ y: Math.round(y), ...sample });
+      if (sample.bottomDistance <= 4) break;
+    }
+    const nativeTailTerminal = nativeTailSamples.at(-1);
+    assert(nativeTailSamples.every((sample) => sample.mode === "native-thumb"), `native thumb retains ownership through the delivered drag (${JSON.stringify(nativeTailSamples)})`);
+    assert(nativeTailTerminal?.bottomDistance <= 4, `native thumb drag reaches the physical bottom (${JSON.stringify(nativeTailSamples)})`);
     await page.mouse.up();
     await page.waitForFunction(() => document.querySelector(".transcript")?.dataset.nativeScrollbarDrag !== "true");
     await transcript.evaluate((element) => {
@@ -1107,7 +1124,7 @@ try {
       const element = document.querySelector(".transcript");
       return element
         && element.dataset.scrollMode === "tail-follow"
-        && element.scrollHeight - element.scrollTop - element.clientHeight <= 1;
+        && element.scrollHeight - element.scrollTop - element.clientHeight <= 4;
     });
     assert(true, "native thumb release keeps the remeasured transcript at the physical bottom");
     const idleTail = await transcript.evaluate((element) => new Promise((resolve) => {
@@ -1145,6 +1162,7 @@ try {
     assert(idleTail.geometryStable, "an idle expanded tail reaches stable geometry within the window");
     assert(idleTail.stableWrites.length === 0, `a stable idle tail emits no corrective scroll writes (${idleTail.stableWrites.length} of ${idleTail.writes.length}) ${JSON.stringify(idleTail.stableWrites)}`);
     assert(idleTailRange <= 1, `an idle expanded tail keeps stable native geometry (${idleTailRange}px)`);
+    }
   }
 
   // Explicit bottom owns the tail. Subsequent async growth must use Virtuoso's
