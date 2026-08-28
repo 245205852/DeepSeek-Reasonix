@@ -240,6 +240,9 @@ const rawInitialBytes = [...initialJS, ...initialCSS, ...appShellCSS]
 // The same shell-support surface moves the merged path from 2417.526 to
 // 2422.371 KiB raw (+4.845 KiB). Retain 0.129 KiB of bounded headroom without
 // widening unrelated chunk ceilings.
-const rawInitialBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 2_422.5 : 2_422.5;
+// The WebView2 extent rebound prepaint handoff adds 0.204 KiB raw so a native
+// scroll delivery can restore mounted coverage before the next visible frame.
+// Retain 0.096 KiB of headroom without widening gzip or chunk ceilings.
+const rawInitialBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 2_422.8 : 2_422.8;
 assertBudget("initial raw JavaScript and CSS", rawInitialBytes, rawInitialBudgetKiB * 1024);
 assertBudget("largest initial JavaScript chunk raw", largestInitialJSRaw, 1_000 * 1024);
