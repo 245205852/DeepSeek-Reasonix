@@ -197,6 +197,10 @@ type Host struct {
 	// creation; cache identity and the capability matrix derive from it.
 	profile HostProfile
 
+	// appInstances is the bounded MCP Apps instance registry, built with the
+	// Host and never nil.
+	appInstances *appInstanceRegistry
+
 	// Detached stats/schema-cache writers from Start; off the boot path but
 	// drained by Close so cleanup can't race a still-open cache file.
 	bgWrites  sync.WaitGroup
@@ -885,7 +889,7 @@ func NewHost() *Host { return NewHostWithProfile(HostProfileCore) }
 // client capabilities. Immutable once set; a degraded frontend constructs
 // the Host with a lower profile instead of mutating a live one.
 func NewHostWithProfile(profile HostProfile) *Host {
-	return &Host{profile: profile.Normalize()}
+	return &Host{profile: profile.Normalize(), appInstances: newAppInstanceRegistry()}
 }
 
 // Profile returns the host's semantic capability profile, fixed at creation.
@@ -1398,6 +1402,9 @@ func (h *Host) Remove(name string) (toolPrefix string, found bool) {
 		return ToolPrefix(name), true
 	}
 	removed := h.removeClientAtLocked(idx)
+	if h.appInstances != nil {
+		h.appInstances.ReleaseServer(name)
+	}
 	h.mu.Unlock()
 
 	for _, cancel := range cancels {
@@ -1645,20 +1652,6 @@ func formatTimeout(timeout time.Duration) string {
 	return timeout.String()
 }
 
-type mcpTool struct {
-	Name         string          `json:"name"`
-	Description  string          `json:"description"`
-	InputSchema  json.RawMessage `json:"inputSchema"`
-	OutputSchema json.RawMessage `json:"outputSchema,omitempty"`
-	// Annotations carries MCP's optional tool hints. readOnlyHint controls reader
-	// classification; destructiveHint remains destructive even when another hint
-	// claims the tool is read-only. Approval policy is applied separately.
-	Annotations *struct {
-		ReadOnlyHint    bool `json:"readOnlyHint"`
-		DestructiveHint bool `json:"destructiveHint"`
-	} `json:"annotations"`
-}
-
 // toolName builds Reasonix's canonical model-visible name
 // "mcp__<server>__<tool>". The registry separately resolves unique portable
 // and Claude plugin-qualified references without exposing duplicate schemas.
@@ -1733,6 +1726,12 @@ type remoteTool struct {
 	// conflicting readOnlyHint in Plan and strict read-only execution.
 	destructive bool
 	generation  uint64
+	// Apps metadata: whether the App channel may call this tool and the ui
+	// resource an App renders results with.
+	visibility    []string
+	appCallable   bool
+	uiResourceURI string
+	uiCSP         map[string][]string
 }
 
 func (t *remoteTool) Name() string        { return t.name }
@@ -1751,6 +1750,15 @@ func (t *remoteTool) MCPPackageName() string {
 	}
 	return t.client.spec.Package
 }
+
+// AppCallable reports whether an App instance may invoke this tool.
+func (t *remoteTool) AppCallable() bool { return t.appCallable }
+
+// UIResourceURI returns the MCP Apps _meta.ui.resourceUri (empty = none).
+func (t *remoteTool) UIResourceURI() string { return t.uiResourceURI }
+
+// UICSP returns the resource's declared CSP directives (nil = default deny).
+func (t *remoteTool) UICSP() map[string][]string { return t.uiCSP }
 
 func (t *remoteTool) MCPServerAuthorized() bool {
 	return t.client != nil && t.client.spec.ServerAuthorized()
@@ -1841,6 +1849,7 @@ func (t *remoteTool) ExecuteWithImages(ctx context.Context, args json.RawMessage
 	if err != nil {
 		return "", nil, err
 	}
+	stampMCPAppResult(ctx, t, res)
 	return parseToolResult(res)
 }
 

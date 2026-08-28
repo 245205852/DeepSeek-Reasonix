@@ -200,7 +200,8 @@ func MCPServerEntries(opts CatalogOptions) []Entry {
 		}
 		for _, ct := range toolSrc {
 			raw := strings.TrimSpace(ct.Name)
-			if raw == "" {
+			if raw == "" || !ct.ToolIsModelVisible() {
+				// App-only tools stay in the server-private App catalog.
 				continue
 			}
 			out = append(out, Entry{

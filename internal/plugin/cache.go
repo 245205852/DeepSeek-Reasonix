@@ -38,12 +38,14 @@ func cacheableToolsOf(tools []tool.Tool) []CachedTool {
 		}
 		declaredReadOnly, _, destructive := rt.securitySnapshot()
 		out = append(out, CachedTool{
-			Name:         rt.rawName,
-			Description:  rt.desc,
-			Schema:       rt.schema,
-			OutputSchema: rt.outputSchema,
-			ReadOnly:     declaredReadOnly,
-			Destructive:  destructive,
+			Name:          rt.rawName,
+			Description:   rt.desc,
+			Schema:        rt.schema,
+			OutputSchema:  rt.outputSchema,
+			ReadOnly:      declaredReadOnly,
+			Destructive:   destructive,
+			Visibility:    append([]string(nil), rt.visibility...),
+			UIResourceURI: rt.uiResourceURI,
 		})
 	}
 	return out

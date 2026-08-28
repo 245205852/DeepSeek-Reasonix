@@ -74,12 +74,16 @@ type toolCatalogSnapshot struct {
 	fingerprint [sha256.Size]byte
 	infos       []ToolInfo
 	adapters    []tool.Tool
+	// appAdapters holds App-callable tools (visibility contains "app"),
+	// including app-only ones that never enter the model catalog.
+	appAdapters []tool.Tool
 }
 
 type toolCatalogFingerprintEntry struct {
 	RawName         string          `json:"raw_name"`
 	VisibleName     string          `json:"visible_name"`
 	Description     string          `json:"description"`
+	Visibility      []string        `json:"visibility,omitempty"`
 	Schema          json.RawMessage `json:"schema,omitempty"`
 	OutputSchema    json.RawMessage `json:"output_schema,omitempty"`
 	SchemaError     string          `json:"schema_error,omitempty"`
@@ -545,6 +549,7 @@ func (c *Client) fetchToolCatalog(ctx context.Context, settleEmpty bool) (toolCa
 
 	toolInfos := make([]ToolInfo, 0, len(out))
 	tools := make([]tool.Tool, 0, len(out))
+	appTools := make([]tool.Tool, 0, len(out))
 	fingerprintEntries := make([]toolCatalogFingerprintEntry, 0, len(out))
 	normalizedSchemas := make(map[string]json.RawMessage, len(out))
 	for _, candidate := range out {
@@ -556,6 +561,7 @@ func (c *Client) fetchToolCatalog(ctx context.Context, settleEmpty bool) (toolCa
 	for _, candidate := range out {
 		readOnlyHint := candidate.Annotations != nil && candidate.Annotations.ReadOnlyHint
 		destructiveHint := candidate.Annotations != nil && candidate.Annotations.DestructiveHint
+		modelVisible, appCallable := candidate.Meta.appVisibility()
 		info := ToolInfo{Name: candidate.Name, Description: candidate.Description, ReadOnlyHint: readOnlyHint, DestructiveHint: destructiveHint}
 		visibleName := candidate.Name
 		if c.spec.StripRawPrefix != "" {
@@ -566,17 +572,23 @@ func (c *Client) fetchToolCatalog(ctx context.Context, settleEmpty bool) (toolCa
 			if _, err := normalizeAndValidateToolSchema(candidate.InputSchema); err != nil {
 				info.SchemaError = schemaValidationError(err)
 			}
-			toolInfos = append(toolInfos, info)
+			if modelVisible {
+				toolInfos = append(toolInfos, info)
+			}
 			fingerprintEntries = append(fingerprintEntries, toolCatalogFingerprintEntry{
 				RawName: candidate.Name, VisibleName: visibleName, Description: candidate.Description,
 				SchemaError: info.SchemaError, ReadOnlyHint: readOnlyHint, DestructiveHint: destructiveHint,
+				Visibility: candidate.Meta.visibilityCopy(),
 			})
 			continue
 		}
-		toolInfos = append(toolInfos, info)
+		if modelVisible {
+			toolInfos = append(toolInfos, info)
+		}
 		outputSchema := append(json.RawMessage(nil), candidate.OutputSchema...)
 		fingerprintOutputSchema := canonicalizeCatalogJSON(outputSchema)
-		tools = append(tools, &remoteTool{
+		uiResourceURI, uiCSP := candidate.Meta.uiResource()
+		adapter := &remoteTool{
 			client:           c,
 			name:             toolName(c.name, visibleName),
 			rawName:          candidate.Name,
@@ -587,10 +599,21 @@ func (c *Client) fetchToolCatalog(ctx context.Context, settleEmpty bool) (toolCa
 			declaredReadOnly: readOnlyHint,
 			readOnly:         readOnlyHint,
 			destructive:      destructiveHint,
-		})
+			visibility:       candidate.Meta.visibilityCopy(),
+			appCallable:      appCallable,
+			uiResourceURI:    uiResourceURI,
+			uiCSP:            uiCSP,
+		}
+		if modelVisible {
+			tools = append(tools, adapter)
+		}
+		if appCallable {
+			appTools = append(appTools, adapter)
+		}
 		fingerprintEntries = append(fingerprintEntries, toolCatalogFingerprintEntry{
 			RawName: candidate.Name, VisibleName: visibleName, Description: candidate.Description,
 			Schema: schema, OutputSchema: fingerprintOutputSchema, ReadOnlyHint: readOnlyHint, DestructiveHint: destructiveHint,
+			Visibility: candidate.Meta.visibilityCopy(),
 		})
 	}
 	sort.SliceStable(toolInfos, func(i, j int) bool { return toolInfos[i].Name < toolInfos[j].Name })
@@ -602,7 +625,7 @@ func (c *Client) fetchToolCatalog(ctx context.Context, settleEmpty bool) (toolCa
 	}
 	return toolCatalogSnapshot{
 		listed: true, fingerprint: sha256.Sum256(fingerprintJSON),
-		infos: toolInfos, adapters: sortedTools,
+		infos: toolInfos, adapters: sortedTools, appAdapters: sortToolsByName(appTools),
 	}, nil
 }
 
