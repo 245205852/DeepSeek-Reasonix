@@ -14,11 +14,11 @@ export type TranscriptScrollWriteRecord = {
   /** Logical writer, e.g. "tail-follow", "jump", "recovery", or a
    *  TranscriptScrollOwner such as "selection-edge-scroll". */
   owner: string;
-  kind: "scrollTo" | "scrollBy" | "scrollToIndex";
+  kind: "scrollTo" | "scrollBy" | "scrollToIndex" | "pinTail";
   top?: number;
   index?: number | "LAST";
   source?: string;
-  phase?: "initial" | "settle";
+  phase?: "mount-anchor" | "correct-offset" | "initial" | "settle";
   scrollTop?: number;
   scrollHeight?: number;
   clientHeight?: number;
@@ -26,7 +26,10 @@ export type TranscriptScrollWriteRecord = {
   mode?: string;
   sequence?: number;
   generation?: number;
+  ownershipEpoch?: number;
   geometryRevision?: number;
+  transactionId?: number;
+  rejectedReason?: string;
   settleFrame?: number;
   offBottomFrames?: number;
   stagnantFrames?: number;
@@ -76,7 +79,10 @@ export function noteTranscriptScrollWrite(write: TranscriptScrollWriteRecord): v
       mode: write.mode,
       sequence: write.sequence,
       generation: write.generation,
+      ownershipEpoch: write.ownershipEpoch,
       geometryRevision: write.geometryRevision,
+      transactionId: write.transactionId,
+      rejectedReason: write.rejectedReason,
       settleFrame: write.settleFrame,
       offBottomFrames: write.offBottomFrames,
       stagnantFrames: write.stagnantFrames,

@@ -4,7 +4,7 @@ import { JSDOM } from "jsdom";
 import React, { act } from "react";
 import { createRoot } from "react-dom/client";
 import type { VirtuosoHandle } from "react-virtuoso";
-import type { TranscriptScrollWriteRecord } from "../lib/transcriptScrollProbe";
+import { setTranscriptScrollDiagnosticSink, type TranscriptScrollWriteRecord } from "../lib/transcriptScrollProbe";
 import { useTranscriptScrollArbiter } from "../lib/useTranscriptScrollArbiter";
 
 let passed = 0;
@@ -69,6 +69,7 @@ const rectAt = (top: number) => ({
 });
 const scrollElement = dom.window.document.getElementById("scroll") as HTMLDivElement;
 const rowElement = scrollElement.querySelector<HTMLElement>(".transcript__row")!;
+rowElement.dataset.index = "0";
 scrollElement.getBoundingClientRect = () => rectAt(0);
 rowElement.getBoundingClientRect = () => rectAt(20);
 Object.defineProperty(scrollElement, "clientHeight", { configurable: true, value: 725 });
@@ -136,22 +137,151 @@ await act(async () => arbiter?.onWheelIntent({
 } as React.WheelEvent<HTMLElement>));
 scrollExtent = 13_344;
 scrollElement.scrollTop = 12_618.67;
-rowElement.getBoundingClientRect = () => rectAt(1_836);
+rowElement.getBoundingClientRect = () => rectAt(1_836 - (scrollElement.scrollTop - 12_618.67) + (Number.parseFloat(
+  scrollElement.style.getPropertyValue("--transcript-reader-visual-offset"),
+) || 0));
 await act(async () => arbiter?.deliverScroll());
 check(arbiter?.modeRef.current === "manual",
   "a transient physical-bottom clamp cannot claim tail ownership");
-await act(async () => arbiter?.finishProgrammaticScroll());
+check(scrollElement.dataset.transcriptReaderVisualGuard === "true",
+  "the transient clamp visually holds the mounted history window");
 await act(async () => arbiter?.followGrowingTail());
 await flushFrames();
 check(scrollByCalls === 0, "the transaction waits while the native extent remains collapsed");
 scrollExtent = 15_829;
 await act(async () => arbiter?.followGrowingTail());
 await flushFrames();
-check(scrollByCalls === 1 && lastScrollByTop > 1_900,
+check(scrollByCalls === 1 && Math.abs(lastScrollByTop - 1_816) <= 1,
   `the rebound restores the logical anchor exactly once (${lastScrollByTop}px)`);
 check(scrollWrites.length === 1 && scrollWrites[0].owner === "reader-stability",
   "the correction is owned by reader stability rather than recovery or tail-follow");
+check(scrollElement.dataset.transcriptReaderVisualGuard === undefined,
+  "the visual hold clears in the rebound correction frame");
 check(arbiter?.modeRef.current === "manual", "the correction preserves manual reader ownership");
+
+// A long same-direction transaction spans many streaming revisions. Its
+// accepted extent must advance with growth so a later collapse that remains
+// above the mount-time height is still visible to the guard.
+await act(async () => arbiter?.reset());
+scrollExtent = 20_000;
+scrollElement.scrollTop = 1_000;
+rowElement.getBoundingClientRect = () => rectAt(20);
+await act(async () => arbiter?.deliverScroll());
+await act(async () => arbiter?.releaseTailFollow());
+await act(async () => arbiter?.onWheelIntent({
+  ctrlKey: false,
+  deltaMode: 0,
+  deltaX: 0,
+  deltaY: 120,
+  target: scrollElement,
+} as React.WheelEvent<HTMLElement>));
+scrollExtent = 26_000;
+scrollElement.scrollTop = 5_000;
+await act(async () => arbiter?.deliverScroll());
+scrollByCalls = 0;
+scrollWrites.length = 0;
+scrollExtent = 24_500;
+scrollElement.scrollTop = 3_300;
+rowElement.getBoundingClientRect = () => rectAt(1_720 + (Number.parseFloat(
+  scrollElement.style.getPropertyValue("--transcript-reader-visual-offset"),
+) || 0));
+await act(async () => arbiter?.deliverScroll());
+for (let frame = 0; frame < 4; frame += 1) await flushFrames();
+check(scrollByCalls === 1, "streaming growth advances the accepted extent before a later collapse");
+check(
+  scrollWrites.filter((write) => write.owner === "reader-stability" && write.kind === "scrollBy").length === 1,
+  "the post-growth collapse receives one reader-owned anchor correction",
+);
+
+// WKWebView can replace estimates above the viewport without moving native
+// scrollTop. The logical rows still jump backwards on screen, so the reader
+// transaction must guard and correct the row displacement itself.
+await act(async () => arbiter?.reset());
+scrollExtent = 23_806;
+scrollElement.scrollTop = 22_608;
+rowElement.getBoundingClientRect = () => rectAt(12 + (Number.parseFloat(
+  scrollElement.style.getPropertyValue("--transcript-reader-visual-offset"),
+) || 0));
+await act(async () => arbiter?.deliverScroll());
+await act(async () => arbiter?.releaseTailFollow());
+await act(async () => arbiter?.onWheelIntent({
+  ctrlKey: false,
+  deltaMode: 0,
+  deltaX: 0,
+  deltaY: 24,
+  target: scrollElement,
+} as React.WheelEvent<HTMLElement>));
+scrollByCalls = 0;
+scrollWrites.length = 0;
+scrollExtent += 681;
+rowElement.getBoundingClientRect = () => rectAt(693 + (Number.parseFloat(
+  scrollElement.style.getPropertyValue("--transcript-reader-visual-offset"),
+) || 0));
+await act(async () => arbiter?.deliverScroll());
+check(scrollElement.dataset.transcriptReaderVisualGuard === "true",
+  "same-scrollTop estimate growth visually holds the logical reader anchor");
+await flushFrames();
+check(scrollByCalls === 1 && Math.abs(lastScrollByTop - 681) <= 1,
+  `same-scrollTop estimate growth restores the logical anchor once (${lastScrollByTop}px)`);
+rowElement.getBoundingClientRect = () => rectAt(12 + (Number.parseFloat(
+  scrollElement.style.getPropertyValue("--transcript-reader-visual-offset"),
+) || 0));
+await flushFrames();
+check(scrollElement.dataset.transcriptReaderVisualGuard === undefined,
+  "the completed screen-anchor correction releases its visual guard");
+
+// A long native gesture can encounter another range replacement after using
+// its one permitted writer correction. Keep that later displacement visually
+// guarded until native movement self-restores it; never replay the old write.
+rowElement.getBoundingClientRect = () => rectAt(463 + (Number.parseFloat(
+  scrollElement.style.getPropertyValue("--transcript-reader-visual-offset"),
+) || 0));
+await act(async () => arbiter?.deliverScroll());
+await flushFrames();
+check(scrollElement.dataset.transcriptReaderVisualGuard === "true",
+  "a second same-transaction displacement cannot clear the new visual guard with an old write");
+check(scrollByCalls === 1,
+  "a second same-transaction displacement does not exceed the one-correction writer budget");
+scrollElement.scrollTop += 451;
+rowElement.getBoundingClientRect = () => rectAt(12 + (Number.parseFloat(
+  scrollElement.style.getPropertyValue("--transcript-reader-visual-offset"),
+) || 0));
+await act(async () => arbiter?.deliverScroll());
+check(scrollElement.dataset.transcriptReaderVisualGuard === undefined,
+  "same-direction native movement releases the later visual guard after self-restoring the anchor");
+check(
+  scrollWrites.filter((write) => write.owner === "reader-stability" && write.kind === "scrollBy").length === 1,
+  "same-scrollTop anchor displacement stays inside the reader writer lane",
+);
+
+// A corrupted extent can momentarily collapse all the way to one viewport.
+// That sample is not evidence that the transcript became non-scrollable: the
+// active reader guard must keep manual ownership until geometry rebounds.
+await act(async () => arbiter?.reset());
+Object.defineProperty(scrollElement, "clientHeight", { configurable: true, value: 596 });
+scrollExtent = 4_600;
+scrollElement.scrollTop = 2_200;
+rowElement.getBoundingClientRect = () => rectAt(20);
+await act(async () => arbiter?.deliverScroll());
+await act(async () => arbiter?.releaseTailFollow());
+await act(async () => arbiter?.onWheelIntent({
+  ctrlKey: false,
+  deltaMode: 0,
+  deltaX: 0,
+  deltaY: 24,
+  target: scrollElement,
+} as React.WheelEvent<HTMLElement>));
+scrollExtent = 596;
+scrollElement.scrollTop = 0;
+rowElement.getBoundingClientRect = () => rectAt(2_220);
+await act(async () => arbiter?.deliverScroll());
+check(arbiter?.modeRef.current === "manual",
+  "a viewport-sized transient extent cannot manufacture tail ownership");
+check(scrollElement.dataset.transcriptReaderVisualGuard === "true",
+  "a viewport-sized transient extent keeps the visual reader guard");
+scrollExtent = 4_600;
+await act(async () => arbiter?.setMode("selection", "end-viewport-collapse-test"));
+Object.defineProperty(scrollElement, "clientHeight", { configurable: true, value: 725 });
 
 // Touch movement is incremental: the second touchmove protects only its own
 // segment rather than replaying the distance from the original touchstart.
@@ -252,9 +382,8 @@ await act(async () => arbiter?.finishQuestionJump(77));
 check(String(arbiter?.modeRef.current) === "manual",
   "the matching paint terminal releases question-jump ownership");
 
-// A downward wheel at the physical bottom must not arm reader-extent
-// recovery. A later extent rebound would otherwise snap the viewport upward
-// and fight the user's wheel input.
+// A downward wheel at the physical bottom still creates a reader transaction,
+// but a non-collapsed movement never earns an anchor correction.
 await act(async () => arbiter?.reset());
 scrollExtent = 2_000;
 Object.defineProperty(scrollElement, "clientHeight", { configurable: true, value: 725 });
@@ -274,7 +403,94 @@ scrollElement.scrollTop = 1_100;
 await act(async () => arbiter?.followGrowingTail());
 await flushFrames();
 check(scrollByCalls === 0 && scrollWrites.length === 0,
-  "near-bottom downward wheel does not arm the reader-extent guard");
+  "near-bottom downward wheel does not invent a reverse correction");
+
+// Reaching the native tail once does not authorize reader-stability to chase
+// later geometry revisions. Manual ownership remains entirely observational.
+await act(async () => arbiter?.reset());
+scrollExtent = 5_000;
+scrollElement.scrollTop = 4_275;
+rowElement.dataset.transcriptLastRow = "true";
+await act(async () => arbiter?.deliverScroll());
+await act(async () => arbiter?.setMode("manual", "test-reader-observation"));
+scrollWrites.length = 0;
+const realDateNow = Date.now;
+let fakeNow = realDateNow();
+Date.now = () => fakeNow;
+await act(async () => arbiter?.onWheelIntent({
+  ctrlKey: false,
+  deltaMode: 0,
+  deltaX: 0,
+  deltaY: 120,
+  target: scrollElement,
+} as React.WheelEvent<HTMLElement>));
+await act(async () => arbiter?.deliverScroll());
+scrollExtent = 5_100;
+await act(async () => arbiter?.followGrowingTail("data-change"));
+fakeNow += 181;
+for (let frame = 0; frame < 4; frame += 1) await flushFrames();
+check(
+  scrollWrites.filter((write) => write.kind === "pinTail" && write.owner === "reader-stability").length === 0,
+  "reader stability never writes toward the tail in manual mode",
+);
+scrollExtent = 5_200;
+await act(async () => arbiter?.followGrowingTail("row-measure"));
+for (let frame = 0; frame < 4; frame += 1) await flushFrames();
+check(
+  scrollWrites.filter((write) => write.kind === "pinTail" && write.owner === "reader-stability").length === 0,
+  "later geometry revisions cannot re-arm reader tail pinning",
+);
+check(arbiter?.modeRef.current === "manual", "a post-settle growth revision exits to stable manual ownership");
+Date.now = realDateNow;
+delete rowElement.dataset.transcriptLastRow;
+
+// A real reader-to-tail handoff keeps the enlarged mount window after writer
+// ownership changes. WKWebView otherwise contracts the overscan in that
+// commit, replaces the measured tail with estimates, and paints a reverse
+// jump. The next explicit owner must still release the layout-only guard.
+await act(async () => arbiter?.reset());
+scrollExtent = 5_000;
+scrollElement.scrollTop = 4_275;
+rowElement.dataset.transcriptLastRow = "true";
+await act(async () => arbiter?.deliverScroll());
+await act(async () => arbiter?.setMode("manual", "test-tail-handoff-layout-safe"));
+let handoffNow = realDateNow();
+Date.now = () => handoffNow;
+await act(async () => arbiter?.onWheelIntent({
+  ctrlKey: false,
+  deltaMode: 0,
+  deltaX: 0,
+  deltaY: 120,
+  target: scrollElement,
+} as React.WheelEvent<HTMLElement>));
+handoffNow += 181;
+for (let frame = 0; frame < 4; frame += 1) await flushFrames();
+check(String(arbiter?.modeRef.current) === "tail-follow", "two stable reader frames hand ownership to the physical tail");
+check(arbiter?.readerTransactionActive === true, "tail handoff retains only the layout-safe mount window");
+await act(async () => arbiter?.setMode("manual", "test-tail-handoff-layout-safe-release"));
+check(arbiter?.readerTransactionActive === false, "the next explicit owner releases the handoff mount window");
+Date.now = realDateNow;
+delete rowElement.dataset.transcriptLastRow;
+
+// A large extent contraction is transient for its first painted sample and is
+// accepted only after two consecutive stable frames.
+const geometryEvents: Array<Record<string, unknown>> = [];
+setTranscriptScrollDiagnosticSink((type, fields) => {
+  if (type === "geometry-revision") geometryEvents.push(fields);
+});
+await act(async () => arbiter?.reset());
+scrollExtent = 5_000;
+scrollElement.scrollTop = 4_275;
+await act(async () => arbiter?.followGrowingTail("data-change"));
+await flushFrames();
+scrollExtent = 3_000;
+await act(async () => arbiter?.followGrowingTail("row-measure"));
+await flushFrames();
+check(geometryEvents.some((event) => event.transient === true), "a 2k extent collapse is treated as transient on its first frame");
+await flushFrames();
+await flushFrames();
+check(geometryEvents.some((event) => event.result === "stable" && event.transient === false), "a permanent extent shrink is accepted after two stable frames");
+setTranscriptScrollDiagnosticSink(() => {});
 
 // A replacement native-thumb gesture owns a new pointer transaction. A late
 // pointerup from the displaced gesture must not release or demote it.

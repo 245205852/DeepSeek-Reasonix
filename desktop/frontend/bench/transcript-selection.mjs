@@ -381,16 +381,7 @@ try {
   });
   assert(neutralPoint != null, "deep logical drag keeps the transcript mounted");
   await page.mouse.move(neutralPoint.x, neutralPoint.y);
-  await page.evaluate(() => {
-    const transcript = document.querySelector(".transcript");
-    if (!transcript) return;
-    transcript.scrollTop = (transcript.scrollHeight - transcript.clientHeight) * 0.1;
-    transcript.dispatchEvent(new Event("scroll"));
-  });
-  await page.waitForTimeout(300);
-  // One extra turn of margin below the 20-turn contract: Virtuoso can still
-  // be settling row heights after edge scrolling, so the caret may land one
-  // row away from the measured target when the pointer move is delivered.
+  await page.waitForTimeout(100);
   const focusTargetTurn = Math.max(0, points.anchorTurn - 21);
   // Target one extra turn beyond the 20-turn contract: Virtuoso can still be
   // settling row heights after edge scrolling, so the caret may land one row
@@ -411,16 +402,36 @@ try {
       x: Math.min(rect.right - 2, rect.left + 8),
       y: (Math.max(rect.top, viewport.top) + Math.min(rect.bottom, viewport.bottom)) / 2,
     };
-  }, Math.max(0, points.anchorTurn - 21));
+  }, focusTargetTurn);
   let logicalFocusPoint = null;
-  for (let index = 0; index < 40 && !logicalFocusPoint; index += 1) {
+  for (let index = 0; index < 80 && !logicalFocusPoint; index += 1) {
     logicalFocusPoint = await findLogicalFocusPoint();
     if (!logicalFocusPoint) {
-      await page.mouse.wheel(0, -250);
-      await page.waitForTimeout(50);
+      // Keep the active drag on its own upper-edge writer. Direct scrollTop
+      // assignments race pointer capture on Windows and can be overwritten by
+      // the next selection frame before Virtuoso commits the target range.
+      await page.mouse.move(points.edge.x, points.edge.y, { steps: 2 });
+      await page.waitForTimeout(100);
     }
   }
-  assert(logicalFocusPoint != null, "deep logical drag settles over a visible 20+ turn target");
+  const focusFailure = logicalFocusPoint ? null : await page.evaluate(() => {
+    const transcript = document.querySelector(".transcript");
+    return {
+      top: transcript?.scrollTop,
+      height: transcript?.scrollHeight,
+      mode: transcript?.dataset.scrollMode,
+      visibleTurns: [...(transcript?.querySelectorAll("[data-transcript-selectable]") ?? [])]
+        .filter((row) => {
+          const rect = row.getBoundingClientRect();
+          const viewport = transcript?.getBoundingClientRect();
+          return viewport && rect.bottom > viewport.top && rect.top < viewport.bottom;
+        })
+        .map((row) => row.textContent?.match(/\bbench turn (\d+):/)?.[1] ?? null),
+      writeOwners: [...new Set((window.__transcriptProgrammaticWrites ?? []).map((write) => write.owner))],
+    };
+  });
+  assert(logicalFocusPoint != null,
+    `deep logical drag settles over a visible 20+ turn target${focusFailure ? ` (${JSON.stringify(focusFailure)})` : ""}`);
   // Rows can shift between measuring the focus target and delivering the
   // pointer move. Re-derive the coordinates on every attempt so the caret
   // ends on a mounted selectable row and the overlay actually paints.
