@@ -10,7 +10,10 @@ import {
 import type { TranscriptScrollMode } from "./transcriptScrollArbiter";
 import { nativeTranscriptDistanceFromBottom } from "./transcriptScrollGeometry";
 import type { TranscriptScrollWriteRecord } from "./transcriptScrollProbe";
-import { captureTranscriptLayoutAnchor } from "./transcriptVirtuosoRecovery";
+import {
+  captureTranscriptLayoutAnchor,
+  transcriptElementViewportIsBlank,
+} from "./transcriptVirtuosoRecovery";
 
 const READER_EXTENT_STABILITY_MS = 180;
 
@@ -68,6 +71,7 @@ export function useTranscriptReaderExtentStability({
       deadline: Date.now() + READER_EXTENT_STABILITY_MS,
       frame: null,
     };
+    let reboundHeight: number | undefined;
     const tick = () => {
       active.frame = null;
       if (
@@ -85,7 +89,15 @@ export function useTranscriptReaderExtentStability({
         clientHeight: element.clientHeight,
       };
       observeTranscriptReaderExtent(active, snapshot);
-      if (transcriptReaderExtentCanCorrect(active, snapshot)) {
+      // WebView2 can publish the restored native extent one or two paints
+      // before Virtuoso mounts rows for it. Writing during that gap moves the
+      // viewport into an empty size tree. Wait for mounted coverage and one
+      // unchanged-height interval, then spend the single correction budget.
+      if (
+        transcriptReaderExtentCanCorrect(active, snapshot)
+        && !transcriptElementViewportIsBlank(element)
+        && reboundHeight === snapshot.scrollHeight
+      ) {
         const row = active.anchor
           ? Array.from(element.querySelectorAll<HTMLElement>(".transcript__row[data-row-key]"))
             .find((candidate) => candidate.dataset.rowKey === active.anchor?.rowKey)
@@ -109,6 +121,7 @@ export function useTranscriptReaderExtentStability({
           return;
         }
       }
+      reboundHeight = snapshot.scrollHeight;
       if (Date.now() >= active.deadline) {
         guardRef.current = null;
         return;
