@@ -1410,17 +1410,46 @@ try {
     requestAnimationFrame(sample);
   });
   let stormReached = false;
-  for (let attempt = 0; attempt < 60 && !stormReached; attempt += 1) {
+  let stormAttempts = 0;
+  let stagnantGestures = 0;
+  const stormDeadline = Date.now() + 20_000;
+  while (Date.now() < stormDeadline && !stormReached) {
+    if (stormAttempts > 0 && (stormAttempts % 6 === 0 || stagnantGestures >= 2)) {
+      // Patch delivery can replace the row under the pointer without replacing
+      // the scroller. Re-resolve reserved row padding so subsequent wheel
+      // events still belong to the outer reader instead of an emptied/nested
+      // target. A genuine pull-back remains observable by the frame probe.
+      await moveToOuterReaderGutter(page, stormTranscript, false);
+      stagnantGestures = 0;
+    }
+    const before = await stormTranscript.evaluate((element) => element.scrollTop);
     await page.mouse.wheel(0, 640);
     await page.waitForTimeout(60);
     // Every sixth gesture, pause into scroll idle — the moment the pre-fix
     // chain fired its revision-driven remount mid-approach.
-    if (attempt % 6 === 5) await page.waitForTimeout(500);
-    stormReached = await stormTranscript.evaluate((element) =>
-      element.dataset.scrollMode === "tail-follow"
-      && element.scrollHeight - element.scrollTop - element.clientHeight <= 1);
+    if (stormAttempts % 6 === 5) await page.waitForTimeout(500);
+    const current = await stormTranscript.evaluate((element) => ({
+      mode: element.dataset.scrollMode,
+      top: element.scrollTop,
+      distance: element.scrollHeight - element.scrollTop - element.clientHeight,
+    }));
+    stormReached = current.mode === "tail-follow" && current.distance <= 1;
+    stagnantGestures = current.top <= before + 1 && !stormReached ? stagnantGestures + 1 : 0;
+    stormAttempts += 1;
   }
-  assert(stormReached, "repeated downward wheels reach the physical bottom through the ref-resolution storm (#8657)");
+  const stormApproach = await stormTranscript.evaluate((element) => ({
+    writes: window.__stormProbe?.writes.length ?? null,
+    mode: element.dataset.scrollMode,
+    top: Math.round(element.scrollTop),
+    height: Math.round(element.scrollHeight),
+    clientHeight: element.clientHeight,
+    distance: Math.round(element.scrollHeight - element.scrollTop - element.clientHeight),
+  }));
+  stormApproach.gestures = stormAttempts;
+  assert(
+    stormReached,
+    `repeated downward wheels reach the physical bottom through the ref-resolution storm (#8657; ${JSON.stringify(stormApproach)})`,
+  );
   await page.waitForFunction(() => document.querySelector(".transcript")?.dataset.scrollMode === "tail-follow", undefined, { timeout: 5_000 });
   // The storm keeps resolving after the user lands; the tail must hold.
   await page.waitForFunction(
