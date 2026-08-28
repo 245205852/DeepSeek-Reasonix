@@ -50,6 +50,18 @@ func (f *appsFixtureServer) server(t *testing.T) *mcpsdk.Server {
 			"csp":         map[string]any{"connect-src": []string{"https://api.example.com"}},
 		},
 	})
+	server.AddResource(
+		&mcpsdk.Resource{URI: "ui://app/rich.html", Name: "rich-app", MIMEType: "text/html;profile=mcp-app"},
+		func(context.Context, *mcpsdk.ReadResourceRequest) (*mcpsdk.ReadResourceResult, error) {
+			return &mcpsdk.ReadResourceResult{Contents: []*mcpsdk.ResourceContents{{
+				URI: "ui://app/rich.html", MIMEType: "text/html;profile=mcp-app", Text: "<html>rich</html>",
+				Meta: mcpsdk.Meta{"ui": map[string]any{"csp": map[string]any{
+					"connectDomains":  []string{"https://api.resource.example"},
+					"resourceDomains": []string{"https://cdn.resource.example"},
+				}}},
+			}}}, nil
+		},
+	)
 	return server
 }
 
@@ -200,5 +212,71 @@ func TestAppInstanceRegistryBoundAndReclaimed(t *testing.T) {
 	host.appInstances.ReleaseServer("other")
 	if _, ok := reg.Lookup(other.Token); ok {
 		t.Fatal("release-server did not reclaim the server's instances")
+	}
+}
+
+func TestReadResourceForAppReturnsResourceLevelCSP(t *testing.T) {
+	host, client, snapshot, _ := startAppsClient(t)
+	host.mu.Lock()
+	host.clients = append(host.clients, client)
+	host.mu.Unlock()
+	inst := host.RegisterAppInstance("apps-fixture", "app_rich", snapshot.generation, "call", "ui://app/rich.html")
+	if csp, ok := host.AppInstanceResourceDescriptor(inst.Token); !ok || len(csp["connect-src"]) != 1 {
+		t.Fatalf("tool resource descriptor = %#v, %v", csp, ok)
+	}
+	wrong := host.RegisterAppInstance("apps-fixture", "app_rich", snapshot.generation, "call", "ui://app/other.html")
+	if _, ok := host.AppInstanceResourceDescriptor(wrong.Token); ok {
+		t.Fatal("mismatched resource URI was accepted")
+	}
+	content, mime, csp, err := client.readResourceWithMime(t.Context(), "ui://app/rich.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if content != "<html>rich</html>" || mime != "text/html;profile=mcp-app" {
+		t.Fatalf("content/mime = %q %q", content, mime)
+	}
+	if got := csp["connectDomains"]; len(got) != 1 || got[0] != "https://api.resource.example" {
+		t.Fatalf("resource CSP = %#v", csp)
+	}
+}
+
+func TestAppInstanceRegistryFreezesResourceAndBoundsSnapshotMemory(t *testing.T) {
+	host := NewHostWithProfile(HostProfileDesktopApps)
+	csp := map[string][]string{"connect-src": {"https://api.example.test"}}
+	first := host.RegisterAppInstance("srv", "tool", 3, "call-1", "ui://x/a.html")
+	if !host.BindAppResource(first.Token, "<html>first</html>", "text/html", "digest-1", csp) {
+		t.Fatal("bind first resource failed")
+	}
+	csp["connect-src"][0] = "https://mutated.example.test"
+	snapshot, ok := host.AppResource(first.Token)
+	if !ok || snapshot.Digest != "digest-1" || snapshot.Content != "<html>first</html>" {
+		t.Fatalf("snapshot = %+v, %v", snapshot, ok)
+	}
+	if got := snapshot.CSP["connect-src"][0]; got != "https://api.example.test" {
+		t.Fatalf("snapshot CSP was not copied: %q", got)
+	}
+
+	chunk := strings.Repeat("x", 1<<20)
+	for i := 0; i < 17; i++ {
+		inst := host.RegisterAppInstance("srv", "tool", 3, "call", "ui://x/b.html")
+		if !host.BindAppResource(inst.Token, chunk, "text/html", "digest", nil) {
+			t.Fatalf("bind resource %d failed", i)
+		}
+	}
+	if host.appInstances.bytes > maxAppResourceRegistryBytes {
+		t.Fatalf("snapshot bytes = %d, limit = %d", host.appInstances.bytes, maxAppResourceRegistryBytes)
+	}
+	if _, ok := host.AppResource(first.Token); ok {
+		t.Fatal("oldest snapshot was not evicted by the aggregate memory budget")
+	}
+	tooLarge := host.RegisterAppInstance("srv", "tool", 3, "call", "ui://x/large.html")
+	if host.BindAppResource(tooLarge.Token, strings.Repeat("z", maxAppResourceSnapshotBytes+1), "text/html", "digest", nil) {
+		t.Fatal("oversized resource snapshot was accepted")
+	}
+	metadataBomb := host.RegisterAppInstance("srv", "tool", 3, "call", "ui://x/csp.html")
+	if host.BindAppResource(metadataBomb.Token, "<html></html>", "text/html", "digest", map[string][]string{
+		"resourceDomains": {strings.Repeat("z", maxAppResourceSnapshotBytes)},
+	}) {
+		t.Fatal("oversized resource CSP was accepted")
 	}
 }

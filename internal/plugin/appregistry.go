@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"sync"
+
+	"reasonix/internal/tool"
 )
 
 // AppInstance is one live MCP Apps surface: an unguessable token binding the
@@ -21,6 +23,22 @@ type AppInstance struct {
 	Generation  uint64
 	CallID      string
 	ResourceURI string
+
+	resourceContent string
+	resourceMIME    string
+	resourceDigest  string
+	resourceCSP     map[string][]string
+	resourceBytes   int
+}
+
+// AppResourceSnapshot is the immutable resource bound to one live App
+// instance. Desktop serves this copy instead of re-reading a mutable upstream
+// resource after the instance has been authorized.
+type AppResourceSnapshot struct {
+	Content string
+	MIME    string
+	Digest  string
+	CSP     map[string][]string
 }
 
 // appInstanceRegistry is the host's bounded set of live App instances. Max 32:
@@ -30,9 +48,14 @@ type appInstanceRegistry struct {
 	mu        sync.Mutex
 	instances map[string]*AppInstance
 	order     []string
+	bytes     int
 }
 
-const maxAppInstances = 32
+const (
+	maxAppInstances             = 32
+	maxAppResourceSnapshotBytes = 4 << 20
+	maxAppResourceRegistryBytes = 16 << 20
+)
 
 func newAppInstanceRegistry() *appInstanceRegistry {
 	return &appInstanceRegistry{instances: map[string]*AppInstance{}}
@@ -59,11 +82,9 @@ func (r *appInstanceRegistry) Register(server, tool string, generation uint64, c
 	r.instances[inst.Token] = inst
 	r.order = append(r.order, inst.Token)
 	for len(r.order) > maxAppInstances {
-		oldest := r.order[0]
-		r.order = r.order[1:]
-		delete(r.instances, oldest)
+		r.releaseOldestLocked()
 	}
-	return inst
+	return cloneAppInstance(inst)
 }
 
 // Lookup resolves a token to its live instance.
@@ -71,7 +92,93 @@ func (r *appInstanceRegistry) Lookup(token string) (*AppInstance, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	inst, ok := r.instances[token]
-	return inst, ok
+	return cloneAppInstance(inst), ok
+}
+
+func cloneAppInstance(inst *AppInstance) *AppInstance {
+	if inst == nil {
+		return nil
+	}
+	copy := *inst
+	copy.resourceCSP = cloneAppCSP(inst.resourceCSP)
+	return &copy
+}
+
+func cloneAppCSP(csp map[string][]string) map[string][]string {
+	if len(csp) == 0 {
+		return nil
+	}
+	out := make(map[string][]string, len(csp))
+	for directive, values := range csp {
+		out[directive] = append([]string(nil), values...)
+	}
+	return out
+}
+
+func (r *appInstanceRegistry) releaseOldestLocked() {
+	if len(r.order) == 0 {
+		return
+	}
+	oldest := r.order[0]
+	r.order = r.order[1:]
+	if inst := r.instances[oldest]; inst != nil {
+		r.bytes -= inst.resourceBytes
+	}
+	delete(r.instances, oldest)
+}
+
+// BindResource freezes the validated UI resource and CSP onto an instance.
+// The registry has a process-memory budget in addition to its instance-count
+// bound; oldest instances are reclaimed before the new snapshot is exposed.
+func (r *appInstanceRegistry) BindResource(token, content, mime, digest string, csp map[string][]string) bool {
+	resourceBytes := len(content) + appCSPBytes(csp)
+	if resourceBytes > maxAppResourceSnapshotBytes {
+		return false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	inst, ok := r.instances[token]
+	if !ok {
+		return false
+	}
+	r.bytes -= inst.resourceBytes
+	inst.resourceContent = content
+	inst.resourceMIME = mime
+	inst.resourceDigest = digest
+	inst.resourceCSP = cloneAppCSP(csp)
+	inst.resourceBytes = resourceBytes
+	r.bytes += resourceBytes
+	for r.bytes > maxAppResourceRegistryBytes && len(r.order) > 1 {
+		r.releaseOldestLocked()
+	}
+	_, ok = r.instances[token]
+	return ok && r.bytes <= maxAppResourceRegistryBytes
+}
+
+func appCSPBytes(csp map[string][]string) int {
+	size := 0
+	for directive, values := range csp {
+		size += len(directive)
+		for _, value := range values {
+			size += len(value)
+		}
+	}
+	return size
+}
+
+func (r *appInstanceRegistry) Resource(token string) (AppResourceSnapshot, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	inst, ok := r.instances[token]
+	if !ok || inst.resourceDigest == "" {
+		return AppResourceSnapshot{}, false
+	}
+	return AppResourceSnapshot{
+		Content: inst.resourceContent,
+		MIME:    inst.resourceMIME,
+		Digest:  inst.resourceDigest,
+		CSP:     cloneAppCSP(inst.resourceCSP),
+	}, true
 }
 
 // Release drops one instance (tab closed, component unmounted).
@@ -81,6 +188,7 @@ func (r *appInstanceRegistry) Release(token string) {
 	if _, ok := r.instances[token]; !ok {
 		return
 	}
+	r.bytes -= r.instances[token].resourceBytes
 	delete(r.instances, token)
 	for i, t := range r.order {
 		if t == token {
@@ -96,6 +204,7 @@ func (r *appInstanceRegistry) ReleaseServer(server string) {
 	defer r.mu.Unlock()
 	for token, inst := range r.instances {
 		if inst.Server == server {
+			r.bytes -= inst.resourceBytes
 			delete(r.instances, token)
 		}
 	}
@@ -123,6 +232,52 @@ func (h *Host) RegisterAppInstance(server, tool string, generation uint64, callI
 // LookupAppInstance resolves a token against the host registry.
 func (h *Host) LookupAppInstance(token string) (*AppInstance, bool) {
 	return h.appInstances.Lookup(token)
+}
+
+// BindAppResource freezes one validated resource onto the live instance.
+func (h *Host) BindAppResource(token, content, mime, digest string, csp map[string][]string) bool {
+	return h.appInstances.BindResource(token, content, mime, digest, csp)
+}
+
+// AppResource resolves the immutable resource snapshot for a live instance.
+func (h *Host) AppResource(token string) (AppResourceSnapshot, bool) {
+	return h.appInstances.Resource(token)
+}
+
+// AppInstanceResourceDescriptor validates that the originating tool still
+// belongs to the same server/catalog generation and still declares the exact
+// ui:// resource before Desktop reads or serves it.
+func (h *Host) AppInstanceResourceDescriptor(token string) (map[string][]string, bool) {
+	inst, ok := h.LookupAppInstance(token)
+	if !ok {
+		return nil, false
+	}
+	h.mu.RLock()
+	var client *Client
+	for _, c := range h.clients {
+		if c.name == inst.Server && !c.closed.Load() {
+			client = c
+			break
+		}
+	}
+	h.mu.RUnlock()
+	if client == nil {
+		return nil, false
+	}
+	client.toolsMu.RLock()
+	defer client.toolsMu.RUnlock()
+	if client.toolCatalog.generation != inst.Generation || client.toolCatalogStale() {
+		return nil, false
+	}
+	for _, candidates := range [][]tool.Tool{client.toolCatalog.adapters, client.toolCatalog.appAdapters} {
+		for _, candidate := range candidates {
+			rt, ok := candidate.(*remoteTool)
+			if ok && rt.rawName == inst.Tool && rt.uiResourceURI == inst.ResourceURI {
+				return cloneAppCSP(rt.uiCSP), true
+			}
+		}
+	}
+	return nil, false
 }
 
 // ReleaseAppInstance drops one instance.
@@ -172,8 +327,8 @@ type toolRef struct {
 func (r toolRef) UITool() *remoteTool { return r.tool }
 
 // ReadResourceForApp reads one ui resource for the Apps channel, returning the
-// text content and declared mime type.
-func (h *Host) ReadResourceForApp(ctx context.Context, server, uri string) (string, string, error) {
+// text content, declared mime type, and resource-level Apps CSP metadata.
+func (h *Host) ReadResourceForApp(ctx context.Context, server, uri string) (string, string, map[string][]string, error) {
 	h.mu.RLock()
 	var client *Client
 	for _, c := range h.clients {
@@ -184,31 +339,44 @@ func (h *Host) ReadResourceForApp(ctx context.Context, server, uri string) (stri
 	}
 	h.mu.RUnlock()
 	if client == nil {
-		return "", "", fmt.Errorf("server %q not connected", server)
+		return "", "", nil, fmt.Errorf("server %q not connected", server)
 	}
 	return client.readResourceWithMime(ctx, uri)
 }
 
-// readResourceWithMime reads one resource and returns its text plus declared
-// mime type (empty when the server did not declare one).
-func (c *Client) readResourceWithMime(ctx context.Context, uri string) (string, string, error) {
+// readResourceWithMime reads one resource and returns its text, mime type, and
+// the 2026 Apps resource `_meta.ui.csp` (flat `ui/csp` is accepted too).
+func (c *Client) readResourceWithMime(ctx context.Context, uri string) (string, string, map[string][]string, error) {
 	res, err := c.call(ctx, "resources/read", map[string]any{"uri": uri})
 	if err != nil {
-		return "", "", err
+		return "", "", nil, err
 	}
 	var wire struct {
 		Contents []struct {
 			URI      string `json:"uri"`
 			MimeType string `json:"mimeType"`
 			Text     string `json:"text"`
+			Meta     struct {
+				UI *struct {
+					CSP map[string][]string `json:"csp,omitempty"`
+				} `json:"ui,omitempty"`
+				FlatCSP map[string][]string `json:"ui/csp,omitempty"`
+			} `json:"_meta,omitempty"`
 		} `json:"contents"`
 	}
 	if err := json.Unmarshal(res, &wire); err != nil {
-		return "", "", err
+		return "", "", nil, err
 	}
 	if len(wire.Contents) == 0 {
-		return "", "", fmt.Errorf("resource %q returned no contents", uri)
+		return "", "", nil, fmt.Errorf("resource %q returned no contents", uri)
 	}
 	first := wire.Contents[0]
-	return first.Text, first.MimeType, nil
+	if first.URI != "" && first.URI != uri {
+		return "", "", nil, fmt.Errorf("resource %q returned mismatched URI %q", uri, first.URI)
+	}
+	csp := first.Meta.FlatCSP
+	if first.Meta.UI != nil && len(first.Meta.UI.CSP) > 0 {
+		csp = first.Meta.UI.CSP
+	}
+	return first.Text, first.MimeType, cloneAppCSP(csp), nil
 }

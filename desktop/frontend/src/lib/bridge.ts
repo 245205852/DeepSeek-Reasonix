@@ -23,6 +23,7 @@ import { createMockRemoteProjects } from "./mockRemoteProjects";
 import { mockRemoteHostView } from "./mockRemoteHosts";
 import type { RemoteProjectBindings } from "./remoteProjectBridge";
 import type { ScrollDiagnosticBindings } from "./scrollDiagnosticBridge";
+import { makeMockMCPAppBindings, type MCPAppBindings } from "./mcpAppBridge";
 import type {
   RemoteHostView,
   RemoteHostInput,
@@ -133,7 +134,6 @@ import type {
   GitCommitDetailView,
   WorkspaceView,
   SessionClearResult,
-  MCPAppInstanceView,
 } from "./types";
 export * from "./remoteTabEvents";
 export const COMPACT_RATIO_MIN_PERCENT = 30, COMPACT_RATIO_MAX_PERCENT = 85;
@@ -181,7 +181,7 @@ interface DesktopWindowState {
 
 // AppBindings is the hand-written React-to-Go contract. _CheckGeneratedBindings
 // catches generated methods missing here; update this interface and typecheck.
-export interface AppBindings extends SessionCatalogBindings, ProjectTreeOrganizationBindings, HistoryCatalogBindings, TaskCatalogBindings, BlankProjectBindings, QualityFloorBindings, SessionTitleBindings, ScrollDiagnosticBindings, RemoteProjectBindings {
+export interface AppBindings extends SessionCatalogBindings, ProjectTreeOrganizationBindings, HistoryCatalogBindings, TaskCatalogBindings, BlankProjectBindings, QualityFloorBindings, SessionTitleBindings, ScrollDiagnosticBindings, RemoteProjectBindings, MCPAppBindings {
   Platform(): Promise<string>;
   MinimiseMainWindow(): Promise<void>;
   ToggleMaximiseMainWindow(): Promise<void>;
@@ -279,11 +279,6 @@ export interface AppBindings extends SessionCatalogBindings, ProjectTreeOrganiza
   RecoveryCheckpointEnabledTab(tabID: string): Promise<boolean>;
   AnswerQuestion(id: string, answers: QuestionAnswer[]): Promise<void>;
   AnswerQuestionForTab(tabID: string, id: string, answers: QuestionAnswer[]): Promise<void>;
-  MCPOpenAppInstance(server: string, tool: string, generation: number, callID: string, resourceURI: string): Promise<MCPAppInstanceView>;
-  MCPAppResourceDigest(instanceToken: string): Promise<string>;
-  MCPCloseAppInstance(instanceToken: string): Promise<void>;
-  MCPOpenAppLink(url: string): Promise<void>;
-  MCPAppCallTool(instanceToken: string, toolName: string, args: Record<string, unknown> | unknown): Promise<string>;
   AnswerMCPInteractionForTab(
     tabID: string,
     id: string,
@@ -3099,21 +3094,7 @@ function makeMockApp(): AppBindings {
         async AnswerMCPInteractionForTab(_tabID, _id, _action, _content) {
           return undefined;
         },
-        async MCPOpenAppInstance() {
-          throw new Error("MCP Apps are unavailable in browser dev mode");
-        },
-        async MCPAppResourceDigest() {
-          return "";
-        },
-        async MCPCloseAppInstance() {
-          return undefined;
-        },
-        async MCPOpenAppLink(url) {
-          window.open(url, "_blank", "noopener");
-        },
-        async MCPAppCallTool() {
-          throw new Error("MCP Apps are unavailable in browser dev mode");
-        },
+        ...makeMockMCPAppBindings(),
         async AnswerQuestionForTab(_tabID, id, answers) {
           await withMockTabScope(_tabID, () => this.AnswerQuestion(id, answers));
         },

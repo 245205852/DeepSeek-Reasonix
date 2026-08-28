@@ -13,6 +13,8 @@ branch.
   cancel unanswered requests instead of guessing.
 - **MCP Apps 2026-01-26 (Desktop):** inline app surfaces in tool cards behind
   a per-server double-iframe sandbox, app-tool visibility metadata, bounded
+  aggregate local presentations, tab-bound AppBridge routing and teardown,
+  immutable digest-bound resource snapshots, and confirmed external links;
   local rich results, instance-gated app tool calls, and the four-layer
   capability matrix in MCP status.
 - **Profile-scoped MCP schema caches:** capability-declaring hosts keep their

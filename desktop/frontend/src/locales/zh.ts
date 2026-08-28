@@ -1544,6 +1544,9 @@ export const zh: Record<DictKey, string> = {
 
   // MCP elicitation prompts
   "mcp.app.open": "打开应用",
+  "mcp.app.linkTitle": "打开外部链接？",
+  "mcp.app.linkMessage": "此 MCP 应用想在浏览器中打开 {origin}。是否允许当前应用实例访问该来源？",
+  "mcp.app.linkOpen": "打开链接",
   "mcp.interaction.title": "MCP 服务器需要你的输入",
   "mcp.interaction.modeForm": "表单",
   "mcp.interaction.modeUrl": "链接",

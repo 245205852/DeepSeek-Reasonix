@@ -51,17 +51,33 @@ by default) and `_meta.ui.resourceUri` (nested key preferred, flat
 App-only tools stay in a server-private catalog — invisible to the model
 and to `use_capability list`.
 
-Results from App-capable tools carry a bounded local presentation
-(512 KiB cap, inline audio/video and oversized base64 stripped) that is
-persisted for the Desktop card and stripped from every provider request.
-Inline surfaces run in a double-iframe sandbox: a per-server loopback
-origin relays to a sandboxed inner frame, with instance-nonce binding,
-source checks, an 8 MiB frame cap, a 4 MiB `ui://` html decode cap,
-deny-all CSP (exact origins only), and SHA-256 resource digests so a
-changed upstream never silently restores stale UI. App-initiated
-`tools/call` resolves through the instance registry (same server, app
-visibility, current catalog generation) and records nested, local-only
-events — visible in the transcript, never added to model context.
+Results from App-capable tools carry a bounded local presentation (one
+aggregate 512 KiB cap including metadata and JSON framing; inline
+audio/video and oversized nested base64 are stripped) that is persisted
+for the Desktop card and stripped from every provider request.
+
+Inline surfaces run in a double-iframe sandbox. A per-server loopback
+origin relays AppBridge traffic in both directions to a sandboxed inner
+frame, with parent/inner source checks, instance-nonce binding, an 8 MiB
+UTF-8 frame cap, a 4 MiB `ui://` HTML cap, and deny-all CSP extended only
+by exact declared origins. Opening a card validates its server, tool,
+catalog generation, and resource URI, then freezes the resource in the
+bounded live-instance registry. The SHA-256 digest is bound into the
+resource request and response, so content cannot change within that App
+instance. Reopening an older card creates a new validated snapshot of the
+server's current resource; Reasonix does not persist executable App HTML
+in the conversation.
+
+After `ui/notifications/initialized`, Desktop sends the original tool
+input followed by the full bounded `CallToolResult`; unmount waits up to
+one second for `ui/resource-teardown`. App-initiated `tools/call`, link
+opening, resource loading, and cleanup remain bound to the originating
+tab even if the user switches tabs. External `http(s)` links require one
+confirmation per App instance and origin, and are validated again by the
+native host. App tool calls resolve through the instance registry (same
+server, app visibility, current catalog generation) and record nested,
+local-only events — visible in the transcript, never added to model
+context.
 
 ## Cache and cross-version compatibility
 

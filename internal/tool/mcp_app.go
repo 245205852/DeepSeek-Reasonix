@@ -28,24 +28,105 @@ const maxMCPAppBytes = 512 << 10
 // audio/video and oversized base64 data blow the budget without adding App
 // value; the model-facing text/image forms live on the message itself.
 func droppableMCPAppContent(item map[string]any) bool {
+	if hasOversizedInlineData(item) {
+		return true
+	}
 	switch item["type"] {
 	case "audio", "video":
-		return true
-	case "image", "resource":
-		return false
-	}
-	if data, ok := item["data"].(string); ok && len(data) > 4096 {
 		return true
 	}
 	mime, _ := item["mimeType"].(string)
 	return strings.HasPrefix(mime, "audio/") || strings.HasPrefix(mime, "video/")
 }
 
+func hasOversizedInlineData(value any) bool {
+	switch typed := value.(type) {
+	case map[string]any:
+		for key, nested := range typed {
+			if key == "data" || key == "blob" {
+				if text, ok := nested.(string); ok && len(text) > 4096 {
+					return true
+				}
+			}
+			if hasOversizedInlineData(nested) {
+				return true
+			}
+		}
+	case []any:
+		for _, nested := range typed {
+			if hasOversizedInlineData(nested) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func sanitizeMCPAppRawResult(raw json.RawMessage) json.RawMessage {
+	if len(raw) == 0 {
+		return nil
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(raw, &parsed); err != nil || parsed == nil {
+		return nil
+	}
+	if content, ok := parsed["content"].([]any); ok {
+		kept := make([]any, 0, len(content))
+		for _, candidate := range content {
+			item, ok := candidate.(map[string]any)
+			if !ok || !droppableMCPAppContent(item) {
+				kept = append(kept, candidate)
+			}
+		}
+		parsed["content"] = kept
+	}
+	b, err := json.Marshal(parsed)
+	if err != nil {
+		return nil
+	}
+	return b
+}
+
+func cloneMCPAppCSP(csp map[string][]string) map[string][]string {
+	if len(csp) == 0 {
+		return nil
+	}
+	out := make(map[string][]string, len(csp))
+	for directive, values := range csp {
+		out[directive] = append([]string(nil), values...)
+	}
+	return out
+}
+
+func mcpAppPersistedSize(r *MCPAppResult) int {
+	if r == nil {
+		return 0
+	}
+	wire := struct {
+		Server      string              `json:"server"`
+		Tool        string              `json:"tool"`
+		Generation  uint64              `json:"generation"`
+		ResourceURI string              `json:"resourceUri,omitempty"`
+		CSP         map[string][]string `json:"csp,omitempty"`
+		RawResult   json.RawMessage     `json:"rawResult,omitempty"`
+		Structured  json.RawMessage     `json:"structured,omitempty"`
+	}{
+		Server: r.Server, Tool: r.Tool, Generation: r.Generation,
+		ResourceURI: r.ResourceURI, CSP: r.CSP,
+		RawResult: r.RawResult, Structured: r.Structured,
+	}
+	b, err := json.Marshal(wire)
+	if err != nil {
+		return maxMCPAppBytes + 1
+	}
+	return len(b)
+}
+
 // Sanitized returns the bounded presentation copy: inline audio/video and
 // oversized base64 content items are dropped, then the whole payload is
 // capped at maxMCPAppBytes (text fallback remains in Content).
 func (r *MCPAppResult) Sanitized() *MCPAppResult {
-	if r == nil {
+	if r == nil || strings.TrimSpace(r.Server) == "" || strings.TrimSpace(r.Tool) == "" {
 		return nil
 	}
 	out := &MCPAppResult{
@@ -53,32 +134,32 @@ func (r *MCPAppResult) Sanitized() *MCPAppResult {
 		Tool:        r.Tool,
 		Generation:  r.Generation,
 		ResourceURI: r.ResourceURI,
-		CSP:         r.CSP,
+		CSP:         cloneMCPAppCSP(r.CSP),
 	}
-	if len(r.RawResult) > 0 {
-		var parsed struct {
-			Content []map[string]any `json:"content"`
-		}
-		if err := json.Unmarshal(r.RawResult, &parsed); err == nil {
-			kept := parsed.Content[:0]
-			for _, item := range parsed.Content {
-				if !droppableMCPAppContent(item) {
-					kept = append(kept, item)
-				}
-			}
-			parsed.Content = kept
-			if b, err := json.Marshal(parsed); err == nil {
-				out.RawResult = b
-			}
-		} else {
-			out.RawResult = r.RawResult
-		}
+	out.RawResult = sanitizeMCPAppRawResult(r.RawResult)
+	var structuredCopy json.RawMessage
+	if json.Valid(r.Structured) {
+		structuredCopy = append(json.RawMessage(nil), r.Structured...)
+		out.Structured = structuredCopy
 	}
-	if len(out.RawResult) > maxMCPAppBytes {
+	// Enforce one aggregate persisted budget, including identity, CSP, JSON
+	// framing, RawResult, and Structured. Structured is normally duplicated in
+	// RawResult, so discard it first; then the rich result; then optional CSP.
+	if mcpAppPersistedSize(out) > maxMCPAppBytes {
+		out.Structured = nil
+	}
+	if mcpAppPersistedSize(out) > maxMCPAppBytes {
 		out.RawResult = nil
+		out.Structured = structuredCopy
 	}
-	if len(r.Structured) <= maxMCPAppBytes {
-		out.Structured = r.Structured
+	if mcpAppPersistedSize(out) > maxMCPAppBytes {
+		out.Structured = nil
+	}
+	if mcpAppPersistedSize(out) > maxMCPAppBytes {
+		out.CSP = nil
+	}
+	if mcpAppPersistedSize(out) > maxMCPAppBytes {
+		return nil
 	}
 	return out
 }

@@ -1543,6 +1543,9 @@ export const en = {
 
   // MCP elicitation prompts
   "mcp.app.open": "Open app",
+  "mcp.app.linkTitle": "Open external link?",
+  "mcp.app.linkMessage": "This MCP app wants to open {origin} in your browser. Allow links to this origin for this app instance?",
+  "mcp.app.linkOpen": "Open link",
   "mcp.interaction.title": "MCP server needs your input",
   "mcp.interaction.modeForm": "form",
   "mcp.interaction.modeUrl": "link",

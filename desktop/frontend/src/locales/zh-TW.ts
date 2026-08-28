@@ -2775,6 +2775,9 @@ export const zhTW: Record<DictKey, string> = {
 
   // MCP elicitation prompts
   "mcp.app.open": "開啟應用",
+  "mcp.app.linkTitle": "開啟外部連結？",
+  "mcp.app.linkMessage": "此 MCP 應用想在瀏覽器中開啟 {origin}。是否允許目前應用實例存取該來源？",
+  "mcp.app.linkOpen": "開啟連結",
   "mcp.interaction.title": "MCP 伺服器需要你的輸入",
   "mcp.interaction.modeForm": "表單",
   "mcp.interaction.modeUrl": "連結",

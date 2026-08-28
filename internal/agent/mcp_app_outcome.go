@@ -11,6 +11,9 @@ func toProviderMCPApp(r *tool.MCPAppResult) *provider.MCPAppPresentation {
 		return nil
 	}
 	bounded := r.Sanitized()
+	if bounded == nil {
+		return nil
+	}
 	return &provider.MCPAppPresentation{
 		Server: bounded.Server, Tool: bounded.Tool, Generation: bounded.Generation,
 		ResourceURI: bounded.ResourceURI, CSP: bounded.CSP,

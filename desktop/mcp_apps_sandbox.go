@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -16,6 +15,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"reasonix/internal/control"
 	"reasonix/internal/plugin"
 )
 
@@ -29,7 +29,15 @@ type mcpAppsSandbox struct {
 	down atomic.Bool
 	mu   sync.Mutex
 
-	origins map[string]*mcpAppOrigin
+	origins  map[string]*mcpAppOrigin
+	bindings map[string]mcpAppBinding
+}
+
+type mcpAppBinding struct {
+	tabID  string
+	server string
+	host   *plugin.Host
+	ctrl   control.SessionAPI
 }
 
 type mcpAppOrigin struct {
@@ -50,6 +58,30 @@ const (
 func (s *mcpAppsSandbox) noteUnavailable() { s.down.Store(true) }
 
 func (s *mcpAppsSandbox) available() bool { return !s.down.Load() }
+
+func (s *mcpAppsSandbox) bind(token string, binding mcpAppBinding) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.bindings == nil {
+		s.bindings = map[string]mcpAppBinding{}
+	}
+	s.bindings[token] = binding
+}
+
+func (s *mcpAppsSandbox) binding(token string) (mcpAppBinding, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	binding, ok := s.bindings[token]
+	return binding, ok
+}
+
+func (s *mcpAppsSandbox) release(token string) (mcpAppBinding, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	binding, ok := s.bindings[token]
+	delete(s.bindings, token)
+	return binding, ok
+}
 
 // appOriginURL returns the outer sandbox page URL for a server, binding the
 // per-server listener on first use.
@@ -119,18 +151,33 @@ const outerSandboxRelay = `<!doctype html>
   var nonce = params.get("nonce");
   var src = params.get("src");
   var inner = null;
+  try {
+    var resource = new URL(src, location.href);
+    if (resource.origin !== location.origin || resource.pathname !== "/resource") return;
+    src = resource.pathname + resource.search;
+  } catch (e) { return; }
+  function frameSize(data) {
+    try {
+      var text = typeof data === "string" ? data : JSON.stringify(data);
+      return new TextEncoder().encode(text).byteLength;
+    } catch (e) { return %d + 1; }
+  }
   window.addEventListener("message", function (event) {
-    if (event.data && event.data.__mcpInit === nonce && event.source === window.parent) {
-      if (inner) return;
-      inner = document.createElement("iframe");
-      inner.setAttribute("sandbox", "allow-scripts");
-      inner.setAttribute("src", src);
-      document.body.appendChild(inner);
+    if (event.source === window.parent) {
+      if (event.data && event.data.__mcpInit === nonce) {
+        if (inner) return;
+        inner = document.createElement("iframe");
+        inner.setAttribute("sandbox", "allow-scripts");
+        inner.setAttribute("src", src);
+        document.body.appendChild(inner);
+        return;
+      }
+      if (!inner || !inner.contentWindow || frameSize(event.data) > %d) return;
+      try { inner.contentWindow.postMessage(event.data, "*"); } catch (e) {}
       return;
     }
     if (!inner || event.source !== inner.contentWindow) return;
-    var text = typeof event.data === "string" ? event.data : JSON.stringify(event.data);
-    if (text.length > %d) return;
+    if (frameSize(event.data) > %d) return;
     try { window.parent.postMessage(event.data, "*"); } catch (e) {}
   });
 }());
@@ -143,41 +190,40 @@ func (o *mcpAppOrigin) serveRelayPage(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Content-Security-Policy", "default-src 'none'; frame-src 'self'; script-src 'unsafe-inline'")
-	w.Header().Set("X-Frame-Options", "SAMEORIGIN")
-	fmt.Fprintf(w, outerSandboxRelay, maxAppPostMessageBytes)
+	fmt.Fprintf(w, outerSandboxRelay, maxAppPostMessageBytes, maxAppPostMessageBytes, maxAppPostMessageBytes)
 }
 
-// serveResource validates the instance token, reads the ui resource from the
-// MCP server, checks scheme/mime/size, and serves it with the declared CSP
-// (deny-all default). Only the inner sandboxed iframe loads this.
+// serveResource validates the instance token and digest, then serves the
+// immutable resource snapshot captured when the App was opened. Only the
+// inner sandboxed iframe loads this copy.
 func (o *mcpAppOrigin) serveResource(a *App) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
-		host := a.activeMCPRuntimeHost()
-		if host == nil {
-			http.Error(w, "no runtime", http.StatusServiceUnavailable)
-			return
-		}
-		inst, ok := host.LookupAppInstance(r.URL.Query().Get("token"))
-		if !ok || inst.Server != o.server || !strings.HasPrefix(inst.ResourceURI, "ui://") {
+		token := r.URL.Query().Get("token")
+		binding, ok := a.mcpAppsSandbox.binding(token)
+		if !ok || binding.host == nil || binding.server != o.server {
 			http.Error(w, "unknown instance", http.StatusForbidden)
 			return
 		}
-		readCtx, cancel := context.WithTimeout(r.Context(), appResourceReadTimeout)
-		defer cancel()
-		content, mime, err := host.ReadResourceForApp(readCtx, inst.Server, inst.ResourceURI)
-		if err != nil || len(content) > maxAppResourceBytes || !isAppHTMLMimeType(mime) {
+		inst, ok := binding.host.LookupAppInstance(token)
+		if !ok || inst.Server != o.server || !strings.HasPrefix(inst.ResourceURI, "ui://") {
+			a.mcpAppsSandbox.release(token)
+			http.Error(w, "unknown instance", http.StatusForbidden)
+			return
+		}
+		snapshot, ok := binding.host.AppResource(token)
+		if !ok || r.URL.Query().Get("digest") != snapshot.Digest || len(snapshot.Content) > maxAppResourceBytes || !isAppHTMLMimeType(snapshot.MIME) {
 			http.Error(w, "resource unavailable", http.StatusBadGateway)
 			return
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.Header().Set("Content-Security-Policy", appResourceCSP(host, inst))
+		w.Header().Set("Content-Security-Policy", appResourceCSP(snapshot.CSP))
 		w.Header().Set("Cache-Control", "no-store")
-		w.Header().Set("X-App-Sha256", resourceDigest(content))
-		_, _ = io.WriteString(w, content)
+		w.Header().Set("X-App-Sha256", snapshot.Digest)
+		_, _ = io.WriteString(w, snapshot.Content)
 	}
 }
 
@@ -187,36 +233,65 @@ func isAppHTMLMimeType(mime string) bool {
 		strings.Contains(mime, "profile=mcp-app")
 }
 
-// appResourceCSP: deny-all default, extended only by the tool's declared
-// exact http/https origins; wildcards, credentials, and undeclared hosts are
-// refused.
-func appResourceCSP(host *plugin.Host, inst *plugin.AppInstance) string {
+// appResourceCSP defaults every channel to deny and extends it only with exact
+// declared origins. Wildcards, credentials, paths, and undeclared hosts are
+// refused; connectDomains additionally accepts exact ws/wss origins.
+func appResourceCSP(csp map[string][]string) string {
+	connect := allowedCSPSources(csp, []string{"connectDomains", "connect-src"}, []string{"http", "https", "ws", "wss"})
+	resources := allowedCSPSources(csp, []string{"resourceDomains", "resource-src"}, []string{"http", "https"})
+	frames := allowedCSPSources(csp, []string{"frameDomains", "frame-src"}, []string{"http", "https"})
+	bases := allowedCSPSources(csp, []string{"baseUriDomains", "base-uri"}, []string{"http", "https"})
 	directives := []string{
-		"default-src 'none'", "script-src 'unsafe-inline'", "style-src 'unsafe-inline'",
-		"img-src data:", "connect-src 'none'", "frame-ancestors 'self'",
-	}
-	if ref, ok := host.AppInstanceTool(inst.Token, inst.Tool); ok {
-		var allowed []string
-		for _, origin := range ref.UITool().UICSP()["connect-src"] {
-			if cspOriginAllowed(origin) {
-				allowed = append(allowed, origin)
-			}
-		}
-		if len(allowed) > 0 {
-			slices.Sort(allowed)
-			directives[3] = "connect-src " + strings.Join(slices.Compact(allowed), " ")
-		}
+		"default-src 'none'",
+		"object-src 'none'",
+		"script-src " + cspWithBase("'unsafe-inline'", resources),
+		"style-src " + cspWithBase("'unsafe-inline'", resources),
+		"img-src " + cspWithBase("data:", resources),
+		"font-src " + cspOr("'none'", resources),
+		"media-src " + cspOr("'none'", resources),
+		"connect-src " + cspOr("'none'", connect),
+		"frame-src " + cspOr("'none'", frames),
+		"base-uri " + cspOr("'self'", bases),
+		"frame-ancestors 'self'",
 	}
 	return strings.Join(directives, "; ")
 }
 
-func cspOriginAllowed(origin string) bool {
+func cspOr(fallback string, sources []string) string {
+	if len(sources) == 0 {
+		return fallback
+	}
+	return strings.Join(sources, " ")
+}
+
+func cspWithBase(base string, sources []string) string {
+	if len(sources) == 0 {
+		return base
+	}
+	return base + " " + strings.Join(sources, " ")
+}
+
+func allowedCSPSources(csp map[string][]string, keys, schemes []string) []string {
+	var allowed []string
+	for _, key := range keys {
+		for _, source := range csp[key] {
+			if cspOriginAllowed(source, schemes) {
+				allowed = append(allowed, strings.TrimSpace(source))
+			}
+		}
+	}
+	slices.Sort(allowed)
+	return slices.Compact(allowed)
+}
+
+func cspOriginAllowed(origin string, schemes []string) bool {
 	origin = strings.TrimSpace(origin)
-	if origin == "" || strings.ContainsAny(origin, "*'") {
+	if origin == "" || strings.ContainsAny(origin, "*'; ") {
 		return false
 	}
 	u, err := url.Parse(origin)
-	return err == nil && (u.Scheme == "https" || u.Scheme == "http") && u.Host != "" && u.User == nil
+	return err == nil && slices.Contains(schemes, u.Scheme) && u.Host != "" && u.User == nil &&
+		(u.Path == "" || u.Path == "/") && u.RawQuery == "" && u.Fragment == ""
 }
 
 func resourceDigest(content string) string {
