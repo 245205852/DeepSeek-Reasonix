@@ -176,15 +176,23 @@
   });
 
   const loadHistoryRows = async (element, minimumRows) => {
-    if (Number.parseInt(element.dataset.transcriptRowCount ?? "0", 10) >= minimumRows) return;
+    const rowCount = () => Number.parseInt(element.dataset.transcriptRowCount ?? "0", 10);
+    if (rowCount() >= minimumRows) return;
     const rail = await waitFor(() => document.querySelector(".jump-scroll"), 10000);
+    const earliestLoadedTurn = () => {
+      const turns = [...document.querySelectorAll(".jump-item[data-loaded='true']")]
+        .map((marker) => Number(marker.getAttribute("data-turn")))
+        .filter(Number.isFinite);
+      return turns.length > 0 ? Math.min(...turns) : null;
+    };
     // Target progressively earlier questions through the real navigation UI.
     // A midpoint request usually supplies the 400+ variable-height rows the
     // smoke needs without forcing every archived turn into its first geometry
     // pass at once.
     for (const ratio of [0.65, 0.5, 0.35, 0.2, 0]) {
-      const before = Number.parseInt(element.dataset.transcriptRowCount ?? "0", 10);
-      if (before >= minimumRows) return;
+      if (rowCount() >= minimumRows) return;
+      const beforeRows = rowCount();
+      const beforeTurn = earliestLoadedTurn();
       const rect = rail.getBoundingClientRect();
       rail.dispatchEvent(new MouseEvent("mousedown", {
         button: 0,
@@ -193,10 +201,20 @@
         bubbles: true,
         cancelable: true,
       }));
-      await waitFor(() => Number.parseInt(element.dataset.transcriptRowCount ?? "0", 10) > before, 30000);
       await waitFor(() => !document.querySelector(".transcript-navigation-overlay"), 15000);
+      // A fixed-size history window keeps the mounted row count constant when
+      // an earlier page arrives, and clicking an already-loaded turn changes
+      // nothing. Accept an earlier first loaded turn or genuine row growth; a
+      // no-op click falls through to the next, earlier ratio instead of
+      // stalling the fixture on one signal.
+      await waitFor(() => {
+        const earliest = earliestLoadedTurn();
+        return rowCount() > beforeRows
+          || (earliest !== null && (beforeTurn === null || earliest < beforeTurn));
+      }, 8000).catch(() => {});
     }
-    throw new Error("native transcript fixture could not load 400 rows");
+    if (rowCount() >= minimumRows) return;
+    throw new Error(`native transcript fixture could not load ${minimumRows} rows (rows=${rowCount()} earliestTurn=${earliestLoadedTurn()})`);
   };
 
   const start = async () => {
