@@ -129,11 +129,11 @@
               "desktop"
             ],
             "title": {
-              "en": "Auto-collapse completed todo panels",
+              "en": "Auto-collapse completed Todo panel",
               "zh": "完成待办后自动收起面板"
             },
             "body": {
-              "en": "Completed todo panels now fade out after a short hold and do not reattach completed batches when a session is restored.",
+              "en": "Completed Todo panels now fade out after a short hold, and restored sessions do not reattach completed batches.",
               "zh": "已完成的待办面板现在会在短暂停留后淡出，恢复会话时不会重新附加已完成的批次。"
             },
             "refs": [
@@ -147,11 +147,11 @@
               "desktop"
             ],
             "title": {
-              "en": "Stale status races no longer crash",
+              "en": "Superseded status races no longer crash",
               "zh": "过时的状态竞争不再导致崩溃"
             },
             "body": {
-              "en": "A /status poll losing the race against an SSE-derived frame is now treated as a benign stale snapshot instead of surfacing as an unhandled rejection crash.",
+              "en": "A /status poll losing the race against an SSE-derived frame is now treated as a benign stale snapshot instead of an unhandled rejection crash.",
               "zh": "与 SSE 派生帧竞争失败的 /status 轮询现在被视为良性的过时快照，而不再表现为未处理的拒绝崩溃。"
             },
             "refs": [
@@ -163,7 +163,7 @@
               "desktop"
             ],
             "title": {
-              "en": "Mounted coverage after height rebound",
+              "en": "Wait for mounted extent rebound",
               "zh": "等待高度恢复后的挂载覆盖"
             },
             "body": {
@@ -183,8 +183,8 @@
               "zh": "绘制前修正空白高度回弹"
             },
             "body": {
-              "en": "Corrects a recoverable blank transcript rebound synchronously from native scroll delivery before the next visible frame, preventing a blank Windows WebView2 frame.",
-              "zh": "在下一个可见帧之前，从原生滚动传递同步修正可恢复的空白转录回弹，防止 Windows WebView2 出现空白帧。"
+              "en": "Corrects a recoverable blank transcript rebound synchronously from the native scroll delivery before the next visible frame, preventing blank frames in Windows WebView2.",
+              "zh": "在下一个可见帧之前，从原生滚动传递同步修正可恢复的空白转录回弹，防止 Windows WebView2 中出现空白帧。"
             },
             "refs": [
               9553
