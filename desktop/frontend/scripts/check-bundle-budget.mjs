@@ -231,6 +231,9 @@ const rawInitialBytes = [...initialJS, ...initialCSS, ...appShellCSS]
 // the ToolCard Apps surface brings it to 2416.8 KiB raw (+0.07% more).
 // Origin-tab binding and deterministic cleanup bring the measured path to
 // 2417.659 KiB; retain 0.141 KiB of bounded toolchain headroom.
-const rawInitialBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 2_417.8 : 2_417.8;
+// The merged main-v2 Todo shelf retirement changes the shared startup graph;
+// the exact combined path measures 2417.840 KiB. Retain 0.060 KiB of bounded
+// toolchain headroom with the smallest existing decimal ratchet.
+const rawInitialBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 2_417.9 : 2_417.9;
 assertBudget("initial raw JavaScript and CSS", rawInitialBytes, rawInitialBudgetKiB * 1024);
 assertBudget("largest initial JavaScript chunk raw", largestInitialJSRaw, 1_000 * 1024);
