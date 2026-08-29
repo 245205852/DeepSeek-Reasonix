@@ -63,15 +63,17 @@ let scrollToBottomCalls = 0;
 // Null disables snapshot capture; the snapshot sections opt in explicitly so
 // the pre-snapshot scenarios keep their first-mount scrollToBottom behavior.
 let stubSnapshot: StateSnapshot | null = null;
+const applyScrollTo = (options?: { top?: number }) => {
+  scrollToCalls += 1;
+  const top = options?.top ?? 0;
+  scrollElement.scrollTop = Math.max(0, Math.min(scrollExtent - scrollElement.clientHeight, top));
+};
+scrollElement.scrollTo = applyScrollTo;
 const virtuosoHandle = {
   scrollBy: () => { scrollByCalls += 1; },
   scrollToIndex: () => { scrollToIndexCalls += 1; },
   // Browser semantics: an offset write clamps against the current extent.
-  scrollTo: (options?: { top?: number }) => {
-    scrollToCalls += 1;
-    const top = options?.top ?? 0;
-    scrollElement.scrollTop = Math.max(0, Math.min(scrollExtent - scrollElement.clientHeight, top));
-  },
+  scrollTo: applyScrollTo,
   getState: (callback: (state: StateSnapshot) => void) => {
     if (stubSnapshot) callback(stubSnapshot);
   },
@@ -239,11 +241,12 @@ await triggerWatchdogRebuild();
 check(integrity?.resetKey === keyBeforeJumpBlank, "jump-bottom transients cannot trigger a blank size-tree rebuild");
 await advanceClock(350);
 
-// Tail-follow is a persistent mode, not a six-frame retry window. As long as
-// growth keeps arriving (streaming), each height notification re-arms another
-// coalesced convergence and the view keeps landing on the current bottom.
+// Tail-follow is a persistent mode, not a six-frame retry window. Successful
+// writes may follow real growth revisions; only ineffective writes enter the
+// quiet-window quarantine.
 scrollToCalls = 0;
 await act(async () => arbiter?.scrollToBottom());
+scrollToCalls = 0;
 for (let i = 0; i < 14; i += 1) {
   scrollExtent += 200;
   await advanceClock(40);
@@ -481,7 +484,8 @@ check(
   "a blank confirmed by two consecutive idle checks earns a rebuild",
 );
 
-// ── Restore waits for a slow-mounting anchor row beyond the old 8-frame budget
+// ── Restore waits for a slow-mounting anchor row without repeating the same
+// writer phase inside one geometry revision.
 await switchSurface("surface-f");
 await act(async () => arbiter?.releaseTailFollow());
 const keySurfaceF = integrity?.resetKey;
@@ -492,7 +496,7 @@ scrollByCalls = 0;
 scrollToIndexCalls = 0;
 await act(async () => integrity?.handleItemsRendered(1));
 for (let i = 0; i < 10; i += 1) await flushFrames();
-check(scrollToIndexCalls > 8, "restore keeps re-aiming past the old 8-frame budget while the anchor row is unmounted");
+check(scrollToIndexCalls === 1, "restore writes its mount anchor at most once per geometry revision");
 check(scrollByCalls === 0, "no intermediate scrollBy lands while the anchor row is unmounted");
 scrollElement.appendChild(rowElement);
 rowElement.getBoundingClientRect = () => rectAt(50);

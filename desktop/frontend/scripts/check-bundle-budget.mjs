@@ -138,12 +138,17 @@ console.log("\nbundle budgets");
 // The final 0.266 KiB retains jump ownership through paint-ready instead of
 // allowing a native scrollend to release it. Keep only 0.213 KiB headroom;
 // native validation hosts and test fixtures stay outside the production graph.
-// Notification controls, live-tail stabilization, and cross-platform shell
-// support move current main-v2 to 449.758 KiB gzip. MCP elicitation and the
-// inline Apps lifecycle add 1.167 KiB on the same startup graph. The merged
-// merged path measures 451.0 KiB; retain 0.2 KiB of bounded
+// Cross-platform shell inventory, current-session vs after-reload rows,
+// manual repair guidance, and exact download-host allowlisting move the merged
+// path from 448.692 to 449.758 KiB (+1.066 KiB). Retain 0.142 KiB of bounded
 // build/toolchain headroom.
-const initialJSBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 451.2 : 451.2;
+// The reader transaction contract (geometry revisions, generation-fenced
+// writer requests, gesture travel proof, stabilized-shrink extent acceptance,
+// and the blank-rebound prepaint lane) adds a measured 3.978 KiB gzip on the
+// merged main-v2 baseline. MCP elicitation and the inline Apps lifecycle remain
+// on that startup graph; the combined path measures 455.0 KiB. Retain 0.2 KiB
+// of bounded build/toolchain headroom.
+const initialJSBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 455.2 : 455.2;
 assertBudget("initial JavaScript gzip", initialJSGzip, initialJSBudgetKiB * 1024);
 assertBudget("largest initial JavaScript chunk gzip", largestInitialJS, 280 * 1024);
 // Render-blocking CSS is intentionally absent: styles.css loads deferred via
@@ -222,19 +227,25 @@ const rawInitialBytes = [...initialJS, ...initialCSS, ...appShellCSS]
 // raw/toolchain headroom for both owners.
 // The same transcript transaction measures 2413.012 KiB raw (+0.28%) against
 // the 2406.204 KiB baseline. Retain 0.188 KiB of bounded headroom.
-// MCP 2026 elicitation's reducer wiring measures 2415.032 KiB raw (+0.08%);
-// the ToolCard Apps surface brings it to 2416.8 KiB raw (+0.07% more).
-// Origin-tab binding and deterministic cleanup bring the measured path to
-// 2417.659 KiB; retain 0.141 KiB of bounded toolchain headroom.
-// The merged main-v2 Todo shelf retirement changes the shared startup graph;
-// the exact combined path measures 2417.840 KiB. Retain 0.060 KiB of bounded
-// toolchain headroom with the smallest existing decimal ratchet.
 // The notification-volume control adds one persisted master gain, per-source
-// loudness trims, live-tail lifecycle fencing, shell support, and WebView2
-// rebound move current main-v2 to 2422.575 KiB raw. MCP elicitation and Apps
-// add 4.657 KiB on the shared graph. The merged path is expected near
-// merged path measures 2427.4 KiB; retain 0.2 KiB of bounded
-// build/toolchain headroom.
-const rawInitialBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 2_427.6 : 2_427.6;
+// loudness trims, and its accessible Settings surface. Current main-v2 moves
+// from 2413.183 to 2414.879 KiB raw (+1.696 KiB); retain 0.121 KiB of bounded
+// headroom.
+// Owner-lifecycle reasoning disclosure, pre-paint tail pinning, and the live
+// footer growth floor then add 2.390 KiB after extracting ownership modules
+// below repolint's source ceilings. Lifecycle fencing adds 0.258 KiB; the
+// combined path measures 2417.526 KiB. Retain 0.074 KiB while preventing
+// phase-boundary reverse flashes and cross-surface floor leaks.
+// The same shell-support surface moves the merged path from 2417.526 to
+// 2422.371 KiB raw (+4.845 KiB). Retain 0.129 KiB of bounded headroom without
+// widening unrelated chunk ceilings.
+// The WebView2 extent rebound prepaint handoff adds 0.204 KiB raw so a native
+// scroll delivery can restore mounted coverage before the next visible frame.
+// Retain 0.096 KiB of headroom without widening gzip or chunk ceilings.
+// The reader transaction contract then adds a measured 15.317 KiB raw on the
+// merged main-v2 baseline (including its own prepaint port). MCP elicitation
+// and Apps add their bounded payload on the shared graph; the combined path
+// measures 2442.6 KiB. Retain 0.4 KiB of bounded build/toolchain headroom.
+const rawInitialBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 2_443.0 : 2_443.0;
 assertBudget("initial raw JavaScript and CSS", rawInitialBytes, rawInitialBudgetKiB * 1024);
 assertBudget("largest initial JavaScript chunk raw", largestInitialJSRaw, 1_000 * 1024);

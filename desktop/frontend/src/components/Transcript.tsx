@@ -1,5 +1,5 @@
 import { lazy, Suspense, type CSSProperties, type ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { Virtuoso, type ListItem } from "react-virtuoso";
+import { Virtuoso } from "react-virtuoso";
 import type { ControllerLiveStore, HistoryLoadTrigger, HistoryMutation, Item, LiveStream } from "../lib/useController";
 import type { CheckpointMeta, WireCompletionSummary } from "../lib/types";
 import type { InvocationMetadataMap } from "../lib/invocationDisplay";
@@ -45,7 +45,7 @@ import {
 import { readTranscriptGeometryEnvironment } from "../lib/transcriptGeometryEnvironment";
 import { onTypographyPreferencesChange } from "../lib/typographyPreferences";
 import { acquireMarkdownWorkerClient, releaseMarkdownWorkerClient } from "../lib/markdownWorkerClient";
-import { noteTranscriptRecoveryTerminal, noteTranscriptRowCounts } from "../lib/sessionDiagnostics";
+import { noteTranscriptRecoveryTerminal } from "../lib/sessionDiagnostics";
 import { useReasoningDisplayMode } from "../lib/reasoningDisplayPreference";
 import { InlineAssistantReasoning } from "./InlineAssistantReasoning";
 import { ProcessFoldHeader } from "./ProcessFoldHeader";
@@ -62,6 +62,7 @@ import { recordTranscriptScrollDiagnostic } from "../lib/transcriptScrollProbe";
 import { recordFrontendDiagnostic } from "../lib/frontendDiagnosticBridge";
 import { useTranscriptQuestionJump, useTranscriptQuestions } from "../lib/useTranscriptQuestionNavigation";
 import { useTranscriptHistoryAutoFill, useTranscriptPagingAuthorization, useTranscriptSurfaceCommit } from "../lib/useTranscriptNavigationSurface";
+import { useTranscriptGeometryLifecycle } from "../lib/useTranscriptGeometryLifecycle";
 import {
   LiveAssistantMessage,
   SHOW_SCROLL_DIAGNOSTICS,
@@ -87,6 +88,11 @@ const FrontendDiagnosticsPanel = SHOW_FRONTEND_DIAGNOSTICS
   ? lazy(() => import("./FrontendDiagnosticsPanel"))
   : null;
 const VIRTUAL_OVERSCAN_ROWS = 8;
+const READER_MOUNT_CORRIDOR_ROWS = 112;
+const READER_MOUNT_CORRIDOR_VIEWPORTS = 7;
+// Keep paged history measured during manual reading so WKWebView cannot replace
+// non-overlapping ranges without an anchor; large sessions keep a bounded corridor.
+const READER_FULL_MOUNT_ROW_LIMIT = 1_000;
 
 export function Transcript({
   items,
@@ -220,6 +226,8 @@ export function Transcript({
     scrollRef,
     itemSize,
     nativeScrollbarDragging,
+    readerTransactionActive,
+    modeRef: scrollModeRef,
     scrollElement,
     pinnedRef: stick,
     onWheelIntent,
@@ -236,6 +244,7 @@ export function Transcript({
     scrollToBottom,
     pinLiveTailBeforePaint,
     followGrowingTail,
+    revalidateTail,
     beginUserResize, userResizeRevision,
     scrollToDataIndex, beginQuestionJump, finishQuestionJump,
     releaseTailFollow,
@@ -303,7 +312,7 @@ export function Transcript({
 
   useEffect(() => {
     if (hydrating || !virtuosoReadyRef.current || !stick.current) return;
-    followGrowingTail();
+    followGrowingTail("footer-resize");
   }, [footerHeight, followGrowingTail, hydrating, stick]);
 
   const refreshGeometryEnvironment = useCallback((element: HTMLElement) => {
@@ -332,10 +341,11 @@ export function Transcript({
         lastWidth = width;
         setLayoutWidth(width);
         refreshGeometryEnvironment(element);
+        if (!hydrating) followGrowingTail("typography-change");
       }
       if (height !== lastHeight) {
         lastHeight = height;
-        if (!hydrating) followGrowingTail();
+        if (!hydrating) followGrowingTail("viewport-resize");
       }
     });
     observer.observe(element);
@@ -829,45 +839,29 @@ export function Transcript({
     }, 300);
     return () => window.clearTimeout(timeout);
   }, [holdingLiveRegion]);
+  useLayoutEffect(() => {
+    if (!holdingLiveRegion || !scrollRef.current) return;
+    const held = heldLiveRowsRef.current;
+    const lastKey = held.length > 0 ? String(held[held.length - 1].key) : null;
+    if (lastKey === null) return;
+    const mounted = Array.from(scrollRef.current.querySelectorAll<HTMLElement>(".transcript__row[data-row-key]"))
+      .some((row) => row.dataset.rowKey === lastKey && !row.closest('[data-live-region="true"]'));
+    if (!mounted) return;
+    heldLiveRowsRef.current = [];
+    setHoldingLiveRegion(false);
+  }, [contentRevision, holdingLiveRegion, scrollRef, virtualRows.length]);
   const heldLiveRows = heldSurfaceRef.current === layoutSurfaceKey ? heldLiveRowsRef.current : NO_HELD_ROWS;
   const showLiveRegion = liveSplit.liveActive || (holdingLiveRegion && heldLiveRows.length > 0);
+  const readerMountCorridorRows = readerTransactionActive && virtualRows.length <= READER_FULL_MOUNT_ROW_LIMIT
+    ? Math.max(READER_MOUNT_CORRIDOR_ROWS, virtualRows.length)
+    : READER_MOUNT_CORRIDOR_ROWS;
 
-  const handleItemsRendered = useCallback((rendered: ListItem<TranscriptRow>[]) => {
-    noteTranscriptRowCounts(rendered.length, virtualRows.length);
-    selectionRetention.reconcileLogicalFocus();
-    handleRecoveryItemsRendered(rendered.length);
-    scheduleActiveQuestionSync();
-    if (holdingLiveRegion) {
-      const held = heldLiveRowsRef.current;
-      const lastKey = held.length > 0 ? String(held[held.length - 1].key) : null;
-      if (lastKey === null || rendered.some((item) => String(item.data?.key ?? "") === lastKey)) {
-        heldLiveRowsRef.current = [];
-        setHoldingLiveRegion(false);
-      }
-    }
-    markSurfaceItemsRendered(rendered.length);
-  }, [handleRecoveryItemsRendered, holdingLiveRegion, markSurfaceItemsRendered, scheduleActiveQuestionSync, selectionRetention.reconcileLogicalFocus, virtualRows.length]);
-
-  const prependLayoutTransientRef = useRef(false);
-  useEffect(() => {
-    if (historyMutation?.kind !== "prepend") return;
-    prependLayoutTransientRef.current = true;
-    let frame = requestAnimationFrame(() => {
-      frame = requestAnimationFrame(() => {
-        prependLayoutTransientRef.current = false;
-      });
-    });
-    return () => {
-      cancelAnimationFrame(frame);
-      prependLayoutTransientRef.current = false;
-    };
-  }, [historyMutation?.kind, historyMutation?.seq]);
-
-  const handleTotalListHeightChanged = useCallback((height: number) => {
-    if (SHOW_SCROLL_DIAGNOSTICS) recordTranscriptScrollDiagnostic("list-height", { listHeight: height });
-    if (hydrating || prependLayoutTransientRef.current) return;
-    followGrowingTail();
-  }, [followGrowingTail, hydrating]);
+  const { handleItemsRendered, handleTotalListHeightChanged } = useTranscriptGeometryLifecycle({
+    virtualRowCount: virtualRows.length, hydrating, readerTransactionActive, historyMutation, scrollModeRef,
+    followGrowingTail, revalidateTail,
+    reconcileLogicalFocus: selectionRetention.reconcileLogicalFocus,
+    handleRecoveryItemsRendered, scheduleActiveQuestionSync, markSurfaceItemsRendered,
+  });
 
   const virtuosoContext = useMemo<TranscriptVirtuosoContext>(() => ({
     tabId,
@@ -886,6 +880,7 @@ export function Transcript({
           rows: liveSplit.liveActive ? liveSplit.liveRows : heldLiveRows,
           renderRow,
           showStatus: liveSplit.liveActive,
+          overlay: !liveSplit.liveActive,
           turnStartAt,
           minHeight: liveMinHeight ?? undefined,
           onPointerDownCapture: selectionRetention.onPointerDownCapture,
@@ -959,6 +954,8 @@ export function Transcript({
             key={virtuosoResetKey}
             ref={virtuosoRef}
             className={`transcript${creationMode ? " transcript--creation-scrollbar" : ""}${creationMode && creationScrollbar.hot ? " transcript--scrollbar-hot" : ""}`}
+            data-transcript-hydrating={hydrating ? "true" : "false"}
+            data-transcript-reader-layout-lease={readerTransactionActive ? "true" : "false"}
             data-transcript-row-count={virtualRows.length}
             data-transcript-estimated-total={estimatedTotalHeight}
             data-transcript-reset-key={virtuosoResetKey}
@@ -983,11 +980,14 @@ export function Transcript({
             atBottomStateChange={atBottomStateChange}
             heightEstimates={heightEstimates}
             itemSize={itemSize}
-            minOverscanItemCount={layoutSafeMode
-              ? { top: 32, bottom: 32 }
+            minOverscanItemCount={layoutSafeMode || readerTransactionActive
+              ? { top: readerMountCorridorRows, bottom: readerMountCorridorRows }
               : { top: VIRTUAL_OVERSCAN_ROWS, bottom: VIRTUAL_OVERSCAN_ROWS }}
-            increaseViewportBy={layoutSafeMode
-              ? { top: (scrollElement?.clientHeight ?? 0) * 2, bottom: (scrollElement?.clientHeight ?? 0) * 2 }
+            increaseViewportBy={layoutSafeMode || readerTransactionActive
+              ? {
+                  top: (scrollElement?.clientHeight ?? 0) * READER_MOUNT_CORRIDOR_VIEWPORTS,
+                  bottom: (scrollElement?.clientHeight ?? 0) * READER_MOUNT_CORRIDOR_VIEWPORTS,
+                }
               : { top: 480, bottom: 480 }}
             scrollerRef={handleScrollerRef}
             itemsRendered={handleItemsRendered}
