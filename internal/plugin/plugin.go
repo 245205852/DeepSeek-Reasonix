@@ -634,6 +634,7 @@ type Client struct {
 	instanceID uint64 // Host-local identity for RemoveIfInstance rollback
 	t          transport
 	spec       Spec
+	profile    HostProfile
 
 	// registrationClaims and registrationCommitted are guarded by Host.mu.
 	// Claims keep a tentative shared instance alive across overlapping builds;
@@ -1460,6 +1461,7 @@ func start(lifeCtx, callCtx context.Context, s Spec, profile HostProfile) (*Clie
 		name:      s.Name,
 		t:         t,
 		spec:      s,
+		profile:   profile.Normalize(),
 		transport: tt,
 		refresh: toolListRefreshState{
 			ctx:    refreshCtx,
@@ -1802,25 +1804,60 @@ func (t *remoteTool) Execute(ctx context.Context, args json.RawMessage) (string,
 // content items, which callers with a structural image channel (the agent)
 // forward to vision models instead of relying on the text placeholders alone.
 func (t *remoteTool) ExecuteWithImages(ctx context.Context, args json.RawMessage) (string, []string, error) {
+	res, err := t.callRaw(ctx, args)
+	if err != nil {
+		return "", nil, err
+	}
+	stampMCPAppResult(ctx, t, res)
+	return parseToolResult(res)
+}
+
+// ExecuteForApp returns the complete standard CallToolResult to an MCP App.
+// The text and isError flag are separate host-local projections used for hooks
+// and transcript events; an MCP isError result remains a successful bridge
+// response so the App receives its structured fields and metadata.
+func (t *remoteTool) ExecuteForApp(ctx context.Context, args json.RawMessage) (json.RawMessage, string, bool, error) {
+	res, err := t.callRaw(ctx, args)
+	if err != nil {
+		return nil, "", false, err
+	}
+	res, err = tool.ValidateMCPAppCallResult(res)
+	if err != nil {
+		return nil, "", false, err
+	}
+	var status struct {
+		IsError bool `json:"isError"`
+	}
+	if err := json.Unmarshal(res, &status); err != nil {
+		return nil, "", false, fmt.Errorf("decode MCP App tool result: %w", err)
+	}
+	text, _, parseErr := parseToolResult(res)
+	if parseErr != nil && !status.IsError {
+		return nil, "", false, parseErr
+	}
+	return res, text, status.IsError, nil
+}
+
+func (t *remoteTool) callRaw(ctx context.Context, args json.RawMessage) (json.RawMessage, error) {
 	if t.client == nil {
-		return "", nil, errors.New("MCP tool client is unavailable")
+		return nil, errors.New("MCP tool client is unavailable")
 	}
 	t.client.toolDispatchMu.RLock()
 	defer t.client.toolDispatchMu.RUnlock()
 	if t.client.closed.Load() {
-		return "", nil, fmt.Errorf("MCP server %q is closed", t.client.name)
+		return nil, fmt.Errorf("MCP server %q is closed", t.client.name)
 	}
 	if t.client.toolCatalogStale() {
 		t.client.ensureToolsRefresh()
-		return "", nil, fmt.Errorf("MCP server %q changed its tool catalog and the refresh is still pending or failed; retry so Reasonix can apply the current schema and safety metadata", t.client.name)
+		return nil, fmt.Errorf("MCP server %q changed its tool catalog and the refresh is still pending or failed; retry so Reasonix can apply the current schema and safety metadata", t.client.name)
 	}
 	if t.generation == 0 || t.generation != t.client.catalogGeneration {
-		return "", nil, fmt.Errorf("MCP server %q changed tool %q after this call was authorized; retry so Reasonix can apply the current schema and safety metadata", t.client.name, t.rawName)
+		return nil, fmt.Errorf("MCP server %q changed tool %q after this call was authorized; retry so Reasonix can apply the current schema and safety metadata", t.client.name, t.rawName)
 	}
 	var argMap map[string]any
 	if len(args) > 0 {
 		if err := json.Unmarshal(args, &argMap); err != nil {
-			return "", nil, fmt.Errorf("invalid args: %w", err)
+			return nil, fmt.Errorf("invalid args: %w", err)
 		}
 	}
 	readOnly, destructive := t.readOnly, t.destructive
@@ -1831,7 +1868,7 @@ func (t *remoteTool) ExecuteWithImages(ctx context.Context, args json.RawMessage
 		// authorization or safety metadata changed — state drift here returns an
 		// actionable error instead of dispatching.
 		if !t.MCPServerAuthorized() || !readOnly || destructive {
-			return "", nil, fmt.Errorf("MCP server %q changed the authorization or security metadata for tool %q; the call was blocked before dispatch — refresh the server from a parent session before retrying", t.client.name, t.rawName)
+			return nil, fmt.Errorf("MCP server %q changed the authorization or security metadata for tool %q; the call was blocked before dispatch — refresh the server from a parent session before retrying", t.client.name, t.rawName)
 		}
 	}
 	if tool.HasNonDestructiveMCPExecutionIntent(ctx) {
@@ -1839,7 +1876,7 @@ func (t *remoteTool) ExecuteWithImages(ctx context.Context, args json.RawMessage
 		// is intentional and does not block; destructive promotion or lost
 		// authorization must produce zero tools/call.
 		if !t.MCPServerAuthorized() || destructive {
-			return "", nil, fmt.Errorf("MCP server %q changed the authorization or destructive classification for tool %q; the call was blocked before dispatch — retry so Reasonix can re-apply the current Planner MCP safety boundary", t.client.name, t.rawName)
+			return nil, fmt.Errorf("MCP server %q changed the authorization or destructive classification for tool %q; the call was blocked before dispatch — retry so Reasonix can re-apply the current Planner MCP safety boundary", t.client.name, t.rawName)
 		}
 	}
 	res, err := t.client.call(ctx, "tools/call", map[string]any{
@@ -1847,10 +1884,9 @@ func (t *remoteTool) ExecuteWithImages(ctx context.Context, args json.RawMessage
 		"arguments": argMap,
 	})
 	if err != nil {
-		return "", nil, err
+		return nil, err
 	}
-	stampMCPAppResult(ctx, t, res)
-	return parseToolResult(res)
+	return res, nil
 }
 
 // Tool-result images are forwarded to vision models as base64 data URLs, so

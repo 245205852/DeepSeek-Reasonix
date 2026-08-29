@@ -161,7 +161,7 @@ func TestChromeDevtoolsMCPLive(t *testing.T) {
 
 func parseSelectedChromePageID(output string) (int, error) {
 	selected := 0
-	for _, rawLine := range strings.Split(output, "\n") {
+	for rawLine := range strings.SplitSeq(output, "\n") {
 		line := strings.TrimSpace(rawLine)
 		if !strings.HasSuffix(line, "[selected]") {
 			continue
@@ -200,7 +200,6 @@ func TestParseSelectedChromePageID(t *testing.T) {
 		{name: "multiple selections", output: "## Pages\n1: about:blank [selected]\n2: about:blank [selected]", wantErr: true},
 	}
 	for _, test := range tests {
-		test := test
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			got, err := parseSelectedChromePageID(test.output)

@@ -13,18 +13,23 @@ type MCPCapabilityView struct {
 	Detail     string `json:"detail"`
 }
 
+type MCPCapabilityMatrixView struct {
+	Views       []MCPCapabilityView `json:"views"`
+	HostProfile string              `json:"hostProfile"`
+}
+
 // MCPCapabilityMatrix returns the active tab's MCP capability matrix plus the
 // host profile name for the status header.
-func (a *App) MCPCapabilityMatrix() ([]MCPCapabilityView, string) {
+func (a *App) MCPCapabilityMatrix() MCPCapabilityMatrixView {
 	tab, ctrl := a.activeTabAndCtrl()
 	if tab == nil || ctrl == nil {
-		return nil, ""
+		return MCPCapabilityMatrixView{}
 	}
 	capabilityViews, ok := ctrl.(interface {
 		MCPCapabilityViews() []plugin.CapabilityView
 	})
 	if !ok {
-		return nil, ""
+		return MCPCapabilityMatrixView{}
 	}
 	views := capabilityViews.MCPCapabilityViews()
 	plugin.SortCapabilityViews(views)
@@ -40,5 +45,5 @@ func (a *App) MCPCapabilityMatrix() ([]MCPCapabilityView, string) {
 			}
 		}
 	}
-	return out, profile
+	return MCPCapabilityMatrixView{Views: out, HostProfile: profile}
 }

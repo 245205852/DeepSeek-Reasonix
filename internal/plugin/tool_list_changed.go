@@ -65,6 +65,10 @@ type clientCapabilities struct {
 // appsUI reports two-way MCP Apps agreement for this server.
 func (cc clientCapabilities) appsUI() bool { return cc.serverExtensions[AppsUIExtensionID] }
 
+func (c *Client) appsNegotiated() bool {
+	return c != nil && c.profile.Capabilities().AppsUI && c.capabilities.appsUI()
+}
+
 // toolCatalogSnapshot is immutable after publication. All slices are built off
 // lock and replaced together under toolsMu, so readers see either the complete
 // old catalog or the complete new catalog.
@@ -561,7 +565,8 @@ func (c *Client) fetchToolCatalog(ctx context.Context, settleEmpty bool) (toolCa
 	for _, candidate := range out {
 		readOnlyHint := candidate.Annotations != nil && candidate.Annotations.ReadOnlyHint
 		destructiveHint := candidate.Annotations != nil && candidate.Annotations.DestructiveHint
-		modelVisible, appCallable := candidate.Meta.appVisibility()
+		modelVisible, appVisible := candidate.Meta.appVisibility()
+		appCallable := appVisible && c.appsNegotiated()
 		info := ToolInfo{Name: candidate.Name, Description: candidate.Description, ReadOnlyHint: readOnlyHint, DestructiveHint: destructiveHint}
 		visibleName := candidate.Name
 		if c.spec.StripRawPrefix != "" {
@@ -659,9 +664,11 @@ func (c *Client) publishToolCatalog(candidate toolCatalogSnapshot, targetRevisio
 	if changed {
 		c.catalogGeneration++
 		candidate.generation = c.catalogGeneration
-		for _, adapter := range candidate.adapters {
-			if remote, ok := adapter.(*remoteTool); ok {
-				remote.generation = candidate.generation
+		for _, adapters := range [][]tool.Tool{candidate.adapters, candidate.appAdapters} {
+			for _, adapter := range adapters {
+				if remote, ok := adapter.(*remoteTool); ok {
+					remote.generation = candidate.generation
+				}
 			}
 		}
 		c.toolCatalog = candidate

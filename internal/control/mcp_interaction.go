@@ -210,10 +210,3 @@ func (c *Controller) recordMCPInteractionReceipt(id string, pending pendingMCPIn
 	}
 	c.executor.Session().AddDecisionReceipt(receipt)
 }
-
-// hasPendingMCPInteractions reports unanswered elicitations for prompt state.
-func (a *approvalManager) hasPendingMCPInteractions() bool {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return len(a.mcpInteractions.pending) > 0
-}

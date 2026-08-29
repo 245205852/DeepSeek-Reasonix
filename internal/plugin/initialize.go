@@ -62,10 +62,10 @@ func parseServerExtensions(raw json.RawMessage) map[string]bool {
 	return extensions
 }
 
-// elicitationUsable reports that the negotiated protocol revision supports
-// server-initiated elicitation, so a declared client capability is meaningful.
+// elicitationUsable reports that a live negotiated session can deliver either
+// legacy push-style or 2026 multi-round-trip elicitation to the client handler.
 func (c *Client) elicitationUsable() bool {
-	return c.protocolVersion >= "2026-07-28"
+	return c.protocolVersion != ""
 }
 
 func capabilityListChanged(capability json.RawMessage) bool {

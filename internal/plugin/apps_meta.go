@@ -25,6 +25,8 @@ type mcpTool struct {
 }
 
 type mcpToolMeta struct {
+	// Visibility is the legacy top-level shape. Stable MCP Apps nests the
+	// field under ui; the nested value wins when both are present.
 	Visibility []string `json:"visibility,omitempty"`
 	// ResourceURI is the pre-2026-01-26 flat key; ui.resourceUri wins.
 	ResourceURI string `json:"resourceUri,omitempty"`
@@ -33,16 +35,28 @@ type mcpToolMeta struct {
 	UI              *struct {
 		ResourceURI string              `json:"resourceUri,omitempty"`
 		CSP         map[string][]string `json:"csp,omitempty"`
+		Visibility  []string            `json:"visibility,omitempty"`
 	} `json:"ui,omitempty"`
+}
+
+func (m *mcpToolMeta) effectiveVisibility() []string {
+	if m == nil {
+		return nil
+	}
+	if m.UI != nil && len(m.UI.Visibility) > 0 {
+		return m.UI.Visibility
+	}
+	return m.Visibility
 }
 
 // appVisibility resolves the effective visibility: the spec default keeps a
 // tool in both the model catalog and the App channel.
 func (m *mcpToolMeta) appVisibility() (model, app bool) {
-	if m == nil || len(m.Visibility) == 0 {
+	visibility := m.effectiveVisibility()
+	if len(visibility) == 0 {
 		return true, true
 	}
-	for _, v := range m.Visibility {
+	for _, v := range visibility {
 		switch v {
 		case "model":
 			model = true
@@ -55,10 +69,7 @@ func (m *mcpToolMeta) appVisibility() (model, app bool) {
 
 // visibilityCopy is nil-safe for tools without _meta.
 func (m *mcpToolMeta) visibilityCopy() []string {
-	if m == nil {
-		return nil
-	}
-	return m.Visibility
+	return append([]string(nil), m.effectiveVisibility()...)
 }
 
 func (m *mcpToolMeta) uiResource() (uri string, csp map[string][]string) {
@@ -86,6 +97,9 @@ func (m *mcpToolMeta) uiResource() (uri string, csp map[string][]string) {
 // context when the result carries App-relevant payload (a structured result
 // or a tool with a ui resource). It never alters the text/image forms.
 func stampMCPAppResult(ctx context.Context, t *remoteTool, res json.RawMessage) {
+	if t == nil || t.client == nil || !t.client.appsNegotiated() {
+		return
+	}
 	var wire struct {
 		StructuredContent json.RawMessage `json:"structuredContent"`
 	}

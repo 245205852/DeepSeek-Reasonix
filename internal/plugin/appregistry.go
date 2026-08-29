@@ -29,6 +29,8 @@ type AppInstance struct {
 	resourceDigest  string
 	resourceCSP     map[string][]string
 	resourceBytes   int
+	callCtx         context.Context
+	cancelCalls     context.CancelFunc
 }
 
 // AppResourceSnapshot is the immutable resource bound to one live App
@@ -75,9 +77,11 @@ func (r *appInstanceRegistry) newToken() string {
 func (r *appInstanceRegistry) Register(server, tool string, generation uint64, callID, resourceURI string) *AppInstance {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	callCtx, cancelCalls := context.WithCancel(context.Background())
 	inst := &AppInstance{
 		Token: r.newToken(), Server: server, Tool: tool,
 		Generation: generation, CallID: callID, ResourceURI: resourceURI,
+		callCtx: callCtx, cancelCalls: cancelCalls,
 	}
 	r.instances[inst.Token] = inst
 	r.order = append(r.order, inst.Token)
@@ -101,6 +105,8 @@ func cloneAppInstance(inst *AppInstance) *AppInstance {
 	}
 	copy := *inst
 	copy.resourceCSP = cloneAppCSP(inst.resourceCSP)
+	copy.callCtx = nil
+	copy.cancelCalls = nil
 	return &copy
 }
 
@@ -123,6 +129,7 @@ func (r *appInstanceRegistry) releaseOldestLocked() {
 	r.order = r.order[1:]
 	if inst := r.instances[oldest]; inst != nil {
 		r.bytes -= inst.resourceBytes
+		inst.cancelCalls()
 	}
 	delete(r.instances, oldest)
 }
@@ -181,6 +188,16 @@ func (r *appInstanceRegistry) Resource(token string) (AppResourceSnapshot, bool)
 	}, true
 }
 
+func (r *appInstanceRegistry) Context(token string) (context.Context, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	inst, ok := r.instances[token]
+	if !ok || inst.callCtx == nil {
+		return nil, false
+	}
+	return inst.callCtx, true
+}
+
 // Release drops one instance (tab closed, component unmounted).
 func (r *appInstanceRegistry) Release(token string) {
 	r.mu.Lock()
@@ -189,6 +206,7 @@ func (r *appInstanceRegistry) Release(token string) {
 		return
 	}
 	r.bytes -= r.instances[token].resourceBytes
+	r.instances[token].cancelCalls()
 	delete(r.instances, token)
 	for i, t := range r.order {
 		if t == token {
@@ -205,6 +223,7 @@ func (r *appInstanceRegistry) ReleaseServer(server string) {
 	for token, inst := range r.instances {
 		if inst.Server == server {
 			r.bytes -= inst.resourceBytes
+			inst.cancelCalls()
 			delete(r.instances, token)
 		}
 	}
@@ -232,6 +251,12 @@ func (h *Host) RegisterAppInstance(server, tool string, generation uint64, callI
 // LookupAppInstance resolves a token against the host registry.
 func (h *Host) LookupAppInstance(token string) (*AppInstance, bool) {
 	return h.appInstances.Lookup(token)
+}
+
+// AppInstanceContext is cancelled when the App closes, is evicted, or its
+// server disconnects. App-initiated calls use it as their lifetime owner.
+func (h *Host) AppInstanceContext(token string) (context.Context, bool) {
+	return h.appInstances.Context(token)
 }
 
 // BindAppResource freezes one validated resource onto the live instance.
@@ -264,6 +289,9 @@ func (h *Host) AppInstanceResourceDescriptor(token string) (map[string][]string,
 	if client == nil {
 		return nil, false
 	}
+	if !client.appsNegotiated() {
+		return nil, false
+	}
 	client.toolsMu.RLock()
 	defer client.toolsMu.RUnlock()
 	if client.toolCatalog.generation != inst.Generation || client.toolCatalogStale() {
@@ -272,7 +300,7 @@ func (h *Host) AppInstanceResourceDescriptor(token string) (map[string][]string,
 	for _, candidates := range [][]tool.Tool{client.toolCatalog.adapters, client.toolCatalog.appAdapters} {
 		for _, candidate := range candidates {
 			rt, ok := candidate.(*remoteTool)
-			if ok && rt.rawName == inst.Tool && rt.uiResourceURI == inst.ResourceURI {
+			if ok && rt.rawName == inst.Tool && rt.appCallable && rt.uiResourceURI == inst.ResourceURI {
 				return cloneAppCSP(rt.uiCSP), true
 			}
 		}
@@ -340,6 +368,9 @@ func (h *Host) ReadResourceForApp(ctx context.Context, server, uri string) (stri
 	h.mu.RUnlock()
 	if client == nil {
 		return "", "", nil, fmt.Errorf("server %q not connected", server)
+	}
+	if !client.appsNegotiated() {
+		return "", "", nil, fmt.Errorf("server %q did not negotiate the MCP Apps extension", server)
 	}
 	return client.readResourceWithMime(ctx, uri)
 }

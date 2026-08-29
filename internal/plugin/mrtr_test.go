@@ -7,6 +7,7 @@ import (
 	"sync"
 	"testing"
 
+	mcpjsonrpc "github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 	"reasonix/internal/mcpinteraction"
 )
@@ -43,7 +44,6 @@ type mrtrFixtureServer struct {
 	mu        sync.Mutex
 	attempts  int
 	states    []string
-	elicited  bool
 	numInputs int // how many parallel input requests to return (multi-input test)
 }
 
@@ -214,6 +214,170 @@ func TestMRTRBrokerTravelsWithCallContext(t *testing.T) {
 	}
 	if res == nil {
 		t.Fatal("nil result")
+	}
+}
+
+func TestLegacy20251125PushElicitationUsesOnlyUnambiguousCall(t *testing.T) {
+	transport := &sdkSessionTransport{name: "legacy-push"}
+	broker := &scriptedBroker{answer: mcpinteraction.Result{
+		Action:  mcpinteraction.ActionAccept,
+		Content: map[string]any{"answer": "legacy"},
+	}}
+	callCtx := mcpinteraction.WithBroker(t.Context(), broker)
+	unregister := transport.registerLegacyElicitationCall(callCtx, "2025-11-25", "tools/call")
+	defer unregister()
+
+	res, err := transport.handleElicitation(context.Background(), &mcpsdk.ElicitRequest{Params: &mcpsdk.ElicitParams{
+		Message: "legacy form",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Action != mcpinteraction.ActionAccept || res.Content["answer"] != "legacy" {
+		t.Fatalf("legacy response = %+v", res)
+	}
+	if got := len(broker.requests()); got != 1 {
+		t.Fatalf("legacy broker requests = %d, want 1", got)
+	}
+}
+
+func TestLegacy20251125PushElicitationEndToEnd(t *testing.T) {
+	lifeCtx, cancelLife := context.WithCancel(context.Background())
+	transport := &sdkSessionTransport{
+		name: "legacy-push", spec: Spec{Name: "legacy-push", Type: "http"}, profile: HostProfileInteractive,
+		lifeCtx: lifeCtx, cancel: cancelLife, state: SessionStateConnecting,
+	}
+	transport.endpointFactory = func(ctx context.Context) (sdkEndpoint, error) {
+		clientSide, serverSide := mcpsdk.NewInMemoryTransports()
+		go serveLegacyPushFixture(ctx, serverSide)
+		return sdkEndpoint{transport: clientSide}, nil
+	}
+	t.Cleanup(transport.close)
+
+	broker := &scriptedBroker{answer: mcpinteraction.Result{
+		Action: mcpinteraction.ActionAccept, Content: map[string]any{"answer": "legacy accepted"},
+	}}
+	callCtx := mcpinteraction.WithBroker(t.Context(), broker)
+	raw, err := transport.call(callCtx, "tools/call", map[string]any{"name": "legacy_ask", "arguments": map[string]any{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := transport.sessionDiagnostics().ProtocolVersion; got != "2025-11-25" {
+		t.Fatalf("protocol = %q, want 2025-11-25", got)
+	}
+	var result struct {
+		Content []struct {
+			Text string `json:"text"`
+		} `json:"content"`
+	}
+	if err := json.Unmarshal(raw, &result); err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Content) != 1 || result.Content[0].Text != "legacy accepted" || len(broker.requests()) != 1 {
+		t.Fatalf("legacy push result = %s, broker requests = %d", raw, len(broker.requests()))
+	}
+}
+
+func serveLegacyPushFixture(ctx context.Context, transport mcpsdk.Transport) {
+	conn, err := transport.Connect(ctx)
+	if err != nil {
+		return
+	}
+	defer conn.Close()
+	for {
+		message, err := conn.Read(ctx)
+		if err != nil {
+			return
+		}
+		request, ok := message.(*mcpjsonrpc.Request)
+		if !ok {
+			continue
+		}
+		switch request.Method {
+		case "server/discover":
+			_ = writeLegacyFixtureMessage(ctx, conn, map[string]any{
+				"jsonrpc": "2.0", "id": request.ID.Raw(),
+				"error": map[string]any{"code": mcpjsonrpc.CodeMethodNotFound, "message": "method not found"},
+			})
+		case "initialize":
+			_ = writeLegacyFixtureMessage(ctx, conn, map[string]any{
+				"jsonrpc": "2.0", "id": request.ID.Raw(),
+				"result": map[string]any{
+					"protocolVersion": "2025-11-25",
+					"capabilities":    map[string]any{"tools": map[string]any{}},
+					"serverInfo":      map[string]any{"name": "legacy-push", "version": "1"},
+				},
+			})
+		case "tools/call":
+			if err := writeLegacyFixtureMessage(ctx, conn, map[string]any{
+				"jsonrpc": "2.0", "id": 700, "method": "elicitation/create",
+				"params": map[string]any{
+					"message": "legacy question",
+					"requestedSchema": map[string]any{
+						"type":       "object",
+						"properties": map[string]any{"answer": map[string]any{"type": "string"}},
+						"required":   []any{"answer"},
+					},
+				},
+			}); err != nil {
+				return
+			}
+			answerMessage, err := conn.Read(ctx)
+			if err != nil {
+				return
+			}
+			answer, ok := answerMessage.(*mcpjsonrpc.Response)
+			if !ok || answer.Error != nil {
+				return
+			}
+			var elicitation struct {
+				Action  string         `json:"action"`
+				Content map[string]any `json:"content"`
+			}
+			if json.Unmarshal(answer.Result, &elicitation) != nil {
+				return
+			}
+			text, _ := elicitation.Content["answer"].(string)
+			_ = writeLegacyFixtureMessage(ctx, conn, map[string]any{
+				"jsonrpc": "2.0", "id": request.ID.Raw(),
+				"result": map[string]any{
+					"content": []any{map[string]any{"type": "text", "text": text}},
+				},
+			})
+		}
+	}
+}
+
+func writeLegacyFixtureMessage(ctx context.Context, conn mcpsdk.Connection, wire map[string]any) error {
+	encoded, err := json.Marshal(wire)
+	if err != nil {
+		return err
+	}
+	message, err := mcpjsonrpc.DecodeMessage(encoded)
+	if err != nil {
+		return err
+	}
+	return conn.Write(ctx, message)
+}
+
+func TestLegacyPushElicitationCancelsAmbiguousConcurrentCalls(t *testing.T) {
+	transport := &sdkSessionTransport{name: "legacy-concurrent"}
+	first := &scriptedBroker{answer: mcpinteraction.Result{Action: mcpinteraction.ActionAccept}}
+	second := &scriptedBroker{answer: mcpinteraction.Result{Action: mcpinteraction.ActionAccept}}
+	unregisterFirst := transport.registerLegacyElicitationCall(mcpinteraction.WithBroker(t.Context(), first), "2025-11-25", "tools/call")
+	defer unregisterFirst()
+	unregisterSecond := transport.registerLegacyElicitationCall(mcpinteraction.WithBroker(t.Context(), second), "2025-11-25", "tools/call")
+	defer unregisterSecond()
+
+	res, err := transport.handleElicitation(context.Background(), &mcpsdk.ElicitRequest{Params: &mcpsdk.ElicitParams{Message: "ambiguous"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Action != mcpinteraction.ActionCancel {
+		t.Fatalf("ambiguous action = %q, want cancel", res.Action)
+	}
+	if len(first.requests()) != 0 || len(second.requests()) != 0 {
+		t.Fatal("ambiguous legacy elicitation crossed into a call broker")
 	}
 }
 

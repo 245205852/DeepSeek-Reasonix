@@ -1,8 +1,8 @@
 package control
 
 import (
-	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -31,6 +31,10 @@ func (c *Controller) MCPAppCallTool(instanceToken, toolName string, args json.Ra
 		return "", fmt.Errorf("app tool call refused: unknown instance, cross-server target, non-app tool, or stale catalog")
 	}
 	inst, _ := host.LookupAppInstance(instanceToken)
+	callCtx, ok := host.AppInstanceContext(instanceToken)
+	if !ok || callCtx.Err() != nil {
+		return "", fmt.Errorf("app tool call refused: instance is closed")
+	}
 	target := ref.UITool()
 	callID := fmt.Sprintf("mcp-app-%d", time.Now().UnixNano())
 	parentID := ""
@@ -52,27 +56,31 @@ func (c *Controller) MCPAppCallTool(instanceToken, toolName string, args json.Ra
 		return "", fmt.Errorf("persist app dispatch: %w", err)
 	}
 
-	ctx := agent.WithToolCallContext(context.Background(), callID, c.sink, c, false)
+	ctx := agent.WithToolCallContext(callCtx, callID, c.sink, c, false)
 	ctx = mcpinteraction.WithBroker(ctx, c)
 
 	if c.hooks != nil {
 		c.hooks.PreToolUse(ctx, target.Name(), argsJSON)
 	}
-	output, err := target.Execute(ctx, argsJSON)
+	rawResult, output, reportedError, err := target.ExecuteForApp(ctx, argsJSON)
+	hookErr := err
+	if hookErr == nil && reportedError {
+		hookErr = errors.New("MCP tool returned isError")
+	}
 	if c.hooks != nil {
-		if err != nil {
-			c.hooks.PostToolUseFailure(ctx, target.Name(), argsJSON, output, err)
+		if hookErr != nil {
+			c.hooks.PostToolUseFailure(ctx, target.Name(), argsJSON, output, hookErr)
 		} else {
 			c.hooks.PostToolUse(ctx, target.Name(), argsJSON, output)
 		}
 	}
 
 	toolEvent.Output = output
-	if err != nil {
-		toolEvent.Err = err.Error()
+	if hookErr != nil {
+		toolEvent.Err = hookErr.Error()
 	}
 	if emitErr := event.EmitChecked(c.sink, event.Event{Kind: event.ToolResult, Tool: toolEvent}); emitErr != nil {
-		return output, fmt.Errorf("persist app result: %w", emitErr)
+		return string(rawResult), fmt.Errorf("persist app result: %w", emitErr)
 	}
 	if c.executor != nil && c.executor.Session() != nil {
 		c.executor.Session().Add(provider.Message{
@@ -81,5 +89,5 @@ func (c *Controller) MCPAppCallTool(instanceToken, toolName string, args json.Ra
 			Content: output,
 		})
 	}
-	return output, err
+	return string(rawResult), err
 }

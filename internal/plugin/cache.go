@@ -16,6 +16,7 @@ import (
 	"log/slog"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -102,12 +103,7 @@ func (t CachedTool) ToolIsModelVisible() bool {
 	if len(t.Visibility) == 0 {
 		return true
 	}
-	for _, v := range t.Visibility {
-		if v == "model" {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(t.Visibility, "model")
 }
 
 // SchemaCacheKey hashes the load-bearing, non-secret parts of a Spec. Secret

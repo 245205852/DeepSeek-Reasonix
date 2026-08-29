@@ -108,6 +108,10 @@ type sdkSessionTransport struct {
 	lastStartupStderr string
 	endpointFactory   func(context.Context) (sdkEndpoint, error)
 	wg                sync.WaitGroup
+
+	legacyElicitationMu   sync.Mutex
+	legacyElicitationNext uint64
+	legacyElicitation     map[uint64]legacyElicitationCall
 }
 
 var defaultSessionReconnectDelays = []time.Duration{
@@ -193,7 +197,7 @@ func (t *sdkSessionTransport) call(ctx context.Context, method string, params an
 	if err != nil {
 		return nil, t.sanitizeError(err, nil)
 	}
-	result, err := invokeSDKMethod(ctx, managed.session, method, params)
+	result, err := t.invokeManaged(ctx, managed, method, params)
 	if err == nil {
 		t.clearRuntimeError(managed)
 		return result, nil
@@ -211,7 +215,7 @@ func (t *sdkSessionTransport) call(ctx context.Context, method string, params an
 		if rebuildErr != nil {
 			return nil, t.sanitizeError(fmt.Errorf("MCP session expired; rebuild failed: %w", rebuildErr), managed)
 		}
-		result, err = invokeSDKMethod(ctx, replacement.session, method, params)
+		result, err = t.invokeManaged(ctx, replacement, method, params)
 		if err == nil {
 			t.clearRuntimeError(replacement)
 			return result, nil
@@ -233,7 +237,7 @@ func (t *sdkSessionTransport) call(ctx context.Context, method string, params an
 			if rebuildErr != nil {
 				return nil, t.sanitizeError(fmt.Errorf("MCP connection closed; rebuild failed: %w", rebuildErr), managed)
 			}
-			result, err = invokeSDKMethod(ctx, replacement.session, method, params)
+			result, err = t.invokeManaged(ctx, replacement, method, params)
 			if err == nil {
 				t.clearRuntimeError(replacement)
 				return result, nil
@@ -458,15 +462,32 @@ func (t *sdkSessionTransport) setStateIfBuilding(generation uint64, state Sessio
 	t.mu.Unlock()
 }
 
-// handleElicitation answers server-initiated elicitation. The broker rides the
-// original tools/call context (the SDK middleware passes it through), so the
-// decision reaches the tab or terminal that started the call. Without a broker
-// the request is cancelled — the model must never guess an answer.
+// handleElicitation answers server-initiated elicitation. MCP 2026 middleware
+// preserves the tools/call context; legacy push requests use the fail-closed,
+// unambiguous active-call registry. Without one exact broker the request is
+// cancelled — the model must never guess an answer or cross tabs.
 func (t *sdkSessionTransport) handleElicitation(ctx context.Context, req *mcpsdk.ElicitRequest) (*mcpsdk.ElicitResult, error) {
-	broker := mcpinteraction.FromContext(ctx)
-	if broker == nil {
-		return &mcpsdk.ElicitResult{Action: mcpinteraction.ActionCancel}, nil
+	if ctx == nil {
+		ctx = context.Background()
 	}
+	broker := mcpinteraction.FromContext(ctx)
+	decisionCtx := ctx
+	cleanup := func() {}
+	if broker == nil {
+		legacyBroker, callCtx, ok := t.unambiguousLegacyElicitation()
+		if !ok {
+			return &mcpsdk.ElicitResult{Action: mcpinteraction.ActionCancel}, nil
+		}
+		broker = legacyBroker
+		var cancel context.CancelFunc
+		decisionCtx, cancel = context.WithCancel(callCtx)
+		stop := context.AfterFunc(ctx, cancel)
+		cleanup = func() {
+			stop()
+			cancel()
+		}
+	}
+	defer cleanup()
 	interactReq := mcpinteraction.Request{
 		Server:        t.name,
 		Mode:          req.Params.Mode,
@@ -484,7 +505,7 @@ func (t *sdkSessionTransport) handleElicitation(ctx context.Context, req *mcpsdk
 	if !mcpinteraction.SanitizeURLMode(interactReq) {
 		return &mcpsdk.ElicitResult{Action: mcpinteraction.ActionCancel}, nil
 	}
-	res, err := broker.Interact(ctx, interactReq)
+	res, err := broker.Interact(decisionCtx, interactReq)
 	if err != nil {
 		return nil, err
 	}

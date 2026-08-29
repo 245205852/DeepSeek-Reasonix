@@ -95,9 +95,9 @@ func (h *Host) CapabilityViews() []CapabilityView {
 		interactiveDetail = "Form and URL elicitation declared (profile " + profile.String() + ")"
 		if elicitationLive {
 			interactiveState = CapabilityStateNegotiated
-			interactiveDetail = "Elicitation active on at least one 2026-07-28 session"
+			interactiveDetail = "Elicitation active on at least one compatible session"
 		} else if anyConnected {
-			interactiveDetail = "Declared; no connected server negotiated a 2026-07-28 session yet"
+			interactiveDetail = "Declared; no connected session can deliver elicitation yet"
 		}
 	}
 	views = append(views, CapabilityView{

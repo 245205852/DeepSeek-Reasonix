@@ -10,7 +10,10 @@ import {
 import type { TranscriptScrollMode } from "./transcriptScrollArbiter";
 import { nativeTranscriptDistanceFromBottom } from "./transcriptScrollGeometry";
 import type { TranscriptScrollWriteRecord } from "./transcriptScrollProbe";
-import { captureTranscriptLayoutAnchor } from "./transcriptVirtuosoRecovery";
+import {
+  captureTranscriptLayoutAnchor,
+  transcriptElementViewportIsBlank,
+} from "./transcriptVirtuosoRecovery";
 
 const READER_EXTENT_STABILITY_MS = 180;
 
@@ -19,6 +22,8 @@ type ActiveReaderExtentGuard = TranscriptReaderExtentGuard & {
   generation: number;
   deadline: number;
   frame: number | null;
+  prepaint: boolean;
+  tick?: () => void;
 };
 
 export function useTranscriptReaderExtentStability({
@@ -48,6 +53,14 @@ export function useTranscriptReaderExtentStability({
     const guard = guardRef.current;
     if (!element || guard?.element !== element) return false;
     observeTranscriptReaderExtent(guard, element);
+    if (
+      transcriptReaderExtentCanCorrect(guard, element)
+      && transcriptElementViewportIsBlank(element)
+    ) {
+      guard.prepaint = true;
+      if (guard.frame !== null) cancelAnimationFrame(guard.frame);
+      guard.tick?.();
+    }
     return transcriptReaderExtentHasCollapsed(guard);
   }, [scrollRef]);
 
@@ -67,9 +80,13 @@ export function useTranscriptReaderExtentStability({
       generation: generationRef.current,
       deadline: Date.now() + READER_EXTENT_STABILITY_MS,
       frame: null,
+      prepaint: false,
     };
+    let reboundHeight: number | undefined;
     const tick = () => {
       active.frame = null;
+      const prepaint = active.prepaint;
+      active.prepaint = false;
       if (
         guardRef.current !== active
         || generationRef.current !== active.generation
@@ -85,7 +102,16 @@ export function useTranscriptReaderExtentStability({
         clientHeight: element.clientHeight,
       };
       observeTranscriptReaderExtent(active, snapshot);
-      if (transcriptReaderExtentCanCorrect(active, snapshot)) {
+      // WebView2 can publish the restored native extent before Virtuoso mounts
+      // rows for it. A rebound scroll delivery spends the correction before
+      // paint; the frame fallback waits for coverage and a stable height.
+      const viewportIsBlank = transcriptElementViewportIsBlank(element);
+      if (
+        transcriptReaderExtentCanCorrect(active, snapshot)
+        && (prepaint
+          ? viewportIsBlank
+          : !viewportIsBlank && reboundHeight === snapshot.scrollHeight)
+      ) {
         const row = active.anchor
           ? Array.from(element.querySelectorAll<HTMLElement>(".transcript__row[data-row-key]"))
             .find((candidate) => candidate.dataset.rowKey === active.anchor?.rowKey)
@@ -109,12 +135,14 @@ export function useTranscriptReaderExtentStability({
           return;
         }
       }
+      reboundHeight = snapshot.scrollHeight;
       if (Date.now() >= active.deadline) {
         guardRef.current = null;
         return;
       }
       active.frame = requestAnimationFrame(tick);
     };
+    active.tick = tick;
     guardRef.current = active;
     active.frame = requestAnimationFrame(tick);
   }, [cancel, generationRef, modeRef, scrollRef, writeCorrection]);

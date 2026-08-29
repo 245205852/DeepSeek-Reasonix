@@ -12,15 +12,6 @@ import (
 	"reasonix/internal/plugin"
 )
 
-// activeMCPRuntimeHost returns the active tab's MCP host.
-func (a *App) activeMCPRuntimeHost() *plugin.Host {
-	_, ctrl, _ := a.activeMCPRuntime()
-	if ctrl == nil {
-		return nil
-	}
-	return ctrl.Host()
-}
-
 // MCPAppInstanceView describes one live App surface for the frontend.
 type MCPAppInstanceView struct {
 	InstanceToken  string `json:"instanceToken"`

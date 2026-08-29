@@ -3,6 +3,8 @@ package tool
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -23,6 +25,23 @@ type MCPAppResult struct {
 // maxMCPAppBytes bounds the persisted presentation copy. Oversized results
 // keep the text form only.
 const maxMCPAppBytes = 512 << 10
+
+// ValidateMCPAppCallResult preserves a complete standard CallToolResult for
+// the App bridge while enforcing the same bounded host payload used by stored
+// presentations. Unknown fields and nested resource metadata are retained.
+func ValidateMCPAppCallResult(raw json.RawMessage) (json.RawMessage, error) {
+	if len(raw) == 0 || len(raw) > maxMCPAppBytes {
+		return nil, fmt.Errorf("MCP App tool result is empty or exceeds %d bytes", maxMCPAppBytes)
+	}
+	var result map[string]any
+	if err := json.Unmarshal(raw, &result); err != nil || result == nil {
+		return nil, fmt.Errorf("MCP App tool result is not a JSON object")
+	}
+	if _, ok := result["content"].([]any); !ok {
+		return nil, fmt.Errorf("MCP App tool result has invalid content")
+	}
+	return append(json.RawMessage(nil), raw...), nil
+}
 
 // droppableMCPAppContent reports items that never enter the persisted copy:
 // audio/video and oversized base64 data blow the budget without adding App
@@ -53,11 +72,7 @@ func hasOversizedInlineData(value any) bool {
 			}
 		}
 	case []any:
-		for _, nested := range typed {
-			if hasOversizedInlineData(nested) {
-				return true
-			}
-		}
+		return slices.ContainsFunc(typed, hasOversizedInlineData)
 	}
 	return false
 }

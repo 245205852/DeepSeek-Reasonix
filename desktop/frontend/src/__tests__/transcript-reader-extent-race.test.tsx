@@ -69,8 +69,12 @@ const rectAt = (top: number) => ({
 });
 const scrollElement = dom.window.document.getElementById("scroll") as HTMLDivElement;
 const rowElement = scrollElement.querySelector<HTMLElement>(".transcript__row")!;
+const reboundCoverageRow = dom.window.document.createElement("div");
+reboundCoverageRow.className = "transcript__row";
+reboundCoverageRow.dataset.rowKey = "row-ready";
 scrollElement.getBoundingClientRect = () => rectAt(0);
 rowElement.getBoundingClientRect = () => rectAt(20);
+reboundCoverageRow.getBoundingClientRect = () => rectAt(20);
 Object.defineProperty(scrollElement, "clientHeight", { configurable: true, value: 725 });
 let scrollExtent = 15_829;
 Object.defineProperty(scrollElement, "scrollHeight", { configurable: true, get: () => scrollExtent });
@@ -78,11 +82,13 @@ Object.defineProperty(scrollElement, "scrollTop", { configurable: true, writable
 
 let scrollByCalls = 0;
 let lastScrollByTop = 0;
+let mountCoverageOnScrollBy = false;
 const virtuosoHandle = {
   scrollBy: (options?: { top?: number }) => {
     scrollByCalls += 1;
     lastScrollByTop = options?.top ?? 0;
     scrollElement.scrollTop += lastScrollByTop;
+    if (mountCoverageOnScrollBy) rowElement.getBoundingClientRect = () => rectAt(20);
   },
   scrollTo: (options?: { top?: number }) => {
     scrollElement.scrollTop = options?.top ?? scrollElement.scrollTop;
@@ -145,13 +151,48 @@ await act(async () => arbiter?.followGrowingTail());
 await flushFrames();
 check(scrollByCalls === 0, "the transaction waits while the native extent remains collapsed");
 scrollExtent = 15_829;
+scrollElement.append(reboundCoverageRow);
 await act(async () => arbiter?.followGrowingTail());
+await flushFrames();
+check(scrollByCalls === 0,
+  "the rebound waits for mounted coverage and stable restored geometry");
 await flushFrames();
 check(scrollByCalls === 1 && lastScrollByTop > 1_900,
   `the rebound restores the logical anchor exactly once (${lastScrollByTop}px)`);
 check(scrollWrites.length === 1 && scrollWrites[0].owner === "reader-stability",
   "the correction is owned by reader stability rather than recovery or tail-follow");
 check(arbiter?.modeRef.current === "manual", "the correction preserves manual reader ownership");
+reboundCoverageRow.remove();
+
+// A rebound scroll delivery can arrive before the next animation frame. If
+// the native extent has already exposed a blank viewport, spend the same
+// single correction budget synchronously so the next paint has mounted rows.
+await act(async () => arbiter?.reset());
+scrollExtent = 5_000;
+scrollElement.scrollTop = 2_000;
+rowElement.getBoundingClientRect = () => rectAt(20);
+await act(async () => arbiter?.deliverScroll());
+await act(async () => arbiter?.releaseTailFollow());
+await act(async () => arbiter?.onWheelIntent({
+  ctrlKey: false,
+  deltaMode: 0,
+  deltaX: 0,
+  deltaY: 10,
+  target: scrollElement,
+} as React.WheelEvent<HTMLElement>));
+scrollExtent = 4_000;
+scrollElement.scrollTop = 1_000;
+rowElement.getBoundingClientRect = () => rectAt(1_000);
+await act(async () => arbiter?.deliverScroll());
+scrollExtent = 5_000;
+scrollByCalls = 0;
+mountCoverageOnScrollBy = true;
+await act(async () => arbiter?.deliverScroll());
+mountCoverageOnScrollBy = false;
+check(scrollByCalls === 1 && rowElement.getBoundingClientRect().top === 20,
+  "a blank rebound delivery corrects before the next paint");
+await flushFrames();
+check(scrollByCalls === 1, "the prepaint rebound still spends one correction");
 
 // Touch movement is incremental: the second touchmove protects only its own
 // segment rather than replaying the distance from the original touchstart.
@@ -173,13 +214,16 @@ await act(async () => arbiter?.onTouchMoveIntent({
 scrollExtent = 4_000;
 scrollElement.scrollTop = 1_000;
 rowElement.remove();
+scrollElement.append(reboundCoverageRow);
 await act(async () => arbiter?.deliverScroll());
 scrollExtent = 5_000;
 scrollByCalls = 0;
 lastScrollByTop = 0;
 await flushFrames();
+await flushFrames();
 check(scrollByCalls === 1 && lastScrollByTop === 1_020,
   `consecutive touch segments use incremental geometry (${lastScrollByTop}px)`);
+reboundCoverageRow.remove();
 scrollElement.append(rowElement);
 
 // Ordinary sub-viewport measurement jitter stays browser-owned, and a higher

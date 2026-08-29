@@ -55,8 +55,6 @@ const (
 	appResourceReadTimeout = 30 * time.Second
 )
 
-func (s *mcpAppsSandbox) noteUnavailable() { s.down.Store(true) }
-
 func (s *mcpAppsSandbox) available() bool { return !s.down.Load() }
 
 func (s *mcpAppsSandbox) bind(token string, binding mcpAppBinding) {

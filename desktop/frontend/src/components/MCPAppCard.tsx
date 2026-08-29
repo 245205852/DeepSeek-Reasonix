@@ -3,7 +3,7 @@ import { AppBridge, PostMessageTransport } from "@modelcontextprotocol/ext-apps/
 import { app } from "../lib/bridge";
 import { useT } from "../lib/i18n";
 import type { MCPAppInstanceView, MCPAppPresentation } from "../lib/types";
-import { normalizeMCPAppResult, parseMCPAppArguments, validatedMCPAppLinkOrigin } from "../lib/mcpAppProtocol";
+import { normalizeMCPAppResult, parseMCPAppArguments, parseMCPAppCallResult, validatedMCPAppLinkOrigin } from "../lib/mcpAppProtocol";
 import { useConfirmDialog } from "./ConfirmDialog";
 
 const MIN_APP_HEIGHT = 120;
@@ -81,7 +81,7 @@ export function MCPAppCard({
         params.name,
         params.arguments ?? {},
       );
-      return { content: [{ type: "text", text: raw }] };
+      return parseMCPAppCallResult(raw);
     };
     bridge.onopenlink = async (params) => {
       const origin = validatedMCPAppLinkOrigin(params.url);

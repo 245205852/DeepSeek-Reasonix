@@ -138,19 +138,12 @@ console.log("\nbundle budgets");
 // The final 0.266 KiB retains jump ownership through paint-ready instead of
 // allowing a native scrollend to release it. Keep only 0.213 KiB headroom;
 // native validation hosts and test fixtures stay outside the production graph.
-// MCP 2026 elicitation adds the mcp_interaction prompt surface to the initial
-// reducer graph (state field, event case, prompt teardown, resolve callback);
-// the card itself stays lazy. Measured +0.132 KiB gzip (447.932 KiB).
-// The inline Apps surface in ToolCard (expand-to-open state plus the lazy
-// mount wrapper) adds another +0.286 KiB gzip (448.46 KiB); the AppBridge
-// dependency itself stays in the lazy chunk. Carry 0.14 KiB headroom.
-// Tab-bound lifecycle props and instance cleanup add 0.213 KiB gzip to that
-// always-mounted wrapper (448.673 KiB measured); the AppBridge implementation,
-// link confirmation, and result normalization remain in the lazy chunk.
-// Notification volume plus per-source loudness normalization adds 0.243 KiB
-// gzip on main-v2. The exact combined MCP + notification path measures
-// 449.049 KiB; retain 0.151 KiB of bounded build/toolchain headroom.
-const initialJSBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 449.2 : 449.2;
+// Notification controls, live-tail stabilization, and cross-platform shell
+// support move current main-v2 to 449.758 KiB gzip. MCP elicitation and the
+// inline Apps lifecycle add 1.167 KiB on the same startup graph. The merged
+// merged path measures 451.0 KiB; retain 0.2 KiB of bounded
+// build/toolchain headroom.
+const initialJSBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 451.2 : 451.2;
 assertBudget("initial JavaScript gzip", initialJSGzip, initialJSBudgetKiB * 1024);
 assertBudget("largest initial JavaScript chunk gzip", largestInitialJS, 280 * 1024);
 // Render-blocking CSS is intentionally absent: styles.css loads deferred via
@@ -196,10 +189,9 @@ for (const path of localeChunks) {
   // connection, fallback, and legacy-state copy while removing protocol
   // choices from the primary UI; keep that complete guidance with a bounded
   // 0.4–0.5 KiB locale-only ratchet.
-  // Remote-session actions and disconnected-shell guidance add bounded copy.
-  // MCP elicitation prompts add fourteen short labels per locale (title, form
-  // actions, URL guidance); measured ~40 B gzip each.
-  const budget = name.startsWith("zh-TW-") ? 58.7 * 1024 : 58.0 * 1024;
+  // Git-Bash installation guidance adds localized copy across dialects.
+  // MCP elicitation adds fourteen short labels per locale (~40 B gzip).
+  const budget = name.startsWith("zh-TW-") ? 59.2 * 1024 : 58.6 * 1024;
   assertBudget(`${name} gzip`, gzipBytes(path), budget);
 }
 
@@ -238,9 +230,11 @@ const rawInitialBytes = [...initialJS, ...initialCSS, ...appShellCSS]
 // the exact combined path measures 2417.840 KiB. Retain 0.060 KiB of bounded
 // toolchain headroom with the smallest existing decimal ratchet.
 // The notification-volume control adds one persisted master gain, per-source
-// loudness trims, and its accessible Settings surface. The exact combined MCP
-// + notification path measures 2419.536 KiB raw; retain 0.164 KiB of bounded
+// loudness trims, live-tail lifecycle fencing, shell support, and WebView2
+// rebound move current main-v2 to 2422.575 KiB raw. MCP elicitation and Apps
+// add 4.657 KiB on the shared graph. The merged path is expected near
+// merged path measures 2427.4 KiB; retain 0.2 KiB of bounded
 // build/toolchain headroom.
-const rawInitialBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 2_419.7 : 2_419.7;
+const rawInitialBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 2_427.6 : 2_427.6;
 assertBudget("initial raw JavaScript and CSS", rawInitialBytes, rawInitialBudgetKiB * 1024);
 assertBudget("largest initial JavaScript chunk raw", largestInitialJSRaw, 1_000 * 1024);

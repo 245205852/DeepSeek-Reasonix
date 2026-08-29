@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -15,14 +14,17 @@ import (
 // appsFixtureServer advertises the Apps extension and serves tools with
 // visibility/_meta.ui metadata, capturing tools/list as the client sees it.
 type appsFixtureServer struct {
-	mu      sync.Mutex
-	listed  int
-	cspSeen map[string][]string
 }
 
-func (f *appsFixtureServer) server(t *testing.T) *mcpsdk.Server {
+func (f *appsFixtureServer) server(t *testing.T, advertiseApps bool) *mcpsdk.Server {
 	t.Helper()
-	server := mcpsdk.NewServer(&mcpsdk.Implementation{Name: "apps-fixture", Version: "1"}, nil)
+	capabilities := &mcpsdk.ServerCapabilities{}
+	if advertiseApps {
+		capabilities.AddExtension(AppsUIExtensionID, map[string]any{"mimeTypes": []any{AppsMimeType}})
+	}
+	server := mcpsdk.NewServer(&mcpsdk.Implementation{Name: "apps-fixture", Version: "1"}, &mcpsdk.ServerOptions{
+		Capabilities: capabilities,
+	})
 	addAppTool := func(name string, meta map[string]any) {
 		t := &mcpsdk.Tool{
 			Name:        name,
@@ -38,17 +40,43 @@ func (f *appsFixtureServer) server(t *testing.T) *mcpsdk.Server {
 		})
 	}
 	addAppTool("both_tool", map[string]any{})
+	// Top-level visibility is retained for pre-stable servers.
 	addAppTool("model_only", map[string]any{"visibility": []string{"model"}})
 	addAppTool("app_only", map[string]any{
-		"visibility":  []string{"app"},
-		"resourceUri": "ui://legacy/index.html",
+		"ui": map[string]any{
+			"visibility":  []string{"app"},
+			"resourceUri": "ui://stable/index.html",
+		},
 	})
 	addAppTool("app_rich", map[string]any{
-		"visibility": []string{"model", "app"},
 		"ui": map[string]any{
 			"resourceUri": "ui://app/rich.html",
 			"csp":         map[string]any{"connect-src": []string{"https://api.example.com"}},
+			"visibility":  []string{"model", "app"},
 		},
+	})
+	addAppTool("nested_wins", map[string]any{
+		"visibility": []string{"model"},
+		"ui": map[string]any{
+			"visibility": []string{"app"},
+		},
+	})
+	server.AddTool(&mcpsdk.Tool{
+		Name:        "complete_result",
+		Description: "complete CallToolResult fixture",
+		InputSchema: map[string]any{"type": "object", "properties": map[string]any{}},
+		Meta:        mcpsdk.Meta{"ui": map[string]any{"visibility": []string{"app"}}},
+	}, func(context.Context, *mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+		size := int64(12)
+		return &mcpsdk.CallToolResult{
+			Meta: mcpsdk.Meta{"trace": "app-call"},
+			Content: []mcpsdk.Content{
+				&mcpsdk.TextContent{Text: "complete result"},
+				&mcpsdk.ResourceLink{URI: "https://example.test/result", Name: "result", MIMEType: "application/json", Size: &size, Meta: mcpsdk.Meta{"resource": "metadata"}},
+			},
+			StructuredContent: map[string]any{"ok": false, "reason": "fixture"},
+			IsError:           true,
+		}, nil
 	})
 	server.AddResource(
 		&mcpsdk.Resource{URI: "ui://app/rich.html", Name: "rich-app", MIMEType: "text/html;profile=mcp-app"},
@@ -67,7 +95,7 @@ func (f *appsFixtureServer) server(t *testing.T) *mcpsdk.Server {
 
 // startAppsClient connects a desktop-profile client through the real build
 // path and returns the started Client plus the fixture for assertions.
-func startAppsClient(t *testing.T) (*Host, *Client, toolCatalogSnapshot, *appsFixtureServer) {
+func startAppsClientWithAgreement(t *testing.T, advertiseApps bool) (*Host, *Client, toolCatalogSnapshot, *appsFixtureServer) {
 	t.Helper()
 	fixture := &appsFixtureServer{}
 	host := NewHostWithProfile(HostProfileDesktopApps)
@@ -83,11 +111,14 @@ func startAppsClient(t *testing.T) (*Host, *Client, toolCatalogSnapshot, *appsFi
 	}
 	transport.endpointFactory = func(ctx context.Context) (sdkEndpoint, error) {
 		clientSide, serverSide := mcpsdk.NewInMemoryTransports()
-		go func() { _ = fixture.server(t).Run(ctx, serverSide) }()
+		go func() { _ = fixture.server(t, advertiseApps).Run(ctx, serverSide) }()
 		return sdkEndpoint{transport: clientSide}, nil
 	}
 	t.Cleanup(transport.close)
-	client := &Client{name: "apps-fixture", t: transport, spec: Spec{Name: "apps-fixture"}, transport: "http"}
+	client := &Client{name: "apps-fixture", t: transport, spec: Spec{Name: "apps-fixture"}, profile: HostProfileDesktopApps, transport: "http"}
+	if err := client.initialize(t.Context()); err != nil {
+		t.Fatalf("initialize: %v", err)
+	}
 	if _, err := client.listTools(t.Context()); err != nil {
 		t.Fatalf("tools/list: %v", err)
 	}
@@ -98,6 +129,11 @@ func startAppsClient(t *testing.T) (*Host, *Client, toolCatalogSnapshot, *appsFi
 	snapshot.appAdapters = append([]tool.Tool(nil), snapshot.appAdapters...)
 	client.toolsMu.RUnlock()
 	return host, client, snapshot, fixture
+}
+
+func startAppsClient(t *testing.T) (*Host, *Client, toolCatalogSnapshot, *appsFixtureServer) {
+	t.Helper()
+	return startAppsClientWithAgreement(t, true)
 }
 
 func TestMetaVisibilitySplitsCatalogs(t *testing.T) {
@@ -111,7 +147,7 @@ func TestMetaVisibilitySplitsCatalogs(t *testing.T) {
 		appNames = append(appNames, tl.Name())
 	}
 	joined := strings.Join(modelNames, ",")
-	for _, banned := range []string{"app_only"} {
+	for _, banned := range []string{"app_only", "nested_wins", "complete_result"} {
 		if strings.Contains(joined, banned) {
 			t.Fatalf("model catalog contains %s: %v", banned, modelNames)
 		}
@@ -122,7 +158,7 @@ func TestMetaVisibilitySplitsCatalogs(t *testing.T) {
 		}
 	}
 	appJoined := strings.Join(appNames, ",")
-	for _, want := range []string{"both_tool", "app_only", "app_rich"} {
+	for _, want := range []string{"both_tool", "app_only", "app_rich", "nested_wins", "complete_result"} {
 		if !strings.Contains(appJoined, want) {
 			t.Fatalf("app catalog missing %s: %v", want, appNames)
 		}
@@ -152,8 +188,76 @@ func TestMetaUIResourceNestedAndFlat(t *testing.T) {
 		t.Fatalf("csp not parsed: %v", rich.UICSP())
 	}
 	legacy, ok := byName[toolName("apps-fixture", "app_only")].(*remoteTool)
-	if !ok || legacy.UIResourceURI() != "ui://legacy/index.html" {
-		t.Fatalf("flat resourceUri fallback not parsed: %+v", legacy)
+	if !ok || legacy.UIResourceURI() != "ui://stable/index.html" {
+		t.Fatalf("stable nested resourceUri not parsed: %+v", legacy)
+	}
+}
+
+func TestAppsRequireTwoWayExtensionAgreement(t *testing.T) {
+	host, client, catalog, _ := startAppsClientWithAgreement(t, false)
+	if client.appsNegotiated() {
+		t.Fatal("Apps negotiated without the server extension")
+	}
+	if len(catalog.appAdapters) != 0 {
+		t.Fatalf("app catalog populated without agreement: %v", catalog.appAdapters)
+	}
+	for _, info := range catalog.infos {
+		if info.Name == "app_only" || info.Name == "nested_wins" || info.Name == "complete_result" {
+			t.Fatalf("stable app-only tool leaked to the model catalog: %q", info.Name)
+		}
+	}
+	host.mu.Lock()
+	host.clients = append(host.clients, client)
+	host.mu.Unlock()
+	inst := host.RegisterAppInstance("apps-fixture", "app_rich", catalog.generation, "call", "ui://app/rich.html")
+	if _, ok := host.AppInstanceResourceDescriptor(inst.Token); ok {
+		t.Fatal("App resource opened without two-way extension agreement")
+	}
+	var rich *remoteTool
+	for _, candidate := range catalog.adapters {
+		if rt, ok := candidate.(*remoteTool); ok && rt.rawName == "app_rich" {
+			rich = rt
+		}
+	}
+	if rich == nil {
+		t.Fatal("model-visible app_rich tool not found")
+	}
+	ctx, collector := tool.WithMCPAppCollector(t.Context())
+	if _, _, err := rich.ExecuteWithImages(ctx, json.RawMessage(`{}`)); err != nil {
+		t.Fatal(err)
+	}
+	if collector.Server != "" {
+		t.Fatal("rich presentation stamped without two-way extension agreement")
+	}
+}
+
+func TestAppCallResultPreservesStandardFields(t *testing.T) {
+	_, _, catalog, _ := startAppsClient(t)
+	var complete *remoteTool
+	for _, candidate := range catalog.appAdapters {
+		if rt, ok := candidate.(*remoteTool); ok && rt.rawName == "complete_result" {
+			complete = rt
+		}
+	}
+	if complete == nil {
+		t.Fatal("complete_result App tool not found")
+	}
+	raw, text, reportedError, err := complete.ExecuteForApp(t.Context(), json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if text != "complete result" || !reportedError {
+		t.Fatalf("host projection = %q, isError=%v", text, reportedError)
+	}
+	var result map[string]any
+	if err := json.Unmarshal(raw, &result); err != nil {
+		t.Fatal(err)
+	}
+	content, _ := result["content"].([]any)
+	resource, _ := content[1].(map[string]any)
+	meta, _ := resource["_meta"].(map[string]any)
+	if result["isError"] != true || result["structuredContent"] == nil || result["_meta"] == nil || meta["resource"] != "metadata" {
+		t.Fatalf("complete CallToolResult was not preserved: %s", raw)
 	}
 }
 
@@ -215,6 +319,21 @@ func TestAppInstanceRegistryBoundAndReclaimed(t *testing.T) {
 	}
 }
 
+func TestAppInstanceReleaseCancelsNestedCalls(t *testing.T) {
+	host := NewHostWithProfile(HostProfileDesktopApps)
+	inst := host.RegisterAppInstance("srv", "tool", 3, "call", "ui://x/a.html")
+	ctx, ok := host.AppInstanceContext(inst.Token)
+	if !ok || ctx.Err() != nil {
+		t.Fatal("live App instance has no call context")
+	}
+	host.ReleaseAppInstance(inst.Token)
+	select {
+	case <-ctx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("releasing App instance did not cancel nested calls")
+	}
+}
+
 func TestReadResourceForAppReturnsResourceLevelCSP(t *testing.T) {
 	host, client, snapshot, _ := startAppsClient(t)
 	host.mu.Lock()
@@ -257,7 +376,7 @@ func TestAppInstanceRegistryFreezesResourceAndBoundsSnapshotMemory(t *testing.T)
 	}
 
 	chunk := strings.Repeat("x", 1<<20)
-	for i := 0; i < 17; i++ {
+	for i := range 17 {
 		inst := host.RegisterAppInstance("srv", "tool", 3, "call", "ui://x/b.html")
 		if !host.BindAppResource(inst.Token, chunk, "text/html", "digest", nil) {
 			t.Fatalf("bind resource %d failed", i)

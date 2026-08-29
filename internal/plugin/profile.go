@@ -5,7 +5,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"sort"
 )
 
 // HostProfile is the semantic identity of a frontend's MCP client surface:
@@ -120,15 +119,4 @@ func (p HostProfile) DisplayName() string {
 	default:
 		return "Core Host"
 	}
-}
-
-// sortedExtensionNames is a helper for capability views: deterministic
-// extension listing regardless of map iteration order.
-func sortedExtensionNames(m map[string]json.RawMessage) []string {
-	names := make([]string, 0, len(m))
-	for k := range m {
-		names = append(names, k)
-	}
-	sort.Strings(names)
-	return names
 }

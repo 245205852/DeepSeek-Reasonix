@@ -48,6 +48,20 @@ export function normalizeMCPAppResult(
   return result as Parameters<AppBridge["sendToolResult"]>[0];
 }
 
+export function parseMCPAppCallResult(
+  raw: string,
+): Parameters<AppBridge["sendToolResult"]>[0] {
+  const parsed = JSON.parse(raw) as unknown;
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("MCP App tool result is not an object");
+  }
+  const result = parsed as Record<string, unknown>;
+  if (!Array.isArray(result.content)) {
+    throw new Error("MCP App tool result has invalid content");
+  }
+  return result as Parameters<AppBridge["sendToolResult"]>[0];
+}
+
 export function validatedMCPAppLinkOrigin(rawURL: string): string | null {
   try {
     const target = new URL(rawURL);

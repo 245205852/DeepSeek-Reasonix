@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import {
   normalizeMCPAppResult,
   parseMCPAppArguments,
+  parseMCPAppCallResult,
   validatedMCPAppLinkOrigin,
 } from "../lib/mcpAppProtocol";
 
@@ -48,6 +49,29 @@ const fallbackResult = normalizeMCPAppResult({
 }, "fallback text");
 ok(fallbackResult.content[0]?.type === "text" && fallbackResult.content[0]?.text === "fallback text", "text fallback becomes a CallToolResult content block");
 ok((fallbackResult.structuredContent as { chance?: number }).chance === 25, "bounded structured fallback is delivered");
+
+const nestedCallResult = parseMCPAppCallResult(JSON.stringify({
+  content: [{
+    type: "resource",
+    resource: { uri: "https://example.test/result", mimeType: "application/json", text: "{}", _meta: { etag: "v1" } },
+    _meta: { audience: "app" },
+  }],
+  structuredContent: { ok: false, details: [1, 2, 3] },
+  isError: true,
+  _meta: { trace: "nested" },
+}));
+ok(nestedCallResult.isError === true, "App-initiated call preserves isError");
+ok((nestedCallResult.structuredContent as { details?: number[] }).details?.length === 3, "App-initiated call preserves structuredContent");
+const nestedResource = nestedCallResult.content[0] as unknown as { resource?: { _meta?: { etag?: string } }; _meta?: { audience?: string } };
+ok(nestedResource.resource?._meta?.etag === "v1" && nestedResource._meta?.audience === "app", "App-initiated call preserves embedded resource metadata");
+ok((nestedCallResult._meta as { trace?: string }).trace === "nested", "App-initiated call preserves result metadata");
+let invalidNestedResultRejected = false;
+try {
+  parseMCPAppCallResult(`{"structuredContent":{}}`);
+} catch {
+  invalidNestedResultRejected = true;
+}
+ok(invalidNestedResultRejected, "invalid App-initiated CallToolResult is rejected");
 
 ok(validatedMCPAppLinkOrigin("https://docs.example.test/path") === "https://docs.example.test", "https link origin is normalized");
 ok(validatedMCPAppLinkOrigin("http://localhost:8080/path") === "http://localhost:8080", "http loopback-style origin is allowed");
