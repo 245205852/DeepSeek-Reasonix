@@ -279,11 +279,17 @@
     await waitForStableViewport(element, 2, 15000);
     state.phase = "loading-targeted-history";
     await loadHistoryRows(element, 400);
+    // When the initial history window already meets the row minimum, no
+    // question jump ever ran and the view never left the tail, so the
+    // jump-bottom control is correctly absent. Only a genuine jump away from
+    // the tail needs the control to return.
     const jumpBottom = await waitFor(() => document.querySelector(".transcript__jump-bottom"), 10000)
-      .catch(() => {
-        throw new Error(`native transcript fixture jump-bottom unavailable after history load: ${describeTranscriptState(element)}`);
-      });
-    jumpBottom.click();
+      .catch(() => null);
+    if (!jumpBottom && (element.dataset.scrollMode !== "tail-follow"
+      || element.scrollHeight - element.scrollTop - element.clientHeight > 4)) {
+      throw new Error(`native transcript fixture left the tail without a jump-bottom control: ${describeTranscriptState(element)}`);
+    }
+    jumpBottom?.click();
     state.phase = "waiting-loaded-tail";
     await waitForStableTail(element, 2, 10000);
     // Loaded WebView2 may continue cycling its estimate-only tail by one row;
