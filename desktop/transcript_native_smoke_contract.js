@@ -175,6 +175,29 @@
     requestAnimationFrame(sample);
   });
 
+  // A bare "timed out" cannot distinguish a missing rail, a stuck jump mask,
+  // or a jump-bottom button that never appears on a hosted runner, so every
+  // internal gate reports the live transcript state when it fails.
+  const describeTranscriptState = (element) => {
+    const overlay = document.querySelector(".transcript-navigation-overlay");
+    const loadedTurns = [...document.querySelectorAll(".jump-item[data-loaded='true']")]
+      .map((marker) => Number(marker.getAttribute("data-turn")))
+      .filter(Number.isFinite);
+    return JSON.stringify({
+      rows: Number.parseInt(element?.dataset.transcriptRowCount ?? "0", 10),
+      markers: document.querySelectorAll(".jump-item").length,
+      earliestTurn: loadedTurns.length > 0 ? Math.min(...loadedTurns) : null,
+      overlayPhase: overlay ? overlay.getAttribute("data-question-jump-phase") ?? "present" : null,
+      shellBusy: document.querySelector(".transcript-shell")?.getAttribute("aria-busy") ?? null,
+      mode: element?.dataset.scrollMode ?? "missing",
+      top: element ? Math.round(element.scrollTop) : null,
+      height: element?.scrollHeight ?? null,
+      bottomDistance: element
+        ? Math.round(element.scrollHeight - element.scrollTop - element.clientHeight)
+        : null,
+    });
+  };
+
   const loadHistoryRows = async (element, minimumRows) => {
     const rowCount = () => Number.parseInt(element.dataset.transcriptRowCount ?? "0", 10);
     if (rowCount() >= minimumRows) return;
@@ -184,25 +207,9 @@
         .filter(Number.isFinite);
       return turns.length > 0 ? Math.min(...turns) : null;
     };
-    // A bare "timed out" cannot distinguish a missing rail from a stuck jump
-    // mask on a hosted runner, so every internal gate reports the live jump
-    // surface state when it fails.
-    const describeJumpSurface = () => {
-      const overlay = document.querySelector(".transcript-navigation-overlay");
-      return JSON.stringify({
-        rows: rowCount(),
-        markers: document.querySelectorAll(".jump-item").length,
-        earliestTurn: earliestLoadedTurn(),
-        overlayPhase: overlay ? overlay.getAttribute("data-question-jump-phase") ?? "present" : null,
-        shellBusy: document.querySelector(".transcript-shell")?.getAttribute("aria-busy") ?? null,
-        mode: element.dataset.scrollMode ?? "missing",
-        top: Math.round(element.scrollTop),
-        height: element.scrollHeight,
-      });
-    };
     const rail = await waitFor(() => document.querySelector(".jump-scroll"), 10000)
       .catch(() => {
-        throw new Error(`native transcript fixture question rail unavailable: ${describeJumpSurface()}`);
+        throw new Error(`native transcript fixture question rail unavailable: ${describeTranscriptState(element)}`);
       });
     // Target progressively earlier questions through the real navigation UI.
     // A midpoint request usually supplies the 400+ variable-height rows the
@@ -225,7 +232,7 @@
       // mask gate itself just as forgiving instead of failing a slow landing.
       await waitFor(() => !document.querySelector(".transcript-navigation-overlay"), 30000)
         .catch(() => {
-          throw new Error(`native transcript fixture question jump surface stuck at ratio ${ratio}: ${describeJumpSurface()}`);
+          throw new Error(`native transcript fixture question jump surface stuck at ratio ${ratio}: ${describeTranscriptState(element)}`);
         });
       // A fixed-size history window keeps the mounted row count constant when
       // an earlier page arrives, and clicking an already-loaded turn changes
@@ -272,7 +279,10 @@
     await waitForStableViewport(element, 2, 15000);
     state.phase = "loading-targeted-history";
     await loadHistoryRows(element, 400);
-    const jumpBottom = await waitFor(() => document.querySelector(".transcript__jump-bottom"), 10000);
+    const jumpBottom = await waitFor(() => document.querySelector(".transcript__jump-bottom"), 10000)
+      .catch(() => {
+        throw new Error(`native transcript fixture jump-bottom unavailable after history load: ${describeTranscriptState(element)}`);
+      });
     jumpBottom.click();
     state.phase = "waiting-loaded-tail";
     await waitForStableTail(element, 2, 10000);
