@@ -212,11 +212,10 @@ globalThis.MouseEvent = dom.window.MouseEvent;
     );
   });
   const text = document.body.textContent ?? "";
-  ok(text.includes("linear") && text.includes("auth.example.com"), "url card shows server and target host");
+  const urlSummary = document.querySelector(".mcp-interaction-url")?.textContent ?? "";
+  ok(urlSummary.trim() === "linear → auth.example.com", "url card shows the exact server and target host");
   ok(!text.includes("?state=xyz"), "url card hides query params from the summary line");
-  const open = Array.from(document.querySelectorAll("button, [role='button']")).find((b) =>
-    (b.textContent ?? "").includes("auth.example.com"),
-  );
+  const open = document.querySelector(".prompt-shelf-bar-actions button");
   if (open) {
     await act(async () => {
       open.dispatchEvent(new MouseEvent("click", { bubbles: true }));
