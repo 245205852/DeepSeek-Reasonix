@@ -150,7 +150,12 @@ console.log("\nbundle budgets");
 // manual repair guidance, and exact download-host allowlisting move the merged
 // path from 448.692 to 449.758 KiB (+1.066 KiB). Retain 0.142 KiB of bounded
 // build/toolchain headroom.
-const initialJSBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 449.9 : 449.9;
+// The reader transaction contract (geometry revisions, generation-fenced
+// writer requests, gesture travel proof, stabilized-shrink extent acceptance,
+// and the blank-rebound prepaint lane) adds a measured 3.978 KiB gzip on the
+// merged main-v2 baseline, bringing the path to 453.736 KiB; retain 0.064
+// KiB of bounded headroom.
+const initialJSBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 453.8 : 453.8;
 assertBudget("initial JavaScript gzip", initialJSGzip, initialJSBudgetKiB * 1024);
 assertBudget("largest initial JavaScript chunk gzip", largestInitialJS, 280 * 1024);
 // Render-blocking CSS is intentionally absent: styles.css loads deferred via
@@ -243,6 +248,9 @@ const rawInitialBytes = [...initialJS, ...initialCSS, ...appShellCSS]
 // The WebView2 extent rebound prepaint handoff adds 0.204 KiB raw so a native
 // scroll delivery can restore mounted coverage before the next visible frame.
 // Retain 0.096 KiB of headroom without widening gzip or chunk ceilings.
-const rawInitialBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 2_422.8 : 2_422.8;
+// The reader transaction contract then adds a measured 15.317 KiB raw on the
+// merged main-v2 baseline (including its own prepaint port), bringing the
+// path to 2437.892 KiB; retain 0.108 KiB of bounded headroom.
+const rawInitialBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 2_438.0 : 2_438.0;
 assertBudget("initial raw JavaScript and CSS", rawInitialBytes, rawInitialBudgetKiB * 1024);
 assertBudget("largest initial JavaScript chunk raw", largestInitialJSRaw, 1_000 * 1024);

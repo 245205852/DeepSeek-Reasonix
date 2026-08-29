@@ -29,6 +29,7 @@ export const LiveTurnRegion = memo(function LiveTurnRegion({
   rows,
   renderRow,
   showStatus,
+  overlay,
   turnStartAt,
   tabId,
   scrollElement,
@@ -39,6 +40,9 @@ export const LiveTurnRegion = memo(function LiveTurnRegion({
   renderRow: (row: TranscriptRow) => ReactNode;
   /** Show the working status line when the turn has no rows yet. */
   showStatus: boolean;
+  /** Completion handoff copy. It paints over the materialized tail row but
+   * contributes zero layout height and is never interactive. */
+  overlay: boolean;
   turnStartAt?: number;
   tabId?: string;
   scrollElement: HTMLElement | null;
@@ -51,8 +55,9 @@ export const LiveTurnRegion = memo(function LiveTurnRegion({
     : undefined;
   return (
     <div
-      className="transcript__live-region"
+      className={`transcript__live-region${overlay ? " transcript__live-region--overlay" : ""}`}
       data-live-region="true"
+      aria-hidden={overlay || undefined}
       style={regionStyle}
       onPointerDownCapture={onPointerDownCapture}
     >

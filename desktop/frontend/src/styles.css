@@ -3506,7 +3506,6 @@ a[href] {
   .transcript-navigation-overlay__spinner { animation: none; }
 }
 /* The active turn streams as the virtual list's in-flow Footer: inside the
-/* The active turn streams as the virtual list's in-flow Footer: inside the
    scroller, right after the last history row, but outside Virtuoso's
    measured size tree — unbounded growth never reaches the list's anchors or
    recovery machinery (#8657/#8688). */
@@ -3514,9 +3513,20 @@ a[href] {
   position: relative;
   width: 100%;
 }
+.transcript__live-region--overlay {
+  position: absolute;
+  inset-inline: 0;
+  bottom: 0;
+  z-index: var(--z-local-raised);
+  pointer-events: none;
+}
 .transcript__live-content {
   position: relative;
   width: 100%;
+}
+.transcript[data-transcript-reader-visual-guard="true"] [data-testid="virtuoso-item-list"] {
+  transform: translateY(var(--transcript-reader-visual-offset, 0));
+  will-change: transform;
 }
 .transcript__live-status {
   display: flex;
