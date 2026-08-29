@@ -246,6 +246,9 @@ const rawInitialBytes = [...initialJS, ...initialCSS, ...appShellCSS]
 // merged main-v2 baseline (including its own prepaint port). MCP elicitation
 // and Apps add their bounded payload on the shared graph; the combined path
 // measures 2442.6 KiB. Retain 0.4 KiB of bounded build/toolchain headroom.
-const rawInitialBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 2_443.0 : 2_443.0;
+// The browser MCP interaction preview adds 0.6 KiB of route wiring while its
+// 0.75 KiB form fixture and lifecycle remain lazy. The combined path measures
+// 2443.2 KiB; retain 0.1 KiB of bounded build/toolchain headroom.
+const rawInitialBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 2_443.3 : 2_443.3;
 assertBudget("initial raw JavaScript and CSS", rawInitialBytes, rawInitialBudgetKiB * 1024);
 assertBudget("largest initial JavaScript chunk raw", largestInitialJSRaw, 1_000 * 1024);

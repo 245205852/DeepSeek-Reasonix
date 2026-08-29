@@ -54,7 +54,7 @@ const RemoteSessionSurface = lazy(() => import("./components/RemoteSessionSurfac
 const ExtensionFormDialog = lazy(() => import("./components/ExtensionFormDialog").then((module) => ({ default: module.ExtensionFormDialog })));
 const MCPInteractionCard = lazy(() => import("./components/MCPInteractionCard").then((module) => ({ default: module.MCPInteractionCard })));
 /** Footer decision surface kinds. Runtime blockers are explicit recovery choices. */
-type DecisionSurfaceKind = MockDecisionSurfaceKind | "extension_form" | "mcp_interaction";
+type DecisionSurfaceKind = MockDecisionSurfaceKind | "extension_form";
 import { StatusBar } from "./components/StatusBar";
 import { RemoteHostKeyDialog } from "./components/RemoteHostKeyDialog";
 import { RemoteSecretDialog } from "./components/RemoteSecretDialog";

@@ -21,6 +21,8 @@ registerHooks({
 import { LocaleProvider } from "../lib/i18n";
 import type { WireEvent } from "../lib/types";
 import { initialState, reducer } from "../lib/useController";
+import { app, onEvent } from "../lib/bridge";
+import { DECISION_SURFACE_MOCK_TRIGGERS } from "../lib/decisionSurfaceMock";
 import { MCPInteractionCard } from "../components/MCPInteractionCard";
 import {
   coerceStructuredValues,
@@ -138,6 +140,32 @@ globalThis.MouseEvent = dom.window.MouseEvent;
     e: { kind: "prompt_answered", turnId: "t1", itemId: "42" } as unknown as WireEvent,
   } as never);
   ok((answered as ControllerState).mcpInteraction === undefined, "prompt_answered clears the card");
+}
+
+// ── Browser mock lifecycle ──────────────────────────────────────────────────
+
+{
+  const events: WireEvent[] = [];
+  const unsubscribe = onEvent((event) => events.push(event));
+  await app.SubmitToTabWithID("mock-mcp-tab", DECISION_SURFACE_MOCK_TRIGGERS.mcp_interaction, "mock-mcp-submission");
+  const interaction = events.find((event) => event.kind === "mcp_interaction");
+  ok(interaction?.tabId === "mock-mcp-tab", "browser mock routes the MCP interaction to its origin tab");
+  ok(interaction?.mcpInteraction?.server === "github", "browser mock identifies the requesting MCP server");
+  const schema = interaction?.mcpInteraction?.requestedSchema as { properties?: Record<string, unknown> } | undefined;
+  ok(Object.keys(schema?.properties ?? {}).join(",") === "code,environment,remember", "browser mock exposes the complete structured form");
+  await app.AnswerMCPInteractionForTab("mock-mcp-tab", interaction?.mcpInteraction?.id ?? "", "accept", {
+    code: "123-456",
+    environment: "Staging",
+    remember: false,
+  });
+  ok(events.some((event) => event.kind === "prompt_answered" && event.tabId === "mock-mcp-tab"), "browser mock acknowledges the MCP answer on the origin tab");
+  ok(events.some((event) => event.kind === "turn_done" && event.tabId === "mock-mcp-tab"), "browser mock completes the preview turn after an answer");
+  await app.SubmitToTabWithID("mock-mcp-tab", DECISION_SURFACE_MOCK_TRIGGERS.mcp_interaction, "mock-mcp-submission-2");
+  const interactions = events.filter((event) => event.kind === "mcp_interaction");
+  ok(interactions.length === 2, "browser mock can be triggered repeatedly");
+  ok(interactions[0].mcpInteraction?.id !== interactions[1].mcpInteraction?.id, "repeated browser mocks use distinct prompt ids");
+  await app.AnswerMCPInteractionForTab("mock-mcp-tab", interactions[1].mcpInteraction?.id ?? "", "cancel", null);
+  unsubscribe();
 }
 
 // ── Card rendering + submit wiring ───────────────────────────────────────────
