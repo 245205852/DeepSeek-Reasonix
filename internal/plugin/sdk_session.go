@@ -13,6 +13,7 @@ import (
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 	"reasonix/internal/mcpdiag"
+	"reasonix/internal/mcpinteraction"
 	"reasonix/internal/tool"
 )
 
@@ -82,6 +83,9 @@ type sessionBuild struct {
 type sdkSessionTransport struct {
 	name string
 	spec Spec
+	// profile fixes the client capability surface this connection declares.
+	// It comes from the Host and is immutable for the transport's lifetime.
+	profile HostProfile
 
 	lifeCtx context.Context
 	cancel  context.CancelFunc
@@ -104,6 +108,10 @@ type sdkSessionTransport struct {
 	lastStartupStderr string
 	endpointFactory   func(context.Context) (sdkEndpoint, error)
 	wg                sync.WaitGroup
+
+	legacyElicitationMu   sync.Mutex
+	legacyElicitationNext uint64
+	legacyElicitation     map[uint64]legacyElicitationCall
 }
 
 var defaultSessionReconnectDelays = []time.Duration{
@@ -136,7 +144,7 @@ func mcpClientVersion() string {
 	return "dev"
 }
 
-func newSDKSessionTransport(ctx context.Context, s Spec) (*sdkSessionTransport, error) {
+func newSDKSessionTransport(ctx context.Context, s Spec, profile HostProfile) (*sdkSessionTransport, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -167,9 +175,11 @@ func newSDKSessionTransport(ctx context.Context, s Spec) (*sdkSessionTransport, 
 	}
 
 	lifeCtx, cancel := context.WithCancel(ctx)
+	profile = profile.Normalize()
 	return &sdkSessionTransport{
 		name:            s.Name,
 		spec:            s,
+		profile:         profile,
 		lifeCtx:         lifeCtx,
 		cancel:          cancel,
 		oauth:           oauth,
@@ -187,7 +197,7 @@ func (t *sdkSessionTransport) call(ctx context.Context, method string, params an
 	if err != nil {
 		return nil, t.sanitizeError(err, nil)
 	}
-	result, err := invokeSDKMethod(ctx, managed.session, method, params)
+	result, err := t.invokeManaged(ctx, managed, method, params)
 	if err == nil {
 		t.clearRuntimeError(managed)
 		return result, nil
@@ -205,7 +215,7 @@ func (t *sdkSessionTransport) call(ctx context.Context, method string, params an
 		if rebuildErr != nil {
 			return nil, t.sanitizeError(fmt.Errorf("MCP session expired; rebuild failed: %w", rebuildErr), managed)
 		}
-		result, err = invokeSDKMethod(ctx, replacement.session, method, params)
+		result, err = t.invokeManaged(ctx, replacement, method, params)
 		if err == nil {
 			t.clearRuntimeError(replacement)
 			return result, nil
@@ -227,7 +237,7 @@ func (t *sdkSessionTransport) call(ctx context.Context, method string, params an
 			if rebuildErr != nil {
 				return nil, t.sanitizeError(fmt.Errorf("MCP connection closed; rebuild failed: %w", rebuildErr), managed)
 			}
-			result, err = invokeSDKMethod(ctx, replacement.session, method, params)
+			result, err = t.invokeManaged(ctx, replacement, method, params)
 			if err == nil {
 				t.clearRuntimeError(replacement)
 				return result, nil
@@ -369,9 +379,27 @@ func (t *sdkSessionTransport) build(ctx context.Context, generation uint64) (*ma
 		//nolint:staticcheck // Legacy MCP servers still require roots during the SDK deprecation window.
 		capabilities.RootsV2 = &mcpsdk.RootCapabilities{ListChanged: false}
 	}
+	profileCaps := t.profile.Capabilities()
+	var elicitationHandler func(context.Context, *mcpsdk.ElicitRequest) (*mcpsdk.ElicitResult, error)
+	if profileCaps.ElicitationForms || profileCaps.ElicitationURL {
+		declared := &mcpsdk.ElicitationCapabilities{}
+		if profileCaps.ElicitationForms {
+			declared.Form = &mcpsdk.FormElicitationCapabilities{}
+		}
+		if profileCaps.ElicitationURL {
+			declared.URL = &mcpsdk.URLElicitationCapabilities{}
+		}
+		capabilities.Elicitation = declared
+		elicitationHandler = t.handleElicitation
+	}
+	if profileCaps.AppsUI {
+		capabilities.AddExtension(AppsUIExtensionID, map[string]any{
+			"mimeTypes": []any{AppsMimeType},
+		})
+	}
 	client := mcpsdk.NewClient(&mcpsdk.Implementation{Name: "reasonix", Version: mcpClientVersion()}, &mcpsdk.ClientOptions{
-		Capabilities:   capabilities,
-		MultiRoundTrip: &mcpsdk.MultiRoundTripOptions{Disabled: true},
+		Capabilities:       capabilities,
+		ElicitationHandler: elicitationHandler,
 		ToolListChangedHandler: func(_ context.Context, req *mcpsdk.ToolListChangedRequest) {
 			t.dispatchSDKNotification(generation, "notifications/tools/list_changed", req.Params)
 		},
@@ -432,6 +460,61 @@ func (t *sdkSessionTransport) setStateIfBuilding(generation uint64, state Sessio
 		t.state = state
 	}
 	t.mu.Unlock()
+}
+
+// handleElicitation answers server-initiated elicitation. MCP 2026 middleware
+// preserves the tools/call context; legacy push requests use the fail-closed,
+// unambiguous active-call registry. Without one exact broker the request is
+// cancelled — the model must never guess an answer or cross tabs.
+func (t *sdkSessionTransport) handleElicitation(ctx context.Context, req *mcpsdk.ElicitRequest) (*mcpsdk.ElicitResult, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	broker := mcpinteraction.FromContext(ctx)
+	decisionCtx := ctx
+	cleanup := func() {}
+	if broker == nil {
+		legacyBroker, callCtx, ok := t.unambiguousLegacyElicitation()
+		if !ok {
+			return &mcpsdk.ElicitResult{Action: mcpinteraction.ActionCancel}, nil
+		}
+		broker = legacyBroker
+		var cancel context.CancelFunc
+		decisionCtx, cancel = context.WithCancel(callCtx)
+		stop := context.AfterFunc(ctx, cancel)
+		cleanup = func() {
+			stop()
+			cancel()
+		}
+	}
+	defer cleanup()
+	interactReq := mcpinteraction.Request{
+		Server:        t.name,
+		Mode:          req.Params.Mode,
+		Message:       req.Params.Message,
+		URL:           req.Params.URL,
+		ElicitationID: req.Params.ElicitationID,
+	}
+	if req.Params.RequestedSchema != nil {
+		if raw, err := json.Marshal(req.Params.RequestedSchema); err == nil {
+			interactReq.RequestedSchema = raw
+		} else {
+			return nil, fmt.Errorf("encode elicitation schema: %w", err)
+		}
+	}
+	if !mcpinteraction.SanitizeURLMode(interactReq) {
+		return &mcpsdk.ElicitResult{Action: mcpinteraction.ActionCancel}, nil
+	}
+	res, err := broker.Interact(decisionCtx, interactReq)
+	if err != nil {
+		return nil, err
+	}
+	switch res.Action {
+	case mcpinteraction.ActionAccept, mcpinteraction.ActionDecline, mcpinteraction.ActionCancel:
+	default:
+		return nil, fmt.Errorf("invalid elicitation action %q", res.Action)
+	}
+	return &mcpsdk.ElicitResult{Action: res.Action, Content: res.Content}, nil
 }
 
 func (t *sdkSessionTransport) dispatchSDKNotification(generation uint64, method string, params any) {

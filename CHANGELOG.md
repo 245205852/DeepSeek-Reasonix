@@ -6,6 +6,21 @@ branch.
 
 ## Unreleased
 
+### Added
+
+- **MCP 2026-07-28 protocol:** multi-round-trip form/URL elicitation across
+  Desktop, CLI TUI, and serve; headless entries stay on the core surface and
+  cancel unanswered requests instead of guessing.
+- **MCP Apps 2026-01-26 (Desktop):** inline app surfaces in tool cards behind
+  a per-server double-iframe sandbox, app-tool visibility metadata, bounded
+  aggregate local presentations, tab-bound AppBridge routing and teardown,
+  immutable digest-bound resource snapshots, and confirmed external links;
+  local rich results, instance-gated app tool calls, and the four-layer
+  capability matrix in MCP status.
+- **Profile-scoped MCP schema caches:** capability-declaring hosts keep their
+  own `v3` cache files so catalogs negotiated under different client
+  capabilities never cross-read.
+
 ### Changed
 
 - **Fact-driven execution:** Ordinary requests always enter the executor.

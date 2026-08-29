@@ -39545,3 +39545,34 @@ body > .mermaid-diagram--fullscreen {
 .remote-surface__ask-question { display: flex; flex-direction: column; gap: 6px; }
 .remote-surface__ask-prompt { font-size: var(--text-sm); font-weight: 600; }
 .remote-surface__ask-options { display: flex; flex-wrap: wrap; gap: 8px; }
+
+/* ── MCP Apps inline surface ─────────────────────────────────────────── */
+.mcp-app-card {
+  margin-top: 8px;
+  border: 1px solid var(--soft-border, #d0d0d0);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.mcp-app-frame {
+  display: block;
+  width: 100%;
+  border: 0;
+  background: #fff;
+  transition: height 120ms ease;
+}
+
+.tool__mcp-app-open {
+  margin-top: 8px;
+  padding: 4px 12px;
+  border: 1px solid var(--soft-border, #d0d0d0);
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.tool__mcp-app-open:hover {
+  filter: brightness(0.95);
+}

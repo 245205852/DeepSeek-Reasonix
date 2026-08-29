@@ -36,6 +36,7 @@ import (
 	fileencoding "reasonix/internal/fileutil/encoding"
 	"reasonix/internal/i18n"
 	"reasonix/internal/notify"
+	"reasonix/internal/plugin"
 	"reasonix/internal/provider"
 	"reasonix/internal/provider/openai"
 	"reasonix/internal/serve"
@@ -260,11 +261,7 @@ func configureCLIThemeFromConfigForTTYOutput() {
 // The assembly (model resolution, tool registry, permission gate, two-model
 // Coordinator) lives in internal/boot, shared with the desktop frontend.
 // requireKey forces the executor's API key to be present (used by run); chat
-// passes false so the session UI is reachable before a key is set. sink receives
-// the agent's typed event stream — runAgent passes a TextSink that renders to
-// stdout, the TUI passes an event-channel sink so events become tea.Msgs.
-// workspaceRoot pins the project root explicitly (from --dir); empty falls back
-// to git-root detection.
+// passes false so the session UI is reachable before a key is set.
 func setupProfile(ctx context.Context, modelName string, maxStepsOverride int, requireKey bool, sink event.Sink, workspaceRoot string) (*control.Controller, error) {
 	return setupProfileWithOverrides(ctx, modelName, maxStepsOverride, requireKey, sink, cliBuildOverrides{WorkspaceRoot: workspaceRoot})
 }
@@ -279,6 +276,9 @@ type cliBuildOverrides struct {
 	Stderr               io.Writer
 	OnSessionRecovered   func(control.SessionRecoveryInfo) error
 	Ablation             ablation.Set
+	// InteractiveHost marks human-in-the-loop entries (chat TUI); print mode
+	// and bots stay on core-v1.
+	InteractiveHost bool
 	// SessionTemp carries the previous Controller's private temporary directory
 	// manager across model/profile rebuilds so temporary files survive.
 	SessionTemp *sessiontemp.Manager
@@ -301,7 +301,7 @@ func setupProfileWithOverrides(ctx context.Context, modelName string, maxStepsOv
 }
 
 func cliProfileBuildOptions(modelName string, maxStepsOverride int, requireKey bool, sink event.Sink, overrides cliBuildOverrides) boot.Options {
-	return boot.Options{
+	opts := boot.Options{
 		Model:                modelName,
 		MaxSteps:             maxStepsOverride,
 		MaxStepsKey:          "--max-steps",
@@ -320,6 +320,8 @@ func cliProfileBuildOptions(modelName string, maxStepsOverride int, requireKey b
 		Ablation:             overrides.Ablation,
 		SessionTemp:          overrides.SessionTemp,
 	}
+	opts.MCPHostProfile = plugin.HostProfileForInteractive(overrides.InteractiveHost)
+	return opts
 }
 
 type cliPermissionMode struct {
@@ -1126,6 +1128,7 @@ func chatREPL(args []string, version string) int {
 		PermissionAllow:    allowedTools,
 		AdditionalDirs:     additionalDirs,
 		WorkspaceRoot:      workspaceRoot,
+		InteractiveHost:    true,
 		Stderr:             diagnostics.Writer(),
 		OnSessionRecovered: cliSessionRecoveredHandler(leases),
 	}

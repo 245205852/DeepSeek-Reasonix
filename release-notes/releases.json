@@ -11,14 +11,45 @@
         "zh": "Reasonix v1.33.0"
       },
       "summary": {
-        "en": "This release improves shell configuration, remote credential security, interface stability, and adds notification volume control.",
-        "zh": "此版本改进了 Shell 配置、远程凭据安全性、界面稳定性，并新增通知音量控制。"
+        "en": "This release adds MCP 2026 elicitation and stable MCP Apps, improves shell configuration, remote credential security, interface stability, and notification volume control.",
+        "zh": "此版本新增 MCP 2026 交互与稳定版 MCP Apps，并改进 Shell 配置、远程凭据安全性、界面稳定性和通知音量控制。"
       },
       "surfaces": [
-        "desktop"
+        "desktop",
+        "cli"
       ],
-      "guides": [],
+      "guides": [
+        {
+          "title": {
+            "en": "MCP 2026 capability surface",
+            "zh": "MCP 2026 能力面"
+          },
+          "body": {
+            "en": "Host capability profiles, capability negotiation, elicitation, Apps sandboxing, and the cross-version cache contract.",
+            "zh": "宿主能力分层、能力协商、交互流程、Apps 沙箱与跨版本缓存契约。"
+          },
+          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/main-v2/docs/mcp-2026-apps.md"
+        }
+      ],
       "highlights": [
+        {
+          "kind": "new",
+          "targets": [
+            "desktop",
+            "cli"
+          ],
+          "title": {
+            "en": "MCP 2026 elicitation and stable Apps",
+            "zh": "MCP 2026 交互与稳定版 Apps"
+          },
+          "body": {
+            "en": "Added MCP 2026-07-28 multi-round-trip form and URL elicitation plus stable MCP Apps 2026-01-26 on Desktop, with explicit capability negotiation and safe cross-version fallbacks.",
+            "zh": "新增 MCP 2026-07-28 多轮表单及 URL 交互，并在桌面端支持稳定版 MCP Apps 2026-01-26，同时提供显式能力协商与安全的跨版本回退。"
+          },
+          "refs": [
+            9547
+          ]
+        },
         {
           "kind": "new",
           "targets": [

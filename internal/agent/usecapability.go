@@ -54,6 +54,24 @@ type mcpProxySharedState struct {
 	liveTools map[string][]plugin.CachedTool
 }
 
+// hostProfile returns the session host's capability profile. A nil host (tests)
+// resolves to core-v1.
+func (r *MCPCapabilityRuntime) hostProfile() plugin.HostProfile {
+	if r == nil || r.host == nil {
+		return plugin.HostProfileCore
+	}
+	return r.host.Profile()
+}
+
+// hostProfileFor mirrors hostProfile for UseCapabilityTool, which holds its
+// own host reference shared with the runtime.
+func (t *UseCapabilityTool) hostProfileFor() plugin.HostProfile {
+	if t == nil || t.host == nil {
+		return plugin.HostProfileCore
+	}
+	return t.host.Profile()
+}
+
 // NewMCPCapabilityRuntime builds the session-shared MCP substrate. lifeCtx owns
 // on-demand MCP child process lifetimes; specs must be the boot-converted specs.
 func NewMCPCapabilityRuntime(lifeCtx context.Context, host *plugin.Host, specs []plugin.Spec, reg *tool.Registry, catalog func() capability.Catalog) *MCPCapabilityRuntime {
@@ -104,7 +122,7 @@ func (r *MCPCapabilityRuntime) ConfigureServers(entries []config.PluginEntry, sp
 		if enabled != nil {
 			isEnabled = enabled[name]
 		}
-		cached, keyOK := cachedToolsForSpec(spec)
+		cached, keyOK := cachedToolsForSpec(spec, r.hostProfile())
 		next[name] = mcpRuntimeServer{
 			entry:      entry,
 			spec:       spec,
@@ -138,7 +156,7 @@ func (r *MCPCapabilityRuntime) UpsertServer(entry config.PluginEntry, raw plugin
 	if strings.TrimSpace(entry.Name) == "" {
 		entry.Name = name
 	}
-	cached, keyOK := cachedToolsForSpec(spec)
+	cached, keyOK := cachedToolsForSpec(spec, r.hostProfile())
 	r.mu.Lock()
 	r.servers[name] = mcpRuntimeServer{
 		entry:      entry,
@@ -302,8 +320,8 @@ func (r *MCPCapabilityRuntime) serverEnabled(server string) bool {
 	return ok && configured.enabled
 }
 
-func cachedToolsForSpec(spec plugin.Spec) ([]plugin.CachedTool, bool) {
-	cached, keyOK := capability.LoadCachedToolsForSpecs([]plugin.Spec{spec})
+func cachedToolsForSpec(spec plugin.Spec, profile plugin.HostProfile) ([]plugin.CachedTool, bool) {
+	cached, keyOK := capability.LoadCachedToolsForSpecs([]plugin.Spec{spec}, profile)
 	return cloneCachedTools(cached[spec.Name]), keyOK[spec.Name]
 }
 
@@ -763,7 +781,7 @@ func (t *UseCapabilityTool) inspect(ctx context.Context, id string) (string, err
 					return string(b) + "\n\nTools:\n" + inspectToolListJSON(server, filterInspectTools(tools, toolFilter)), nil
 				}
 				if spec, ok := t.specFor(server); ok {
-					if cs, ok := plugin.LoadCachedSchemaForSpec(spec); ok && len(cs.Tools) > 0 {
+					if cs, ok := plugin.LoadCachedSchemaForSpecProfile(spec, t.hostProfileFor()); ok && len(cs.Tools) > 0 {
 						var list []inspectToolInfo
 						for _, ct := range cs.Tools {
 							if toolFilter != "" && ct.Name != toolFilter {

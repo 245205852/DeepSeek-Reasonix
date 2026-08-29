@@ -6,11 +6,11 @@
   "packageManager": "pnpm@10.34.5",
   "scripts": {
     "dev": "vite",
-    "build": "pnpm lint:hooks && pnpm check:waapi && pnpm check:scroll-writer && node scripts/check-css-syntax.mjs src/styles.css src/components/RemoteConnectWizard.css src/components/TranscriptSelectionMenu.css && node scripts/check-z-index-tokens.mjs src/styles.css src/components/RemoteConnectWizard.css && node scripts/check-theme-token-contract.mjs && tsc --noEmit && vite build && node scripts/check-bundle-budget.mjs",
+    "build": "pnpm lint:hooks && pnpm check:waapi && pnpm check:scroll-writer && node scripts/check-css-syntax.mjs src/styles.css src/components/RemoteConnectWizard.css src/components/TranscriptSelectionMenu.css src/components/MCPInteractionCard.css && node scripts/check-z-index-tokens.mjs src/styles.css src/components/RemoteConnectWizard.css && node scripts/check-theme-token-contract.mjs && tsc --noEmit && vite build && node scripts/check-bundle-budget.mjs",
     "check:bundle": "node scripts/check-bundle-budget.mjs",
     "check:scroll-writer": "node scripts/check-single-scroll-writer.mjs",
     "preview": "vite preview",
-    "check:css": "node scripts/check-css-syntax.mjs src/styles.css src/components/RemoteConnectWizard.css && node scripts/check-z-index-tokens.mjs src/styles.css src/components/RemoteConnectWizard.css && node scripts/check-theme-token-contract.mjs",
+    "check:css": "node scripts/check-css-syntax.mjs src/styles.css src/components/RemoteConnectWizard.css src/components/MCPInteractionCard.css && node scripts/check-z-index-tokens.mjs src/styles.css src/components/RemoteConnectWizard.css && node scripts/check-theme-token-contract.mjs",
     "check:waapi": "node scripts/check-waapi-contract.mjs",
     "lint:hooks": "eslint \"src/**/*.{ts,tsx}\"",
     "test:todo-visibility": "node scripts/test-todo-visibility.mjs && tsx src/__tests__/todo-panel-lifecycle.test.tsx",
@@ -18,6 +18,7 @@
     "test:terminal": "tsx src/__tests__/terminal-events.test.ts && tsx src/__tests__/terminal-store.test.ts && tsx src/__tests__/terminal-output.test.ts && tsx src/__tests__/terminal-theme.test.ts && tsx src/__tests__/terminal-selection.test.ts && tsx src/__tests__/workspace-layout.test.ts",
     "test:usage-stats": "tsx src/__tests__/usage-stats-format.test.ts && tsx src/__tests__/usage-stats-panel.test.tsx",
     "test:task-monitor": "tsx src/components/TaskMonitorPanel.test.tsx && tsx src/__tests__/task-monitor-navigation.test.ts",
+    "test:mcp-app": "tsx src/__tests__/mcp-app-protocol.test.ts",
     "test:workspace": "tsx src/__tests__/keyed-resource.test.ts && tsx src/__tests__/workspace-tree-memory.test.ts && tsx src/__tests__/workspace-refresh-store.test.ts && tsx src/__tests__/workspace-selection-isolation.test.tsx && tsx src/__tests__/workspace-changes-errors.test.tsx && tsx src/__tests__/workspace-turn-verification.test.tsx && tsx src/__tests__/workspace-preview-css.test.ts && tsx src/__tests__/workspace-context-menu.test.tsx && tsx src/__tests__/workspace-resize-interaction.test.tsx && tsx src/__tests__/workspace-panel-swr-contract.test.ts",
     "test:settings-responsive": "tsx src/__tests__/settings-responsive-layout.test.ts",
     "test:stream": "tsx src/__tests__/raf-batch.test.ts && tsx src/__tests__/stream-delta-batch.test.ts && tsx src/__tests__/use-controller-stream-progress.test.ts",
@@ -42,6 +43,7 @@
     "test:all": "pnpm test:typecheck && pnpm test:updater && pnpm test:window-state && pnpm test && pnpm test:remote && pnpm test:performance"
   },
   "dependencies": {
+    "@modelcontextprotocol/ext-apps": "1.7.5",
     "@tanstack/react-virtual": "^3.14.9",
     "@xterm/addon-fit": "0.11.0",
     "@xterm/xterm": "6.0.0",

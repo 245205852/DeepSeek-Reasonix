@@ -63,6 +63,9 @@ type toolOutcome struct {
 	// execution is local shell metadata (optional). Provider messages strip it
 	// via ModelMessages; UI/event sinks surface it on ToolResult cards.
 	execution *tool.ShellExecution
+	// mcpApp is the optional MCP Apps presentation; provider-excluded like
+	// execution, persisted for Desktop cards.
+	mcpApp *provider.MCPAppPresentation
 	// recoveryGeneration is the gate generation captured before execution so
 	// ObserveResult can ignore stale results after a mode switch.
 	recoveryGeneration uint64
