@@ -22,6 +22,7 @@ const (
 	NoticeCodeStreamInterruptedPrematureEOF                     = "stream_interrupted_premature_eof"
 	NoticeCodeStreamInterruptedConnectionReset                  = "stream_interrupted_connection_reset"
 	NoticeCodeUnappliedSteer                                    = "unapplied_steer"
+	NoticeCodeMCPToolsList                                      = "mcp_tools_list"
 	NoticeCodeSessionRecoveryForked                             = "session_recovery_forked"
 	NoticeCodeSessionRecoveryAdopted                            = "session_recovery_adopted"
 	NoticeCodeSessionRecoveryAdoptedCovered                     = "session_recovery_adopted_covered"

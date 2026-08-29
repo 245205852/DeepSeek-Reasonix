@@ -5,7 +5,7 @@ import {
   type TranscriptTailWriteDiagnostic,
 } from "./transcriptScrollDiagnosticProbe";
 import type { TranscriptScrollMode } from "./transcriptScrollArbiter";
-import { nativeTranscriptBottomTop, nativeTranscriptDistanceFromBottom, TRANSCRIPT_AT_BOTTOM_THRESHOLD_PX } from "./transcriptScrollGeometry";
+import { nativeTranscriptBottomTop, nativeTranscriptDistanceFromBottom, observeNativeTranscriptTailClamp, TRANSCRIPT_AT_BOTTOM_THRESHOLD_PX } from "./transcriptScrollGeometry";
 import type { TranscriptScrollWriter } from "./transcriptScrollWriter";
 import type { TranscriptGeometryChangeSource } from "./transcriptGeometryRevision";
 
@@ -83,12 +83,15 @@ export function createTranscriptTailSettle({
     attempts: number;
   } | null = null;
   let jumpTailTimer: number | null = null;
+  let jumpTailFollowupTimer: number | null = null;
   let layoutTransientIdleTimer: number | null = null;
   let lastBottomHeight: number | null = null;
+  let lastBottomViewport: number | null = null;
   let tailPinned = false;
   let ineffectivePin = false;
   let settleExhausted = false;
-  let pendingPin: { top: number; height: number } | null = null;
+  let pendingPin: { top: number; height: number; previousTop: number } | null = null;
+  let lastPinAttempt: { element: HTMLDivElement; top: number; height: number; clientHeight: number; previousTop: number } | null = null;
   // 0=fresh, 1=awaiting LAST commit, 2=LAST committed, 3=quiet retry spent.
   let fallbackState = 0;
   let fallbackEpoch = -1;
@@ -114,6 +117,13 @@ export function createTranscriptTailSettle({
   ) => {
     const element = scrollRef.current;
     if (!element) return;
+    const previousAttempt = lastPinAttempt;
+    if (
+      previousAttempt?.element === element
+      && Math.abs(previousAttempt.height - element.scrollHeight) <= 1
+      && Math.abs(previousAttempt.clientHeight - element.clientHeight) <= 1
+      && previousAttempt.top >= element.scrollHeight - element.clientHeight - TRANSCRIPT_AT_BOTTOM_THRESHOLD_PX
+    ) observeNativeTranscriptTailClamp(element, previousAttempt.previousTop);
     const top = nativeTranscriptBottomTop(element);
     const beforeTop = element.scrollTop;
     if (fallbackEpoch !== ownershipEpochRef.current) {
@@ -121,6 +131,7 @@ export function createTranscriptTailSettle({
       fallbackState = 0;
     }
     lastBottomHeight = element.scrollHeight;
+    lastBottomViewport = element.clientHeight;
     tailPinned = false;
     if (!writer.write({
       owner: "tail-follow",
@@ -136,12 +147,25 @@ export function createTranscriptTailSettle({
       offBottomFrames: diagnostic?.settle?.offBottomFrames,
       stagnantFrames: diagnostic?.settle?.stagnantFrames,
     })) return;
+    lastPinAttempt = {
+      element,
+      top,
+      height: element.scrollHeight,
+      clientHeight: element.clientHeight,
+      previousTop: beforeTop,
+    };
     // WebKit/Virtuoso can accept a physical tail target while its size tree
     // still clamps the native scroller to the previous mounted range. Quarantine
     // that no-op until the quiet window instead of retrying every revision.
-    ineffectivePin = nativeTranscriptDistanceFromBottom(element) > TRANSCRIPT_AT_BOTTOM_THRESHOLD_PX
+    const observedClamp = behavior === "auto"
+      && observeNativeTranscriptTailClamp(element, beforeTop);
+    ineffectivePin = !observedClamp
+      && nativeTranscriptDistanceFromBottom(element) > TRANSCRIPT_AT_BOTTOM_THRESHOLD_PX
       && Math.abs(element.scrollTop - beforeTop) <= 0.5;
-    pendingPin = ineffectivePin ? null : { top, height: element.scrollHeight };
+    pendingPin = ineffectivePin || observedClamp ? null : { top, height: element.scrollHeight, previousTop: beforeTop };
+    if (observedClamp) {
+      tailPinned = true;
+    }
     if (ineffectivePin) requestTailMount();
   };
 
@@ -150,6 +174,7 @@ export function createTranscriptTailSettle({
     tailSettleFrame = null;
     tailSettleProgress = null;
     lastBottomHeight = null;
+    lastBottomViewport = null;
     tailPinned = false;
     ineffectivePin = false;
     settleExhausted = false;
@@ -157,6 +182,8 @@ export function createTranscriptTailSettle({
     fallbackState = 0;
     if (jumpTailTimer !== null) window.clearTimeout(jumpTailTimer);
     jumpTailTimer = null;
+    if (jumpTailFollowupTimer !== null) window.clearTimeout(jumpTailFollowupTimer);
+    jumpTailFollowupTimer = null;
     if (layoutTransientIdleTimer !== null) window.clearTimeout(layoutTransientIdleTimer);
     layoutTransientIdleTimer = null;
     layoutTransientRef.current = false;
@@ -166,7 +193,7 @@ export function createTranscriptTailSettle({
     if (layoutTransientIdleTimer !== null) window.clearTimeout(layoutTransientIdleTimer);
     layoutTransientIdleTimer = window.setTimeout(() => {
       layoutTransientIdleTimer = null;
-      if (tailSettleFrame !== null) return;
+      if (tailSettleFrame !== null || jumpTailTimer !== null || jumpTailFollowupTimer !== null) return;
       layoutTransientRef.current = false;
       tailSettleProgress = null;
       if (ineffectivePin && modeRef.current === "tail-follow" && fallbackState !== 3) {
@@ -222,21 +249,39 @@ export function createTranscriptTailSettle({
     }
     if (jump) {
       if (jumpTailTimer !== null) window.clearTimeout(jumpTailTimer);
+      if (jumpTailFollowupTimer !== null) window.clearTimeout(jumpTailFollowupTimer);
+      jumpTailFollowupTimer = null;
       const transactionElement = scrollElement;
-      jumpTailTimer = window.setTimeout(() => {
-        jumpTailTimer = null;
+      const confirmJumpTail = (settleFrame: number, final: boolean) => {
         const element = scrollRef.current;
         if (element && element === transactionElement && modeRef.current === "tail-follow") {
           const distance = nativeTranscriptDistanceFromBottom(element);
           if (distance > TRANSCRIPT_AT_BOTTOM_THRESHOLD_PX) {
+            const geometryChanged = lastBottomHeight !== null && (
+              Math.abs(element.scrollHeight - lastBottomHeight) > 1
+              || (lastBottomViewport !== null && Math.abs(element.clientHeight - lastBottomViewport) > 1)
+            );
+            if (geometryChanged) geometryRevisionRef.current += 1;
             scrollToTail("auto", CAPTURE_TRANSCRIPT_SCROLL_DIAGNOSTICS && source
-              ? { source, phase: "settle", settle: { frame: 0, offBottomFrames: 0, stagnantFrames: 0 } }
+              ? { source, phase: "settle", settle: { frame: settleFrame, offBottomFrames: 0, stagnantFrames: 0 } }
               : undefined);
           }
-          armLayoutTransientIdle();
+          if (!final) {
+            jumpTailFollowupTimer = window.setTimeout(() => {
+              jumpTailFollowupTimer = null;
+              confirmJumpTail(2, true);
+            }, JUMP_TAIL_TRANSACTION_MS);
+          } else {
+            armLayoutTransientIdle();
+          }
         } else {
+          jumpTailFollowupTimer = null;
           layoutTransientRef.current = false;
         }
+      };
+      jumpTailTimer = window.setTimeout(() => {
+        jumpTailTimer = null;
+        confirmJumpTail(1, false);
       }, JUMP_TAIL_TRANSACTION_MS);
     }
     if (jumpTailTimer !== null) return;
@@ -298,6 +343,13 @@ export function createTranscriptTailSettle({
         }
         if (held) pendingPin = null;
         else if (sameExtent) {
+          if (observeNativeTranscriptTailClamp(element, pendingPin.previousTop)) {
+            pendingPin = null;
+            tailPinned = true;
+            tailSettleProgress = null;
+            armLayoutTransientIdle();
+            return;
+          }
           // The browser accepted the write synchronously, then Virtuoso
           // restored the previous range on the next frame. Quarantine that
           // revision rather than chasing it with another write.

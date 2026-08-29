@@ -43,6 +43,7 @@
     wheelDelta: 0,
     wheelInsideTranscript: 0,
     wheelMaxDelta: 0,
+    reachableTailResidual: 0,
     composer: {
       enabled: false,
       active: false,
@@ -59,8 +60,40 @@
   };
   window.__reasonixNativeTranscriptSmokeState = state;
   window.__REASONIX_TRANSCRIPT_SCROLL_WRITE__ = (write) => {
+    const previousWrite = state.writes.at(-1);
     state.writes.push(write);
     if (state.writes.length > 80) state.writes.shift();
+    if (write.kind !== "pinTail" || write.rejectedReason || !Number.isFinite(write.top)) return;
+    const repeatedClamp = previousWrite?.kind === "pinTail"
+      && !previousWrite.rejectedReason
+      && Math.abs(previousWrite.top - write.top) <= 1
+      && Math.abs(previousWrite.scrollHeight - write.scrollHeight) <= 1
+      && Math.abs(previousWrite.clientHeight - write.clientHeight) <= 1
+      && Math.abs(previousWrite.scrollTop - write.scrollTop) <= 0.5;
+    const reportedResidual = write.scrollHeight - write.clientHeight - write.scrollTop;
+    const learnedClamp = previousWrite?.kind === "pinTail"
+      && previousWrite.top >= write.scrollHeight - write.clientHeight - 4
+      && Math.abs(write.top - write.scrollTop) <= 1;
+    if ((repeatedClamp || learnedClamp) && reportedResidual > 4 && reportedResidual <= 64) {
+      state.reachableTailResidual = reportedResidual;
+    }
+    requestAnimationFrame(() => {
+      const element = state.transcript;
+      if (!(element instanceof HTMLElement)) return;
+      const theoreticalTop = Math.max(0, element.scrollHeight - element.clientHeight);
+      const residual = theoreticalTop - element.scrollTop;
+      const sameGeometry = Math.abs(element.scrollHeight - write.scrollHeight) <= 1
+        && Math.abs(element.clientHeight - write.clientHeight) <= 1;
+      if (
+        sameGeometry
+        && write.top >= theoreticalTop - 4
+        && Math.abs(element.scrollTop - write.scrollTop) <= 0.5
+        && residual > 4
+        && residual <= 64
+      ) {
+        state.reachableTailResidual = residual;
+      }
+    });
   };
   window.addEventListener("wheel", (event) => {
     if (!state.active) return;
@@ -69,6 +102,17 @@
     if (event.target instanceof Node && state.transcript?.contains(event.target)) state.wheelInsideTranscript += 1;
     state.wheelMaxDelta = Math.max(state.wheelMaxDelta, Math.abs(event.deltaY));
   }, { capture: true, passive: true });
+
+  // WebView2 can expose a stable Virtuoso scrollHeight with a small terminal
+  // range that scrollTop cannot reach. Accept it only after an explicit native
+  // tail write is synchronously clamped at unchanged geometry.
+  const tailDistance = (element) => {
+    const theoreticalTop = Math.max(0, element.scrollHeight - element.clientHeight);
+    const observedTop = theoreticalTop - state.reachableTailResidual;
+    if (element.scrollTop <= observedTop + 4) return observedTop - element.scrollTop;
+    state.reachableTailResidual = 0;
+    return theoreticalTop - element.scrollTop;
+  };
 
   const visibleRows = (element) => {
     const viewport = element.getBoundingClientRect();
@@ -176,7 +220,7 @@
     let stableFrames = 0;
     const sample = () => {
       const stable = element.dataset.scrollMode === "tail-follow"
-        && element.scrollHeight - element.scrollTop - element.clientHeight <= 4
+        && tailDistance(element) <= 4
         && visibleRows(element).length > 0;
       stableFrames = stable ? stableFrames + 1 : 0;
       if (stableFrames >= requiredFrames || performance.now() - startedAt >= timeout) {
@@ -217,7 +261,7 @@
       top: element.scrollTop,
       height: element.scrollHeight,
       clientHeight: element.clientHeight,
-      distance: element.scrollHeight - element.scrollTop - element.clientHeight,
+      distance: tailDistance(element),
     });
   };
 
@@ -250,7 +294,7 @@
     input.focus();
     await waitForStableTail(element, 2, 10000);
     await waitForStableViewport(element, 12, 15000);
-    const initialDistance = element.scrollHeight - element.scrollTop - element.clientHeight;
+    const initialDistance = tailDistance(element);
     if (element.dataset.scrollMode !== "tail-follow" || initialDistance > 4) {
       throw new Error(`native composer did not start at a stable tail: ${describeTranscriptState(element)}`);
     }
@@ -310,7 +354,7 @@
       const geometryChanges = composer.samples.filter((sample) => (
         Math.abs(sample.height - baseline.height) > 0.5 || sample.clientHeight !== baseline.clientHeight
       )).length;
-      const finalDistance = element.scrollHeight - element.scrollTop - element.clientHeight;
+      const finalDistance = tailDistance(element);
       const finalGeometry = {
         top: element.scrollTop,
         height: element.scrollHeight,
@@ -374,9 +418,14 @@
       mode: element?.dataset.scrollMode ?? "missing",
       top: element ? Math.round(element.scrollTop) : null,
       height: element?.scrollHeight ?? null,
+      clientHeight: element?.clientHeight ?? null,
+      offsetHeight: element?.offsetHeight ?? null,
+      rectHeight: element ? element.getBoundingClientRect().height : null,
+      reachableTailResidual: state.reachableTailResidual,
       bottomDistance: element
-        ? Math.round(element.scrollHeight - element.scrollTop - element.clientHeight)
+        ? Math.round(tailDistance(element))
         : null,
+      recentWrites: state.writes.slice(-8),
     });
   };
 
@@ -462,19 +511,26 @@
     await prepareNativeComposer(element);
     state.phase = "loading-targeted-history";
     await loadHistoryRows(element, 400);
-    // When the initial history window already meets the row minimum, no
-    // question jump ever ran and the view never left the tail, so the
-    // jump-bottom control is correctly absent. Only a genuine jump away from
-    // the tail needs the control to return.
-    const jumpBottom = await waitFor(() => document.querySelector(".transcript__jump-bottom"), 10000)
-      .catch(() => null);
-    if (!jumpBottom && (element.dataset.scrollMode !== "tail-follow"
-      || element.scrollHeight - element.scrollTop - element.clientHeight > 4)) {
-      throw new Error(`native transcript fixture left the tail without a jump-bottom control: ${describeTranscriptState(element)}`);
+    // A real history jump owns manual-reader mode and must expose the product's
+    // jump-bottom control. When the initial window already has enough rows,
+    // the control is correctly absent and the product must preserve its
+    // physical tail without a fixture-owned scroll write.
+    let jumpBottom = document.querySelector(".transcript__jump-bottom");
+    if (!jumpBottom && element.dataset.scrollMode !== "tail-follow") {
+      jumpBottom = await waitFor(() => document.querySelector(".transcript__jump-bottom"), 10000)
+        .catch(() => null);
     }
-    jumpBottom?.click();
+    if (jumpBottom instanceof HTMLElement) {
+      jumpBottom.click();
+    } else if (element.dataset.scrollMode !== "tail-follow") {
+      throw new Error(`native transcript fixture left manual-reader mode without a jump-bottom control: ${describeTranscriptState(element)}`);
+    }
     state.phase = "waiting-loaded-tail";
     await waitForStableTail(element, 2, 10000);
+    if (element.dataset.scrollMode !== "tail-follow"
+      || tailDistance(element) > 4) {
+      throw new Error(`native transcript fixture could not establish the loaded tail: ${describeTranscriptState(element)}`);
+    }
     // The initial tools page can keep settling its Virtuoso estimates after a
     // couple of visually stable frames on a slower hosted WebView2. Run the
     // composer regression only after the long loaded surface has held both
@@ -503,7 +559,7 @@
       ), 10000);
       await waitFor(() => !document.querySelector(".transcript-navigation-overlay"), 15000);
       await waitForStableViewport(element);
-      state.initialDistance = element.scrollHeight - element.scrollTop - element.clientHeight;
+      state.initialDistance = tailDistance(element);
       if (state.initialDistance >= element.clientHeight * 2) break;
     }
     if (state.initialDistance < element.clientHeight * 2) {
@@ -591,7 +647,7 @@
     const lastTop = frames.at(-1)?.top ?? firstTop;
     const blankFrames = frames.filter((frame) => !frame.occupied);
     const distance = element instanceof HTMLElement
-      ? element.scrollHeight - element.scrollTop - element.clientHeight
+      ? tailDistance(element)
       : Number.POSITIVE_INFINITY;
     const viewportRect = element instanceof HTMLElement ? element.getBoundingClientRect() : null;
     const footerRect = state.growthSurface?.parentElement?.getBoundingClientRect();
@@ -680,7 +736,7 @@
       finalScrollHeight: element?.scrollHeight ?? heights.at(-1) ?? 0,
       blankFrames: blankFrames.length,
       mountedCoverage: frames.length > 0 ? (frames.length - blankFrames.length) / frames.length : 0,
-      finalBottomDistance: element instanceof HTMLElement ? element.scrollHeight - element.scrollTop - element.clientHeight : 0,
+      finalBottomDistance: element instanceof HTMLElement ? tailDistance(element) : 0,
       finalMode: element?.dataset.scrollMode ?? "missing",
       deliveredNativeEvents: state.wheelEvents,
       mode: element?.dataset.scrollMode ?? "missing",

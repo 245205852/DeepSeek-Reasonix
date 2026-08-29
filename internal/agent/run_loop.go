@@ -240,7 +240,12 @@ func (a *Agent) beginRunTurn(ctx context.Context, input string) (rawInput string
 
 // runToolLoop owns the main tool-round budget and dispatches each streamed
 // assistant turn into final-response or tool-round handling.
-func (a *Agent) runToolLoop(ctx context.Context, state *turnRuntime) error {
+func (a *Agent) runToolLoop(ctx context.Context, state *turnRuntime) (runErr error) {
+	releaseMCPListObserver := a.activateMCPListObserver()
+	defer func() {
+		a.recordReadonlySoftBudgetSample(state, runErr)
+		releaseMCPListObserver()
+	}()
 	ctx = a.withAgentContext(ctx)
 	for step := 0; state.runMaxSteps <= 0 || step < state.runMaxSteps || state.graceRound || state.recoveryGraceRound; step++ {
 		// Consume a queued steer and persist it to the session so it

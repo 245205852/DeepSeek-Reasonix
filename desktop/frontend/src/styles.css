@@ -26113,6 +26113,31 @@ body > .mermaid-diagram--fullscreen {
   background: var(--bg);
 }
 
+.context-panel__mcp-empty {
+  margin: 0;
+  color: var(--fg-faint);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.context-panel__mcp-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.context-panel__mcp-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 12px;
+  color: var(--fg);
+}
+
+.context-panel__mcp-row strong {
+  font-variant-numeric: tabular-nums;
+}
+
 .context-panel__section-head {
   display: flex;
   align-items: baseline;

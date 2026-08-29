@@ -290,16 +290,18 @@ for (const extent of [3_467, 6_785, 7_728, 5_525, 4_869]) {
   await flushFrames();
 }
 await advanceClock(240);
+// Absorb one post-quiet WebView2 extent without opening an unbounded write loop.
+scrollExtent += 37;
+scrollElement.scrollTop = Math.min(scrollElement.scrollTop, scrollExtent - scrollElement.clientHeight);
+await advanceClock(240);
 for (let i = 0; i < 6; i += 1) await flushFrames();
-check(scrollToCalls <= 2, `one jump-bottom transaction emits at most two effective writes (${scrollToCalls})`);
-check(arbiter?.modeRef.current === "tail-follow" && scrollElement.scrollTop === scrollExtent - scrollElement.clientHeight,
-  "a progressing jump-bottom transaction retains automatic ownership");
+check(scrollToCalls <= 3, `one jump-bottom transaction emits at most three effective writes (${scrollToCalls})`);
+check(arbiter?.modeRef.current === "tail-follow" && scrollElement.scrollTop === scrollExtent - scrollElement.clientHeight, "a progressing jump-bottom transaction retains automatic ownership");
 scrollElement.scrollTop = 0; suppressScrollTo = true;
 await act(async () => arbiter?.scrollToBottom());
 await act(async () => arbiter?.followGrowingTail("items-rendered"));
 for (let i = 0; i < 6; i += 1) { await advanceClock(350); await flushFrames(); }
-check(arbiter?.modeRef.current === "tail-follow" && arbiter?.isAtBottom === false,
-  `exhausted ineffective tail-follow exposes recovery without revoking ownership (${arbiter?.modeRef.current}/${arbiter?.isAtBottom}/${scrollToCalls})`);
+check(arbiter?.modeRef.current === "tail-follow" && arbiter?.isAtBottom === false, `exhausted ineffective tail-follow exposes recovery without revoking ownership (${arbiter?.modeRef.current}/${arbiter?.isAtBottom}/${scrollToCalls})`);
 suppressScrollTo = false;
 await act(async () => arbiter?.scrollToBottom());
 await advanceClock(240);

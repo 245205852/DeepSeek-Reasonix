@@ -8,7 +8,12 @@ import {
   type TranscriptScrollEvent,
   type TranscriptScrollState,
 } from "../lib/transcriptScrollArbiter";
-import { pinTranscriptTailAfterViewportShrink } from "../lib/transcriptScrollGeometry";
+import {
+  nativeTranscriptBottomTop,
+  nativeTranscriptDistanceFromBottom,
+  observeNativeTranscriptTailClamp,
+  pinTranscriptTailAfterViewportShrink,
+} from "../lib/transcriptScrollGeometry";
 import {
   TRANSCRIPT_TAIL_REARM_MIN_HEIGHT_PX,
   transcriptTailIsStranded,
@@ -276,6 +281,24 @@ check(!isTranscriptContentShrink(80), "content growth is not a shrink");
 
 check(isSubstantialTranscriptDisplacement(1200), "a thumb-drop-sized gap is a substantial displacement");
 check(!isSubstantialTranscriptDisplacement(4), "bottom-adjacent jitter is not substantial");
+
+const webView2Scroller = { scrollHeight: 21_442, scrollTop: 20_827, clientHeight: 578 };
+check(nativeTranscriptBottomTop(webView2Scroller) === 20_864, "unobserved WebView2 geometry retains the theoretical tail");
+check(
+  observeNativeTranscriptTailClamp(webView2Scroller, 20_827),
+  "a small no-op WebView2 tail write records the reachable native clamp",
+);
+check(nativeTranscriptBottomTop(webView2Scroller) === 20_827, "the observed WebView2 tail target stays physically reachable");
+check(nativeTranscriptDistanceFromBottom(webView2Scroller) === 0, "the observed reachable tail is classified at bottom");
+webView2Scroller.scrollHeight += 40;
+check(nativeTranscriptBottomTop(webView2Scroller) === 20_867, "content growth preserves the observed terminal residual");
+check(nativeTranscriptDistanceFromBottom(webView2Scroller) === 40, "content growth still re-arms tail convergence");
+const staleWebView2Range = { scrollHeight: 3_000, scrollTop: 1_000, clientHeight: 500 };
+check(
+  !observeNativeTranscriptTailClamp(staleWebView2Range, 1_000),
+  "a large unmounted WebView2 range is not mistaken for a terminal clamp",
+);
+check(nativeTranscriptBottomTop(staleWebView2Range) === 2_500, "large gaps retain the LAST-item recovery target");
 
 // A misread shrink (native-thumb release remeasure seen as a height drop)
 // leaves layout convergence inert; a later substantial displacement delivery
