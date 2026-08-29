@@ -286,6 +286,11 @@ func (a *Agent) runToolLoop(ctx context.Context, state *turnRuntime) error {
 			// bounded LocalOnly recovery record for the next real user message.
 			// Intermediate failed attempts never wrote session state.
 			a.recordInterruptedDisplay(text, reasoning, partialCalls, true, state.workDurationMs())
+			// A broken provider stream can otherwise look like a silent hang
+			// followed only by the generic interrupted-turn notice (#9560).
+			if code, msg := streamInterruptNotice(err); msg != "" {
+				a.svc.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Code: code, Text: msg})
+			}
 			return err
 		}
 		a.sess.lastPrefixShape = prefixShape

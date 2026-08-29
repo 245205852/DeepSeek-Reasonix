@@ -2845,3 +2845,20 @@ func finishReasonMessage(u *provider.Usage) (string, bool) {
 		return "", false
 	}
 }
+
+// streamInterruptNotice explains why a provider stream never reached a clean
+// terminal, in words a user can act on. Only the closed StreamInterrupt* enum
+// is rendered — the wrapped transport error can carry URLs or gateway bodies
+// and must not reach the transcript (#9560).
+func streamInterruptNotice(err error) (code, text string) {
+	switch provider.StreamInterruptReason(err) {
+	case provider.StreamInterruptIdleTimeout:
+		return event.NoticeCodeStreamInterruptedIdleTimeout, "model stream stalled: no data arrived before the idle timeout; check the provider gateway or network proxy"
+	case provider.StreamInterruptPrematureEOF:
+		return event.NoticeCodeStreamInterruptedPrematureEOF, "model stream ended before completion; the provider gateway or network proxy dropped the connection"
+	case provider.StreamInterruptConnectionReset:
+		return event.NoticeCodeStreamInterruptedConnectionReset, "model connection was reset; check the provider gateway or network proxy"
+	default:
+		return "", ""
+	}
+}

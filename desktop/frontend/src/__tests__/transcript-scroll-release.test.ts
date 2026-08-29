@@ -11,6 +11,7 @@ import {
 import { pinTranscriptTailAfterViewportShrink } from "../lib/transcriptScrollGeometry";
 import {
   TRANSCRIPT_TAIL_REARM_MIN_HEIGHT_PX,
+  transcriptTailIsStranded,
   transcriptTailSettleBudgetExhausted,
   transcriptTailShouldReaim,
 } from "../lib/transcriptTailSettle";
@@ -247,6 +248,15 @@ check(transcriptTailSettleBudgetExhausted(8) === true, "tail settle stops at its
 check(transcriptTailShouldReaim(null, 1_000) === true, "a fresh tail settle always re-aims");
 check(transcriptTailShouldReaim(1_000, 1_000 + TRANSCRIPT_TAIL_REARM_MIN_HEIGHT_PX - 1) === false, "sub-threshold tail measurement jitter does not re-aim");
 check(transcriptTailShouldReaim(1_000, 1_000 + TRANSCRIPT_TAIL_REARM_MIN_HEIGHT_PX) === true, "real tail growth re-arms the settle writer");
+check(transcriptTailIsStranded("tail-follow", 37, true), "an exhausted off-bottom tail-follow is recoverable");
+check(!transcriptTailIsStranded("tail-follow", 37, false), "an active tail settle retains automatic ownership");
+check(!transcriptTailIsStranded("manual", 37, true), "manual reading never triggers tail exhaustion recovery");
+
+const strandedTail = run([
+  { type: "SCROLL_DELIVERED", atBottom: false, scrollable: true, substantial: true },
+  { type: "TAIL_SETTLE_EXHAUSTED" },
+]);
+check(strandedTail.state.mode === "tail-follow" && !strandedTail.state.atBottom, "exhausted tail repair exposes recovery without revoking ownership");
 
 const repeatedDisplacement = run([
   { type: "SCROLL_DELIVERED", atBottom: true, scrollable: true },
