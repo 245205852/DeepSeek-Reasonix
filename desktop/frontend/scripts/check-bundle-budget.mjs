@@ -148,7 +148,10 @@ console.log("\nbundle budgets");
 // merged main-v2 baseline. MCP elicitation and the inline Apps lifecycle remain
 // on that startup graph; the combined path measures 455.0 KiB. Retain 0.2 KiB
 // of bounded build/toolchain headroom.
-const initialJSBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 455.2 : 455.2;
+// Generic elicitation validation adds field-specific localized accessibility
+// copy to the English startup dictionary. The interaction code and CSS remain
+// lazy; the measured path is 455.437 KiB. Retain 0.163 KiB of headroom.
+const initialJSBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 455.6 : 455.6;
 assertBudget("initial JavaScript gzip", initialJSGzip, initialJSBudgetKiB * 1024);
 assertBudget("largest initial JavaScript chunk gzip", largestInitialJS, 280 * 1024);
 // Render-blocking CSS is intentionally absent: styles.css loads deferred via
@@ -196,7 +199,10 @@ for (const path of localeChunks) {
   // 0.4–0.5 KiB locale-only ratchet.
   // Git-Bash installation guidance adds localized copy across dialects.
   // MCP elicitation adds fourteen short labels per locale (~40 B gzip).
-  const budget = name.startsWith("zh-TW-") ? 59.2 * 1024 : 58.6 * 1024;
+  // Generic schema validation adds complete field-error, privacy, and safe-
+  // fallback copy. Measured chunks are 58.574 KiB zh and 59.368 KiB zh-TW;
+  // retain roughly 0.13 KiB of platform headroom for each.
+  const budget = name.startsWith("zh-TW-") ? 59.5 * 1024 : 58.7 * 1024;
   assertBudget(`${name} gzip`, gzipBytes(path), budget);
 }
 
@@ -249,6 +255,9 @@ const rawInitialBytes = [...initialJS, ...initialCSS, ...appShellCSS]
 // The browser MCP interaction preview adds 0.6 KiB of route wiring while its
 // 0.75 KiB form fixture and lifecycle remain lazy. The combined path measures
 // 2443.2 KiB; retain 0.1 KiB of bounded build/toolchain headroom.
-const rawInitialBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 2_443.3 : 2_443.3;
+// Generic field copy adds 1.134 KiB raw to the startup dictionary; all schema
+// parsing, rendering, and CSS remain lazy. The measured path is 2444.334 KiB;
+// retain 0.166 KiB of bounded build/toolchain headroom.
+const rawInitialBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 2_444.5 : 2_444.5;
 assertBudget("initial raw JavaScript and CSS", rawInitialBytes, rawInitialBudgetKiB * 1024);
 assertBudget("largest initial JavaScript chunk raw", largestInitialJSRaw, 1_000 * 1024);

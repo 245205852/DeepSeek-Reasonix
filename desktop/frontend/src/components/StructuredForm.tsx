@@ -1,149 +1,62 @@
-import { useMemo, useState } from "react";
+import { useEffect, useId, useRef } from "react";
 import { useI18n } from "../lib/i18n";
+import {
+  structuredFieldIssue,
+  type StructuredField,
+  type StructuredFieldIssue,
+  type StructuredFieldValue,
+} from "../lib/structuredFormSchema";
 
-// One field of a flat primitive elicitation schema after normalization.
-export type StructuredField = {
-  key: string;
-  label: string;
-  kind: "string" | "number" | "integer" | "boolean" | "enum";
-  required: boolean;
-  defaultValue?: string;
-  options?: { label: string; value: string }[];
-  minLength?: number;
-  maxLength?: number;
-  minimum?: number;
-  maximum?: number;
-  description?: string;
-};
+export {
+  coerceStructuredValues,
+  initialStructuredValues,
+  missingStructuredRequired,
+  normalizeStructuredSchema,
+  parseStructuredSchema,
+} from "../lib/structuredFormSchema";
+export type { StructuredField, StructuredFieldIssue, StructuredFieldValue } from "../lib/structuredFormSchema";
 
-export type StructuredFieldValue = string | number | boolean;
-
-// normalizeStructuredSchema flattens an elicitation requestedSchema (flat
-// primitive properties only per the MCP spec) into renderable fields. Unknown
-// or nested shapes degrade to a plain string field rather than blocking the
-// prompt.
-export function normalizeStructuredSchema(schema: unknown): StructuredField[] {
-  if (!schema || typeof schema !== "object") return [];
-  const props = (schema as { properties?: Record<string, unknown> }).properties;
-  if (!props || typeof props !== "object") return [];
-  const required = new Set(
-    Array.isArray((schema as { required?: unknown[] }).required)
-      ? ((schema as { required?: unknown[] }).required as unknown[]).filter((v): v is string => typeof v === "string")
-      : [],
-  );
-  const fields: StructuredField[] = [];
-  for (const [key, raw] of Object.entries(props)) {
-    if (!raw || typeof raw !== "object") continue;
-    const prop = raw as Record<string, unknown>;
-    const enumValues = Array.isArray(prop.enum)
-      ? (prop.enum as unknown[]).filter((v) => v !== null && v !== undefined)
-      : null;
-    let kind: StructuredField["kind"] = "string";
-    if (enumValues && enumValues.length > 0) kind = "enum";
-    else if (typeof prop.type === "string") {
-      if (prop.type === "number" || prop.type === "integer" || prop.type === "boolean" || prop.type === "string") {
-        kind = prop.type;
-      }
-    }
-    const defaultValue =
-      prop.default === null || prop.default === undefined
-        ? undefined
-        : kind === "boolean"
-          ? prop.default
-            ? "true"
-            : "false"
-          : String(prop.default);
-    fields.push({
-      key,
-      label: typeof prop.title === "string" && prop.title ? prop.title : key,
-      kind,
-      required: required.has(key),
-      defaultValue,
-      options: enumValues
-        ? enumValues.map((v) => ({
-            label: String(v),
-            value: typeof v === "string" ? v : JSON.stringify(v),
-          }))
-        : undefined,
-      minLength: typeof prop.minLength === "number" ? prop.minLength : undefined,
-      maxLength: typeof prop.maxLength === "number" ? prop.maxLength : undefined,
-      minimum: typeof prop.minimum === "number" ? prop.minimum : undefined,
-      maximum: typeof prop.maximum === "number" ? prop.maximum : undefined,
-      description: typeof prop.description === "string" ? prop.description : undefined,
-    });
-  }
-  return fields;
+function inputType(field: StructuredField): "text" | "email" | "url" | "date" | "number" {
+  if (field.kind === "number" || field.kind === "integer") return "number";
+  if (field.format === "email") return "email";
+  if (field.format === "uri") return "url";
+  if (field.format === "date") return "date";
+  // RFC 3339 date-times can include a timezone, which datetime-local drops.
+  return "text";
 }
 
-// initialStructuredValues applies defaults (and boolean false defaults stay
-// explicit so required booleans do not block submission).
-export function initialStructuredValues(fields: StructuredField[]): Record<string, StructuredFieldValue> {
-  const values: Record<string, StructuredFieldValue> = {};
-  for (const field of fields) {
-    if (field.defaultValue === undefined) continue;
-    values[field.key] = field.kind === "boolean" ? field.defaultValue === "true" : field.defaultValue;
-  }
-  return values;
-}
-
-export function missingStructuredRequired(
-  fields: StructuredField[],
-  values: Record<string, StructuredFieldValue>,
-): string[] {
-  return fields.filter((f) => f.required && values[f.key] === undefined).map((f) => f.label);
-}
-
-// coerceStructuredValues converts the string form entries into the JSON types
-// the schema asks for; unparseable numbers are reported instead of sent.
-export function coerceStructuredValues(
-  fields: StructuredField[],
-  values: Record<string, StructuredFieldValue>,
-): { content: Record<string, unknown>; invalid: string[] } {
-  const content: Record<string, unknown> = {};
-  const invalid: string[] = [];
-  for (const field of fields) {
-    const value = values[field.key];
-    if (value === undefined || value === "") continue;
-    if (field.kind === "number" || field.kind === "integer") {
-      const num = field.kind === "integer" ? Number.parseInt(String(value), 10) : Number(String(value));
-      if (!Number.isFinite(num)) {
-        invalid.push(field.label);
-        continue;
-      }
-      if (field.minimum !== undefined && num < field.minimum) invalid.push(field.label);
-      if (field.maximum !== undefined && num > field.maximum) invalid.push(field.label);
-      content[field.key] = num;
-      continue;
-    }
-    if (field.kind === "boolean") {
-      content[field.key] = value === true || value === "true";
-      continue;
-    }
-    const text = String(value);
-    if (field.minLength !== undefined && text.length < field.minLength) invalid.push(field.label);
-    if (field.maxLength !== undefined && text.length > field.maxLength) invalid.push(field.label);
-    content[field.key] = text;
-  }
-  return { content, invalid };
-}
-
-// StructuredForm renders flat primitive schema fields. It owns no submission
-// protocol: the caller collects values and submits. MCP elicitation and
-// extension forms share it with different submit paths.
+// StructuredForm renders the complete MCP flat-schema subset. It owns no
+// protocol state: the caller decides when validation becomes visible and when
+// values are submitted.
 export function StructuredForm({
   fields,
   values,
   onChange,
   disabled,
+  showErrors = false,
+  focusInvalidNonce = 0,
 }: {
   fields: StructuredField[];
   values: Record<string, StructuredFieldValue>;
   onChange: (next: Record<string, StructuredFieldValue>) => void;
   disabled?: boolean;
+  showErrors?: boolean;
+  focusInvalidNonce?: number;
 }) {
   const { t } = useI18n();
-  const [focusKey, setFocusKey] = useState<string | null>(null);
-  const orderedKeys = useMemo(() => fields.map((f) => f.key), [fields]);
+  const formID = useId().replace(/:/g, "");
+  const controls = useRef(new Map<string, HTMLElement>());
+
+  useEffect(() => {
+    const first = fields.find((field) => field.kind !== "unsupported");
+    if (first) controls.current.get(first.key)?.focus();
+  }, [fields]);
+
+  useEffect(() => {
+    if (!focusInvalidNonce) return;
+    const firstInvalid = fields.find((field) => structuredFieldIssue(field, values[field.key]));
+    if (firstInvalid) controls.current.get(firstInvalid.key)?.focus();
+  }, [fields, focusInvalidNonce, values]);
 
   const set = (key: string, value: StructuredFieldValue | undefined) => {
     const next = { ...values };
@@ -152,64 +65,153 @@ export function StructuredForm({
     onChange(next);
   };
 
+  const messageFor = (field: StructuredField, issue: StructuredFieldIssue): string => {
+    if (issue === "required") return t("mcp.interaction.fieldRequired");
+    if (issue === "tooShort") return t("mcp.interaction.fieldTooShort", { min: field.minLength ?? 0 });
+    if (issue === "tooLong") return t("mcp.interaction.fieldTooLong", { max: field.maxLength ?? 0 });
+    if (issue === "belowMinimum") return t("mcp.interaction.fieldBelowMinimum", { min: field.minimum ?? 0 });
+    if (issue === "aboveMaximum") return t("mcp.interaction.fieldAboveMaximum", { max: field.maximum ?? 0 });
+    if (issue === "tooFewItems") return t("mcp.interaction.fieldTooFewItems", { min: field.minItems ?? 0 });
+    if (issue === "tooManyItems") return t("mcp.interaction.fieldTooManyItems", { max: field.maxItems ?? 0 });
+    if (issue === "unsupported") return t("mcp.interaction.fieldUnsupported");
+    return t("mcp.interaction.fieldInvalid");
+  };
+
   return (
-    <div className="structured-form" role="list">
-      {fields.map((field) => {
+    <div className="structured-form">
+      {fields.map((field, index) => {
         const raw = values[field.key];
-        const stringRaw = raw === undefined ? "" : String(raw);
-        const invalid =
-          raw !== undefined &&
-          raw !== "" &&
-          ((field.minLength !== undefined && stringRaw.length < field.minLength) ||
-            (field.maxLength !== undefined && stringRaw.length > field.maxLength));
-        const focused = focusKey === field.key;
-        void focused;
+        const fieldID = `${formID}-field-${index}`;
+        const hintID = field.description ? `${fieldID}-hint` : undefined;
+        const issue = structuredFieldIssue(field, raw);
+        const errorID = showErrors && issue ? `${fieldID}-error` : undefined;
+        const describedBy = [hintID, errorID].filter(Boolean).join(" ") || undefined;
+        const setControl = (node: HTMLElement | null) => {
+          if (node) controls.current.set(field.key, node);
+          else controls.current.delete(field.key);
+        };
+        const label = (
+          <>
+            {field.label}
+            {field.required ? <span className="structured-form-required" aria-hidden="true"> *</span> : null}
+          </>
+        );
+        const help = (
+          <>
+            {field.description ? <span id={hintID} className="structured-form-hint">{field.description}</span> : null}
+            {showErrors && issue ? <span id={errorID} className="structured-form-error" role="alert">{messageFor(field, issue)}</span> : null}
+          </>
+        );
+
+        if (field.kind === "unsupported") {
+          return (
+            <div key={field.key} className="structured-form-field structured-form-field--wide">
+              <span className="structured-form-label">{label}</span>
+              <span className="structured-form-unsupported" role="alert">{t("mcp.interaction.fieldUnsupported")}</span>
+            </div>
+          );
+        }
+
+        if (field.kind === "boolean") {
+          return (
+            <div key={field.key} className="structured-form-field structured-form-field--wide">
+              <label className="structured-form-checkbox-row" htmlFor={fieldID}>
+                <input
+                  ref={setControl}
+                  id={fieldID}
+                  type="checkbox"
+                  className="structured-form-checkbox"
+                  checked={raw === true}
+                  disabled={disabled}
+                  aria-required={field.required || undefined}
+                  aria-invalid={showErrors && issue ? true : undefined}
+                  aria-describedby={describedBy}
+                  onChange={(event) => set(field.key, event.target.checked)}
+                />
+                <span className="structured-form-label">{label}</span>
+              </label>
+              {help}
+            </div>
+          );
+        }
+
+        if (field.kind === "multi-enum" && field.options) {
+          const selected = Array.isArray(raw) ? raw : [];
+          return (
+            <fieldset
+              key={field.key}
+              className="structured-form-field structured-form-field--wide structured-form-options"
+              aria-required={field.required || undefined}
+              aria-invalid={showErrors && issue ? true : undefined}
+              aria-describedby={describedBy}
+            >
+              <legend className="structured-form-label">{label}</legend>
+              {field.options.map((option, optionIndex) => (
+                <label key={option.value} className="structured-form-option">
+                  <input
+                    ref={optionIndex === 0 ? setControl : undefined}
+                    type="checkbox"
+                    checked={selected.includes(option.value)}
+                    disabled={disabled}
+                    onChange={(event) => {
+                      const next = event.target.checked
+                        ? [...selected, option.value]
+                        : selected.filter((value) => value !== option.value);
+                      set(field.key, next);
+                    }}
+                  />
+                  <span>{option.label}</span>
+                </label>
+              ))}
+              {help}
+            </fieldset>
+          );
+        }
+
+        const stringRaw = raw === undefined || Array.isArray(raw) ? "" : String(raw);
         return (
-          <label key={field.key} className="structured-form-field" data-index={orderedKeys.indexOf(field.key)}>
-            <span className="structured-form-label">
-              {field.label}
-              {field.required ? <span className="structured-form-required" aria-hidden="true"> *</span> : null}
-            </span>
-            {field.description ? <span className="structured-form-hint">{field.description}</span> : null}
-            {field.kind === "boolean" ? (
-              <input
-                type="checkbox"
-                className="structured-form-checkbox"
-                checked={raw === true || raw === "true"}
-                disabled={disabled}
-                onChange={(e) => set(field.key, e.target.checked)}
-              />
-            ) : field.kind === "enum" && field.options ? (
+          <div key={field.key} className="structured-form-field">
+            <label className="structured-form-label" htmlFor={fieldID}>{label}</label>
+            {field.kind === "enum" && field.options ? (
               <select
-                className="structured-form-select"
+                ref={setControl}
+                id={fieldID}
+                className="structured-form-control"
                 value={stringRaw}
                 disabled={disabled}
-                onChange={(e) => set(field.key, e.target.value === "" ? undefined : e.target.value)}
+                required={field.required}
+                aria-required={field.required || undefined}
+                aria-invalid={showErrors && issue ? true : undefined}
+                aria-describedby={describedBy}
+                onChange={(event) => set(field.key, event.target.value || undefined)}
               >
                 <option value="">{t("mcp.interaction.chooseOption")}</option>
-                {field.options.map((opt) => (
-                  <option key={opt.value} value={opt.value}>
-                    {opt.label}
-                  </option>
-                ))}
+                {field.options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
               </select>
             ) : (
               <input
-                type={field.kind === "number" || field.kind === "integer" ? "number" : "text"}
-                className={invalid ? "structured-form-input is-invalid" : "structured-form-input"}
+                ref={setControl}
+                id={fieldID}
+                type={inputType(field)}
+                className="structured-form-control"
                 value={stringRaw}
                 disabled={disabled}
+                required={field.required}
+                aria-required={field.required || undefined}
+                aria-invalid={showErrors && issue ? true : undefined}
+                aria-describedby={describedBy}
                 min={field.minimum}
                 max={field.maximum}
+                step={field.kind === "integer" ? 1 : field.kind === "number" ? "any" : undefined}
                 minLength={field.minLength}
                 maxLength={field.maxLength}
-                placeholder={field.defaultValue ?? ""}
-                onFocus={() => setFocusKey(field.key)}
-                onBlur={() => setFocusKey(null)}
-                onChange={(e) => set(field.key, e.target.value === "" ? undefined : e.target.value)}
+                inputMode={field.kind === "integer" ? "numeric" : field.kind === "number" ? "decimal" : undefined}
+                placeholder={field.format === "date-time" ? "2026-08-29T12:00:00Z" : undefined}
+                onChange={(event) => set(field.key, event.target.value || undefined)}
               />
             )}
-          </label>
+            {help}
+          </div>
         );
       })}
     </div>

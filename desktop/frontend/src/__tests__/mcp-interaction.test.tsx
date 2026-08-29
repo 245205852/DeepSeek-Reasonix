@@ -23,13 +23,15 @@ import type { WireEvent } from "../lib/types";
 import { initialState, reducer } from "../lib/useController";
 import { app, onEvent } from "../lib/bridge";
 import { DECISION_SURFACE_MOCK_TRIGGERS } from "../lib/decisionSurfaceMock";
-import { MCPInteractionCard } from "../components/MCPInteractionCard";
 import {
   coerceStructuredValues,
   initialStructuredValues,
   missingStructuredRequired,
   normalizeStructuredSchema,
+  parseStructuredSchema,
 } from "../components/StructuredForm";
+
+const { MCPInteractionCard } = await import("../components/MCPInteractionCard");
 
 let passed = 0;
 let failed = 0;
@@ -63,6 +65,8 @@ globalThis.Event = dom.window.Event;
 globalThis.CustomEvent = dom.window.CustomEvent;
 globalThis.KeyboardEvent = dom.window.KeyboardEvent;
 globalThis.MouseEvent = dom.window.MouseEvent;
+(dom.window.HTMLElement.prototype as unknown as { attachEvent: () => void; detachEvent: () => void }).attachEvent = () => {};
+(dom.window.HTMLElement.prototype as unknown as { attachEvent: () => void; detachEvent: () => void }).detachEvent = () => {};
 
 // ── Schema normalization ─────────────────────────────────────────────────────
 
@@ -74,16 +78,31 @@ globalThis.MouseEvent = dom.window.MouseEvent;
       code: { type: "string", title: "Device code", minLength: 4, maxLength: 8 },
       count: { type: "integer", minimum: 1, maximum: 5, default: 2 },
       ok: { type: "boolean" },
-      flavor: { enum: ["vanilla", "mint"] },
+      flavor: { enum: ["vanilla", "mint"], enumNames: ["Vanilla bean", "Fresh mint"] },
+      region: { type: "string", oneOf: [{ const: "us", title: "United States" }, { const: "sg", title: "Singapore" }] },
+      scopes: {
+        type: "array",
+        items: { anyOf: [{ const: "read", title: "Read data" }, { const: "write", title: "Write data" }] },
+        minItems: 1,
+        maxItems: 2,
+        default: ["read"],
+      },
+      email: { type: "string", format: "email" },
     },
   });
-  ok(fields.length === 4, "all flat properties become fields");
+  ok(fields.length === 7, "old and new flat schema properties become fields");
   const code = fields.find((f) => f.key === "code");
   ok(code?.kind === "string" && code.required && code.minLength === 4, "string field carries required + bounds");
   const count = fields.find((f) => f.key === "count");
-  ok(count?.kind === "integer" && count.defaultValue === "2" && count.maximum === 5, "integer field carries default + max");
+  ok(count?.kind === "integer" && count.defaultValue === 2 && count.maximum === 5, "integer field carries default + max");
   ok(fields.find((f) => f.key === "ok")?.kind === "boolean", "boolean field detected");
-  ok(fields.find((f) => f.key === "flavor")?.kind === "enum", "enum field detected");
+  ok(fields.find((f) => f.key === "flavor")?.options?.[0].label === "Vanilla bean", "legacy enumNames labels stay compatible");
+  ok(fields.find((f) => f.key === "region")?.options?.[1].label === "Singapore", "2025-11-25 titled single-select is normalized");
+  const scopes = fields.find((f) => f.key === "scopes");
+  ok(scopes?.kind === "multi-enum" && Array.isArray(scopes.defaultValue) && scopes.defaultValue[0] === "read", "2025-11-25 titled multi-select carries defaults");
+  ok(fields.find((f) => f.key === "email")?.format === "email", "string formats reach the renderer");
+  const nested = parseStructuredSchema({ type: "object", properties: { account: { type: "object" } } });
+  ok(nested.unsupported && nested.fields[0]?.kind === "unsupported", "nested schemas fail closed instead of becoming text");
   ok(normalizeStructuredSchema(null).length === 0, "null schema yields no fields");
   ok(normalizeStructuredSchema({}).length === 0, "schema without properties yields no fields");
 }
@@ -99,6 +118,7 @@ globalThis.MouseEvent = dom.window.MouseEvent;
       age: { type: "integer" },
       pi: { type: "number" },
       ok: { type: "boolean", default: true },
+      roles: { type: "array", items: { type: "string", enum: ["reader", "writer"] }, minItems: 1 },
     },
   });
   const defaults = initialStructuredValues(fields);
@@ -109,11 +129,13 @@ globalThis.MouseEvent = dom.window.MouseEvent;
     name: "jo",
     age: "41",
     pi: "3.5",
+    roles: ["reader"],
   });
   ok(invalid.length === 0, "valid values coerce without errors");
-  ok(content.name === "jo" && content.age === 41 && content.pi === 3.5 && content.ok === true, "types coerced to JSON types");
-  const bad = coerceStructuredValues(fields, { ...defaults, name: "j", age: "not-a-number" });
-  ok(bad.invalid.includes("name") && bad.invalid.includes("age"), "bound violations and NaN reported");
+  ok(content.name === "jo" && content.age === 41 && content.pi === 3.5 && content.ok === true, "scalar values coerce to JSON types");
+  ok(Array.isArray(content.roles) && content.roles[0] === "reader", "multi-select answers remain string arrays");
+  const bad = coerceStructuredValues(fields, { ...defaults, name: "j", age: "4.2", roles: [] });
+  ok(bad.invalid.includes("name") && bad.invalid.includes("age") && bad.invalid.includes("roles"), "bounds, fractional integers, and selection limits are rejected");
 }
 
 // ── Reducer ──────────────────────────────────────────────────────────────────
@@ -152,10 +174,11 @@ globalThis.MouseEvent = dom.window.MouseEvent;
   ok(interaction?.tabId === "mock-mcp-tab", "browser mock routes the MCP interaction to its origin tab");
   ok(interaction?.mcpInteraction?.server === "github", "browser mock identifies the requesting MCP server");
   const schema = interaction?.mcpInteraction?.requestedSchema as { properties?: Record<string, unknown> } | undefined;
-  ok(Object.keys(schema?.properties ?? {}).join(",") === "code,environment,remember", "browser mock exposes the complete structured form");
+  ok(Object.keys(schema?.properties ?? {}).join(",") === "code,environment,permissions,remember", "browser mock exposes old and new structured controls");
   await app.AnswerMCPInteractionForTab("mock-mcp-tab", interaction?.mcpInteraction?.id ?? "", "accept", {
     code: "123-456",
-    environment: "Staging",
+    environment: "staging",
+    permissions: ["repo:read"],
     remember: false,
   });
   ok(events.some((event) => event.kind === "prompt_answered" && event.tabId === "mock-mcp-tab"), "browser mock acknowledges the MCP answer on the origin tab");
@@ -196,13 +219,19 @@ globalThis.MouseEvent = dom.window.MouseEvent;
   });
   const text = document.body.textContent ?? "";
   ok(text.includes("github") && text.includes("Device code"), "card shows server and field label");
+  const dialog = document.querySelector("[role='dialog']");
+  const descriptionID = dialog?.getAttribute("aria-describedby") ?? "";
+  ok(Boolean(descriptionID) && document.getElementById(descriptionID)?.textContent === "Enter the device code", "server message describes the dialog without crowding its title");
 
-  const input = document.querySelector(".structured-form-input") as HTMLInputElement | null;
+  const input = document.querySelector(".structured-form-control") as HTMLInputElement | null;
   ok(input !== null, "form field rendered as input");
   // jsdom cannot reliably drive React controlled-input keystrokes; the default
   // value prefills the field so the accept path is exercised end-to-end, and
   // typed-value coercion is covered above.
   ok(input?.value === "123-456", "required field prefilled from schema default");
+  ok(document.activeElement === input, "new form focuses its first field");
+  ok(document.querySelectorAll("[role='option']").length === 0, "immediate MCP actions are not exposed as listbox options");
+  ok(document.querySelector(".prompt-shelf-bar-actions")?.getAttribute("role") === "group", "MCP actions expose button-group semantics");
   const submit = Array.from(document.querySelectorAll("button, [role='button']")).find((b) =>
     (b.textContent ?? "").toLowerCase().includes("submit"),
   );
@@ -220,6 +249,70 @@ globalThis.MouseEvent = dom.window.MouseEvent;
   await act(async () => {
     root.unmount();
   });
+}
+
+// ── Unsupported schema fallback ─────────────────────────────────────────────
+
+{
+  const root = createRoot(document.getElementById("root")!);
+  await act(async () => {
+    root.render(
+      <LocaleProvider>
+        <MCPInteractionCard
+          interaction={{
+            id: "unsupported",
+            server: "future-server",
+            mode: "form",
+            message: "Provide account details",
+            requestedSchema: { type: "object", properties: { account: { type: "object" } } },
+          }}
+          busy={false}
+          onAnswer={() => {}}
+        />
+      </LocaleProvider>,
+    );
+  });
+  const submit = Array.from(document.querySelectorAll("button")).find((button) => button.textContent === "Submit");
+  const cancel = Array.from(document.querySelectorAll("button")).find((button) => button.textContent === "Cancel");
+  ok(submit?.disabled === true, "unknown nested schema cannot be submitted as lossy text");
+  ok(cancel?.disabled === false && Boolean(document.querySelector("[role='alert']")), "unsupported form keeps a clear safe exit and explanation");
+  await act(async () => root.unmount());
+}
+
+// ── Required-field validation ───────────────────────────────────────────────
+
+{
+  const answers: string[] = [];
+  const root = createRoot(document.getElementById("root")!);
+  await act(async () => {
+    root.render(
+      <LocaleProvider>
+        <MCPInteractionCard
+          interaction={{
+            id: "8",
+            server: "calendar-with-a-deliberately-long-server-name",
+            mode: "form",
+            message: "Please provide the account identifier used for this calendar connection.",
+            requestedSchema: {
+              type: "object",
+              required: ["account"],
+              properties: { account: { type: "string", title: "Account email", format: "email" } },
+            },
+          }}
+          busy={false}
+          onAnswer={(_id, action) => answers.push(action)}
+        />
+      </LocaleProvider>,
+    );
+  });
+  const submit = Array.from(document.querySelectorAll("button")).find((button) => button.textContent === "Submit");
+  await act(async () => submit?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+  const input = document.querySelector(".structured-form-control") as HTMLInputElement | null;
+  ok(answers.length === 0, "invalid form does not answer the blocked MCP request");
+  ok(input?.required === true && input.getAttribute("aria-invalid") === "true", "required field exposes native and ARIA validation state");
+  ok(Boolean(input?.getAttribute("aria-describedby")), "field error is associated with its control");
+  ok(document.activeElement === input, "failed submit returns focus to the first invalid field");
+  await act(async () => root.unmount());
 }
 
 // ── URL card ─────────────────────────────────────────────────────────────────
@@ -248,9 +341,11 @@ globalThis.MouseEvent = dom.window.MouseEvent;
   });
   const text = document.body.textContent ?? "";
   const urlSummary = document.querySelector(".mcp-interaction-url")?.textContent ?? "";
-  ok(urlSummary.trim() === "linear → auth.example.com", "url card shows the exact server and target host");
+  ok(urlSummary.includes("linear") && urlSummary.includes("auth.example.com"), "url card shows the exact server and target host");
   ok(!text.includes("?state=xyz"), "url card hides query params from the summary line");
-  const open = document.querySelector(".prompt-shelf-bar-actions button");
+  const urlButtons = Array.from(document.querySelectorAll(".prompt-shelf-bar-actions button"));
+  const open = urlButtons.find((button) => (button.textContent ?? "").startsWith("Open "));
+  ok(urlButtons.some((button) => button.textContent === "Cancel"), "url mode keeps cancel distinct from decline");
   if (open) {
     await act(async () => {
       open.dispatchEvent(new MouseEvent("click", { bubbles: true }));

@@ -12,14 +12,32 @@ function createMockMCPInteraction(id: string): WireMCPInteraction {
     message: "MCP server requests additional information",
     requestedSchema: {
       type: "object",
-      required: ["code", "environment"],
+      required: ["code", "environment", "permissions"],
       properties: {
         code: { type: "string", title: "Device code", default: "123-456" },
         environment: {
           type: "string",
           title: "Environment",
-          enum: ["Production", "Staging", "Development"],
-          default: "Staging",
+          oneOf: [
+            { const: "production", title: "Production" },
+            { const: "staging", title: "Staging" },
+            { const: "development", title: "Development" },
+          ],
+          default: "staging",
+        },
+        permissions: {
+          type: "array",
+          title: "Permissions",
+          description: "Choose what this connection may access.",
+          items: {
+            anyOf: [
+              { const: "repo:read", title: "Read repositories" },
+              { const: "issues:write", title: "Update issues" },
+              { const: "actions:read", title: "Read Actions" },
+            ],
+          },
+          minItems: 1,
+          default: ["repo:read"],
         },
         remember: { type: "boolean", title: "Remember this choice", default: false },
       },
