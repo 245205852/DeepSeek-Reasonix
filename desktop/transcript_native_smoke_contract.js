@@ -178,13 +178,32 @@
   const loadHistoryRows = async (element, minimumRows) => {
     const rowCount = () => Number.parseInt(element.dataset.transcriptRowCount ?? "0", 10);
     if (rowCount() >= minimumRows) return;
-    const rail = await waitFor(() => document.querySelector(".jump-scroll"), 10000);
     const earliestLoadedTurn = () => {
       const turns = [...document.querySelectorAll(".jump-item[data-loaded='true']")]
         .map((marker) => Number(marker.getAttribute("data-turn")))
         .filter(Number.isFinite);
       return turns.length > 0 ? Math.min(...turns) : null;
     };
+    // A bare "timed out" cannot distinguish a missing rail from a stuck jump
+    // mask on a hosted runner, so every internal gate reports the live jump
+    // surface state when it fails.
+    const describeJumpSurface = () => {
+      const overlay = document.querySelector(".transcript-navigation-overlay");
+      return JSON.stringify({
+        rows: rowCount(),
+        markers: document.querySelectorAll(".jump-item").length,
+        earliestTurn: earliestLoadedTurn(),
+        overlayPhase: overlay ? overlay.getAttribute("data-question-jump-phase") ?? "present" : null,
+        shellBusy: document.querySelector(".transcript-shell")?.getAttribute("aria-busy") ?? null,
+        mode: element.dataset.scrollMode ?? "missing",
+        top: Math.round(element.scrollTop),
+        height: element.scrollHeight,
+      });
+    };
+    const rail = await waitFor(() => document.querySelector(".jump-scroll"), 10000)
+      .catch(() => {
+        throw new Error(`native transcript fixture question rail unavailable: ${describeJumpSurface()}`);
+      });
     // Target progressively earlier questions through the real navigation UI.
     // A midpoint request usually supplies the 400+ variable-height rows the
     // smoke needs without forcing every archived turn into its first geometry
@@ -201,7 +220,13 @@
         bubbles: true,
         cancelable: true,
       }));
-      await waitFor(() => !document.querySelector(".transcript-navigation-overlay"), 15000);
+      // The combined signal-then-mask budget of the original contract gave a
+      // native WebView up to 45s to finish a targeted history jump; keep the
+      // mask gate itself just as forgiving instead of failing a slow landing.
+      await waitFor(() => !document.querySelector(".transcript-navigation-overlay"), 30000)
+        .catch(() => {
+          throw new Error(`native transcript fixture question jump surface stuck at ratio ${ratio}: ${describeJumpSurface()}`);
+        });
       // A fixed-size history window keeps the mounted row count constant when
       // an earlier page arrives, and clicking an already-loaded turn changes
       // nothing. Accept an earlier first loaded turn or genuine row growth; a
