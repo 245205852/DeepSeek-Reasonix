@@ -3,6 +3,7 @@
 // normalization/coercion, MCPInteractionCard rendering and answer wiring.
 
 import { JSDOM } from "jsdom";
+import { readFileSync } from "node:fs";
 import { registerHooks } from "node:module";
 import React from "react";
 import { act } from "react";
@@ -42,6 +43,12 @@ function ok(value: boolean, label: string) {
 }
 
 type ControllerState = Parameters<typeof reducer>[0];
+
+const appSource = readFileSync(new URL("../App.tsx", import.meta.url), "utf8");
+ok(
+  /\[clearContextPending, pendingClose, state\.approval, state\.ask, state\.extensionForm, state\.mcpInteraction, workspaceConflict\]/.test(appSource),
+  "App decision surface recomputes when an MCP interaction arrives",
+);
 
 const dom = new JSDOM("<!doctype html><html><body><div id='root'></div></body></html>");
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
