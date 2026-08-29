@@ -258,6 +258,9 @@ const rawInitialBytes = [...initialJS, ...initialCSS, ...appShellCSS]
 // Generic field copy adds 1.134 KiB raw to the startup dictionary; all schema
 // parsing, rendering, and CSS remain lazy. The measured path is 2444.334 KiB;
 // retain 0.166 KiB of bounded build/toolchain headroom.
-const rawInitialBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 2_444.5 : 2_444.5;
+// The off-flow composer measurement mirror adds 0.472 KiB raw while removing
+// live-textarea layout mutation. The merged path measures 2444.806 KiB; retain
+// 0.194 KiB of bounded toolchain headroom without widening gzip/chunk gates.
+const rawInitialBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 2_445.0 : 2_445.0;
 assertBudget("initial raw JavaScript and CSS", rawInitialBytes, rawInitialBudgetKiB * 1024);
 assertBudget("largest initial JavaScript chunk raw", largestInitialJSRaw, 1_000 * 1024);

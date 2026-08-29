@@ -43,6 +43,19 @@
     wheelDelta: 0,
     wheelInsideTranscript: 0,
     wheelMaxDelta: 0,
+    composer: {
+      enabled: false,
+      active: false,
+      input: null,
+      initialValue: "",
+      baseline: null,
+      samples: [],
+      observer: null,
+      onScroll: null,
+      resolve: null,
+      reject: null,
+      result: null,
+    },
   };
   window.__reasonixNativeTranscriptSmokeState = state;
   window.__REASONIX_TRANSCRIPT_SCROLL_WRITE__ = (write) => {
@@ -175,6 +188,175 @@
     requestAnimationFrame(sample);
   });
 
+  const settleFrames = (count = 4) => new Promise((resolve) => {
+    const settle = () => {
+      count -= 1;
+      if (count <= 0) resolve();
+      else requestAnimationFrame(settle);
+    };
+    requestAnimationFrame(settle);
+  });
+
+  const setNativeTextareaValue = (input, value) => {
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
+    setter?.call(input, value);
+    input.dispatchEvent(new InputEvent("input", {
+      bubbles: true,
+      data: value,
+      inputType: "insertText",
+    }));
+    input.setSelectionRange(value.length, value.length);
+  };
+
+  const sampleComposer = (source) => {
+    const composer = state.composer;
+    const element = state.transcript;
+    if (!composer.active || !(element instanceof HTMLElement)) return;
+    composer.samples.push({
+      source,
+      top: element.scrollTop,
+      height: element.scrollHeight,
+      clientHeight: element.clientHeight,
+      distance: element.scrollHeight - element.scrollTop - element.clientHeight,
+    });
+  };
+
+  const prepareNativeComposer = async (element) => {
+    if (new URLSearchParams(window.location.search).get("nativeComposer") !== "1") return;
+    state.transcript = element;
+    state.phase = "preparing-native-composer";
+    const input = await waitFor(() => document.querySelector(
+      "textarea.composer__input:not(.composer__input--measure)",
+    ), 10000);
+    const initialValue = "existing first line\nexisting second line";
+    setNativeTextareaValue(input, initialValue);
+    input.focus();
+    await waitFor(() => input.value === initialValue && input.getBoundingClientRect().height > 32, 10000);
+    await document.fonts.ready;
+
+    state.composer.input = input;
+    state.composer.initialValue = initialValue;
+  };
+
+  const runNativeComposer = async (element) => {
+    if (new URLSearchParams(window.location.search).get("nativeComposer") !== "1") return;
+    state.transcript = element;
+    state.phase = "waiting-native-composer";
+    const composer = state.composer;
+    const input = composer.input;
+    if (!(input instanceof HTMLTextAreaElement) || input.value !== composer.initialValue) {
+      throw new Error("native composer draft was not prepared before loading history");
+    }
+    input.focus();
+    await waitForStableTail(element, 2, 10000);
+    await waitForStableViewport(element, 12, 15000);
+    const initialDistance = element.scrollHeight - element.scrollTop - element.clientHeight;
+    if (element.dataset.scrollMode !== "tail-follow" || initialDistance > 4) {
+      throw new Error(`native composer did not start at a stable tail: ${describeTranscriptState(element)}`);
+    }
+
+    composer.enabled = true;
+    composer.active = true;
+    composer.input = input;
+    composer.samples = [];
+    composer.result = null;
+    composer.baseline = {
+      top: element.scrollTop,
+      height: element.scrollHeight,
+      clientHeight: element.clientHeight,
+      inputHeight: input.getBoundingClientRect().height,
+      initialValue: composer.initialValue,
+    };
+    composer.onScroll = () => sampleComposer("scroll");
+    element.addEventListener("scroll", composer.onScroll, { passive: true });
+    composer.observer = new ResizeObserver(() => sampleComposer("resize"));
+    composer.observer.observe(element);
+    sampleComposer("baseline");
+    const sampleFrame = () => {
+      if (!composer.active) return;
+      sampleComposer("frame");
+      requestAnimationFrame(sampleFrame);
+    };
+    requestAnimationFrame(sampleFrame);
+
+    const completion = new Promise((resolve, reject) => {
+      composer.resolve = resolve;
+      composer.reject = reject;
+    });
+    const rect = input.getBoundingClientRect();
+    state.phase = "native-composer-ready";
+    post({
+      type: "composer-ready",
+      point: { x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height / 2) },
+    });
+    await completion;
+    state.phase = "native-composer-complete";
+  };
+
+  const finishComposer = async () => {
+    const composer = state.composer;
+    const element = state.transcript;
+    if (!composer.active || !(element instanceof HTMLElement) || !(composer.input instanceof HTMLTextAreaElement)) {
+      return composer.result;
+    }
+    try {
+      await settleFrames(8);
+      sampleComposer("final");
+      composer.active = false;
+      composer.observer?.disconnect();
+      if (composer.onScroll) element.removeEventListener("scroll", composer.onScroll);
+      const baseline = composer.baseline;
+      const minTop = Math.min(baseline.top, ...composer.samples.map((sample) => sample.top));
+      const geometryChanges = composer.samples.filter((sample) => (
+        Math.abs(sample.height - baseline.height) > 0.5 || sample.clientHeight !== baseline.clientHeight
+      )).length;
+      const finalDistance = element.scrollHeight - element.scrollTop - element.clientHeight;
+      const finalGeometry = {
+        top: element.scrollTop,
+        height: element.scrollHeight,
+        clientHeight: element.clientHeight,
+      };
+      const changedSamples = composer.samples.filter((sample) => (
+        Math.abs(sample.height - baseline.height) > 0.5 || sample.clientHeight !== baseline.clientHeight
+      ));
+      composer.result = {
+        passed: composer.samples.length >= 8
+          && baseline.inputHeight > 32
+          && composer.input.value === baseline.initialValue
+          && baseline.top - minTop <= 1
+          && geometryChanges === 0
+          && element.dataset.scrollMode === "tail-follow"
+          && finalDistance <= 4,
+        samples: composer.samples.length,
+        maxReverse: baseline.top - minTop,
+        geometryChanges,
+        finalDistance,
+        inputHeight: baseline.inputHeight,
+        finalInputHeight: composer.input.getBoundingClientRect().height,
+        finalValueMatches: composer.input.value === baseline.initialValue,
+        baseline: {
+          top: baseline.top,
+          height: baseline.height,
+          clientHeight: baseline.clientHeight,
+        },
+        finalGeometry,
+        changedSamples: changedSamples.length > 0
+          ? [changedSamples[0], changedSamples[changedSamples.length - 1]]
+          : [],
+      };
+      if (!composer.result.passed) {
+        throw new Error(`native composer stability failed: ${JSON.stringify(composer.result)}`);
+      }
+      setNativeTextareaValue(composer.input, "");
+      await waitForStableTail(element, 2, 10000);
+      await waitForStableViewport(element, 2, 10000);
+      composer.resolve?.();
+    } catch (error) {
+      composer.reject?.(error);
+    }
+    return composer.result;
+  };
+
   // A bare "timed out" cannot distinguish a missing rail, a stuck jump mask,
   // or a jump-bottom button that never appears on a hosted runner, so every
   // internal gate reports the live transcript state when it fails.
@@ -277,6 +459,7 @@
     // has to satisfy the stricter tail and geometry gates below before native
     // sampling starts.
     await waitForStableViewport(element, 2, 15000);
+    await prepareNativeComposer(element);
     state.phase = "loading-targeted-history";
     await loadHistoryRows(element, 400);
     // When the initial history window already meets the row minimum, no
@@ -292,10 +475,13 @@
     jumpBottom?.click();
     state.phase = "waiting-loaded-tail";
     await waitForStableTail(element, 2, 10000);
-    // Loaded WebView2 may continue cycling its estimate-only tail by one row;
-    // the manual-reader stability gate below remains strict and is the actual
-    // prerequisite for starting native input sampling.
-    await waitForStableViewport(element, 2, 10000);
+    // The initial tools page can keep settling its Virtuoso estimates after a
+    // couple of visually stable frames on a slower hosted WebView2. Run the
+    // composer regression only after the long loaded surface has held both
+    // its tail and geometry across a stricter painted-frame window, so the
+    // samples isolate keyboard-driven layout from first-load measurement.
+    await waitForStableViewport(element, 12, 15000);
+    await runNativeComposer(element);
     // Position through the product's indexed question navigator. Directly
     // assigning scrollTop while LAST is mounted lets Virtuoso's pending tail
     // range replace the requested history window on WKWebView.
@@ -424,7 +610,8 @@
         && state.initialDistance >= (element?.clientHeight ?? Number.POSITIVE_INFINITY) * 2
         && distance <= 4
         && element?.dataset.scrollMode === "tail-follow"
-        && finalScrollHeight >= maxScrollHeight - collapseTolerance,
+        && finalScrollHeight >= maxScrollHeight - collapseTolerance
+        && (!state.composer.enabled || state.composer.result?.passed === true),
       rows: Number.parseInt(element?.dataset.transcriptRowCount ?? "0", 10),
       frames: frames.length,
       firstTop,
@@ -456,6 +643,14 @@
       wheelMaxDelta: state.wheelMaxDelta,
       paddingBottom: element instanceof HTMLElement ? Number.parseFloat(getComputedStyle(element).paddingBottom) : null,
       footerBottomDistance: viewportRect && footerRect ? footerRect.bottom - viewportRect.bottom : null,
+      composerEnabled: state.composer.enabled,
+      composerPassed: state.composer.result?.passed ?? false,
+      composerSamples: state.composer.result?.samples ?? 0,
+      composerMaxReverse: state.composer.result?.maxReverse ?? 0,
+      composerGeometryChanges: state.composer.result?.geometryChanges ?? 0,
+      composerFinalDistance: state.composer.result?.finalDistance ?? 0,
+      composerInputHeight: state.composer.result?.inputHeight ?? 0,
+      composerFinalValueMatches: state.composer.result?.finalValueMatches ?? false,
       writes: state.writes.slice(-20),
     };
     post(result);
@@ -495,7 +690,7 @@
     return result;
   };
 
-  window.__reasonixNativeTranscriptSmoke = { start, finish, finishMicro };
+  window.__reasonixNativeTranscriptSmoke = { start, finish, finishMicro, finishComposer };
   start().catch((error) => {
     const message = String(error?.message ?? error);
     post({ type: "error", message: `${message} (${state.phase})`, phase: state.phase });
