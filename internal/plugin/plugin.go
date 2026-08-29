@@ -7,7 +7,6 @@ package plugin
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1831,7 +1830,7 @@ func (t *remoteTool) ExecuteForApp(ctx context.Context, args json.RawMessage) (j
 	if err := json.Unmarshal(res, &status); err != nil {
 		return nil, "", false, fmt.Errorf("decode MCP App tool result: %w", err)
 	}
-	text, _, parseErr := parseToolResult(res)
+	text, _, parseErr := parseToolResultForApp(res)
 	if parseErr != nil && !status.IsError {
 		return nil, "", false, parseErr
 	}
@@ -1907,36 +1906,106 @@ var toolResultImageMimes = map[string]bool{
 	"image/webp": true,
 }
 
-// parseToolResult flattens an MCP tools/call result into plain text plus the
-// image content items as data URLs. Every image item leaves a short placeholder
-// in the text at its position, so text-only consumers (and non-vision models)
-// still learn an image was returned.
+// parseToolResult flattens an MCP tools/call result into provider-safe text plus
+// image data URLs. Text and direct images preserve their historical projection;
+// structured content, resource links, embedded resources, audio, and unknown
+// future blocks receive bounded textual projections so they are never silently
+// dropped or allowed to inject unbounded inline binary data.
 func parseToolResult(res json.RawMessage) (string, []string, error) {
+	return parseToolResultProjection(res, true)
+}
+
+// parseToolResultForApp keeps the App transcript's historical text/image-only
+// projection. The complete bounded result already travels over AppBridge, so
+// repeating rich blocks in the local transcript would duplicate content and
+// alter an adjacent provider-excluded contract.
+func parseToolResultForApp(res json.RawMessage) (string, []string, error) {
+	return parseToolResultProjection(res, false)
+}
+
+func parseToolResultProjection(res json.RawMessage, includeRich bool) (string, []string, error) {
 	var out struct {
-		Content []struct {
-			Type     string `json:"type"`
-			Text     string `json:"text"`
-			Data     string `json:"data"`
-			MimeType string `json:"mimeType"`
-		} `json:"content"`
-		IsError bool `json:"isError"`
+		Content           []json.RawMessage `json:"content"`
+		StructuredContent json.RawMessage   `json:"structuredContent"`
+		IsError           bool              `json:"isError"`
 	}
 	if err := json.Unmarshal(res, &out); err != nil {
 		return "", nil, fmt.Errorf("decode tool result: %w", err)
 	}
 	var sb strings.Builder
 	var images []string
-	for _, c := range out.Content {
-		switch c.Type {
+	projection := newToolResultProjection()
+	for _, raw := range out.Content {
+		var header struct {
+			Type string `json:"type"`
+		}
+		if err := json.Unmarshal(raw, &header); err != nil {
+			return "", nil, fmt.Errorf("decode tool result content: %w", err)
+		}
+		switch header.Type {
 		case "text":
-			sb.WriteString(c.Text)
+			var content struct {
+				Text string `json:"text"`
+			}
+			if err := json.Unmarshal(raw, &content); err != nil {
+				return "", nil, fmt.Errorf("decode tool result text content: %w", err)
+			}
+			projection.writeInline(&sb, content.Text)
 		case "image":
-			placeholder, url := toolResultImage(c.MimeType, c.Data, len(images))
-			sb.WriteString(placeholder)
+			var content struct {
+				Data     string `json:"data"`
+				MimeType string `json:"mimeType"`
+			}
+			if err := json.Unmarshal(raw, &content); err != nil {
+				return "", nil, fmt.Errorf("decode tool result image content: %w", err)
+			}
+			placeholder, url := toolResultImage(content.MimeType, content.Data, len(images))
+			projection.writeInline(&sb, placeholder)
 			if url != "" {
 				images = append(images, url)
 			}
+		case "audio":
+			if !includeRich {
+				continue
+			}
+			block, err := projectToolResultAudio(raw)
+			if err != nil {
+				return "", nil, err
+			}
+			projection.writeBlock(&sb, "audio", block, false)
+		case "resource_link":
+			if !includeRich {
+				continue
+			}
+			block, err := projectToolResultResourceLink(raw)
+			if err != nil {
+				return "", nil, err
+			}
+			projection.writeBlock(&sb, "resource link", block, false)
+		case "resource":
+			if !includeRich {
+				continue
+			}
+			block, url, err := projectToolResultEmbeddedResource(raw, len(images))
+			if err != nil {
+				return "", nil, err
+			}
+			projection.writeBlock(&sb, "embedded resource", block, true)
+			if url != "" {
+				images = append(images, url)
+			}
+		default:
+			if includeRich {
+				projection.writeBlock(&sb, "content block", projectUnknownToolResultContent(header.Type), false)
+			}
 		}
+	}
+	if includeRich && hasToolResultStructuredContent(out.StructuredContent) {
+		block, err := projectToolResultStructuredContent(out.StructuredContent)
+		if err != nil {
+			return "", nil, err
+		}
+		projection.writeBlock(&sb, "structured content", block, false)
 	}
 	text := sb.String()
 	if out.IsError {
@@ -1960,20 +2029,14 @@ func toolResultImage(mime, data string, kept int) (placeholder, url string) {
 	}
 	// Some servers wrap base64 in whitespace; vision APIs reject non-canonical
 	// payloads, so normalize before validating.
-	data = strings.Map(func(r rune) rune {
-		switch r {
-		case '\n', '\r', '\t', ' ':
-			return -1
-		}
-		return r
-	}, data)
+	data = normalizeToolResultBase64(data)
 	if data == "" {
 		return "[image omitted: no data]", ""
 	}
 	if len(data) > maxToolResultImageBytes {
 		return fmt.Sprintf("[image omitted: %d bytes exceeds the %d-byte limit]", len(data), maxToolResultImageBytes), ""
 	}
-	if _, err := base64.StdEncoding.DecodeString(data); err != nil {
+	if _, err := decodedToolResultBase64Bytes(data); err != nil {
 		return "[image omitted: invalid base64]", ""
 	}
 	return "[image: " + mime + "]", "data:" + mime + ";base64," + data
