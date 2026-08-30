@@ -74,8 +74,8 @@ func (c *Catalog) ListSessions(ctx context.Context, req SessionPageRequest) (Ses
 	switch strings.ToLower(strings.TrimSpace(req.Scope)) {
 	case "", "all":
 	case "project":
-		where = append(where, `scope='project'`, `workspace_root=?`)
-		args = append(args, strings.TrimSpace(req.WorkspaceRoot))
+		where = append(where, `scope='project'`, `workspace_root_key=?`)
+		args = append(args, c.workspaceRootKey("project", req.WorkspaceRoot))
 	case "global":
 		where = append(where, `scope='global'`)
 	default:

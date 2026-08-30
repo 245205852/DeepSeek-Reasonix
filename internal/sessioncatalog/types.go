@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	SchemaVersion = 9
+	SchemaVersion = 10
 	DefaultLimit  = 50
 	MaxLimit      = 200
 )
@@ -114,6 +114,7 @@ type TopicMetadata struct {
 type SessionRecord struct {
 	Path              string `json:"path"`
 	pathKey           string
+	enqueueSequence   uint64
 	Directory         string     `json:"directory"`
 	Scope             string     `json:"scope"`
 	WorkspaceRoot     string     `json:"workspaceRoot,omitempty"`

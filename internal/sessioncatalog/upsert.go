@@ -29,7 +29,14 @@ func (c *Catalog) upsertSessionsWithNotification(ctx context.Context, records []
 	defer c.mutationMu.Unlock()
 	filtered := records[:0]
 	for _, record := range records {
-		if _, removed := c.removedPaths.Load(c.pathKey(record.Path)); !removed {
+		pathKey := c.pathKey(record.Path)
+		removedAt, removed := c.removedPaths.Load(pathKey)
+		if !removed {
+			filtered = append(filtered, record)
+			continue
+		}
+		if sequence, ok := removedAt.(uint64); ok && record.enqueueSequence > sequence {
+			c.removedPaths.Delete(pathKey)
 			filtered = append(filtered, record)
 		}
 	}
@@ -93,14 +100,14 @@ func (c *Catalog) upsertSessionsWithNotification(ctx context.Context, records []
 		if record.TopicID != "" {
 			affected[TopicKey{Scope: record.Scope, WorkspaceRoot: record.WorkspaceRoot, TopicID: record.TopicID}] = struct{}{}
 		}
-		if err := updateFoldedTopicTombstones(ctx, tx, previous, record, c.opts.Now().UnixMilli()); err != nil {
+		if err := c.updateFoldedTopicTombstones(ctx, tx, previous, record, c.opts.Now().UnixMilli()); err != nil {
 			_ = tx.Rollback()
 			return dirtyDirectories, err
 		}
 		roots[record.WorkspaceRoot] = struct{}{}
 	}
 	for key := range affected {
-		if err := recomputeTopic(ctx, tx, key); err != nil {
+		if err := c.recomputeTopic(ctx, tx, key); err != nil {
 			_ = tx.Rollback()
 			return dirtyDirectories, err
 		}
@@ -123,17 +130,17 @@ func (c *Catalog) upsertSessionsWithNotification(ctx context.Context, records []
 }
 
 const sessionInsertSQL = `INSERT INTO catalog_sessions(
-    path,path_key,directory,directory_key,scope,workspace_root,topic_id,topic_title,custom_title,
+    path,path_key,directory,directory_key,scope,workspace_root,workspace_root_key,topic_id,topic_title,custom_title,
     created_at,last_activity_at,preview,turns,turns_state,recovered,
     recovery_reason,recovery_digest,parent_id,recovery_copy,recovery_group_id,
     recovery_role,recovery_canonical,logical_topic_id,ordinary_visible,content_fingerprint,
     meta_fingerprint,health,missing_since,seen_generation
-) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 ON CONFLICT(path_key) DO UPDATE SET `
 
 const directoryProjectionUpdateSQL = `
     path=excluded.path, directory=excluded.directory, directory_key=excluded.directory_key, scope=excluded.scope,
-    workspace_root=excluded.workspace_root, topic_id=excluded.topic_id,
+    workspace_root=excluded.workspace_root, workspace_root_key=excluded.workspace_root_key, topic_id=excluded.topic_id,
     topic_title=excluded.topic_title, custom_title=excluded.custom_title,
     created_at=excluded.created_at, last_activity_at=excluded.last_activity_at,
     preview=excluded.preview, turns=excluded.turns,
@@ -152,7 +159,7 @@ const directoryProjectionUpdateSQL = `
 
 const exactSourceUpdateSQL = `
     path=excluded.path, directory=excluded.directory, directory_key=excluded.directory_key, scope=excluded.scope,
-    workspace_root=excluded.workspace_root,
+    workspace_root=excluded.workspace_root, workspace_root_key=excluded.workspace_root_key,
     topic_id=CASE
         WHEN catalog_sessions.recovered=1 OR excluded.recovered=1 OR catalog_sessions.recovery_group_id<>''
         THEN catalog_sessions.topic_id ELSE excluded.topic_id END,
@@ -180,14 +187,14 @@ func (c *Catalog) upsertSessionRow(ctx context.Context, tx *sql.Tx, record Sessi
 	if mode == upsertExactSource {
 		updateSQL = exactSourceUpdateSQL
 	}
-	_, err := tx.ExecContext(ctx, sessionInsertSQL+updateSQL, sessionRowValues(record, pathKey, directoryKey, generation)...)
+	_, err := tx.ExecContext(ctx, sessionInsertSQL+updateSQL, c.sessionRowValues(record, pathKey, directoryKey, generation)...)
 	return err
 }
 
-func sessionRowValues(record SessionRecord, pathKey, directoryKey string, generation int64) []any {
+func (c *Catalog) sessionRowValues(record SessionRecord, pathKey, directoryKey string, generation int64) []any {
 	return []any{
 		record.Path, pathKey, record.Directory, directoryKey, record.Scope, record.WorkspaceRoot,
-		record.TopicID, record.TopicTitle, record.CustomTitle, record.CreatedAt,
+		c.workspaceRootKey(record.Scope, record.WorkspaceRoot), record.TopicID, record.TopicTitle, record.CustomTitle, record.CreatedAt,
 		record.LastActivityAt, record.Preview, record.Turns, record.TurnsState,
 		record.Recovered, record.RecoveryReason, record.RecoveryDigest,
 		record.ParentID, boolToInt(record.RecoveryCopy), record.RecoveryGroupID,

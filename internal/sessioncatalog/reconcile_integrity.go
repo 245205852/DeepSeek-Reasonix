@@ -30,7 +30,7 @@ func (c *Catalog) directoryScanCanSkip(ctx context.Context, target DirectoryTarg
 		 WHERE s.directory_key=? AND s.missing_since=0 AND s.topic_id<>''
 		 AND NOT EXISTS (
 			 SELECT 1 FROM catalog_topics t
-			 WHERE t.scope=s.scope AND t.workspace_root=s.workspace_root AND t.topic_id=s.topic_id
+			 WHERE t.scope=s.scope AND t.workspace_root_key=s.workspace_root_key AND t.topic_id=s.topic_id
 		 )),
 		(SELECT COUNT(*) FROM catalog_sessions WHERE directory_key=? AND missing_since>0)
 		FROM catalog_directories
@@ -42,7 +42,8 @@ func (c *Catalog) directoryScanCanSkip(ctx context.Context, target DirectoryTarg
 	if err != nil {
 		return false, err
 	}
-	if storedScope != target.Scope || storedRoot != target.WorkspaceRoot {
+	if storedScope != target.Scope ||
+		c.workspaceRootKey(storedScope, storedRoot) != c.workspaceRootKey(target.Scope, target.WorkspaceRoot) {
 		c.markRepair(repairReasonScopeMismatch, c.opts.Now().UnixMilli())
 		return false, nil
 	}

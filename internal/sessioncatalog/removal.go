@@ -21,11 +21,11 @@ func (c *Catalog) RemoveSession(ctx context.Context, path, reason string) error 
 	pathKey := c.pathKey(path)
 	// Immediate query overlay: ListTopics/ListSessions/GetSession filter this
 	// map even when the durable DELETE has not committed yet.
-	c.removedPaths.Store(pathKey, struct{}{})
+	c.removedPaths.Store(pathKey, c.mutationSeq.Add(1))
 	c.writeMu.Lock()
-	delete(c.writeQueued, pathKey)
+	delete(c.writeQueued, queuePathKey(path))
 	c.writeMu.Unlock()
-	c.pathQueued.Delete(pathKey)
+	c.pathQueued.Delete(queuePathKey(path))
 	c.repairQueued.Delete(pathKey)
 	// Wake listeners without SQLite. Equal revision identifies an overlay change;
 	// empty roots refresh every expanded folder without querying the busy DB for
@@ -129,7 +129,7 @@ func (c *Catalog) applySessionRemovalLocked(ctx context.Context, path, reason st
 		return err
 	}
 	if key.TopicID != "" {
-		if err := recomputeTopic(sqlCtx, tx, key); err != nil {
+		if err := c.recomputeTopic(sqlCtx, tx, key); err != nil {
 			_ = tx.Rollback()
 			return err
 		}

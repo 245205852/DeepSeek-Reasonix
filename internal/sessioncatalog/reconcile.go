@@ -141,7 +141,7 @@ func (c *Catalog) RequestReconcile(target DirectoryTarget) bool {
 		return false
 	}
 	target.Path = cleanCatalogAccessPath(target.Path)
-	key := c.pathKey(target.Path)
+	key := queuePathKey(target.Path)
 	if key == "" {
 		return false
 	}
@@ -164,7 +164,7 @@ func (c *Catalog) RequestReconcile(target DirectoryTarget) bool {
 
 func (c *Catalog) markReconcileDirty(target DirectoryTarget) {
 	c.reconcileDirtyMu.Lock()
-	c.reconcileDirty[c.pathKey(target.Path)] = target
+	c.reconcileDirty[queuePathKey(target.Path)] = target
 	c.reconcileDirtyMu.Unlock()
 }
 
@@ -184,7 +184,7 @@ func (c *Catalog) reconcileLoop() {
 	defer ticker.Stop()
 	for {
 		if target, ok := c.takeReconcileDirty(); ok {
-			c.reconcileQueued.Delete(c.pathKey(target.Path))
+			c.reconcileQueued.Delete(queuePathKey(target.Path))
 			ctx, cancel := context.WithTimeout(c.workerCtx, 2*time.Minute)
 			_ = c.ReconcileDirectory(ctx, target)
 			cancel()
@@ -192,7 +192,7 @@ func (c *Catalog) reconcileLoop() {
 		}
 		select {
 		case target := <-c.reconcileCh:
-			c.reconcileQueued.Delete(c.pathKey(target.Path))
+			c.reconcileQueued.Delete(queuePathKey(target.Path))
 			ctx, cancel := context.WithTimeout(c.workerCtx, 2*time.Minute)
 			_ = c.ReconcileDirectory(ctx, target)
 			cancel()
@@ -219,8 +219,8 @@ func (c *Catalog) RequestIndexSession(target DirectoryTarget, path string) bool 
 	if target.Path == "" {
 		target.Path = filepath.Dir(path)
 	}
-	key := c.pathKey(path)
-	request := sessionPathRequest{target: target, path: path, pathKey: key}
+	key := queuePathKey(path)
+	request := sessionPathRequest{target: target, path: path, queueKey: key}
 	if _, loaded := c.pathQueued.LoadOrStore(key, request); loaded {
 		return true
 	}
@@ -241,7 +241,7 @@ func (c *Catalog) sessionPathLoop() {
 	for {
 		select {
 		case request := <-c.pathCh:
-			c.pathQueued.Delete(request.pathKey)
+			c.pathQueued.Delete(request.queueKey)
 			ctx, cancel := context.WithTimeout(c.workerCtx, 30*time.Second)
 			_ = c.IndexSessionPath(ctx, request.target, request.path)
 			cancel()
@@ -495,14 +495,14 @@ func (c *Catalog) commitDirectoryProjection(ctx context.Context, target Director
 				_ = stmt.Close()
 				return rollback(err)
 			}
-			if _, err := stmt.ExecContext(ctx, sessionRowValues(record, pathKey, directoryKey, generation)...); err != nil {
+			if _, err := stmt.ExecContext(ctx, c.sessionRowValues(record, pathKey, directoryKey, generation)...); err != nil {
 				_ = stmt.Close()
 				return rollback(err)
 			}
 			if record.TopicID != "" {
 				affected[TopicKey{Scope: record.Scope, WorkspaceRoot: record.WorkspaceRoot, TopicID: record.TopicID}] = struct{}{}
 			}
-			if err := updateFoldedTopicTombstones(ctx, tx, previous, record, now); err != nil {
+			if err := c.updateFoldedTopicTombstones(ctx, tx, previous, record, now); err != nil {
 				_ = stmt.Close()
 				return rollback(err)
 			}
@@ -544,7 +544,7 @@ func (c *Catalog) commitDirectoryProjection(ctx context.Context, target Director
 		return rollback(err)
 	}
 	for key := range affected {
-		if err := recomputeTopic(ctx, tx, key); err != nil {
+		if err := c.recomputeTopic(ctx, tx, key); err != nil {
 			return rollback(err)
 		}
 	}
@@ -613,7 +613,7 @@ func (c *Catalog) finishDirectoryScan(ctx context.Context, target DirectoryTarge
 		return err
 	}
 	for key := range affected {
-		if err := recomputeTopic(ctx, tx, key); err != nil {
+		if err := c.recomputeTopic(ctx, tx, key); err != nil {
 			_ = tx.Rollback()
 			return err
 		}

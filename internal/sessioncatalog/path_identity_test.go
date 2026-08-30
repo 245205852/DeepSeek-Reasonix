@@ -2,6 +2,7 @@ package sessioncatalog
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -123,8 +124,12 @@ func TestReconcileDirectoryUsesFilesystemIdentityWhenCaseInsensitive(t *testing.
 	}
 }
 
-func TestCatalogPathIdentityCoalescesQueuesAndLocks(t *testing.T) {
-	fold := func(path string) string { return strings.ToLower(filepath.Clean(path)) }
+func TestCatalogPathIdentityDefersFilesystemResolutionFromEnqueue(t *testing.T) {
+	identityCalls := 0
+	fold := func(path string) string {
+		identityCalls++
+		return strings.ToLower(filepath.Clean(path))
+	}
 	catalog := &Catalog{
 		pathIdentity:   fold,
 		writeCh:        make(chan string, 2),
@@ -145,16 +150,16 @@ func TestCatalogPathIdentityCoalescesQueuesAndLocks(t *testing.T) {
 	if !catalog.EnqueueSession(first) || !catalog.EnqueueSession(second) {
 		t.Fatal("write queue rejected a case variant")
 	}
-	if len(catalog.writeQueued) != 1 || len(catalog.writeCh) != 1 {
-		t.Fatalf("write queue split identity: rows=%d signals=%d", len(catalog.writeQueued), len(catalog.writeCh))
+	if len(catalog.writeQueued) != 2 || len(catalog.writeCh) != 2 {
+		t.Fatalf("lexical write staging = rows=%d signals=%d, want both events", len(catalog.writeQueued), len(catalog.writeCh))
 	}
 	if !catalog.RequestReconcile(DirectoryTarget{Path: upperDir}) || !catalog.RequestReconcile(DirectoryTarget{Path: lowerDir}) {
 		t.Fatal("reconcile queue rejected a case variant")
 	}
 	queuedReconciles := 0
 	catalog.reconcileQueued.Range(func(_, _ any) bool { queuedReconciles++; return true })
-	if queuedReconciles != 1 || len(catalog.reconcileCh) != 1 || len(catalog.reconcileDirty) != 1 {
-		t.Fatalf("reconcile queue split identity: queued=%d signals=%d dirty=%d", queuedReconciles, len(catalog.reconcileCh), len(catalog.reconcileDirty))
+	if queuedReconciles != 2 || len(catalog.reconcileCh) != 2 || len(catalog.reconcileDirty) != 0 {
+		t.Fatalf("lexical reconcile staging: queued=%d signals=%d dirty=%d", queuedReconciles, len(catalog.reconcileCh), len(catalog.reconcileDirty))
 	}
 	if !catalog.RequestIndexSession(DirectoryTarget{Path: upperDir}, upperPath) ||
 		!catalog.RequestIndexSession(DirectoryTarget{Path: lowerDir}, lowerPath) {
@@ -162,8 +167,11 @@ func TestCatalogPathIdentityCoalescesQueuesAndLocks(t *testing.T) {
 	}
 	queuedPaths := 0
 	catalog.pathQueued.Range(func(_, _ any) bool { queuedPaths++; return true })
-	if queuedPaths != 1 || len(catalog.pathCh) != 1 {
-		t.Fatalf("direct-index queue split identity: queued=%d signals=%d", queuedPaths, len(catalog.pathCh))
+	if queuedPaths != 2 || len(catalog.pathCh) != 2 {
+		t.Fatalf("lexical direct-index staging: queued=%d signals=%d", queuedPaths, len(catalog.pathCh))
+	}
+	if identityCalls != 0 {
+		t.Fatalf("enqueue APIs performed %d filesystem identity resolutions", identityCalls)
 	}
 	catalog.enqueueRepair(upperPath)
 	catalog.enqueueRepair(lowerPath)
@@ -253,5 +261,78 @@ func TestCatalogPathIdentityPreservesCaseDistinctSessions(t *testing.T) {
 	}
 	if len(page.Items) != 2 {
 		t.Fatalf("case-distinct sessions = %#v, want two", page.Items)
+	}
+}
+
+func TestWorkspaceRootIdentityJoinsRegistryAndSidecarSpellings(t *testing.T) {
+	ctx := context.Background()
+	catalog, err := Open(ctx, Options{Path: filepath.Join(t.TempDir(), "catalog.sqlite"), DisableRepair: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = catalog.Close(context.Background()) })
+	catalog.pathIdentity = func(path string) string {
+		return strings.ToLower(filepath.Clean(path))
+	}
+
+	upperRoot := filepath.Join(string(filepath.Separator), "Workspaces", "Project")
+	lowerRoot := filepath.Join(string(filepath.Separator), "workspaces", "project")
+	if err := catalog.UpsertSession(ctx, SessionRecord{
+		Path: filepath.Join(lowerRoot, "sessions", "one.jsonl"), Directory: filepath.Join(lowerRoot, "sessions"),
+		Scope: "project", WorkspaceRoot: lowerRoot, TopicID: "topic", Preview: "from sidecar",
+		LastActivityAt: 1, TurnsState: TurnsValid, Health: HealthOK,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := catalog.SyncMetadata(ctx,
+		[]ProjectRecord{{Scope: "project", WorkspaceRoot: upperRoot, Title: "Project"}},
+		[]TopicMetadata{{Scope: "project", WorkspaceRoot: upperRoot, TopicID: "topic", Title: "Registry title"}},
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	topics, err := catalog.ListTopics(ctx, TopicPageRequest{Scope: "project", WorkspaceRoot: upperRoot, Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(topics.Items) != 1 || len(topics.Items[0].Sessions) != 1 {
+		t.Fatalf("registry spelling topics = %#v, want joined sidecar session", topics.Items)
+	}
+	sessions, err := catalog.ListSessions(ctx, SessionPageRequest{Scope: "project", WorkspaceRoot: upperRoot, Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sessions.Items) != 1 || sessions.Items[0].WorkspaceRoot != lowerRoot {
+		t.Fatalf("registry spelling sessions = %#v, want original sidecar access spelling", sessions.Items)
+	}
+}
+
+func TestWorkspaceRootIdentityPreservesCaseDistinctProjects(t *testing.T) {
+	ctx := context.Background()
+	catalog, err := Open(ctx, Options{Path: filepath.Join(t.TempDir(), "catalog.sqlite"), DisableRepair: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = catalog.Close(context.Background()) })
+	catalog.pathIdentity = filepath.Clean
+
+	roots := []string{"/Workspaces/Foo", "/Workspaces/foo"}
+	for index, root := range roots {
+		if err := catalog.UpsertSession(ctx, SessionRecord{
+			Path: filepath.Join(root, "sessions", fmt.Sprintf("%d.jsonl", index)), Directory: filepath.Join(root, "sessions"),
+			Scope: "project", WorkspaceRoot: root, TopicID: "topic", LastActivityAt: int64(index + 1),
+			TurnsState: TurnsValid, Health: HealthOK,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, root := range roots {
+		page, err := catalog.ListTopics(ctx, TopicPageRequest{Scope: "project", WorkspaceRoot: root, Limit: 10})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(page.Items) != 1 || len(page.Items[0].Sessions) != 1 || page.Items[0].Sessions[0].WorkspaceRoot != root {
+			t.Fatalf("case-distinct workspace %q topics = %#v", root, page.Items)
+		}
 	}
 }

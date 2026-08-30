@@ -16,12 +16,14 @@ of the previous index.
 - Startup and project-tree requests never decode transcript JSONL, run legacy
   migration, or wait for a directory scan.
 - A successfully saved transcript is committed before its catalog update. The
-  non-blocking writer coalesces updates by filesystem path identity; background
-  reconciliation repairs updates dropped under queue pressure.
-- The original path spelling is retained for file access and display. A
-  separate identity key resolves aliases and folds case only where the
-  governing filesystem directory is case-insensitive; case-distinct files on
-  case-sensitive volumes remain separate sessions.
+  save observer performs only lexical queue staging and returns without
+  filesystem probes. Background workers resolve filesystem identity, SQLite
+  uniqueness is the final deduplication boundary, and reconciliation repairs
+  updates dropped under queue pressure.
+- Original session and workspace-root spellings are retained for file access
+  and display. Separate identity keys resolve aliases and fold case only where
+  the governing filesystem directory is case-insensitive; case-distinct files
+  and projects on case-sensitive volumes remain separate.
 - Missing legacy counts are represented as `unknown`. The session is visible
   immediately, then a single repair worker decodes it in the background.
 - A missing file is marked degraded on the first scan. It is removed from the
@@ -51,10 +53,11 @@ rebuild paths never remove authoritative files.
 The catalog stores only query projections:
 
 - directory signatures, scan generations, checkpoints, and errors;
-- project ordering, title, color, and pin state;
-- topic ordering, aggregate counts, activity, recovery, and health state; and
-- session access path plus path identity key, preview, counts, fingerprints,
-  recovery, and health state.
+- project ordering, title, color, pin state, and workspace-root identity key;
+- topic ordering, aggregate counts, activity, recovery, health state, and
+  workspace-root identity key; and
+- session access path plus path, directory, and workspace-root identity keys,
+  preview, counts, fingerprints, recovery, and health state.
 
 Topic pages use a `(pinned, last_activity_at, topic_id)` keyset cursor. The
 default page size is 50 and the maximum is 200. Directory reconciliation commits

@@ -164,6 +164,38 @@ CREATE INDEX IF NOT EXISTS idx_catalog_sessions_directory_key
 ON catalog_sessions(directory_key, seen_generation, missing_since);
 `
 
+// v10 extends filesystem identity to workspace roots. Access spellings remain
+// available for UI/file access, while every relationship and uniqueness rule
+// uses the filesystem-aware key. Existing v9 projections are disposable and
+// must be rebuilt because SQL cannot infer volume-specific case semantics.
+const migrationV10 = `
+ALTER TABLE catalog_projects ADD COLUMN workspace_root_key TEXT NOT NULL DEFAULT '';
+ALTER TABLE catalog_topics ADD COLUMN workspace_root_key TEXT NOT NULL DEFAULT '';
+ALTER TABLE catalog_sessions ADD COLUMN workspace_root_key TEXT NOT NULL DEFAULT '';
+ALTER TABLE catalog_folded_topics ADD COLUMN workspace_root_key TEXT NOT NULL DEFAULT '';
+
+DELETE FROM catalog_sessions;
+DELETE FROM catalog_directories;
+DELETE FROM catalog_projects;
+DELETE FROM catalog_topics;
+DELETE FROM catalog_folded_topics;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_catalog_projects_workspace_key
+ON catalog_projects(scope, workspace_root_key);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_catalog_topics_workspace_key
+ON catalog_topics(scope, workspace_root_key, topic_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_catalog_folded_topics_workspace_key
+ON catalog_folded_topics(scope, workspace_root_key, topic_id);
+CREATE INDEX IF NOT EXISTS idx_catalog_topics_workspace_page
+ON catalog_topics(scope, workspace_root_key, pinned DESC, last_activity_at DESC, topic_id ASC);
+CREATE INDEX IF NOT EXISTS idx_catalog_sessions_workspace_topic
+ON catalog_sessions(scope, workspace_root_key, topic_id, last_activity_at DESC, path ASC);
+CREATE INDEX IF NOT EXISTS idx_catalog_sessions_workspace_history
+ON catalog_sessions(scope, workspace_root_key, last_activity_at DESC, path ASC);
+CREATE INDEX IF NOT EXISTS idx_catalog_sessions_workspace_ordinary
+ON catalog_sessions(scope, workspace_root_key, ordinary_visible, last_activity_at DESC);
+`
+
 func sessionMigrations() []projectiondb.Migration {
 	return []projectiondb.Migration{
 		{Version: 1, Apply: func(ctx context.Context, tx *sql.Tx) error {
@@ -200,6 +232,10 @@ func sessionMigrations() []projectiondb.Migration {
 		}},
 		{Version: 9, Apply: func(ctx context.Context, tx *sql.Tx) error {
 			_, err := tx.ExecContext(ctx, migrationV9)
+			return err
+		}},
+		{Version: 10, Apply: func(ctx context.Context, tx *sql.Tx) error {
+			_, err := tx.ExecContext(ctx, migrationV10)
 			return err
 		}},
 	}

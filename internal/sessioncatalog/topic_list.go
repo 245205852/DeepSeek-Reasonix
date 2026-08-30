@@ -22,8 +22,8 @@ func (c *Catalog) ListTopics(ctx context.Context, req TopicPageRequest) (TopicPa
 	if cursor != nil && cursor.ManualOrder != req.ManualOrder {
 		return out, errCursorSortModeChanged
 	}
-	args := []any{req.Scope, req.WorkspaceRoot}
-	where := `scope=? AND workspace_root=?`
+	args := []any{req.Scope, c.workspaceRootKey(req.Scope, req.WorkspaceRoot)}
+	where := `scope=? AND workspace_root_key=?`
 	if query := strings.TrimSpace(req.Query); query != "" {
 		where += ` AND lower(title) LIKE ?`
 		args = append(args, "%"+strings.ToLower(query)+"%")
