@@ -17,10 +17,6 @@ type turnRuntime struct {
 	handoffNudges      int
 	usedAnyTool        bool
 	contextToolRepairs int
-	protocolRepairs    int
-	finishCalls        int
-	pendingFinalAnswer bool
-	finishOutcome      FinishOutcome
 	graceRound         bool
 	recoveryGraceRound bool
 
@@ -28,6 +24,11 @@ type turnRuntime struct {
 	trackingTodoProgress bool
 	todoStallRounds      int
 	seenTodoProgress     map[string]struct{}
+	// standardTodoContinuations is the bounded same-Run repair for a Standard
+	// execution turn that wrote an active todo and then tried to stop. The
+	// fingerprint gates the optional second nudge on new host-observed work.
+	standardTodoContinuations int
+	standardTodoProgress      string
 
 	executorHandoff bool
 	input           string
@@ -74,6 +75,8 @@ type turnRuntime struct {
 	// repeatSuccessCounts catches the shape stormSig cannot see: the same write
 	// succeeding over and over leaves no error for a failure-only breaker.
 	repeatSuccessCounts map[string]int
+	loop                turnLoopState
+	softBudgetMutation  bool
 
 	// constraints and engine are frozen at the start of the Run.
 	constraints runtimepolicy.Constraints
@@ -95,15 +98,8 @@ type turnRuntime struct {
 	// lastReasoning is the previous executor round's reasoning-token spend,
 	// read by the governor trigger (live policy and fork capture alike).
 	lastReasoning int
-}
 
-// TurnFinishOutcome is read while emitting TurnDone, before the next admission
-// can reset the per-run state.
-func (a *Agent) TurnFinishOutcome() FinishOutcome {
-	if a == nil {
-		return ""
-	}
-	return a.turn.finishOutcome
+	phase phaseClock
 }
 
 // pendingTurn is what someone outside the Run arms for the next one: a

@@ -229,7 +229,7 @@ func singleCurrentServeSession(entries []serveSessionEntry) *serveSessionEntry {
 func (a *App) serveClientForRef(hostID, workspace string) (*http.Client, string, func(), error) {
 	a.remoteTabMu.Lock()
 	for _, tab := range a.remoteTabs {
-		if tab.ref.HostID == hostID && tab.ref.Workspace == workspace && tab.client != nil {
+		if tab.ref.HostID == hostID && tab.ref.Workspace == workspace && tab.state == "ready" && tab.client != nil {
 			client, base := tab.client, tab.base
 			a.remoteTabMu.Unlock()
 			return client, base, func() {}, nil
@@ -262,6 +262,43 @@ func (a *App) serveClientForRef(hostID, workspace string) (*http.Client, string,
 	return client, view.LocalURL, cancel, nil
 }
 
+// serveClientEnsured may connect the host and start Serve, so only explicit
+// user-intent paths should use it. Passive listings remain read-only.
+func (a *App) serveClientEnsured(hostID, workspace string) (*http.Client, string, func(), error) {
+	if client, base, done, err := a.serveClientForRef(hostID, workspace); err == nil {
+		return client, base, done, nil
+	}
+	rt, err := a.remoteRT()
+	if err != nil {
+		return nil, "", nil, err
+	}
+	if err := rt.Connect(hostID); err != nil {
+		return nil, "", nil, err
+	}
+	if err := waitForRemoteHost(rt, hostID, 60*time.Second); err != nil {
+		return nil, "", nil, err
+	}
+	bootCtx := a.bootContext()
+	if bootCtx == nil {
+		bootCtx = context.Background()
+	}
+	view, token, err := rt.EnsureServer(bootCtx, hostID, workspace)
+	if err != nil {
+		return nil, "", nil, err
+	}
+	callCtx, cancel := context.WithTimeout(bootCtx, 30*time.Second)
+	client, err := newServeHTTPClient(view.LocalURL)
+	if err != nil {
+		cancel()
+		return nil, "", nil, err
+	}
+	if err := serveHandshake(callCtx, client, view.LocalURL, token); err != nil {
+		cancel()
+		return nil, "", nil, err
+	}
+	return client, view.LocalURL, cancel, nil
+}
+
 // RemoteProjectSessions lists a remote project's serve sessions for the
 // project tree. Live-tab fast paths, desktop title overrides and pinned
 // synthesis arrive with the remote sessions PR.
@@ -273,6 +310,23 @@ func (a *App) RemoteProjectSessions(hostID, workspace string) ([]RemoteSessionVi
 	defer done()
 	ctx, cancel := commandContext(a)
 	defer cancel()
+	return a.remoteProjectSessions(ctx, client, base, hostID, workspace)
+}
+
+// EnsureRemoteProjectSessions is the explicit group-open listing path. It can
+// wake the SSH host and Serve before returning sessions.
+func (a *App) EnsureRemoteProjectSessions(hostID, workspace string) ([]RemoteSessionView, error) {
+	client, base, done, err := a.serveClientEnsured(hostID, workspace)
+	if err != nil {
+		return nil, err
+	}
+	defer done()
+	ctx, cancel := commandContext(a)
+	defer cancel()
+	return a.remoteProjectSessions(ctx, client, base, hostID, workspace)
+}
+
+func (a *App) remoteProjectSessions(ctx context.Context, client *http.Client, base, hostID, workspace string) ([]RemoteSessionView, error) {
 	listing, err := a.fetchRemoteSessionListing(ctx, client, base, hostID, workspace)
 	if err != nil {
 		return nil, err
@@ -283,10 +337,12 @@ func (a *App) RemoteProjectSessions(hostID, workspace string) ([]RemoteSessionVi
 	preferLiveCurrent := listing.preferLive
 	out := make([]RemoteSessionView, 0, len(entries))
 	pinned := make([]RemoteSessionView, 0, len(entries))
+	prefs := remotePrefsSnapshot()
 	hasCurrent := false
 	for _, e := range entries {
 		title := strings.TrimSpace(e.Title)
-		if override := remoteSessionTitleOverride(hostID, workspace, e.Name); override != "" {
+		prefKey := remoteSessionPrefKey(hostID, workspace, e.Name)
+		if override := prefs.SessionTitles[prefKey]; override != "" {
 			title = override
 		}
 		current := e.Current
@@ -297,7 +353,7 @@ func (a *App) RemoteProjectSessions(hostID, workspace string) ([]RemoteSessionVi
 			Name: e.Name, Path: e.Path, Title: title, Turns: e.Turns, Current: current,
 			Running:        remoteSessionRunning(e.Running, liveRunning, e.Path, preferLiveCurrent),
 			LastActivityAt: e.MtimeMilli,
-			Pinned:         remoteSessionPinned(hostID, workspace, e.Name),
+			Pinned:         remoteSessionPinnedLocked(prefs, prefKey),
 		}
 		hasCurrent = hasCurrent || view.Current
 		if view.Pinned {
@@ -307,12 +363,31 @@ func (a *App) RemoteProjectSessions(hostID, workspace string) ([]RemoteSessionVi
 		}
 	}
 	if !hasCurrent {
+		// A fresh foreground session stays absent from /sessions until its first
+		// transcript save. Synthesize it from the live route rather than reset,
+		// which status clears as soon as Serve names the not-yet-listed session.
 		a.remoteTabMu.Lock()
+		listedPaths := make(map[string]bool, len(entries))
+		for _, e := range entries {
+			listedPaths[e.Path] = true
+		}
 		var blank *RemoteSessionView
 		for _, tab := range a.remoteTabs {
-			if tab.ref.HostID == hostID && tab.ref.Workspace == workspace && tab.session.reset {
-				blank = &RemoteSessionView{Name: "", Path: tab.routing.currentPath, Title: tab.topicTitle, Current: true, Running: tab.runtime.running, LastActivityAt: time.Now().UnixMilli()}
-				break
+			if tab.ref.HostID != hostID || tab.ref.Workspace != workspace {
+				continue
+			}
+			if tab.state != "ready" || blank != nil {
+				continue
+			}
+			// Known current path: blank while the serve listing cannot see it
+			// yet. Unknown path (a legacy /new without a path header): blank
+			// while the fresh-session marker is still set.
+			if path := tab.routing.currentPath; path != "" {
+				if !listedPaths[path] {
+					blank = &RemoteSessionView{Name: "", Path: path, Title: tab.topicTitle, Current: true, Running: tab.runtime.running, LastActivityAt: time.Now().UnixMilli()}
+				}
+			} else if tab.session.reset {
+				blank = &RemoteSessionView{Name: "", Title: tab.topicTitle, Current: true, Running: tab.runtime.running, LastActivityAt: time.Now().UnixMilli()}
 			}
 		}
 		a.remoteTabMu.Unlock()

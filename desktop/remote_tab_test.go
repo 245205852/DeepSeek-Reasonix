@@ -34,8 +34,10 @@ type fakeServe struct {
 	failEnter                      string   // non-empty ⇒ next /new or /resume replies 409
 	enterDelay                     time.Duration
 	newStarted, newRelease         chan struct{}
-	resumeStarted, resumeRelease   chan struct{}
+	resumeStarted                  chan string
+	resumeRelease                  chan struct{}
 	failHistory                    bool // /history replies 500 when set
+	historyBody                    string
 	historyStarted, historyRelease chan struct{}
 	failSessions                   bool // /sessions replies 500 when set
 	sessionsStarted                chan struct{}
@@ -67,7 +69,7 @@ func TestRegisterRemoteTabOpenReviveCarriesSelectedTitle(t *testing.T) {
 	if existing.topicTitle != "Old title" || existing.routing.currentPath != "/sessions/old.jsonl" {
 		t.Fatalf("registration changed identity before visibility commit: title=%q path=%q", existing.topicTitle, existing.routing.currentPath)
 	}
-	if !a.commitRemoteTabOpenRegistration(registration, "Box", RemoteTabOpenOptions{
+	if !a.commitRemoteTabOpenRegistration(&registration, "Box", RemoteTabOpenOptions{
 		SessionName: "selected", SessionPath: "/sessions/selected.jsonl", SessionTitle: "Selected title",
 	}) {
 		t.Fatal("commitRemoteTabOpenRegistration rejected the reused shell")
@@ -189,7 +191,7 @@ func newFakeServe(t *testing.T, token string, sessions []serveSessionEntry) *fak
 		fs.mu.Unlock()
 		if resumeStarted != nil {
 			select {
-			case resumeStarted <- struct{}{}:
+			case resumeStarted <- body.Path:
 			default:
 			}
 		}
@@ -304,9 +306,13 @@ func newFakeServe(t *testing.T, token string, sessions []serveSessionEntry) *fak
 	snapshot := func(path, payload string) {
 		mux.HandleFunc("GET "+path, func(w http.ResponseWriter, r *http.Request) {
 			fs.record(r.Method, path, "")
+			responsePayload := payload
 			if path == "/history" {
 				fs.mu.Lock()
 				fail := fs.failHistory
+				if fs.historyBody != "" {
+					responsePayload = fs.historyBody
+				}
 				started, release := fs.historyStarted, fs.historyRelease
 				fs.mu.Unlock()
 				if started != nil {
@@ -325,7 +331,7 @@ func newFakeServe(t *testing.T, token string, sessions []serveSessionEntry) *fak
 				}
 			}
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(payload))
+			_, _ = w.Write([]byte(responsePayload))
 		})
 	}
 	snapshot("/history", `[{"role":"user","content":"hi"}]`)
@@ -387,27 +393,6 @@ func seedBridgeTestHost(t *testing.T, hostID string) {
 	}
 }
 
-func waitForTabState(t *testing.T, a *App, tabID, want string) {
-	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
-	for {
-		a.remoteTabMu.Lock()
-		tab := a.remoteTabs[tabID]
-		state := ""
-		if tab != nil {
-			state = tab.state
-		}
-		a.remoteTabMu.Unlock()
-		if state == want {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("remote tab %s state = %q, want %q", tabID, state, want)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-}
-
 func waitForRemoteEventCount(t *testing.T, log *eventLog, prefix string, want int) {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)
@@ -422,9 +407,10 @@ func waitForRemoteEventCount(t *testing.T, log *eventLog, prefix string, want in
 	}
 }
 
-// cleanupRemoteTabPumps cancels every open tab's SSE pump when the test
-// ends. Without this the long-lived /events connection keeps the httptest
-// server's Close waiting forever.
+// cleanupRemoteTabPumps cancels every open tab's SSE pump and waits for all
+// bridge tasks to return. Waiting matters on Windows: an async resume can
+// publish its final tab snapshot after the assertion succeeds, racing the
+// temporary user directory's cleanup.
 func cleanupRemoteTabPumps(t *testing.T, a *App) {
 	t.Helper()
 	t.Cleanup(func() {
@@ -435,6 +421,13 @@ func cleanupRemoteTabPumps(t *testing.T, a *App) {
 			}
 		}
 		a.remoteTabMu.Unlock()
+		done := make(chan struct{})
+		go func() { a.remoteTabTasks.Wait(); close(done) }()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Error("remote tab tasks did not stop after pump cancellation")
+		}
 	})
 }
 

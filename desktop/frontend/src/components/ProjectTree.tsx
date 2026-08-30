@@ -1,7 +1,3 @@
-// ProjectTree is the sidebar replacement for the flat recent-sessions list.
-// It shows a tree of projects (each with expandable topics) plus a Global
-// section. Clicking a topic opens its tab; "+" next to a project creates a
-// new topic.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { CSSProperties, DragEvent as ReactDragEvent, KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent } from "react";
@@ -10,6 +6,7 @@ import { asArray } from "../lib/array";
 import { useToast } from "../lib/toast";
 import { app } from "../lib/bridge";
 import { onProjectTreeChangedV2 } from "../lib/sessionCatalogBridge";
+import { sessionCatalogNotice } from "../lib/sessionCatalogPresentation";
 import { isRuntimeSessionNode, isTopicNode, loadWorkbenchOrganizeMode, loadWorkbenchSortMode, mergeIncompleteProjectTopicPage, mergeProjectTopicPage, projectTreeDedupedExactTime, projectTreeEventAffectsFolder, projectTreeFolderDisclosure, projectTreeReadActivityKey, projectTreeRevisionIsFresh, projectTreeShellChildren, projectTreeShellSignature, projectTreeShouldApplyShellSnapshot, projectTreeShouldRenderTopicActions, projectTreeShouldSuppressOpenForRename, projectTreeTopicArchiveBlocked, projectTreeTopicHasUnreadActivity, projectTreeTopicHoverCardModel, projectTreeTopicMenuOffersPin, projectTreeTopicMetaLine, projectTreeTopicOpenRequest, projectTreeTopicPageIsFresh, projectTreeTopicPageSignature, projectTreeTopicRecoveryCopyCount, projectTreeWithoutTopic, projectTreeWithTopicTitle, topicActivityAt, topicActivityDateLabel, topicActivityLabel, topicIsActive, topicStatus, topicStatusLabel, topicUnknownTimeLabel, WORKBENCH_ORGANIZE_KEY, WORKBENCH_SORT_KEY, type ProjectTreePendingTopicOpen, type ProjectTreeReadActivity, type ProjectTreeTopicHoverCard, type WorkbenchOrganizeMode, type WorkbenchSortMode } from "../lib/projectTreeTopic";
 export * from "../lib/projectTreeTopic";
 import { arrangeClassicProjectTree, arrangeWorkbenchTree, classicTopicWindow, CLASSIC_TOPIC_PREVIEW_LIMIT, splitPinnedProjectTree, type PinnedTreeSections } from "../lib/projectTreePresentation";
@@ -30,7 +27,7 @@ import { summarizeProjectTreeSessions } from "../lib/projectTreeDiagnostics";
 import { GLOBAL_PROJECT_ORDER_KEY, ProjectTreeFolderActivity, ProjectTreeGroupRows, applyProjectOrder, projectTreeProjectRoots, reorderedProjectRoots, useProjectTreeOrganization, type ProjectDropPosition } from "./ProjectTreeOrganization";
 import { ProjectTreeSessionArchiveMenu } from "./ProjectTreeSessionArchiveMenu";
 import { ProjectTreeHeaderAddControl, ProjectTreeRemoteAction, projectTreeHeaderAddItems } from "./ProjectTreeAddControls";
-import { buildRemoteProjectMenuItems, mergeRemoteSessionsIntoTree, openRemoteSessionNode, remoteProjectKey, remoteServeBadgeState, renameRemoteProjectTitle, useRemoteProjectGroups, useRemoteSessionActions } from "./ProjectTreeRemoteGroups";
+import { activeRemoteProjectAncestorKeys, buildRemoteProjectMenuItems, mergeRemoteSessionsIntoTree, openRemoteSessionNode, remoteProjectKey, remoteServeBadgeState, renameRemoteProjectTitle, RemoteProjectEmptyState, useRemoteProjectGroups, useRemoteSessionActions } from "./ProjectTreeRemoteGroups";
 import type { ProjectTreeProps } from "./ProjectTreeProps";
 
 function projectNodeKey(node: ProjectNode, depth: number): string {
@@ -233,7 +230,7 @@ export function ProjectTree({
   const [catalogStatus, setCatalogStatus] = useState<SessionCatalogStatus>({
     state: "opening", revision: 0, indexed: 0, total: 0, repairPending: 0,
   });
-  const rebuildingCatalogRef = useRef(false);
+  const catalogStatusGenerationRef = useRef(0), rebuildingCatalogRef = useRef(false), catalogRebuildFailedRef = useRef(false);
   const [topicPageState, setTopicPageState] = useState<Record<string, { nextCursor?: string; loading: boolean }>>({});
   const topicPageStateRef = useRef(topicPageState);
   const updateTopicPageState = useCallback((key: string, next: { nextCursor?: string; loading: boolean }) => {
@@ -288,6 +285,7 @@ export function ProjectTree({
     setWorkbenchHeaderMenu(null);
   }, []);
   const topicLoadSeqRef = useRef<Record<string, number>>({});
+  const topicLoadErrorRef = useRef<Record<string, string>>({});
   const refreshRef = useRef<ProjectTreeRefresh>(async () => {});
   const { trashingTopics, trashingSessions, currentArchiveTombstones, trashTopic, trashSession } = useProjectTreeArchiveController({
     treeRef, topicLoadSeqRef, topicPageStateRef, updateTopicPageState, refreshRef,
@@ -332,7 +330,7 @@ export function ProjectTree({
   const loadProjectTopicsRef = useRef<(project: ProjectNode, append?: boolean) => Promise<void>>(async () => {});
 
   const loadProjectTopics = useCallback(async (project: ProjectNode, append = false) => {
-    if (project.kind !== "project" && project.kind !== "global_folder") return;
+    if ((project.kind !== "project" && project.kind !== "global_folder") || project.remote) return;
     const key = project.key;
     const pageState = topicPageStateRef.current[key];
     const cursor = append ? pageState?.nextCursor ?? "" : "";
@@ -355,6 +353,7 @@ export function ProjectTree({
         sortMode,
       });
       if (topicLoadSeqRef.current[key] !== seq) return;
+      delete topicLoadErrorRef.current[key];
       if (!projectTreeTopicPageIsFresh(topicRevisionRef.current, key, page.revision)) {
         updateTopicPageState(key, { ...topicPageStateRef.current[key], loading: false });
         return;
@@ -376,11 +375,16 @@ export function ProjectTree({
       updateTopicPageState(key, preserveCompletePage
         ? { ...topicPageStateRef.current[key], loading: false }
         : { nextCursor: page.nextCursor, loading: false });
-    } catch {
+    } catch (error) {
       if (topicLoadSeqRef.current[key] !== seq) return;
       updateTopicPageState(key, { ...topicPageStateRef.current[key], loading: false });
+      const message = error instanceof Error ? error.message : String(error);
+      if (topicLoadErrorRef.current[key] !== message) {
+        topicLoadErrorRef.current[key] = message;
+        showToast(message, "error", { durationMs: 6000 });
+      }
     }
-  }, [applyRuntimeProjection, creationTopics, currentArchiveTombstones, query, timeFilter, updateTopicPageState]);
+  }, [applyRuntimeProjection, creationTopics, currentArchiveTombstones, query, showToast, timeFilter, updateTopicPageState]);
   loadProjectTopicsRef.current = loadProjectTopics;
 
   const selectWorkbenchSortMode = useCallback((sortMode: WorkbenchSortMode) => {
@@ -410,7 +414,7 @@ export function ProjectTree({
   // Preserve already loaded pages by project key while reconciling pins, so a
   // metadata refresh does not collapse or blank the sidebar.
   const refresh = useCallback(async (options?: ProjectTreeRefreshOptions) => {
-    const reloadRequestedProjects = (projects: ProjectNode[]) => reloadProjectTreeTopics(projects, options, loadProjectTopicsRef.current);
+    const reloadRequestedProjects = (projects: ProjectNode[]) => reloadProjectTreeTopics(projects, options, loadProjectTopicsRef.current), catalogStatusGeneration = catalogStatusGenerationRef.current;
     try {
       const snapshot = await app.GetProjectTreeSnapshot();
       const rev = snapshot.revision ?? 0, empty = treeRef.current.length === 0;
@@ -420,7 +424,7 @@ export function ProjectTree({
       }
       if (projectTreeRevisionIsFresh(latestRevisionRef.current, rev)) latestRevisionRef.current = Math.max(latestRevisionRef.current, rev);
       const projects = asArray(snapshot.projects);
-      setCatalogStatus(snapshot.catalog);
+      if (!catalogRebuildFailedRef.current && catalogStatusGeneration === catalogStatusGenerationRef.current) setCatalogStatus(snapshot.catalog);
       setTree((current) => applyRuntimeProjection(projects.map((project) => {
         const previous = current.find((node) => node.key === project.key);
         // Topic pages reload asynchronously. Keep the last painted children
@@ -436,7 +440,8 @@ export function ProjectTree({
     }
   }, [applyRuntimeProjection]);
   refreshRef.current = refresh;
-  const { openRemoteProject, openRemoteWindow, remoteSessions, setRemoteSessions, remoteServers, refreshRemoteSessions } = useRemoteProjectGroups(tree, showToast, expanded, query);
+  const { openRemoteProject, openRemoteWindow, remoteSessions, setRemoteSessions, remoteServers, remoteGroupBusy, remoteGroupError, ensureRemoteGroupSessions, refreshRemoteSessions } = useRemoteProjectGroups(tree, showToast, expanded, query);
+  const treeWithRemoteSessions = useMemo(() => mergeRemoteSessionsIntoTree(tree, remoteSessions, t), [remoteSessions, t, tree]);
   const remoteSessionActions = useRemoteSessionActions(remoteSessions, refreshRemoteSessions, (error) => showToast(error instanceof Error ? error.message : String(error), "error"));
   const { addingProject, handleAddProject, openBlankProjectFlow, blankProjectFlow, openRemoteConnectFlow, remoteConnectFlow } = useProjectCreation({
     onAddProject,
@@ -445,18 +450,18 @@ export function ProjectTree({
   });
 
   const rebuildSessionCatalog = useCallback(async () => {
-    if (rebuildingCatalogRef.current || catalogStatus.canRebuild === false) return;
-    rebuildingCatalogRef.current = true;
+    if (rebuildingCatalogRef.current || catalogStatus.canRebuild !== true) return;
+    rebuildingCatalogRef.current = true; catalogRebuildFailedRef.current = false; catalogStatusGenerationRef.current += 1;
+    setCatalogStatus({ ...catalogStatus, state: "rebuilding", canRebuild: false });
     try {
-      await app.RebuildSessionCatalog();
-      showToast(t("projectTree.rebuildCatalog"), "info");
-      void refresh();
-    } catch (error) {
-      showToast(error instanceof Error ? error.message : String(error), "error", { durationMs: 6000 });
+      await app.RebuildSessionCatalog(); catalogStatusGenerationRef.current += 1;
+      await refresh();
+    } catch {
+      catalogRebuildFailedRef.current = true; catalogStatusGenerationRef.current += 1; setCatalogStatus(catalogStatus);
     } finally {
       rebuildingCatalogRef.current = false;
     }
-  }, [catalogStatus.canRebuild, refresh, showToast, t]);
+  }, [catalogStatus, refresh]);
 
   useEffect(() => {
     treeRef.current = tree;
@@ -486,7 +491,8 @@ export function ProjectTree({
     }
     latestRevisionRef.current = Math.max(latestRevisionRef.current, event.revision);
     if (event.reason === "metadata") setOrganizationRevision((current) => Math.max(current, event.revision));
-    void app.GetSessionCatalogStatus().then(setCatalogStatus).catch(() => {});
+    const catalogStatusGeneration = catalogStatusGenerationRef.current;
+    void app.GetSessionCatalogStatus().then((status) => { if (!catalogRebuildFailedRef.current && catalogStatusGeneration === catalogStatusGenerationRef.current) setCatalogStatus(status); }).catch(() => {});
     if (treeRef.current.length === 0) { void refresh(); return; } // race: event before shell
     const affected = asArray(event.roots);
     for (const project of treeRef.current) {
@@ -495,7 +501,6 @@ export function ProjectTree({
       if (projectTreeEventAffectsFolder(project, affected)) void loadProjectTopics(project);
     }
   }), [expanded, loadProjectTopics, refresh]);
-
   // Debounce query/timeFilter reloads so typing does not stampede the catalog.
   // Dependency is the project-shell signature, not tree: topic page loads
   // rewrite children and would otherwise re-arm this effect in a loop.
@@ -514,11 +519,21 @@ export function ProjectTree({
   // Following the active topic is a view concern over the tree already held.
   useEffect(() => {
     const collapsed = manuallyCollapsedRef.current;
-    const keys = defaultExpandedProjectTreeKeys(tree, activeScope, activeWorkspaceRoot, activeTopicId, activeSessionPath).filter((key) => !collapsed.has(key));
+    const keys = (activeRemote
+      ? activeRemoteProjectAncestorKeys(treeWithRemoteSessions, activeRemote, projectNodeKey)
+      : defaultExpandedProjectTreeKeys(treeWithRemoteSessions, activeScope, activeWorkspaceRoot, activeTopicId, activeSessionPath))
+      .filter((key) => !collapsed.has(key));
     // Returning prev unchanged keeps a switch that expands nothing new from
     // re-rendering the tree at all.
     setExpanded((prev) => (keys.every((key) => prev.has(key)) ? prev : new Set([...prev, ...keys])));
-  }, [tree, activeScope, activeWorkspaceRoot, activeTopicId, activeSessionPath]);
+    // Active remote groups get the same explicit cold start as a click.
+    for (const node of treeWithRemoteSessions) {
+      if (!node.remote) continue;
+      if (!keys.includes(projectNodeKey(node, 0))) continue;
+      if (!remoteSessions[remoteProjectKey(node.remote)]?.length) void ensureRemoteGroupSessions(node.remote.hostId, node.remote.workspace);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tree, activeScope, activeWorkspaceRoot, activeTopicId, activeSessionPath, activeRemote]);
 
   const markNodeRead = useCallback((node: ProjectNode) => {
     const key = projectTreeReadActivityKey(node);
@@ -540,8 +555,8 @@ export function ProjectTree({
         markActive(asArray(node.children));
       }
     };
-    markActive(tree);
-  }, [activeScope, activeSessionPath, activeTopicId, activeWorkspaceRoot, markNodeRead, tree]);
+    markActive(treeWithRemoteSessions);
+  }, [activeScope, activeSessionPath, activeTopicId, activeWorkspaceRoot, markNodeRead, treeWithRemoteSessions]);
 
   useEffect(() => {
     try {
@@ -863,8 +878,6 @@ export function ProjectTree({
     }
   };
 
-  const treeWithRemoteSessions = useMemo(() => mergeRemoteSessionsIntoTree(tree, remoteSessions, t), [remoteSessions, t, tree]);
-
   const visibleTree = useMemo(() => {
     const q = query.trim().toLowerCase();
     // Time filter: compute cutoff timestamp.
@@ -1018,8 +1031,8 @@ export function ProjectTree({
   }, [clearProjectDrag, dragProjectRoot]);
 
   const activeAncestorKeys = useMemo(
-    () => activeRemote ? tree.flatMap((node, index) => node.remote && remoteProjectKey(node.remote) === remoteProjectKey(activeRemote) ? [projectNodeKey(node, index)] : []) : activeSessionAncestorKeys(tree, activeScope, activeWorkspaceRoot, activeTopicId, activeSessionPath),
-    [activeRemote, activeScope, activeSessionPath, activeTopicId, activeWorkspaceRoot, tree],
+    () => activeRemote ? activeRemoteProjectAncestorKeys(treeWithRemoteSessions, activeRemote, projectNodeKey) : activeSessionAncestorKeys(treeWithRemoteSessions, activeScope, activeWorkspaceRoot, activeTopicId, activeSessionPath),
+    [activeRemote, activeScope, activeSessionPath, activeTopicId, activeWorkspaceRoot, treeWithRemoteSessions],
   );
   useEffect(() => {
     if (activeAncestorKeys.length === 0) return;
@@ -1610,6 +1623,13 @@ export function ProjectTree({
     const backendPage = topicPageState[key];
     const renderFolderChildren = () => {
       if (!hasChildren) {
+        const remoteGroupKey = node.remote ? remoteProjectKey(node.remote) : "";
+        const remoteBusy = Boolean(remoteGroupBusy[remoteGroupKey]);
+        const remoteError = remoteGroupError[remoteGroupKey] || "";
+        if (node.remote) return <RemoteProjectEmptyState
+          busy={remoteBusy} error={remoteError} ready={remoteServers[node.remote.hostId]?.[node.remote.workspace]?.state === "ready"}
+          isExpanded={isExpanded} depth={depth} classicTopics={classicTopics} t={t} onEnsure={() => ensureRemoteGroupSessions(node.remote!.hostId, node.remote!.workspace)}
+        />;
         // While the first topic page is still loading (cold start, catalog
         // reconcile in flight), show a skeleton instead of a blank folder or
         // a premature "no topics" placeholder.
@@ -1714,7 +1734,11 @@ export function ProjectTree({
             style={{ paddingLeft: 8 + depth * 16 }}
             onClick={() => {
               if (node.remote && !folderDisclosure.canExpand) return void openRemoteProject(node.remote, { focus: true });
-              if (folderDisclosure.canExpand) toggleExpand(key, node);
+              if (folderDisclosure.canExpand) {
+                const willExpand = !expanded.has(key);
+                toggleExpand(key, node);
+                if (node.remote && willExpand) { void ensureRemoteGroupSessions(node.remote.hostId, node.remote.workspace); }
+              }
             }}
             onKeyDown={(event) => {
               if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) {
@@ -1730,7 +1754,7 @@ export function ProjectTree({
             <span className={`project-tree__folder-label${!hasChildren ? " project-tree__folder-label--empty" : ""}`}>
               {projectLabel}
               {node.isolatedWorktree && <WorktreeBadge size={11} />}
-              {node.remote ? <span className={`project-tree__remote-badge project-tree__remote-badge--${remoteServeBadgeState(remoteServers[node.remote.hostId]?.[node.remote.workspace])}`} aria-hidden="true" /> : null}
+              {node.remote ? <span className={`project-tree__remote-badge project-tree__remote-badge--${remoteServeBadgeState(remoteServers[node.remote.hostId]?.[node.remote.workspace], remoteGroupBusy[remoteProjectKey(node.remote)])}`} aria-hidden="true" /> : null}
             </span>
             <ProjectTreeFolderActivity folder={node} />
           </button>
@@ -2143,6 +2167,7 @@ export function ProjectTree({
   // Reset topic index counter and visible topics collector before each render.
   topicIndexRef.current = 0;
   visibleTopicsCollectorRef.current = [];
+  const catalogNotice = sessionCatalogNotice(catalogStatus);
 
   return (
     <div className="project-tree">
@@ -2157,12 +2182,11 @@ export function ProjectTree({
           />
         </label>
       )}
-      {(catalogStatus.state === "opening" || catalogStatus.state === "rebuilding" || catalogStatus.repairPending > 0 || (catalogStatus.unindexedTargetCount ?? 0) > 0 || Boolean(catalogStatus.lastError)) && (
+      {catalogNotice && (
         <div className="project-tree__catalog-progress" role="status">
-          <span>{catalogStatus.lastError
-            ? t("projectTree.rebuildCatalog")
-            : t("projectTree.indexingProgress", { done: catalogStatus.indexed, total: catalogStatus.total || "?" })}</span>
-          {catalogStatus.canRebuild !== false && catalogStatus.state !== "rebuilding" && (
+          <span>{catalogNotice !== "working" ? `${t("projectTree.indexing")} — ${t("task.state.failed")}` : catalogStatus.total <= 0 ? t("projectTree.indexing")
+              : t("projectTree.indexingProgress", { done: catalogStatus.indexed, total: catalogStatus.total })}</span>
+          {catalogNotice === "rebuild" && (
             <button type="button" className="project-tree__catalog-rebuild" onClick={() => void rebuildSessionCatalog()}>
               {t("projectTree.rebuildCatalog")}
             </button>

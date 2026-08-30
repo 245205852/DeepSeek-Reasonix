@@ -155,7 +155,7 @@ func TestNamedAttachPublishesResolvedRouteBeforeResume(t *testing.T) {
 	fs := newFakeServe(t, "s3cret", []serveSessionEntry{{Name: "target", Path: targetPath}})
 	fs.mu.Lock()
 	fs.eventFeed = feed
-	fs.resumeStarted = make(chan struct{}, 1)
+	fs.resumeStarted = make(chan string, 1)
 	fs.resumeRelease = make(chan struct{})
 	started, release := fs.resumeStarted, fs.resumeRelease
 	fs.mu.Unlock()
@@ -397,7 +397,7 @@ func TestProvisionalResumeRouteFencesStaleSessionListing(t *testing.T) {
 	fs.sessionsStarted = make(chan struct{}, 1)
 	fs.sessionsRelease = make(chan struct{})
 	sessionsStarted, sessionsRelease := fs.sessionsStarted, fs.sessionsRelease
-	fs.resumeStarted = make(chan struct{}, 1)
+	fs.resumeStarted = make(chan string, 1)
 	fs.resumeRelease = make(chan struct{})
 	resumeStarted, resumeRelease := fs.resumeStarted, fs.resumeRelease
 	fs.mu.Unlock()

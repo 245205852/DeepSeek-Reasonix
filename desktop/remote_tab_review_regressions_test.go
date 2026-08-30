@@ -14,6 +14,23 @@ import (
 	"reasonix/internal/config"
 )
 
+func TestSetActiveTabRepublishesTerminalRemoteState(t *testing.T) {
+	log := &eventLog{}
+	tab := &remoteTab{
+		id: "remote-terminal", ref: RemoteTabRef{HostID: "box", Workspace: "~/app"},
+		state: "serve_down", err: "bootstrap failed",
+		routing: remoteTabSessionRouting{running: map[string]bool{}},
+	}
+	a := &App{remoteTabs: map[string]*remoteTab{tab.id: tab}, remoteEventHook: log.add}
+	if err := a.SetActiveTab(tab.id); err != nil {
+		t.Fatal(err)
+	}
+	events := strings.Join(log.recorded(), "\n")
+	if !strings.Contains(events, `remote-tab:remote-terminal:state {"state":"serve_down","error":"bootstrap failed"}`) {
+		t.Fatalf("terminal activation events = %s", events)
+	}
+}
+
 func TestRemoteTabServeDownSavedSessionClearsPendingBeforeDelayedMarker(t *testing.T) {
 	const oldPath = "/sessions/old.jsonl"
 	const savedPath = "/sessions/saved.jsonl"
@@ -544,6 +561,38 @@ func TestRemoteRejectedResumeReconcilesReselectedCurrentSession(t *testing.T) {
 	}
 	if log.count("remote-tab:"+tab.id+":state") != 1 {
 		t.Fatalf("authoritative reconciliation did not publish one ready barrier: %v", log.recorded())
+	}
+}
+
+func TestRemoteRejectedResumePreservesProbedAuthoritativeSelection(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	const previousPath = "/sessions/previous.jsonl"
+	const targetPath = "/sessions/target.jsonl"
+	const authoritativePath = "/sessions/authoritative.jsonl"
+	client := &http.Client{}
+	tab := &remoteTab{
+		id: "remote-1", state: "ready", client: client, gen: 7, selectionRevision: 11,
+		session: remoteTabSessionState{name: "previous", path: previousPath}, topicTitle: "Previous",
+		routing: remoteTabSessionRouting{currentPath: previousPath, running: map[string]bool{}},
+	}
+	a := &App{remoteTabs: map[string]*remoteTab{tab.id: tab}}
+	previous := &remoteTabOpenSelection{
+		session: tab.session, topicTitle: tab.topicTitle, currentPath: previousPath, revision: tab.selectionRevision,
+	}
+	route := a.beginRemoteTabProvisionalResume(tab.id, tab, client, tab.gen, targetPath)
+	handled := a.reconcileRemoteTabRejectedResume(
+		tab.id, tab, client, tab.gen, route,
+		serveSessionEntry{Name: "authoritative", Path: authoritativePath, Title: "Authoritative"},
+		errors.New("resume response lost"),
+	)
+	if !handled {
+		a.restoreRejectedRemoteTabOpenSelection(tab.id, previous)
+	}
+	a.remoteTabMu.Lock()
+	gotPath, gotSession, gotTitle := tab.routing.currentPath, tab.session.path, tab.topicTitle
+	a.remoteTabMu.Unlock()
+	if gotPath != authoritativePath || gotSession != authoritativePath || gotTitle != "Authoritative" {
+		t.Fatalf("ambiguous resume restored stale selection: route/session/title = %q/%q/%q", gotPath, gotSession, gotTitle)
 	}
 }
 

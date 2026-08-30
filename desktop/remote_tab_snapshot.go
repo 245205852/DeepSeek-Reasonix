@@ -1,14 +1,24 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"sort"
 	"strings"
 	"sync"
 	"time"
+
+	"reasonix/internal/agent"
 )
+
+// errRemoteTabStatusSuperseded marks the benign lost race where a /status
+// response lands after SSE-derived runtime state already advanced the tab
+// revision. Adoption was correctly skipped; callers (watchdog, close policy)
+// merely skip the snapshot instead of surfacing a crash.
+var errRemoteTabStatusSuperseded = errors.New("status was superseded by newer runtime state")
 
 type RemoteTabSnapshot struct {
 	History       json.RawMessage   `json:"history"`
@@ -19,6 +29,41 @@ type RemoteTabSnapshot struct {
 	Commands      json.RawMessage   `json:"commands,omitempty"`
 	Status        json.RawMessage   `json:"status,omitempty"`
 	PendingEvents []json.RawMessage `json:"pendingEvents,omitempty"`
+}
+
+// sanitizeRemoteHistory keeps older Serve builds from leaking provider-only
+// transient blocks into the desktop transcript.
+func sanitizeRemoteHistory(body []byte) []byte {
+	var rows []map[string]json.RawMessage
+	if json.Unmarshal(body, &rows) != nil {
+		return body
+	}
+	changed := false
+	for _, row := range rows {
+		var role, content string
+		if json.Unmarshal(row["role"], &role) != nil || role != "user" || json.Unmarshal(row["content"], &content) != nil {
+			continue
+		}
+		clean := agent.UserPreviewText(content)
+		if clean == content {
+			continue
+		}
+		encoded, err := json.Marshal(clean)
+		if err == nil {
+			row["content"] = encoded
+			changed = true
+		}
+	}
+	if !changed {
+		return body
+	}
+	var out bytes.Buffer
+	encoder := json.NewEncoder(&out)
+	encoder.SetEscapeHTML(false)
+	if encoder.Encode(rows) != nil {
+		return body
+	}
+	return bytes.TrimSpace(out.Bytes())
 }
 
 // RemoteTabSnapshot merges the serve's GET members in parallel. Only
@@ -67,6 +112,7 @@ func (a *App) RemoteTabSnapshot(tabID string) (RemoteTabSnapshot, error) {
 	if len(snap.History) == 0 {
 		return RemoteTabSnapshot{}, fmt.Errorf("remote tab %q: empty history", tabID)
 	}
+	snap.History = sanitizeRemoteHistory(snap.History)
 	if len(snap.Status) > 0 && !a.recordRemoteTabSessionStatus(tabID, client, gen, statusSeq, snap.Status) {
 		// Do not hand a status member captured before a newer request/event to
 		// the frontend aggregate snapshot; it will fetch /status explicitly.
@@ -105,7 +151,7 @@ func (a *App) RemoteTabStatus(tabID string) (json.RawMessage, error) {
 	status, err := serveGet(ctx, client, serveURL(base, "/status?runtime=1"))
 	if err == nil {
 		if !a.recordRemoteTabSessionStatus(tabID, client, gen, statusSeq, status) {
-			return nil, fmt.Errorf("remote tab %q status was superseded by newer runtime state", tabID)
+			return nil, fmt.Errorf("remote tab %q %w", tabID, errRemoteTabStatusSuperseded)
 		}
 	}
 	return status, err
@@ -188,7 +234,7 @@ func (a *App) recordRemoteTabSessionStatus(tabID string, client *http.Client, ge
 		a.emitRemoteEvent(fmt.Sprintf("remote-tab:%s:state", tabID), RemoteTabStateView{State: "ready"})
 	}
 	if pathChanged {
-		a.goSafe("remoteTabStatusTitle", func() { a.refreshRemoteTabTitle(tabID) })
+		a.goRemoteTabSafe("remoteTabStatusTitle", func() { a.refreshRemoteTabTitle(tabID) })
 	}
 	return true
 }

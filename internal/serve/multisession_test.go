@@ -33,6 +33,15 @@ func (replayStubController) ReplayPendingPromptsWith(factory func() event.Sink) 
 	factory().Emit(event.Event{Kind: event.ApprovalRequest})
 }
 
+func sessionPathFromFrame(t *testing.T, frame []byte) string {
+	t.Helper()
+	var wired eventwire.Event
+	if err := json.Unmarshal(frame, &wired); err != nil {
+		t.Fatalf("decode event frame: %v\nframe=%s", err, frame)
+	}
+	return wired.SessionPath
+}
+
 type replayRaceController struct {
 	control.SessionAPI
 	path     string
@@ -258,8 +267,8 @@ func TestReplayPendingPromptsBroadcastTagsFrames(t *testing.T) {
 	server.replayPendingPromptsBroadcast()
 	select {
 	case frame := <-all:
-		if !strings.Contains(string(frame), `"sessionPath":"/sessions/a.jsonl"`) {
-			t.Fatalf("replayed frame is untagged: %s", frame)
+		if got, want := sessionPathFromFrame(t, frame), agent.CanonicalSessionPath("/sessions/a.jsonl"); got != want {
+			t.Fatalf("replayed frame session path = %q, want %q: %s", got, want, frame)
 		}
 	default:
 		t.Fatal("pending prompt was not replayed")
@@ -313,7 +322,7 @@ func TestEventsReplayUsesControllerCapturedWithPath(t *testing.T) {
 		t.Fatalf("event stream ended before the next frame: %v", scanner.Err())
 		return ""
 	}
-	if first := nextData(); !strings.Contains(first, `"sessionPath":"/sessions/a.jsonl"`) {
+	if first := nextData(); sessionPathFromFrame(t, []byte(first)) != agent.CanonicalSessionPath(a.path) {
 		t.Fatalf("first frame = %s, want controller A replay", first)
 	}
 	select {
@@ -321,7 +330,7 @@ func TestEventsReplayUsesControllerCapturedWithPath(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("controller promotion remained blocked after subscription")
 	}
-	if second := nextData(); !strings.Contains(second, `"sessionPath":"/sessions/b.jsonl"`) {
+	if second := nextData(); sessionPathFromFrame(t, []byte(second)) != agent.CanonicalSessionPath(b.path) {
 		t.Fatalf("second frame = %s, want promoted controller B prompt", second)
 	}
 }
@@ -375,8 +384,8 @@ func TestSlashNewRefreshesControllerTagAndForegroundRoute(t *testing.T) {
 		if newPath == agent.CanonicalSessionPath(path) || tag.Path() != newPath || bc.CurrentSession() != newPath {
 			t.Fatalf("slash /new routing = controller %q tag %q broadcaster %q frame=%s", newPath, tag.Path(), bc.CurrentSession(), frame)
 		}
-		if !strings.Contains(string(frame), `"sessionPath":"`+newPath+`"`) {
-			t.Fatalf("slash /new notice kept the old session tag: %s", frame)
+		if got := sessionPathFromFrame(t, frame); got != newPath {
+			t.Fatalf("slash /new notice session path = %q, want %q: %s", got, newPath, frame)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("slash /new emitted no event")

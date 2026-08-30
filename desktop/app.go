@@ -127,6 +127,11 @@ type PromptHistoryResult struct {
 type App struct {
 	ctx          context.Context
 	workspaceHub *workspaceChangeHub
+	topicState   *topicStateManager
+	// topicTitleMutationMu keeps the authoritative title commit and its Tab /
+	// session-sidecar publication in the same order for manual and automatic
+	// renames. It is never held by generic topic-state reads or other metadata.
+	topicTitleMutationMu sync.Mutex
 
 	// sessionCatalog is a disposable, asynchronously opened projection of
 	// authoritative session sidecars. Project-shell APIs must tolerate nil here:
@@ -135,6 +140,8 @@ type App struct {
 	catalogLifecycleMu sync.Mutex
 	catalogCancel      context.CancelFunc
 	catalogDone        chan struct{}
+	catalogRebuildMu   sync.Mutex
+	catalogRebuild     *sessionCatalogRebuildFlight
 	catalogRebuilding  atomic.Bool
 	shuttingDown       atomic.Bool
 	// catalogReconcileJobs coalesces both the legacy pre-scan and catalog scan.
@@ -144,6 +151,9 @@ type App struct {
 	catalogReconcileJobs map[string]*desktopCatalogReconcileJob
 	// Test-only deterministic boundary, set before concurrent requests.
 	catalogReconcileHook func(sessioncatalog.DirectoryTarget)
+	// catalogRebuildJoinHook is test-only: it proves concurrent Wails callers
+	// joined the published rebuild flight before its completion was released.
+	catalogRebuildJoinHook func()
 	// projectTreeCatalogRefreshHook is test-only: it proves runtime-only
 	// navigation never falls back to the broad catalog refresh path.
 	projectTreeCatalogRefreshHook func()
@@ -317,7 +327,8 @@ type App struct {
 	notificationSenderOnce sync.Once
 	notificationSender     notify.Sender
 
-	runtimeEvents asyncRuntimeEmitter
+	runtimeEvents  asyncRuntimeEmitter
+	mcpAppsSandbox mcpAppsSandbox
 
 	// terminals owns local PTY/ConPTY sessions. It is intentionally separate
 	// from chat runtimes: terminal lifecycle must never acquire App.mu or the
@@ -344,6 +355,7 @@ type App struct {
 	remoteTabMu     sync.Mutex
 	remoteTabs      map[string]*remoteTab
 	remoteTabLayout remoteTabLayoutState
+	remoteTabTasks  sync.WaitGroup
 	// remoteTabModelMu makes the caller's current-model snapshot, the remote
 	// Serve rebuild, and the tab metadata commit one transaction. Without it,
 	// overlapping switches could roll remote config back to a stale model.
@@ -440,6 +452,7 @@ func NewApp() *App {
 		botRuntime:           newDesktopBotRuntime(),
 		remoteWindows:        newRemoteWindowRegistry(),
 		remoteWindowOwnerID:  newRemoteWindowOwnerID(),
+		topicState:           desktopTopicState,
 	}
 	a.desktopShell.trayState = "probing"
 	a.webView2Recovery = newWebView2RecoveryCoordinator(a)
@@ -513,7 +526,7 @@ func (a *App) startup(ctx context.Context) {
 	a.mu.Unlock()
 	go a.restoreOrBuildTabs()
 	a.registerHistoryIndexEvents()
-	a.startSessionCatalog(false)
+	a.startSessionCatalog()
 	a.goSafe("refreshBotRuntime", a.refreshBotRuntime)
 	a.goSafe("sendStartupPing", a.sendStartupPing)
 	a.goSafe("flushMetrics", a.flushMetrics)
@@ -1317,6 +1330,10 @@ func (a *App) activeTabAndCtrl() (*WorkspaceTab, control.SessionAPI) {
 // critical section. MCP operations may outlive a frontend tab switch; carrying
 // the invoking workspace root prevents config/authorization reads from drifting to the
 // newly active tab while controller calls still target the original runtime.
+// mcpAppsSandboxAvailable reports whether Desktop may declare the Apps
+// capability profile for newly acquired shared hosts.
+func (a *App) mcpAppsSandboxAvailable() bool { return a.mcpAppsSandbox.available() }
+
 func (a *App) activeMCPRuntime() (*WorkspaceTab, control.SessionAPI, string) {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
@@ -2069,8 +2086,7 @@ func (a *App) assignFreshSessionTopic(tab *WorkspaceTab) {
 	// topic index repair fails here, keep the session usable and let persisted
 	// session metadata repair the topic index later instead of surfacing a false
 	// "new session failed" error to the frontend.
-	_ = ensureTopicIndexed(scope, workspaceRoot, topicID, defaultTopicTitle, topicTitleSourceAuto)
-	_ = setTopicCreatedAt(topicTitleRoot(scope, workspaceRoot), topicID, time.Now().UnixMilli())
+	_ = ensureTopicIndexedWithCreatedAt(scope, workspaceRoot, topicID, defaultTopicTitle, topicTitleSourceAuto, time.Now().UnixMilli())
 }
 
 func (a *App) ensureTabTopicIndexedForUserTurn(tab *WorkspaceTab) {
@@ -2100,8 +2116,7 @@ func (a *App) ensureTabTopicIndexedForUserTurn(tab *WorkspaceTab) {
 		workspaceRoot = normalizeProjectRoot(workspaceRoot)
 	}
 
-	_ = ensureTopicIndexed(scope, workspaceRoot, topicID, defaultTopicTitle, topicTitleSourceAuto)
-	_ = setTopicCreatedAt(topicTitleRoot(scope, workspaceRoot), topicID, time.Now().UnixMilli())
+	_ = ensureTopicIndexedWithCreatedAt(scope, workspaceRoot, topicID, defaultTopicTitle, topicTitleSourceAuto, time.Now().UnixMilli())
 	path := a.currentSessionPathFor(tab)
 	a.persistTabSessionPath(tab, path)
 	a.emitProjectTreeChangedForSessionDirs(sessionDirectoryForPath(path))
@@ -2175,6 +2190,7 @@ func (a *App) clearActiveSessionRuntime(tab *WorkspaceTab, oldCtrl control.Sessi
 		SessionDir:               sessionDirForSnapshot(snap),
 		EffortOverride:           cloneStringPtr(snap.effort),
 		SharedHost:               sharedHost,
+		MCPHostProfile:           plugin.HostProfileDesktopApps,
 		CleanupPendingReconciler: reconcileDesktopCleanupPending,
 		SubagentParentLive:       a.subagentParentProbeForBuild(tab),
 		SessionRecoveryMeta:      a.tabSessionRecoveryMeta(tab),
@@ -4227,6 +4243,7 @@ func (a *App) buildSessionRebindCandidate(
 		SessionDir:               sessionDir,
 		EffortOverride:           cloneStringPtr(source.effort),
 		SharedHost:               sharedHost,
+		MCPHostProfile:           plugin.HostProfileDesktopApps,
 		CleanupPendingReconciler: reconcileDesktopCleanupPending,
 		SubagentParentLive:       a.subagentParentProbeForBuild(tab),
 		SessionRecoveryMeta:      a.tabSessionRecoveryMeta(tab),
@@ -7097,6 +7114,9 @@ type ServerView struct {
 	Name                   string         `json:"name"`
 	Transport              string         `json:"transport"`
 	Status                 string         `json:"status"`
+	HostProfile            string         `json:"hostProfile,omitempty"`
+	ElicitationNegotiated  bool           `json:"elicitationNegotiated,omitempty"`
+	AppsNegotiated         bool           `json:"appsNegotiated,omitempty"`
 	StartIntent            string         `json:"startIntent,omitempty"` // deprecated: derived from Enabled
 	RuntimeState           string         `json:"runtimeState,omitempty"`
 	ProtocolVersion        string         `json:"protocolVersion,omitempty"`
@@ -9511,24 +9531,23 @@ func sessionPathAfterSnapshot(ctrl control.SessionAPI, fallback string) string {
 
 var (
 	// sessionLeaseContentionRetryInterval and sessionLeaseContentionRetryAttempts
-	// bound the retry window for startup session-lease binds that hit a
-	// transient in-process holder. CleanupStaleRunning probes a running
-	// sub-agent's parent session lease inside every controller build, holding
-	// it only for the duration of a metadata rewrite (sub-millisecond); a
-	// concurrent tab build that races that probe must not surface a spurious
-	// "already open in another Reasonix window" error for a lease that is
-	// genuinely free once the probe releases it. A lease held by another
-	// window or process stays held for its whole lifetime, so the bounded
-	// retry still fails fast there.
+	// bound the retry window for lease or removal-guard acquisition that hits a
+	// transient in-process holder. CleanupStaleRunning and catalog persistence
+	// can hold the session lease or save lock briefly while a concurrent tab
+	// bind or archive begins; those callers must not surface a spurious
+	// "already open in another Reasonix window" error for ownership that is
+	// genuinely free once the short operation finishes. A lease held by another
+	// window or process stays held for its whole lifetime, so the bounded retry
+	// still fails fast there.
 	sessionLeaseContentionRetryInterval = 50 * time.Millisecond
 	sessionLeaseContentionRetryAttempts = 2
 )
 
 // withSessionLeaseContentionRetry retries acquire while it fails with
 // agent.ErrSessionLeaseHeld, absorbing sub-second contention windows created
-// by transient in-process lease probes. Any other error is returned
-// immediately, and a lease that remains held after the bounded retries is
-// reported as-is.
+// by transient in-process lease or save-lock holders. Any other error is
+// returned immediately, and a lease that remains held after the bounded
+// retries is reported as-is.
 func withSessionLeaseContentionRetry[T any](acquire func() (T, error)) (T, error) {
 	var zero T
 	for attempt := 0; ; attempt++ {
@@ -9795,6 +9814,7 @@ func (a *App) SetModelForTab(tabID, name string) (retErr error) {
 		SessionDir:               sessionDirForSnapshot(snap),
 		EffortOverride:           cloneStringPtr(effortOverride),
 		SharedHost:               sharedHost,
+		MCPHostProfile:           plugin.HostProfileDesktopApps,
 		CleanupPendingReconciler: reconcileDesktopCleanupPending,
 		SubagentParentLive:       a.subagentParentProbeForBuild(tab),
 		SessionRecoveryMeta:      a.tabSessionRecoveryMeta(tab),
@@ -9982,6 +10002,7 @@ func (a *App) SetEffortForTab(tabID, level string) error {
 		SessionDir:               sessionDirForSnapshot(snap),
 		EffortOverride:           &effort,
 		SharedHost:               sharedHost,
+		MCPHostProfile:           plugin.HostProfileDesktopApps,
 		CleanupPendingReconciler: reconcileDesktopCleanupPending,
 		SubagentParentLive:       a.subagentParentProbeForBuild(tab),
 		SessionRecoveryMeta:      a.tabSessionRecoveryMeta(tab),
