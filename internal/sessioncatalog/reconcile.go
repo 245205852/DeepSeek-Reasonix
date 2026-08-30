@@ -23,8 +23,8 @@ func (c *Catalog) ReconcileDirectory(ctx context.Context, target DirectoryTarget
 	if c == nil || c.db == nil {
 		return nil
 	}
-	target.Path = filepath.Clean(strings.TrimSpace(target.Path))
-	if target.Path == "." || target.Path == "" {
+	target.Path = cleanCatalogAccessPath(target.Path)
+	if target.Path == "" {
 		return nil
 	}
 	lock := c.directoryLock(target.Path)
@@ -63,7 +63,7 @@ func (c *Catalog) ReconcileDirectory(ctx context.Context, target DirectoryTarget
 			// This scan started while holding the directory lock after any
 			// completed removal. A present file is therefore a newer external
 			// recreation and may supersede the in-memory removal tombstone.
-			c.removedPaths.Delete(record.Path)
+			c.removedPaths.Delete(c.pathKey(record.Path))
 			records = append(records, record)
 		}
 		runtime.Gosched()
@@ -122,6 +122,7 @@ func directorySignature(dir string) (string, error) {
 }
 
 func (c *Catalog) directoryLock(path string) *sync.Mutex {
+	path = c.pathKey(path)
 	c.directoryLocksMu.Lock()
 	defer c.directoryLocksMu.Unlock()
 	lock := c.directoryLocks[path]
@@ -139,8 +140,12 @@ func (c *Catalog) RequestReconcile(target DirectoryTarget) bool {
 	if c == nil || strings.TrimSpace(target.Path) == "" {
 		return false
 	}
-	target.Path = filepath.Clean(target.Path)
-	if _, loaded := c.reconcileQueued.LoadOrStore(target.Path, target); loaded {
+	target.Path = cleanCatalogAccessPath(target.Path)
+	key := c.pathKey(target.Path)
+	if key == "" {
+		return false
+	}
+	if _, loaded := c.reconcileQueued.LoadOrStore(key, target); loaded {
 		c.markReconcileDirty(target)
 		return true
 	}
@@ -148,10 +153,10 @@ func (c *Catalog) RequestReconcile(target DirectoryTarget) bool {
 	case c.reconcileCh <- target:
 		return true
 	case <-c.stop:
-		c.reconcileQueued.Delete(target.Path)
+		c.reconcileQueued.Delete(key)
 		return false
 	default:
-		c.reconcileQueued.Delete(target.Path)
+		c.reconcileQueued.Delete(key)
 		c.markReconcileDirty(target)
 		return false
 	}
@@ -159,7 +164,7 @@ func (c *Catalog) RequestReconcile(target DirectoryTarget) bool {
 
 func (c *Catalog) markReconcileDirty(target DirectoryTarget) {
 	c.reconcileDirtyMu.Lock()
-	c.reconcileDirty[target.Path] = target
+	c.reconcileDirty[c.pathKey(target.Path)] = target
 	c.reconcileDirtyMu.Unlock()
 }
 
@@ -179,7 +184,7 @@ func (c *Catalog) reconcileLoop() {
 	defer ticker.Stop()
 	for {
 		if target, ok := c.takeReconcileDirty(); ok {
-			c.reconcileQueued.Delete(target.Path)
+			c.reconcileQueued.Delete(c.pathKey(target.Path))
 			ctx, cancel := context.WithTimeout(c.workerCtx, 2*time.Minute)
 			_ = c.ReconcileDirectory(ctx, target)
 			cancel()
@@ -187,7 +192,7 @@ func (c *Catalog) reconcileLoop() {
 		}
 		select {
 		case target := <-c.reconcileCh:
-			c.reconcileQueued.Delete(target.Path)
+			c.reconcileQueued.Delete(c.pathKey(target.Path))
 			ctx, cancel := context.WithTimeout(c.workerCtx, 2*time.Minute)
 			_ = c.ReconcileDirectory(ctx, target)
 			cancel()
@@ -206,26 +211,27 @@ func (c *Catalog) RequestIndexSession(target DirectoryTarget, path string) bool 
 	if c == nil {
 		return false
 	}
-	path = filepath.Clean(strings.TrimSpace(path))
-	if path == "." || path == "" {
+	path = cleanCatalogAccessPath(path)
+	if path == "" {
 		return false
 	}
-	target.Path = filepath.Clean(strings.TrimSpace(target.Path))
-	if target.Path == "." || target.Path == "" {
+	target.Path = cleanCatalogAccessPath(target.Path)
+	if target.Path == "" {
 		target.Path = filepath.Dir(path)
 	}
-	request := sessionPathRequest{target: target, path: path}
-	if _, loaded := c.pathQueued.LoadOrStore(path, request); loaded {
+	key := c.pathKey(path)
+	request := sessionPathRequest{target: target, path: path, pathKey: key}
+	if _, loaded := c.pathQueued.LoadOrStore(key, request); loaded {
 		return true
 	}
 	select {
 	case c.pathCh <- request:
 		return true
 	case <-c.stop:
-		c.pathQueued.Delete(path)
+		c.pathQueued.Delete(key)
 		return false
 	default:
-		c.pathQueued.Delete(path)
+		c.pathQueued.Delete(key)
 		return false
 	}
 }
@@ -235,7 +241,7 @@ func (c *Catalog) sessionPathLoop() {
 	for {
 		select {
 		case request := <-c.pathCh:
-			c.pathQueued.Delete(request.path)
+			c.pathQueued.Delete(request.pathKey)
 			ctx, cancel := context.WithTimeout(c.workerCtx, 30*time.Second)
 			_ = c.IndexSessionPath(ctx, request.target, request.path)
 			cancel()
@@ -247,12 +253,12 @@ func (c *Catalog) sessionPathLoop() {
 
 // IndexSessionPath indexes one session without walking its directory.
 func (c *Catalog) IndexSessionPath(ctx context.Context, target DirectoryTarget, path string) error {
-	path = filepath.Clean(strings.TrimSpace(path))
-	if path == "." || path == "" {
+	path = cleanCatalogAccessPath(path)
+	if path == "" {
 		return nil
 	}
-	target.Path = filepath.Clean(strings.TrimSpace(target.Path))
-	if target.Path == "." || target.Path == "" {
+	target.Path = cleanCatalogAccessPath(target.Path)
+	if target.Path == "" {
 		target.Path = filepath.Dir(path)
 	}
 	// Hold the directory lock so a concurrent scan cannot mark this row missing.
@@ -269,7 +275,7 @@ func (c *Catalog) IndexSessionPath(ctx context.Context, target DirectoryTarget, 
 	// Only a path that still exists may supersede a removal tombstone. Doing
 	// this after Stat also prevents a delayed exact-index request from exposing
 	// an already archived row while its durable DELETE is pending.
-	c.removedPaths.Delete(path)
+	c.removedPaths.Delete(c.pathKey(path))
 	meta, ok, err := agent.LoadBranchMeta(path)
 	if err != nil {
 		return err
@@ -405,8 +411,9 @@ func (c *Catalog) beginDirectoryScan(ctx context.Context, target DirectoryTarget
 	}
 	var previousSig, previousState, previousCursor string
 	var previousGeneration int64
-	err = tx.QueryRowContext(ctx, `SELECT signature,state,scan_cursor,scan_generation FROM catalog_directories WHERE path=?`,
-		target.Path).Scan(&previousSig, &previousState, &previousCursor, &previousGeneration)
+	pathKey := c.pathKey(target.Path)
+	err = tx.QueryRowContext(ctx, `SELECT signature,state,scan_cursor,scan_generation FROM catalog_directories WHERE path_key=?`,
+		pathKey).Scan(&previousSig, &previousState, &previousCursor, &previousGeneration)
 	resume := err == nil && previousState == "scanning" && previousSig == signature && strings.TrimSpace(previousCursor) != ""
 	if errors.Is(err, sql.ErrNoRows) {
 		err = nil
@@ -416,8 +423,8 @@ func (c *Catalog) beginDirectoryScan(ctx context.Context, target DirectoryTarget
 		return 0, "", err
 	}
 	if resume {
-		if _, err := tx.ExecContext(ctx, `UPDATE catalog_directories SET scope=?,workspace_root=?,state='scanning',error='',signature=? WHERE path=?`,
-			target.Scope, target.WorkspaceRoot, signature, target.Path); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE catalog_directories SET path=?,scope=?,workspace_root=?,state='scanning',error='',signature=? WHERE path_key=?`,
+			target.Path, target.Scope, target.WorkspaceRoot, signature, pathKey); err != nil {
 			_ = tx.Rollback()
 			return 0, "", err
 		}
@@ -426,22 +433,22 @@ func (c *Catalog) beginDirectoryScan(ctx context.Context, target DirectoryTarget
 		}
 		return previousGeneration, previousCursor, tx.Commit()
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO catalog_directories(path,scope,workspace_root,state,error,signature)
-        VALUES(?,?,?,'scanning','',?) ON CONFLICT(path) DO UPDATE SET
-        scope=excluded.scope,workspace_root=excluded.workspace_root,state='scanning',error='',
+	if _, err := tx.ExecContext(ctx, `INSERT INTO catalog_directories(path,path_key,scope,workspace_root,state,error,signature)
+        VALUES(?,?,?,?,'scanning','',?) ON CONFLICT(path_key) DO UPDATE SET
+        path=excluded.path,scope=excluded.scope,workspace_root=excluded.workspace_root,state='scanning',error='',
         signature=excluded.signature,scan_generation=catalog_directories.scan_generation+1,scan_cursor='',indexed=0`,
-		target.Path, target.Scope, target.WorkspaceRoot, signature); err != nil {
+		target.Path, pathKey, target.Scope, target.WorkspaceRoot, signature); err != nil {
 		_ = tx.Rollback()
 		return 0, "", err
 	}
 	var generation int64
-	if err := tx.QueryRowContext(ctx, `SELECT scan_generation FROM catalog_directories WHERE path=?`, target.Path).Scan(&generation); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT scan_generation FROM catalog_directories WHERE path_key=?`, pathKey).Scan(&generation); err != nil {
 		_ = tx.Rollback()
 		return 0, "", err
 	}
 	if generation == 0 {
 		generation = 1
-		if _, err := tx.ExecContext(ctx, `UPDATE catalog_directories SET scan_generation=1 WHERE path=?`, target.Path); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE catalog_directories SET scan_generation=1 WHERE path_key=?`, pathKey); err != nil {
 			_ = tx.Rollback()
 			return 0, "", err
 		}
@@ -471,6 +478,7 @@ func (c *Catalog) commitDirectoryProjection(ctx context.Context, target Director
 		return rollback(err)
 	}
 	affected := map[TopicKey]struct{}{}
+	directoryKey := c.pathKey(target.Path)
 	for start := 0; start < len(records); start += 64 {
 		if err := ctx.Err(); err != nil {
 			_ = stmt.Close()
@@ -478,15 +486,16 @@ func (c *Catalog) commitDirectoryProjection(ctx context.Context, target Director
 		}
 		end := min(start+64, len(records))
 		for _, record := range records[start:end] {
+			pathKey := c.pathKey(record.Path)
 			var previous TopicKey
-			if err := tx.QueryRowContext(ctx, `SELECT scope,workspace_root,topic_id FROM catalog_sessions WHERE path=?`, record.Path).
+			if err := tx.QueryRowContext(ctx, `SELECT scope,workspace_root,topic_id FROM catalog_sessions WHERE path_key=?`, pathKey).
 				Scan(&previous.Scope, &previous.WorkspaceRoot, &previous.TopicID); err == nil && previous.TopicID != "" {
 				affected[previous] = struct{}{}
 			} else if err != nil && !errors.Is(err, sql.ErrNoRows) {
 				_ = stmt.Close()
 				return rollback(err)
 			}
-			if _, err := stmt.ExecContext(ctx, sessionRowValues(record, generation)...); err != nil {
+			if _, err := stmt.ExecContext(ctx, sessionRowValues(record, pathKey, directoryKey, generation)...); err != nil {
 				_ = stmt.Close()
 				return rollback(err)
 			}
@@ -508,7 +517,7 @@ func (c *Catalog) commitDirectoryProjection(ctx context.Context, target Director
 	}
 
 	rows, err := tx.QueryContext(ctx, `SELECT scope,workspace_root,topic_id FROM catalog_sessions
-        WHERE directory=? AND seen_generation<? AND topic_id<>''`, target.Path, generation)
+        WHERE directory_key=? AND seen_generation<? AND topic_id<>''`, directoryKey, generation)
 	if err != nil {
 		return rollback(err)
 	}
@@ -526,12 +535,12 @@ func (c *Catalog) commitDirectoryProjection(ctx context.Context, target Director
 	if _, err := tx.ExecContext(ctx, `UPDATE catalog_sessions SET
         missing_since=CASE WHEN missing_since=0 THEN ? ELSE missing_since END,
         health='missing'
-        WHERE directory=? AND seen_generation<?`, now, target.Path, generation); err != nil {
+		WHERE directory_key=? AND seen_generation<?`, now, directoryKey, generation); err != nil {
 		return rollback(err)
 	}
 	cutoff := now - c.opts.MissingGrace.Milliseconds()
 	if _, err := tx.ExecContext(ctx, `DELETE FROM catalog_sessions
-        WHERE directory=? AND seen_generation<? AND missing_since>0 AND missing_since<=?`, target.Path, generation, cutoff); err != nil {
+		WHERE directory_key=? AND seen_generation<? AND missing_since>0 AND missing_since<=?`, directoryKey, generation, cutoff); err != nil {
 		return rollback(err)
 	}
 	for key := range affected {
@@ -540,7 +549,7 @@ func (c *Catalog) commitDirectoryProjection(ctx context.Context, target Director
 		}
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE catalog_directories SET state='ready',error='',signature=?,
-		scan_cursor='',indexed=?,total=?,completed_at=? WHERE path=?`, signature, len(records), len(records), now, target.Path); err != nil {
+		scan_cursor='',indexed=?,total=?,completed_at=? WHERE path_key=?`, signature, len(records), len(records), now, directoryKey); err != nil {
 		return rollback(err)
 	}
 	revision, err := bumpRevision(ctx, tx)
@@ -569,8 +578,9 @@ func (c *Catalog) finishDirectoryScan(ctx context.Context, target DirectoryTarge
 	if err != nil {
 		return err
 	}
+	directoryKey := c.pathKey(target.Path)
 	rows, err := tx.QueryContext(ctx, `SELECT scope,workspace_root,topic_id FROM catalog_sessions
-        WHERE directory=? AND seen_generation<? AND topic_id<>''`, target.Path, generation)
+        WHERE directory_key=? AND seen_generation<? AND topic_id<>''`, directoryKey, generation)
 	if err != nil {
 		_ = tx.Rollback()
 		return err
@@ -592,13 +602,13 @@ func (c *Catalog) finishDirectoryScan(ctx context.Context, target DirectoryTarge
 	if _, err := tx.ExecContext(ctx, `UPDATE catalog_sessions SET
         missing_since=CASE WHEN missing_since=0 THEN ? ELSE missing_since END,
         health='missing'
-        WHERE directory=? AND seen_generation<?`, now, target.Path, generation); err != nil {
+		WHERE directory_key=? AND seen_generation<?`, now, directoryKey, generation); err != nil {
 		_ = tx.Rollback()
 		return err
 	}
 	cutoff := now - c.opts.MissingGrace.Milliseconds()
 	if _, err := tx.ExecContext(ctx, `DELETE FROM catalog_sessions
-        WHERE directory=? AND seen_generation<? AND missing_since>0 AND missing_since<=?`, target.Path, generation, cutoff); err != nil {
+		WHERE directory_key=? AND seen_generation<? AND missing_since>0 AND missing_since<=?`, directoryKey, generation, cutoff); err != nil {
 		_ = tx.Rollback()
 		return err
 	}
@@ -609,7 +619,7 @@ func (c *Catalog) finishDirectoryScan(ctx context.Context, target DirectoryTarge
 		}
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE catalog_directories SET state='ready',error='',signature=?,
-		scan_cursor='',indexed=?,total=?,completed_at=? WHERE path=?`, signature, total, total, now, target.Path); err != nil {
+		scan_cursor='',indexed=?,total=?,completed_at=? WHERE path_key=?`, signature, total, total, now, directoryKey); err != nil {
 		_ = tx.Rollback()
 		return err
 	}
@@ -642,6 +652,7 @@ func Rebuild(ctx context.Context, path string, targets []DirectoryTarget) (Statu
 // revision fences across the rebuild, so a replacement must never publish a
 // lower revision than the catalog they already rendered.
 func RebuildWithRevisionFloor(ctx context.Context, path string, targets []DirectoryTarget, revisionFloor uint64) (Status, error) {
+	targets = UniqueDirectoryTargets(targets)
 	if strings.TrimSpace(path) == "" {
 		path = DefaultPath()
 	}
@@ -685,6 +696,7 @@ func RebuildWithRevisionFloor(ctx context.Context, path string, targets []Direct
 		temp := &Catalog{
 			db:             db,
 			opts:           Options{Path: path, DisableRepair: true, Now: time.Now, MissingGrace: defaultMissingGrace},
+			pathIdentity:   PathIdentityKey,
 			writeQueued:    map[string]SessionRecord{},
 			directoryLocks: map[string]*sync.Mutex{},
 			stop:           make(chan struct{}),

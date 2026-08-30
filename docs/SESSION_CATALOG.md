@@ -3,12 +3,12 @@
 Reasonix keeps session transcripts, event logs, metadata sidecars, and
 `desktop-projects.json` as the only authoritative session data. The desktop
 project tree reads a disposable SQLite projection from
-`<cache root>/session-catalog/v5.sqlite`; deleting that database never deletes
-or changes a conversation. The earlier `v1.sqlite` through `v4.sqlite` caches are
-left in place so a concurrent or downgraded process cannot cross-write the
-projection. v5 is the repair-release generation; it is rebuilt from
-authoritative files on first use while the old v4 file remains available for
-rollback. A manual rebuild of v5 also leaves a timestamped `.replaced-*` copy
+`<cache root>/session-catalog/v6.sqlite`; deleting that database never deletes
+or changes a conversation. The earlier `v1.sqlite` through `v5.sqlite` caches
+are left in place so a concurrent or downgraded process cannot cross-write the
+projection. v6 introduces filesystem-aware path identity and is rebuilt from
+authoritative files on first use while the old v5 file remains available for
+rollback. A manual rebuild of v6 also leaves a timestamped `.replaced-*` copy
 of the previous index.
 
 ## Invariants
@@ -16,8 +16,12 @@ of the previous index.
 - Startup and project-tree requests never decode transcript JSONL, run legacy
   migration, or wait for a directory scan.
 - A successfully saved transcript is committed before its catalog update. The
-  non-blocking writer coalesces updates by session path; background
+  non-blocking writer coalesces updates by filesystem path identity; background
   reconciliation repairs updates dropped under queue pressure.
+- The original path spelling is retained for file access and display. A
+  separate identity key resolves aliases and folds case only where the
+  governing filesystem directory is case-insensitive; case-distinct files on
+  case-sensitive volumes remain separate sessions.
 - Missing legacy counts are represented as `unknown`. The session is visible
   immediately, then a single repair worker decodes it in the background.
 - A missing file is marked degraded on the first scan. It is removed from the
@@ -49,7 +53,8 @@ The catalog stores only query projections:
 - directory signatures, scan generations, checkpoints, and errors;
 - project ordering, title, color, and pin state;
 - topic ordering, aggregate counts, activity, recovery, and health state; and
-- session path, preview, counts, fingerprints, recovery, and health state.
+- session access path plus path identity key, preview, counts, fingerprints,
+  recovery, and health state.
 
 Topic pages use a `(pinned, last_activity_at, topic_id)` keyset cursor. The
 default page size is 50 and the maximum is 200. Directory reconciliation commits

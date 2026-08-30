@@ -20,14 +20,15 @@ import (
 const defaultMissingGrace = 30 * time.Second
 
 type Catalog struct {
-	db          *sql.DB
-	opts        Options
-	revision    atomic.Uint64
-	statusMu    sync.RWMutex
-	status      Status
-	writeCh     chan string
-	writeMu     sync.Mutex
-	writeQueued map[string]SessionRecord
+	db           *sql.DB
+	opts         Options
+	pathIdentity func(string) string
+	revision     atomic.Uint64
+	statusMu     sync.RWMutex
+	status       Status
+	writeCh      chan string
+	writeMu      sync.Mutex
+	writeQueued  map[string]SessionRecord
 	// mutationMu is the process-local SQLite single-writer boundary. WAL permits
 	// concurrent readers, but repair, metadata, and reconcile mutations must not
 	// race into avoidable SQLITE_BUSY failures.
@@ -59,8 +60,9 @@ type Catalog struct {
 }
 
 type sessionPathRequest struct {
-	target DirectoryTarget
-	path   string
+	target  DirectoryTarget
+	path    string
+	pathKey string
 }
 
 type pageCursor struct {
@@ -98,6 +100,7 @@ func Open(ctx context.Context, opts Options) (*Catalog, error) {
 
 	c := &Catalog{
 		opts:           opts,
+		pathIdentity:   PathIdentityKey,
 		writeCh:        make(chan string, opts.QueueCapacity),
 		writeQueued:    map[string]SessionRecord{},
 		repairCh:       make(chan string, opts.QueueCapacity),
@@ -235,11 +238,11 @@ func normalizeScope(scope, root string) (string, string) {
 }
 
 func normalizeSessionRecord(record SessionRecord) SessionRecord {
-	record.Path = filepath.Clean(record.Path)
+	record.Path = cleanCatalogAccessPath(record.Path)
 	if record.Directory == "" {
 		record.Directory = filepath.Dir(record.Path)
 	}
-	record.Directory = filepath.Clean(record.Directory)
+	record.Directory = cleanCatalogAccessPath(record.Directory)
 	record.Scope, record.WorkspaceRoot = normalizeScope(record.Scope, record.WorkspaceRoot)
 	if record.TurnsState == "" {
 		record.TurnsState = TurnsUnknown
@@ -250,29 +253,40 @@ func normalizeSessionRecord(record SessionRecord) SessionRecord {
 	return record
 }
 
+func (c *Catalog) pathKey(path string) string {
+	if c != nil && c.pathIdentity != nil {
+		return c.pathIdentity(path)
+	}
+	return PathIdentityKey(path)
+}
+
 func (c *Catalog) EnqueueSession(record SessionRecord) bool {
 	if c == nil {
 		return false
 	}
 	record = normalizeSessionRecord(record)
-	c.removedPaths.Delete(record.Path)
+	key := c.pathKey(record.Path)
+	if key == "" {
+		return false
+	}
+	c.removedPaths.Delete(key)
 	c.writeMu.Lock()
-	if _, loaded := c.writeQueued[record.Path]; loaded {
-		c.writeQueued[record.Path] = record
+	if _, loaded := c.writeQueued[key]; loaded {
+		c.writeQueued[key] = record
 		c.writeMu.Unlock()
 		return true
 	}
-	c.writeQueued[record.Path] = record
+	c.writeQueued[key] = record
 	select {
 	case <-c.stop:
-		delete(c.writeQueued, record.Path)
+		delete(c.writeQueued, key)
 		c.writeMu.Unlock()
 		return false
-	case c.writeCh <- record.Path:
+	case c.writeCh <- key:
 		c.writeMu.Unlock()
 		return true
 	default:
-		delete(c.writeQueued, record.Path)
+		delete(c.writeQueued, key)
 		c.writeMu.Unlock()
 		return false
 	}
@@ -453,7 +467,7 @@ func (c *Catalog) listTopicSessions(ctx context.Context, key TopicKey) ([]Sessio
 			}
 			rawCount++
 			lastScanned = record
-			if c.pathRemoved(record.Path) {
+			if c.pathRemovedKey(record.pathKey, record.Path) {
 				continue
 			}
 			out = append(out, record)

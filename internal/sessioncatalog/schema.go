@@ -140,6 +140,30 @@ CREATE TABLE IF NOT EXISTS catalog_folded_topics (
 );
 `
 
+// v9 separates filesystem identity from the original access spelling. The
+// production default moves to a fresh v6.sqlite generation together with this
+// migration, so old v5 writers never share the new identity columns. Explicit
+// legacy catalog paths are invalidated in place: filesystem-aware keys cannot
+// be backfilled safely in SQL, and every deleted row is a disposable projection
+// that the next authoritative directory reconciliation recreates.
+const migrationV9 = `
+ALTER TABLE catalog_directories ADD COLUMN path_key TEXT NOT NULL DEFAULT '';
+ALTER TABLE catalog_sessions ADD COLUMN path_key TEXT NOT NULL DEFAULT '';
+ALTER TABLE catalog_sessions ADD COLUMN directory_key TEXT NOT NULL DEFAULT '';
+
+DELETE FROM catalog_sessions;
+DELETE FROM catalog_directories;
+DELETE FROM catalog_topics;
+DELETE FROM catalog_folded_topics;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_catalog_directories_path_key
+ON catalog_directories(path_key);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_catalog_sessions_path_key
+ON catalog_sessions(path_key);
+CREATE INDEX IF NOT EXISTS idx_catalog_sessions_directory_key
+ON catalog_sessions(directory_key, seen_generation, missing_since);
+`
+
 func sessionMigrations() []projectiondb.Migration {
 	return []projectiondb.Migration{
 		{Version: 1, Apply: func(ctx context.Context, tx *sql.Tx) error {
@@ -172,6 +196,10 @@ func sessionMigrations() []projectiondb.Migration {
 		}},
 		{Version: 8, Apply: func(ctx context.Context, tx *sql.Tx) error {
 			_, err := tx.ExecContext(ctx, migrationV8)
+			return err
+		}},
+		{Version: 9, Apply: func(ctx context.Context, tx *sql.Tx) error {
+			_, err := tx.ExecContext(ctx, migrationV9)
 			return err
 		}},
 	}

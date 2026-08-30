@@ -49,7 +49,7 @@ func (c *Catalog) SyncMetadata(ctx context.Context, projects []ProjectRecord, to
 		if strings.TrimSpace(topic.TopicID) == "" {
 			continue
 		}
-		skip, err := skipFoldedRecoveryShell(ctx, tx, topic)
+		skip, err := c.skipFoldedRecoveryShell(ctx, tx, topic)
 		if err != nil {
 			_ = tx.Rollback()
 			return err
@@ -89,11 +89,11 @@ func (c *Catalog) SyncMetadata(ctx context.Context, projects []ProjectRecord, to
 // lineage projection re-anchors them onto the canonical row, re-creating this
 // shell from the registry would re-list the copy as a separate sidebar session
 // (#8525/#8551). Explicitly pinned topics survive: the user asked for that row.
-func skipFoldedRecoveryShell(ctx context.Context, tx *sql.Tx, topic TopicMetadata) (bool, error) {
+func (c *Catalog) skipFoldedRecoveryShell(ctx context.Context, tx *sql.Tx, topic TopicMetadata) (bool, error) {
 	if topic.Pinned {
 		return false, nil
 	}
-	return foldedRecoveryShellHasCanonical(ctx, tx, topic.Scope, topic.WorkspaceRoot, topic.TopicID)
+	return c.foldedRecoveryShellHasCanonical(ctx, tx, topic.Scope, topic.WorkspaceRoot, topic.TopicID)
 }
 
 // upsertTopicMetadata applies one registry topic. It inherits live session
@@ -168,7 +168,7 @@ func upsertTopicMetadata(ctx context.Context, tx *sql.Tx, topic TopicMetadata) e
 // ordinary_visible/recovery_canonical, or the non-recovered group root (which
 // carries no recovery_group_id of its own, so it is matched by path).
 // Lineages with no canonical yet (unresolved, still scanning) are left alone.
-func foldedRecoveryShellHasCanonical(ctx context.Context, tx *sql.Tx, scope, workspaceRoot, topicID string) (bool, error) {
+func (c *Catalog) foldedRecoveryShellHasCanonical(ctx context.Context, tx *sql.Tx, scope, workspaceRoot, topicID string) (bool, error) {
 	var ordinary int
 	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM catalog_sessions
 		WHERE scope=? AND workspace_root=? AND topic_id=? AND recovered=0 AND recovery_copy=0`,
@@ -227,7 +227,7 @@ func foldedRecoveryShellHasCanonical(ctx context.Context, tx *sql.Tx, scope, wor
 		rootPath := filepath.Join(group.directory, group.id+".jsonl")
 		var roots int
 		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM catalog_sessions
-			WHERE path=? AND recovered=0 AND recovery_copy=0`, rootPath).Scan(&roots); err != nil {
+			WHERE path_key=? AND recovered=0 AND recovery_copy=0`, c.pathKey(rootPath)).Scan(&roots); err != nil {
 			return false, err
 		}
 		if roots > 0 {

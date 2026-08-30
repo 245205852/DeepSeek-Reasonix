@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"path/filepath"
 )
 
 func (c *Catalog) UpsertSession(ctx context.Context, record SessionRecord) error {
@@ -30,7 +29,7 @@ func (c *Catalog) upsertSessionsWithNotification(ctx context.Context, records []
 	defer c.mutationMu.Unlock()
 	filtered := records[:0]
 	for _, record := range records {
-		if _, removed := c.removedPaths.Load(filepath.Clean(record.Path)); !removed {
+		if _, removed := c.removedPaths.Load(c.pathKey(record.Path)); !removed {
 			filtered = append(filtered, record)
 		}
 	}
@@ -46,7 +45,7 @@ func (c *Catalog) upsertSessionsWithNotification(ctx context.Context, records []
 				return dirtyDirectories, err
 			}
 			if projectionDirty {
-				dirtyDirectories[record.Directory] = DirectoryTarget{
+				dirtyDirectories[c.pathKey(record.Directory)] = DirectoryTarget{
 					Path: record.Directory, Scope: record.Scope, WorkspaceRoot: record.WorkspaceRoot,
 				}
 			}
@@ -68,8 +67,10 @@ func (c *Catalog) upsertSessionsWithNotification(ctx context.Context, records []
 	directoryGenerations := map[string]int64{}
 	for _, raw := range records {
 		record := normalizeSessionRecord(raw)
+		pathKey := c.pathKey(record.Path)
+		directoryKey := c.pathKey(record.Directory)
 		var previous TopicKey
-		if err := tx.QueryRowContext(ctx, `SELECT scope,workspace_root,topic_id FROM catalog_sessions WHERE path=?`, record.Path).
+		if err := tx.QueryRowContext(ctx, `SELECT scope,workspace_root,topic_id FROM catalog_sessions WHERE path_key=?`, pathKey).
 			Scan(&previous.Scope, &previous.WorkspaceRoot, &previous.TopicID); err == nil && previous.TopicID != "" {
 			affected[previous] = struct{}{}
 		} else if err != nil && !errors.Is(err, sql.ErrNoRows) {
@@ -79,13 +80,13 @@ func (c *Catalog) upsertSessionsWithNotification(ctx context.Context, records []
 		generation := int64(0)
 		if generations != nil {
 			generation = generations[record.Path]
-		} else if cached, ok := directoryGenerations[record.Directory]; ok {
+		} else if cached, ok := directoryGenerations[directoryKey]; ok {
 			generation = cached
 		} else {
-			_ = tx.QueryRowContext(ctx, `SELECT scan_generation FROM catalog_directories WHERE path=?`, record.Directory).Scan(&generation)
-			directoryGenerations[record.Directory] = generation
+			_ = tx.QueryRowContext(ctx, `SELECT scan_generation FROM catalog_directories WHERE path_key=?`, directoryKey).Scan(&generation)
+			directoryGenerations[directoryKey] = generation
 		}
-		if err := upsertSessionRow(ctx, tx, record, generation, mode); err != nil {
+		if err := c.upsertSessionRow(ctx, tx, record, pathKey, directoryKey, generation, mode); err != nil {
 			_ = tx.Rollback()
 			return dirtyDirectories, err
 		}
@@ -122,16 +123,16 @@ func (c *Catalog) upsertSessionsWithNotification(ctx context.Context, records []
 }
 
 const sessionInsertSQL = `INSERT INTO catalog_sessions(
-    path,directory,scope,workspace_root,topic_id,topic_title,custom_title,
+    path,path_key,directory,directory_key,scope,workspace_root,topic_id,topic_title,custom_title,
     created_at,last_activity_at,preview,turns,turns_state,recovered,
     recovery_reason,recovery_digest,parent_id,recovery_copy,recovery_group_id,
     recovery_role,recovery_canonical,logical_topic_id,ordinary_visible,content_fingerprint,
     meta_fingerprint,health,missing_since,seen_generation
-) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-ON CONFLICT(path) DO UPDATE SET `
+) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+ON CONFLICT(path_key) DO UPDATE SET `
 
 const directoryProjectionUpdateSQL = `
-    directory=excluded.directory, scope=excluded.scope,
+    path=excluded.path, directory=excluded.directory, directory_key=excluded.directory_key, scope=excluded.scope,
     workspace_root=excluded.workspace_root, topic_id=excluded.topic_id,
     topic_title=excluded.topic_title, custom_title=excluded.custom_title,
     created_at=excluded.created_at, last_activity_at=excluded.last_activity_at,
@@ -150,7 +151,7 @@ const directoryProjectionUpdateSQL = `
     missing_since=0, seen_generation=MAX(catalog_sessions.seen_generation, excluded.seen_generation)`
 
 const exactSourceUpdateSQL = `
-    directory=excluded.directory, scope=excluded.scope,
+    path=excluded.path, directory=excluded.directory, directory_key=excluded.directory_key, scope=excluded.scope,
     workspace_root=excluded.workspace_root,
     topic_id=CASE
         WHEN catalog_sessions.recovered=1 OR excluded.recovered=1 OR catalog_sessions.recovery_group_id<>''
@@ -174,18 +175,18 @@ const exactSourceUpdateSQL = `
     meta_fingerprint=excluded.meta_fingerprint, health=excluded.health,
     missing_since=0, seen_generation=MAX(catalog_sessions.seen_generation, excluded.seen_generation)`
 
-func upsertSessionRow(ctx context.Context, tx *sql.Tx, record SessionRecord, generation int64, mode sessionUpsertMode) error {
+func (c *Catalog) upsertSessionRow(ctx context.Context, tx *sql.Tx, record SessionRecord, pathKey, directoryKey string, generation int64, mode sessionUpsertMode) error {
 	updateSQL := directoryProjectionUpdateSQL
 	if mode == upsertExactSource {
 		updateSQL = exactSourceUpdateSQL
 	}
-	_, err := tx.ExecContext(ctx, sessionInsertSQL+updateSQL, sessionRowValues(record, generation)...)
+	_, err := tx.ExecContext(ctx, sessionInsertSQL+updateSQL, sessionRowValues(record, pathKey, directoryKey, generation)...)
 	return err
 }
 
-func sessionRowValues(record SessionRecord, generation int64) []any {
+func sessionRowValues(record SessionRecord, pathKey, directoryKey string, generation int64) []any {
 	return []any{
-		record.Path, record.Directory, record.Scope, record.WorkspaceRoot,
+		record.Path, pathKey, record.Directory, directoryKey, record.Scope, record.WorkspaceRoot,
 		record.TopicID, record.TopicTitle, record.CustomTitle, record.CreatedAt,
 		record.LastActivityAt, record.Preview, record.Turns, record.TurnsState,
 		record.Recovered, record.RecoveryReason, record.RecoveryDigest,

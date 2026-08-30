@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	SchemaVersion = 8
+	SchemaVersion = 9
 	DefaultLimit  = 50
 	MaxLimit      = 200
 )
@@ -112,7 +112,8 @@ type TopicMetadata struct {
 }
 
 type SessionRecord struct {
-	Path              string     `json:"path"`
+	Path              string `json:"path"`
+	pathKey           string
 	Directory         string     `json:"directory"`
 	Scope             string     `json:"scope"`
 	WorkspaceRoot     string     `json:"workspaceRoot,omitempty"`
@@ -227,8 +228,8 @@ type SessionPage struct {
 }
 
 // DefaultPath is the disposable cache file under CacheDir ("" when unavailable).
-// v5.sqlite is independent of all older caches so a new build never trusts a
-// polluted or incomplete lineage projection produced by an older desktop.
+// v6.sqlite is independent of all older caches so a new build never trusts a
+// path-case-split projection produced by an older desktop or CLI.
 // Session JSONL/WAL/sidecars remain authoritative and older binaries may keep
 // using their own disposable cache without cross-writing this one.
 func DefaultPath() string {
@@ -236,5 +237,5 @@ func DefaultPath() string {
 	if cache == "" {
 		return ""
 	}
-	return filepath.Join(cache, "session-catalog", "v5.sqlite")
+	return filepath.Join(cache, "session-catalog", "v6.sqlite")
 }
