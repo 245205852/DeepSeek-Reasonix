@@ -1050,7 +1050,6 @@ func (p *bootSubagentTestProvider) Stream(_ context.Context, req provider.Reques
 		default:
 			chunks = []provider.Chunk{{Type: provider.ChunkText, Text: "done"}, {Type: provider.ChunkDone}}
 		}
-		chunks = finishCompliantBootChunks(req, call, chunks)
 		ch := make(chan provider.Chunk, len(chunks))
 		for _, chunk := range chunks {
 			ch <- chunk
@@ -1080,7 +1079,6 @@ func (p *bootSubagentTestProvider) Stream(_ context.Context, req provider.Reques
 	default:
 		chunks = []provider.Chunk{{Type: provider.ChunkText, Text: "done"}, {Type: provider.ChunkDone}}
 	}
-	chunks = finishCompliantBootChunks(req, call, chunks)
 	ch := make(chan provider.Chunk, len(chunks))
 	for _, chunk := range chunks {
 		ch <- chunk
@@ -1205,7 +1203,6 @@ func (p *headlessTaskTestProvider) Stream(_ context.Context, req provider.Reques
 	default:
 		chunks = []provider.Chunk{{Type: provider.ChunkText, Text: "parent done"}, {Type: provider.ChunkDone}}
 	}
-	chunks = finishCompliantBootChunks(req, call, chunks)
 	ch := make(chan provider.Chunk, len(chunks))
 	for _, chunk := range chunks {
 		ch <- chunk
@@ -1451,7 +1448,6 @@ func (p *headlessTaskWriteTestProvider) Stream(_ context.Context, req provider.R
 	default:
 		chunks = []provider.Chunk{{Type: provider.ChunkText, Text: "parent done"}, {Type: provider.ChunkDone}}
 	}
-	chunks = finishCompliantBootChunks(req, call, chunks)
 	ch := make(chan provider.Chunk, len(chunks))
 	for _, chunk := range chunks {
 		ch <- chunk
@@ -1742,11 +1738,7 @@ func TestNewProviderRejectsExplicitOfficialDeepSeekVisionModel(t *testing.T) {
 
 func TestBuildHonorsSessionDirOverride(t *testing.T) {
 	dir := t.TempDir()
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
-	t.Setenv("AppData", filepath.Join(home, "AppData"))
+	isolateConfigHome(t)
 	t.Chdir(dir)
 	writeFile(t, dir, "reasonix.toml", `
 default_model = "test-model"
@@ -2290,7 +2282,6 @@ func unifiedBootToolNames() []string {
 		"complete_step",
 		"compress",
 		"edit_file",
-		"finish",
 		"kill_shell",
 		"read_file",
 		"todo_write",
@@ -4319,7 +4310,6 @@ model = "x"
 	target := filepath.Join(extra, "sandboxed.txt")
 	command := "printf ok > " + strconv.Quote(target)
 	prov := testutil.NewMock("additional-dir-bash",
-		testutil.Turn{ToolCalls: []provider.ToolCall{{ID: "todo-1", Name: "todo_write", Arguments: `{"todos":[{"content":"write sandboxed file","status":"in_progress"}]}`}}},
 		testutil.Turn{ToolCalls: []provider.ToolCall{{ID: "bash-1", Name: "bash", Arguments: fmt.Sprintf(`{"command":%q}`, command)}}},
 		testutil.Turn{Text: "done"},
 	)

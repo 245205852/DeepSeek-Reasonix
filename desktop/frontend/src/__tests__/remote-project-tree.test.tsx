@@ -33,6 +33,7 @@ const remoteIntegrationSource = readFileSync(resolve(here, "../lib/useRemoteComp
 const topicbarMenuSource = readFileSync(resolve(here, "../components/TopicbarMoreMenuContent.tsx"), "utf8");
 const bridgeSource = readFileSync(resolve(here, "../lib/remoteProjectBridge.ts"), "utf8");
 const remoteOpenSource = readFileSync(resolve(here, "../../../remote_projects.go"), "utf8");
+const remotePendingSelectionSource = readFileSync(resolve(here, "../../../remote_tab_pending_selection.go"), "utf8");
 const explicitEnsureSource = remoteSource.match(
   /const ensureRemoteGroupSessions[\s\S]*?\n  const openRemoteWindow/,
 )?.[0] ?? "";
@@ -241,8 +242,13 @@ ok(
   "remote groups render retryable connect/error rows instead of going silent",
 );
 ok(
-  /existing\.selectionRevision\+\+[\s\S]*?a\.goRemoteTabSafe\("remoteTabResume"[\s\S]*?restoreRejectedRemoteTabOpenSelection/.test(remoteOpenSource),
+  /existing\.selectionRevision\+\+/.test(remoteOpenSource) &&
+    /a\.goRemoteTabSafe\("remoteTabResume"[\s\S]*?restoreRejectedRemoteTabOpenSelection/.test(remotePendingSelectionSource),
   "session switches resume in the background behind a generation guard",
+);
+ok(
+  /if \(\(project\.kind !== "project" && project\.kind !== "global_folder"\) \|\| project\.remote\) return;/.test(source),
+  "remote groups never reach ListProjectTopics with their virtual root",
 );
 
 process.stdout.write(`\n${passed} passed, ${failed} failed\n`);
