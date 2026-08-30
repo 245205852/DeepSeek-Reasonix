@@ -136,8 +136,7 @@ func (m ContextManager) prepareOnce(ctx context.Context, policy ContextPreparePo
 
 	// A manual compact over the hard ceiling is a rescue, not a convenience:
 	// prune first so the never-folded recent tail can shrink too.
-	if policy.Trigger == CompactionTriggerPressure || policy.Trigger == CompactionTriggerOverflow ||
-		(policy.Trigger == CompactionTriggerManual && est >= hard) {
+	if shouldPruneBeforeFold(policy.Trigger, est >= hard) {
 		applied, err := a.pruneToolResultsToProjectionLocked(policy.Trigger)
 		if err != nil {
 			return PreparedContext{}, err
@@ -154,6 +153,17 @@ func (m ContextManager) prepareOnce(ctx context.Context, policy ContextPreparePo
 	}
 
 	return m.foldContext(ctx, prepared, policy, inputHash, est, fold, hard, forceFold)
+}
+
+func shouldPruneBeforeFold(trigger string, overHardCeiling bool) bool {
+	switch trigger {
+	case CompactionTriggerPressure, CompactionTriggerOverflow:
+		return true
+	case CompactionTriggerManual:
+		return overHardCeiling
+	default:
+		return false
+	}
 }
 
 // manualRecoverySummaries bounds the rescue loop for a manual compact that
