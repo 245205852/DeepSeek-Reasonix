@@ -7,11 +7,11 @@
       "channel": "stable",
       "targetingVersion": 1,
       "title": {
-        "en": "Reasonix 1.34.0",
-        "zh": "Reasonix 1.34.0"
+        "en": "Reasonix v1.34.0",
+        "zh": "Reasonix v1.34.0"
       },
       "summary": {
-        "en": "Security hardening for serve and git operations, MCP 2026 interactions and Apps, cache-stable capability controls, and numerous desktop stability fixes.",
+        "en": "Security hardening for serve and git operations, MCP 2026 interactions and Apps, cache-stable capability controls, and multiple desktop stability fixes.",
         "zh": "serve 与 git 操作的安全加固、MCP 2026 交互与 Apps、缓存稳定的能力控制，以及多项桌面稳定性修复。"
       },
       "surfaces": [
@@ -28,7 +28,7 @@
             "en": "Documentation for subagent profiles.",
             "zh": "子代理配置文件文档。"
           },
-          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/a54659c2c5b0f4e57aae2b44d41f421c6a71e8cf/docs/SUBAGENT_PROFILES.md"
+          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/d651a3a5909231992f1c0d828fef00c974c16625/docs/SUBAGENT_PROFILES.md"
         },
         {
           "title": {
@@ -39,7 +39,7 @@
             "en": "Chinese documentation for subagent profiles.",
             "zh": "子代理配置文件中文文档。"
           },
-          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/a54659c2c5b0f4e57aae2b44d41f421c6a71e8cf/docs/SUBAGENT_PROFILES.zh-CN.md"
+          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/d651a3a5909231992f1c0d828fef00c974c16625/docs/SUBAGENT_PROFILES.zh-CN.md"
         },
         {
           "title": {
@@ -50,7 +50,7 @@
             "en": "Documentation for the task contract.",
             "zh": "任务契约文档。"
           },
-          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/a54659c2c5b0f4e57aae2b44d41f421c6a71e8cf/docs/TASK_CONTRACT.md"
+          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/d651a3a5909231992f1c0d828fef00c974c16625/docs/TASK_CONTRACT.md"
         },
         {
           "title": {
@@ -61,7 +61,7 @@
             "en": "Chinese documentation for the task contract.",
             "zh": "任务契约中文文档。"
           },
-          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/a54659c2c5b0f4e57aae2b44d41f421c6a71e8cf/docs/TASK_CONTRACT.zh-CN.md"
+          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/d651a3a5909231992f1c0d828fef00c974c16625/docs/TASK_CONTRACT.zh-CN.md"
         },
         {
           "title": {
@@ -72,7 +72,7 @@
             "en": "Documentation for the tool contract.",
             "zh": "工具契约文档。"
           },
-          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/a54659c2c5b0f4e57aae2b44d41f421c6a71e8cf/docs/TOOL_CONTRACT.md"
+          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/d651a3a5909231992f1c0d828fef00c974c16625/docs/TOOL_CONTRACT.md"
         },
         {
           "title": {
@@ -83,29 +83,29 @@
             "en": "Chinese documentation for the tool contract.",
             "zh": "工具契约中文文档。"
           },
-          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/a54659c2c5b0f4e57aae2b44d41f421c6a71e8cf/docs/TOOL_CONTRACT.zh-CN.md"
+          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/d651a3a5909231992f1c0d828fef00c974c16625/docs/TOOL_CONTRACT.zh-CN.md"
         },
         {
           "title": {
-            "en": "Use Capability Replay",
+            "en": "Capability Use Replay",
             "zh": "能力使用回放"
           },
           "body": {
-            "en": "Documentation for use capability replay evaluation.",
+            "en": "Documentation for capability use replay evaluation.",
             "zh": "能力使用回放评估文档。"
           },
-          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/a54659c2c5b0f4e57aae2b44d41f421c6a71e8cf/docs/eval/use-capability-replay.md"
+          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/d651a3a5909231992f1c0d828fef00c974c16625/docs/eval/use-capability-replay.md"
         },
         {
           "title": {
-            "en": "Use Capability Replay (Chinese)",
+            "en": "Capability Use Replay (Chinese)",
             "zh": "能力使用回放（中文）"
           },
           "body": {
-            "en": "Chinese documentation for use capability replay evaluation.",
+            "en": "Chinese documentation for capability use replay evaluation.",
             "zh": "能力使用回放评估中文文档。"
           },
-          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/a54659c2c5b0f4e57aae2b44d41f421c6a71e8cf/docs/eval/use-capability-replay.zh-CN.md"
+          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/d651a3a5909231992f1c0d828fef00c974c16625/docs/eval/use-capability-replay.zh-CN.md"
         },
         {
           "title": {
@@ -116,27 +116,10 @@
             "en": "Documentation for MCP 2026 Apps support.",
             "zh": "MCP 2026 Apps 支持文档。"
           },
-          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/a54659c2c5b0f4e57aae2b44d41f421c6a71e8cf/docs/mcp-2026-apps.md"
+          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/d651a3a5909231992f1c0d828fef00c974c16625/docs/mcp-2026-apps.md"
         }
       ],
       "highlights": [
-        {
-          "kind": "security",
-          "targets": [
-            "cli"
-          ],
-          "title": {
-            "en": "Serve and git security hardening",
-            "zh": "Serve 与 git 安全加固"
-          },
-          "body": {
-            "en": "Enforces Host allowlist for serve, confines preview reads, neutralizes git clean filters, and blocks SSRF via proxy.",
-            "zh": "强制 serve 的 Host 白名单、限制预览读取、中和 git clean 过滤器，并阻止通过代理的 SSRF。"
-          },
-          "refs": [
-            9599
-          ]
-        },
         {
           "kind": "new",
           "targets": [
@@ -148,7 +131,7 @@
             "zh": "MCP 2026 交互与 Apps"
           },
           "body": {
-            "en": "Adds support for MCP 2026 multi-round elicitation and Desktop Apps with sandboxed rendering.",
+            "en": "Added support for MCP 2026 multi-round interactions and desktop Apps, with sandboxed rendering.",
             "zh": "新增对 MCP 2026 多轮交互和桌面 Apps 的支持，并采用沙箱渲染。"
           },
           "refs": [
@@ -166,7 +149,7 @@
             "zh": "缓存稳定的能力控制"
           },
           "body": {
-            "en": "Lands speed and quality controls for use_capability with parallel scheduling, review budgets, and metrics.",
+            "en": "Landed use_capability speed and quality controls, including parallel scheduling, review budgets, and metrics.",
             "zh": "落地 use_capability 的速度与质量控制，包括并行调度、审查预算和指标。"
           },
           "refs": [
@@ -174,20 +157,20 @@
           ]
         },
         {
-          "kind": "fixed",
+          "kind": "security",
           "targets": [
-            "desktop"
+            "cli"
           ],
           "title": {
-            "en": "Stable transcript scrolling",
-            "zh": "稳定的对话滚动"
+            "en": "Serve and git security hardening",
+            "zh": "serve 与 git 安全加固"
           },
           "body": {
-            "en": "Fixes reverse jumps and blank frames during fast reasoning and scrolling.",
-            "zh": "修复快速推理和滚动时的反向跳跃与空白帧。"
+            "en": "Enforced serve Host allowlist, preview confinement, and git clean-filter neutralization to close six security boundary gaps.",
+            "zh": "强制 serve Host 白名单、预览限制和 git clean 过滤器中和，封堵六个安全边界缺口。"
           },
           "refs": [
-            9513
+            9599
           ]
         }
       ],
@@ -203,13 +186,15 @@
               "zh": "MCP 2026 交互与 Apps"
             },
             "body": {
-              "en": "Adds support for MCP 2026 multi-round elicitation and Desktop Apps with sandboxed rendering.",
+              "en": "Added support for MCP 2026 multi-round interactions and desktop Apps, with sandboxed rendering.",
               "zh": "新增对 MCP 2026 多轮交互和桌面 Apps 的支持，并采用沙箱渲染。"
             },
             "refs": [
               9547
             ]
-          },
+          }
+        ],
+        "improved": [
           {
             "targets": [
               "desktop",
@@ -220,61 +205,11 @@
               "zh": "缓存稳定的能力控制"
             },
             "body": {
-              "en": "Lands speed and quality controls for use_capability with parallel scheduling, review budgets, and metrics.",
+              "en": "Landed use_capability speed and quality controls, including parallel scheduling, review budgets, and metrics.",
               "zh": "落地 use_capability 的速度与质量控制，包括并行调度、审查预算和指标。"
             },
             "refs": [
               9569
-            ]
-          }
-        ],
-        "improved": [
-          {
-            "targets": [
-              "desktop"
-            ],
-            "title": {
-              "en": "Stable transcript scrolling",
-              "zh": "稳定的对话滚动"
-            },
-            "body": {
-              "en": "Fixes reverse jumps and blank frames during fast reasoning and scrolling.",
-              "zh": "修复快速推理和滚动时的反向跳跃与空白帧。"
-            },
-            "refs": [
-              9513
-            ]
-          },
-          {
-            "targets": [
-              "desktop"
-            ],
-            "title": {
-              "en": "Multi-round reasoning timeline",
-              "zh": "多轮思考时间线"
-            },
-            "body": {
-              "en": "Preserves multi-round reasoning timeline and fixes tool timeline misalignment.",
-              "zh": "保留多轮思考时间线并修复工具时间线错位。"
-            },
-            "refs": [
-              9565
-            ]
-          },
-          {
-            "targets": [
-              "desktop"
-            ],
-            "title": {
-              "en": "Composer autosize stability",
-              "zh": "输入框自动高度稳定性"
-            },
-            "body": {
-              "en": "Stabilizes composer autosize scrolling to prevent session jitter.",
-              "zh": "稳定输入框自动高度滚动，防止会话抖动。"
-            },
-            "refs": [
-              9568
             ]
           },
           {
@@ -283,12 +218,12 @@
               "cli"
             ],
             "title": {
-              "en": "Provider model discovery alignment",
-              "zh": "供应商模型发现对齐"
+              "en": "Model discovery and stream failure visibility",
+              "zh": "模型发现与流失败可见性"
             },
             "body": {
-              "en": "Aligns model discovery with chat proxy policy and surfaces stream failures.",
-              "zh": "将模型发现与聊天代理策略对齐，并显示流失败。"
+              "en": "Aligned model discovery with the chat proxy policy and surfaced stream failures with clear notices.",
+              "zh": "将模型发现与聊天代理策略对齐，并通过清晰通知显示流失败。"
             },
             "refs": [
               9563
@@ -303,8 +238,8 @@
               "zh": "MCP Streamable HTTP 兼容性"
             },
             "body": {
-              "en": "Hardens Streamable HTTP compatibility for stateless bridges.",
-              "zh": "加固无状态桥接的 Streamable HTTP 兼容性。"
+              "en": "Hardened Streamable HTTP compatibility to prevent stateless bridges from blocking connections.",
+              "zh": "加固 Streamable HTTP 兼容性，防止无状态桥接阻塞连接。"
             },
             "refs": [
               9602
@@ -314,16 +249,32 @@
         "fixed": [
           {
             "targets": [
+              "cli"
+            ],
+            "title": {
+              "en": "Serve and git security hardening",
+              "zh": "serve 与 git 安全加固"
+            },
+            "body": {
+              "en": "Enforced serve Host allowlist, preview confinement, and git clean-filter neutralization to close six security boundary gaps.",
+              "zh": "强制 serve Host 白名单、预览限制和 git clean 过滤器中和，封堵六个安全边界缺口。"
+            },
+            "refs": [
+              9599
+            ]
+          },
+          {
+            "targets": [
               "desktop",
               "cli"
             ],
             "title": {
-              "en": "Serve write path after resume",
-              "zh": "恢复后的写入路径"
+              "en": "Write path after in-place resume",
+              "zh": "原地恢复后的写入路径"
             },
             "body": {
-              "en": "Fixes write authorization missing after in-place resume.",
-              "zh": "修复原地恢复后写入授权缺失的问题。"
+              "en": "Fixed /new returning write authorization missing after /resume on the same server.",
+              "zh": "修复同一服务器上 /resume 后 /new 报写授权缺失的问题。"
             },
             "refs": [
               9596
@@ -334,11 +285,11 @@
               "desktop"
             ],
             "title": {
-              "en": "Remote group new session row",
+              "en": "New-session blank row in remote groups",
               "zh": "远端项目组新会话行"
             },
             "body": {
-              "en": "Keeps the new-session blank row visible in remote groups.",
+              "en": "Kept the new-session blank row visible in remote project groups.",
               "zh": "保持远端项目组中新会话空白行可见。"
             },
             "refs": [
@@ -350,15 +301,63 @@
               "desktop"
             ],
             "title": {
-              "en": "Remote project roots and local topics",
-              "zh": "远端项目根与本地主题"
+              "en": "Remote project roots and local topic state",
+              "zh": "远端项目根与本地 Topic 状态"
             },
             "body": {
-              "en": "Keeps remote project roots out of local topic state to avoid metadata errors.",
-              "zh": "将远端项目根排除在本地主题状态之外，避免元数据错误。"
+              "en": "Prevented remote project roots from touching local topic metadata, fixing an invalid path error on Windows.",
+              "zh": "防止远端项目根触碰本地 Topic 元数据，修复 Windows 上的无效路径错误。"
             },
             "refs": [
               9594
+            ]
+          },
+          {
+            "targets": [
+              "desktop"
+            ],
+            "title": {
+              "en": "Composer autosize scrolling",
+              "zh": "输入框自动高度滚动"
+            },
+            "body": {
+              "en": "Stabilized composer autosize scrolling to eliminate session jitter.",
+              "zh": "稳定输入框自动高度滚动，消除会话抖动。"
+            },
+            "refs": [
+              9568
+            ]
+          },
+          {
+            "targets": [
+              "desktop"
+            ],
+            "title": {
+              "en": "Multi-round reasoning timeline",
+              "zh": "多轮思考时间线"
+            },
+            "body": {
+              "en": "Preserved multi-round reasoning timeline and final state rendering.",
+              "zh": "保留多轮思考时间线与终态渲染。"
+            },
+            "refs": [
+              9565
+            ]
+          },
+          {
+            "targets": [
+              "desktop"
+            ],
+            "title": {
+              "en": "Transcript reader transactions",
+              "zh": "对话阅读滚动事务"
+            },
+            "body": {
+              "en": "Stabilized transcript reader transactions to prevent reverse jumps and blank frames.",
+              "zh": "稳定对话阅读滚动事务，防止反向跳跃和空白帧。"
+            },
+            "refs": [
+              9513
             ]
           }
         ]
