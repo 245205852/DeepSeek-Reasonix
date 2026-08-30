@@ -7,8 +7,8 @@
       "channel": "stable",
       "targetingVersion": 1,
       "title": {
-        "en": "Reasonix v1.34.0",
-        "zh": "Reasonix v1.34.0"
+        "en": "Reasonix 1.34.0",
+        "zh": "Reasonix 1.34.0"
       },
       "summary": {
         "en": "Security hardening for serve and git operations, MCP 2026 interactions and Apps, cache-stable capability controls, and multiple desktop stability fixes.",
@@ -28,7 +28,7 @@
             "en": "Documentation for subagent profiles.",
             "zh": "子代理配置文件文档。"
           },
-          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/d651a3a5909231992f1c0d828fef00c974c16625/docs/SUBAGENT_PROFILES.md"
+          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/ef25a7fe36367c057fc775af63036a45fee2554e/docs/SUBAGENT_PROFILES.md"
         },
         {
           "title": {
@@ -39,7 +39,7 @@
             "en": "Chinese documentation for subagent profiles.",
             "zh": "子代理配置文件中文文档。"
           },
-          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/d651a3a5909231992f1c0d828fef00c974c16625/docs/SUBAGENT_PROFILES.zh-CN.md"
+          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/ef25a7fe36367c057fc775af63036a45fee2554e/docs/SUBAGENT_PROFILES.zh-CN.md"
         },
         {
           "title": {
@@ -50,7 +50,7 @@
             "en": "Documentation for the task contract.",
             "zh": "任务契约文档。"
           },
-          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/d651a3a5909231992f1c0d828fef00c974c16625/docs/TASK_CONTRACT.md"
+          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/ef25a7fe36367c057fc775af63036a45fee2554e/docs/TASK_CONTRACT.md"
         },
         {
           "title": {
@@ -61,7 +61,7 @@
             "en": "Chinese documentation for the task contract.",
             "zh": "任务契约中文文档。"
           },
-          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/d651a3a5909231992f1c0d828fef00c974c16625/docs/TASK_CONTRACT.zh-CN.md"
+          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/ef25a7fe36367c057fc775af63036a45fee2554e/docs/TASK_CONTRACT.zh-CN.md"
         },
         {
           "title": {
@@ -72,7 +72,7 @@
             "en": "Documentation for the tool contract.",
             "zh": "工具契约文档。"
           },
-          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/d651a3a5909231992f1c0d828fef00c974c16625/docs/TOOL_CONTRACT.md"
+          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/ef25a7fe36367c057fc775af63036a45fee2554e/docs/TOOL_CONTRACT.md"
         },
         {
           "title": {
@@ -83,29 +83,29 @@
             "en": "Chinese documentation for the tool contract.",
             "zh": "工具契约中文文档。"
           },
-          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/d651a3a5909231992f1c0d828fef00c974c16625/docs/TOOL_CONTRACT.zh-CN.md"
+          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/ef25a7fe36367c057fc775af63036a45fee2554e/docs/TOOL_CONTRACT.zh-CN.md"
         },
         {
           "title": {
-            "en": "Capability Use Replay",
+            "en": "Capability Replay",
             "zh": "能力使用回放"
           },
           "body": {
-            "en": "Documentation for capability use replay evaluation.",
+            "en": "Documentation for capability replay evaluation.",
             "zh": "能力使用回放评估文档。"
           },
-          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/d651a3a5909231992f1c0d828fef00c974c16625/docs/eval/use-capability-replay.md"
+          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/ef25a7fe36367c057fc775af63036a45fee2554e/docs/eval/use-capability-replay.md"
         },
         {
           "title": {
-            "en": "Capability Use Replay (Chinese)",
+            "en": "Capability Replay (Chinese)",
             "zh": "能力使用回放（中文）"
           },
           "body": {
-            "en": "Chinese documentation for capability use replay evaluation.",
+            "en": "Chinese documentation for capability replay evaluation.",
             "zh": "能力使用回放评估中文文档。"
           },
-          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/d651a3a5909231992f1c0d828fef00c974c16625/docs/eval/use-capability-replay.zh-CN.md"
+          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/ef25a7fe36367c057fc775af63036a45fee2554e/docs/eval/use-capability-replay.zh-CN.md"
         },
         {
           "title": {
@@ -116,7 +116,7 @@
             "en": "Documentation for MCP 2026 Apps support.",
             "zh": "MCP 2026 Apps 支持文档。"
           },
-          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/d651a3a5909231992f1c0d828fef00c974c16625/docs/mcp-2026-apps.md"
+          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/ef25a7fe36367c057fc775af63036a45fee2554e/docs/mcp-2026-apps.md"
         }
       ],
       "highlights": [
@@ -131,7 +131,7 @@
             "zh": "MCP 2026 交互与 Apps"
           },
           "body": {
-            "en": "Added support for MCP 2026 multi-round interactions and desktop Apps, with sandboxed rendering.",
+            "en": "Added support for MCP 2026 multi-round interactions and Desktop Apps with sandboxed rendering.",
             "zh": "新增对 MCP 2026 多轮交互和桌面 Apps 的支持，并采用沙箱渲染。"
           },
           "refs": [
@@ -139,7 +139,7 @@
           ]
         },
         {
-          "kind": "improved",
+          "kind": "new",
           "targets": [
             "desktop",
             "cli"
@@ -163,14 +163,152 @@
           ],
           "title": {
             "en": "Serve and git security hardening",
-            "zh": "serve 与 git 安全加固"
+            "zh": "serve 与 git 操作安全加固"
           },
           "body": {
-            "en": "Enforced serve Host allowlist, preview confinement, and git clean-filter neutralization to close six security boundary gaps.",
-            "zh": "强制 serve Host 白名单、预览限制和 git clean 过滤器中和，封堵六个安全边界缺口。"
+            "en": "Closed six security-boundary gaps including DNS rebinding, preview confinement, and git clean-filter neutralization.",
+            "zh": "封堵六个安全边界缺口，包括 DNS 重绑定、预览越界读与 git clean 过滤器执行。"
           },
           "refs": [
             9599
+          ]
+        },
+        {
+          "kind": "fixed",
+          "targets": [
+            "desktop"
+          ],
+          "title": {
+            "en": "Stabilized transcript scrolling",
+            "zh": "稳定对话滚动"
+          },
+          "body": {
+            "en": "Fixed transcript reader transactions to prevent reverse jumps and blank frames during high-speed reasoning.",
+            "zh": "修复对话阅读滚动事务，防止高速推理时的反向跳跃和空白帧。"
+          },
+          "refs": [
+            9513
+          ]
+        },
+        {
+          "kind": "fixed",
+          "targets": [
+            "desktop"
+          ],
+          "title": {
+            "en": "Preserved multi-round reasoning timeline",
+            "zh": "修复多轮思考时间线"
+          },
+          "body": {
+            "en": "Fixed multi-round reasoning overwrites and tool timeline misalignment in the same turn.",
+            "zh": "修复同一 turn 内多次模型采样导致的多轮思考覆盖和工具时间线错位。"
+          },
+          "refs": [
+            9565
+          ]
+        },
+        {
+          "kind": "fixed",
+          "targets": [
+            "desktop"
+          ],
+          "title": {
+            "en": "Stabilized composer autosize scrolling",
+            "zh": "修复输入框自动高度抖动"
+          },
+          "body": {
+            "en": "Fixed composer autosize causing session viewport bounce by using an off-flow textarea mirror.",
+            "zh": "通过使用离流 textarea 镜像修复输入框自动高度导致的会话视口抖动。"
+          },
+          "refs": [
+            9568
+          ]
+        },
+        {
+          "kind": "fixed",
+          "targets": [
+            "desktop",
+            "cli"
+          ],
+          "title": {
+            "en": "Aligned model discovery with chat proxy policy",
+            "zh": "修复自定义供应商刷新正常但对话无响应"
+          },
+          "body": {
+            "en": "Fixed custom provider model discovery using a different network policy than chat, and made stream failures visible.",
+            "zh": "修复自定义供应商模型发现与聊天使用不同网络策略的问题，并使流失败可见。"
+          },
+          "refs": [
+            9563
+          ]
+        },
+        {
+          "kind": "fixed",
+          "targets": [
+            "desktop"
+          ],
+          "title": {
+            "en": "Kept remote project roots out of local topic state",
+            "zh": "远端项目根不再触碰本地 Topic 元数据"
+          },
+          "body": {
+            "en": "Fixed a user-visible toast error when opening remote projects on Windows due to invalid path components.",
+            "zh": "修复在 Windows 上打开远端项目时因无效路径组件导致的用户可见 toast 错误。"
+          },
+          "refs": [
+            9594
+          ]
+        },
+        {
+          "kind": "fixed",
+          "targets": [
+            "desktop"
+          ],
+          "title": {
+            "en": "Kept new-session blank row visible in remote groups",
+            "zh": "远端项目组新会话行稳定显示"
+          },
+          "body": {
+            "en": "Fixed the new-session blank row flashing and disappearing in remote workspace sidebars.",
+            "zh": "修复远端工作区侧边栏中新会话行闪烁后消失的问题。"
+          },
+          "refs": [
+            9595
+          ]
+        },
+        {
+          "kind": "fixed",
+          "targets": [
+            "desktop",
+            "cli"
+          ],
+          "title": {
+            "en": "Kept write path alive across in-place resume",
+            "zh": "修复 /resume 之后 /new 报写授权缺失"
+          },
+          "body": {
+            "en": "Fixed a 500 error when creating a new session after an in-place resume due to missing write authority.",
+            "zh": "修复原地 /resume 后创建新会话时因写授权缺失导致的 500 错误。"
+          },
+          "refs": [
+            9596
+          ]
+        },
+        {
+          "kind": "fixed",
+          "targets": [
+            "desktop"
+          ],
+          "title": {
+            "en": "Hardened Streamable HTTP compatibility",
+            "zh": "修复 Streamable HTTP 兼容性"
+          },
+          "body": {
+            "en": "Fixed MCP Streamable HTTP compatibility issues with stateless bridges and pinned the Go MCP SDK.",
+            "zh": "修复 MCP Streamable HTTP 与无状态桥接的兼容性问题，并固定 Go MCP SDK。"
+          },
+          "refs": [
+            9602
           ]
         }
       ],
@@ -186,15 +324,13 @@
               "zh": "MCP 2026 交互与 Apps"
             },
             "body": {
-              "en": "Added support for MCP 2026 multi-round interactions and desktop Apps, with sandboxed rendering.",
+              "en": "Added support for MCP 2026 multi-round interactions and Desktop Apps with sandboxed rendering.",
               "zh": "新增对 MCP 2026 多轮交互和桌面 Apps 的支持，并采用沙箱渲染。"
             },
             "refs": [
               9547
             ]
-          }
-        ],
-        "improved": [
+          },
           {
             "targets": [
               "desktop",
@@ -211,6 +347,56 @@
             "refs": [
               9569
             ]
+          }
+        ],
+        "improved": [
+          {
+            "targets": [
+              "desktop"
+            ],
+            "title": {
+              "en": "Stabilized transcript scrolling",
+              "zh": "稳定对话滚动"
+            },
+            "body": {
+              "en": "Improved transcript reader transactions to prevent reverse jumps and blank frames during high-speed reasoning.",
+              "zh": "改进对话阅读滚动事务，防止高速推理时的反向跳跃和空白帧。"
+            },
+            "refs": [
+              9513
+            ]
+          },
+          {
+            "targets": [
+              "desktop"
+            ],
+            "title": {
+              "en": "Preserved multi-round reasoning timeline",
+              "zh": "修复多轮思考时间线"
+            },
+            "body": {
+              "en": "Improved multi-round reasoning timeline rendering and tool timeline alignment.",
+              "zh": "改进多轮思考时间线渲染和工具时间线对齐。"
+            },
+            "refs": [
+              9565
+            ]
+          },
+          {
+            "targets": [
+              "desktop"
+            ],
+            "title": {
+              "en": "Stabilized composer autosize scrolling",
+              "zh": "修复输入框自动高度抖动"
+            },
+            "body": {
+              "en": "Improved composer autosize to prevent session viewport bounce.",
+              "zh": "改进输入框自动高度，防止会话视口抖动。"
+            },
+            "refs": [
+              9568
+            ]
           },
           {
             "targets": [
@@ -218,12 +404,12 @@
               "cli"
             ],
             "title": {
-              "en": "Model discovery and stream failure visibility",
-              "zh": "模型发现与流失败可见性"
+              "en": "Aligned model discovery with chat proxy policy",
+              "zh": "修复自定义供应商刷新正常但对话无响应"
             },
             "body": {
-              "en": "Aligned model discovery with the chat proxy policy and surfaced stream failures with clear notices.",
-              "zh": "将模型发现与聊天代理策略对齐，并通过清晰通知显示流失败。"
+              "en": "Improved custom provider model discovery to use the same network policy as chat, and made stream failures visible.",
+              "zh": "改进自定义供应商模型发现以使用与聊天相同的网络策略，并使流失败可见。"
             },
             "refs": [
               9563
@@ -234,12 +420,12 @@
               "desktop"
             ],
             "title": {
-              "en": "MCP Streamable HTTP compatibility",
-              "zh": "MCP Streamable HTTP 兼容性"
+              "en": "Hardened Streamable HTTP compatibility",
+              "zh": "修复 Streamable HTTP 兼容性"
             },
             "body": {
-              "en": "Hardened Streamable HTTP compatibility to prevent stateless bridges from blocking connections.",
-              "zh": "加固 Streamable HTTP 兼容性，防止无状态桥接阻塞连接。"
+              "en": "Improved MCP Streamable HTTP compatibility with stateless bridges and pinned the Go MCP SDK.",
+              "zh": "改进 MCP Streamable HTTP 与无状态桥接的兼容性，并固定 Go MCP SDK。"
             },
             "refs": [
               9602
@@ -253,11 +439,11 @@
             ],
             "title": {
               "en": "Serve and git security hardening",
-              "zh": "serve 与 git 安全加固"
+              "zh": "serve 与 git 操作安全加固"
             },
             "body": {
-              "en": "Enforced serve Host allowlist, preview confinement, and git clean-filter neutralization to close six security boundary gaps.",
-              "zh": "强制 serve Host 白名单、预览限制和 git clean 过滤器中和，封堵六个安全边界缺口。"
+              "en": "Fixed six security-boundary gaps including DNS rebinding, preview confinement, and git clean-filter neutralization.",
+              "zh": "修复六个安全边界缺口，包括 DNS 重绑定、预览越界读与 git clean 过滤器执行。"
             },
             "refs": [
               9599
@@ -265,48 +451,15 @@
           },
           {
             "targets": [
-              "desktop",
-              "cli"
-            ],
-            "title": {
-              "en": "Write path after in-place resume",
-              "zh": "原地恢复后的写入路径"
-            },
-            "body": {
-              "en": "Fixed /new returning write authorization missing after /resume on the same server.",
-              "zh": "修复同一服务器上 /resume 后 /new 报写授权缺失的问题。"
-            },
-            "refs": [
-              9596
-            ]
-          },
-          {
-            "targets": [
               "desktop"
             ],
             "title": {
-              "en": "New-session blank row in remote groups",
-              "zh": "远端项目组新会话行"
+              "en": "Kept remote project roots out of local topic state",
+              "zh": "远端项目根不再触碰本地 Topic 元数据"
             },
             "body": {
-              "en": "Kept the new-session blank row visible in remote project groups.",
-              "zh": "保持远端项目组中新会话空白行可见。"
-            },
-            "refs": [
-              9595
-            ]
-          },
-          {
-            "targets": [
-              "desktop"
-            ],
-            "title": {
-              "en": "Remote project roots and local topic state",
-              "zh": "远端项目根与本地 Topic 状态"
-            },
-            "body": {
-              "en": "Prevented remote project roots from touching local topic metadata, fixing an invalid path error on Windows.",
-              "zh": "防止远端项目根触碰本地 Topic 元数据，修复 Windows 上的无效路径错误。"
+              "en": "Fixed a user-visible toast error when opening remote projects on Windows due to invalid path components.",
+              "zh": "修复在 Windows 上打开远端项目时因无效路径组件导致的用户可见 toast 错误。"
             },
             "refs": [
               9594
@@ -317,47 +470,32 @@
               "desktop"
             ],
             "title": {
-              "en": "Composer autosize scrolling",
-              "zh": "输入框自动高度滚动"
+              "en": "Kept new-session blank row visible in remote groups",
+              "zh": "远端项目组新会话行稳定显示"
             },
             "body": {
-              "en": "Stabilized composer autosize scrolling to eliminate session jitter.",
-              "zh": "稳定输入框自动高度滚动，消除会话抖动。"
+              "en": "Fixed the new-session blank row flashing and disappearing in remote workspace sidebars.",
+              "zh": "修复远端工作区侧边栏中新会话行闪烁后消失的问题。"
             },
             "refs": [
-              9568
+              9595
             ]
           },
           {
             "targets": [
-              "desktop"
+              "desktop",
+              "cli"
             ],
             "title": {
-              "en": "Multi-round reasoning timeline",
-              "zh": "多轮思考时间线"
+              "en": "Kept write path alive across in-place resume",
+              "zh": "修复 /resume 之后 /new 报写授权缺失"
             },
             "body": {
-              "en": "Preserved multi-round reasoning timeline and final state rendering.",
-              "zh": "保留多轮思考时间线与终态渲染。"
+              "en": "Fixed a 500 error when creating a new session after an in-place resume due to missing write authority.",
+              "zh": "修复原地 /resume 后创建新会话时因写授权缺失导致的 500 错误。"
             },
             "refs": [
-              9565
-            ]
-          },
-          {
-            "targets": [
-              "desktop"
-            ],
-            "title": {
-              "en": "Transcript reader transactions",
-              "zh": "对话阅读滚动事务"
-            },
-            "body": {
-              "en": "Stabilized transcript reader transactions to prevent reverse jumps and blank frames.",
-              "zh": "稳定对话阅读滚动事务，防止反向跳跃和空白帧。"
-            },
-            "refs": [
-              9513
+              9596
             ]
           }
         ]
