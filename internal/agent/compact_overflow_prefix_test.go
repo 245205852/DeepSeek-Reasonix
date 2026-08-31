@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"reasonix/internal/provider"
@@ -112,5 +113,59 @@ func TestPressureSummaryCappedByConfiguredWindowWithoutAdmission(t *testing.T) {
 	req := prov.requests[0]
 	if got, max := a.estimatedRequestTokens(req), a.effectiveContextWindow()-outputBudgetReserve-256; got > max {
 		t.Fatalf("summary request tokens = %d, exceeds configured-window cap %d", got, max)
+	}
+}
+
+func TestPressureSummaryCappedByLearnedWindowAfterSessionReset(t *testing.T) {
+	sess := foldableSessionOverForce(120)
+	prov := &opaqueWindowProvider{}
+	a := agentOverForceWindow(t, prov, sess, 60_000)
+	a.contextWindow = 0
+	a.sess.output.learned.Store(&learnedContextBudget{windowTokens: 60_000})
+	a.storeAdmission(contextAdmission{ObservedWindow: 60_000})
+	a.SetSession(sess)
+	if got := a.lastAdmission().ObservedWindow; got != 0 {
+		t.Fatalf("session reset retained observed window %d", got)
+	}
+
+	msgs := sess.Snapshot()
+	head, plannedEnd, ok := a.planFoldRegion(msgs, true)
+	if !ok {
+		t.Fatal("fixture has no foldable prefix")
+	}
+	safeEnd := a.maximumSafeSummaryPrefixEnd(msgs, head, plannedEnd, "")
+	if safeEnd <= head || safeEnd >= plannedEnd {
+		t.Fatalf("safe fold end = %d, want a non-empty prefix smaller than planned end %d", safeEnd, plannedEnd)
+	}
+	request := a.summaryRequest(msgs[head:safeEnd], "")
+	if got, max := a.estimatedRequestTokens(request), a.effectiveContextWindow()-outputBudgetReserve-256; got > max {
+		t.Fatalf("summary request tokens = %d, exceeds learned-window cap %d", got, max)
+	}
+}
+
+func TestPressureNoSafePrefixRecordsBudgetReason(t *testing.T) {
+	const window = 10_000
+	prov := &opaqueWindowProvider{}
+	sess := &Session{Messages: []provider.Message{
+		{Role: provider.RoleSystem, Content: "sys"},
+		{Role: provider.RoleUser, Content: strings.Repeat("x", 20_000)},
+		{Role: provider.RoleAssistant, Content: strings.Repeat("y", 12_000)},
+		{Role: provider.RoleUser, Content: "recent"},
+	}}
+	a := agentOverForceWindow(t, prov, sess, window)
+	est := a.estimatedVisibleRequestTokens(a.modelVisibleMessages())
+	if est < a.compactTrigger() || est >= a.hardInputCeiling() {
+		t.Fatalf("fixture tokens = %d, want pressure range [%d, %d)", est, a.compactTrigger(), a.hardInputCeiling())
+	}
+
+	if err := prepareContext(context.Background(), a, CompactionTriggerPressure); err != nil {
+		t.Fatalf("pressure maintenance should soft-skip: %v", err)
+	}
+	if len(prov.requests) != 0 {
+		t.Fatalf("summary requests = %d, want none when no prefix fits", len(prov.requests))
+	}
+	receipt := a.sess.compactionState.LastReceipt
+	if receipt == nil || receipt.Status != "blocked" || !strings.Contains(receipt.Reason, "no balanced prefix leaves enough room") {
+		t.Fatalf("receipt = %+v, want precise summary-budget reason", receipt)
 	}
 }
