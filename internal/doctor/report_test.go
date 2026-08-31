@@ -105,6 +105,37 @@ func TestCollectReportDoesNotRequireAPIKey(t *testing.T) {
 	}
 }
 
+func TestCollectRecoveryLifecycleAggregatesWithoutLeakingSessionData(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "private-session.conflicts.jsonl")
+	body := strings.Join([]string{
+		`{"outcome":"forked_recovery_branch","occurrence":1,"topic_title":"secret title","path":"/private/user/session.jsonl"}`,
+		`{"outcome":"forked_file_lock_recovery","occurrence":2,"repeated_in_process":true,"preview":"secret message"}`,
+		`{"outcome":"adopted_newer_disk_transcript","occurrence":3,"repeated_in_process":true}`,
+		`not-json`,
+	}, "\n") + "\n"
+	if err := os.WriteFile(logPath, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	report := collectSessions(dir)
+	if report.Recovery.Events != 3 || report.Recovery.PhysicalVersionsCreated != 2 ||
+		report.Recovery.DiskAdoptions != 1 || report.Recovery.ShutdownRecoveries != 1 ||
+		report.Recovery.RepeatedEvents != 2 || report.Recovery.MaxTopicOccurrences != 3 ||
+		report.Recovery.InvalidRecords != 1 {
+		t.Fatalf("recovery lifecycle = %+v", report.Recovery)
+	}
+	raw, err := json.Marshal(report.Recovery)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, secret := range []string{"secret title", "secret message", "/private/user", "private-session"} {
+		if strings.Contains(string(raw), secret) {
+			t.Fatalf("aggregate recovery diagnostics leaked %q: %s", secret, raw)
+		}
+	}
+}
+
 func TestRenderTextSurfacesWarningsUpTop(t *testing.T) {
 	text := RenderText(Report{Warnings: []string{"config reasonix.toml: parse boom"}})
 	w := strings.Index(text, "parse boom")

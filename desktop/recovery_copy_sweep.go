@@ -43,7 +43,7 @@ func (a *App) sweepExcessRecoveryCopiesIn(catalog *sessioncatalog.Catalog, targe
 	groups, err := catalog.ListRecoveryGroups(ctx, target.Path)
 	cancel()
 	if err != nil {
-		slog.Warn("desktop: list recovery lineages for copy sweep", "dir", target.Path, "err", err)
+		slog.Warn("desktop: list recovery lineages for copy sweep", "err", err)
 		return 0
 	}
 	moved := 0
@@ -51,7 +51,7 @@ func (a *App) sweepExcessRecoveryCopiesIn(catalog *sessioncatalog.Catalog, targe
 		moved += a.sweepRecoveryGroupCopies(group, now, grace)
 	}
 	if moved > 0 {
-		slog.Info("desktop: moved excess recovery copies to the session trash", "dir", target.Path, "count", moved)
+		slog.Info("desktop: moved excess recovery copies to the session trash", "count", moved)
 	}
 	return moved
 }
@@ -107,10 +107,10 @@ func (a *App) trashSweptRecoveryCopy(group sessioncatalog.RecoveryGroup, path st
 		err = agent.TrashCoveredRecoveryBranch(path, group.Directory)
 	}
 	if err != nil {
-		slog.Debug("desktop: sweep skipped recovery copy", "path", path, "group", group.ID, "err", err)
+		slog.Debug("desktop: sweep skipped recovery copy", "reason", err)
 		return false
 	}
 	a.removeSessionCatalogPath(path, "recovery_copy_sweep")
-	slog.Info("desktop: swept excess recovery copy to trash", "path", path, "group", group.ID)
+	slog.Info("desktop: swept excess recovery copy to trash")
 	return true
 }

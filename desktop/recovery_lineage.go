@@ -9,12 +9,16 @@ import (
 )
 
 type RecoveryLineageMember struct {
-	Path      string `json:"path"`
-	Role      string `json:"role"`
-	Canonical bool   `json:"canonical"`
-	Turns     int    `json:"turns"`
-	Open      bool   `json:"open"`
-	Running   bool   `json:"running"`
+	Path           string `json:"path"`
+	Role           string `json:"role"`
+	Canonical      bool   `json:"canonical"`
+	Turns          int    `json:"turns"`
+	Open           bool   `json:"open"`
+	Running        bool   `json:"running"`
+	VersionNote    string `json:"versionNote,omitempty"`
+	Preview        string `json:"preview,omitempty"`
+	CreatedAt      int64  `json:"createdAt,omitempty"`
+	LastActivityAt int64  `json:"lastActivityAt,omitempty"`
 }
 
 type RecoveryLineageView struct {
@@ -57,6 +61,10 @@ type RecoveryCleanupResult struct {
 
 func (a *App) GetRecoveryLineage(key ProjectTopicKey) RecoveryLineageView {
 	out := RecoveryLineageView{Members: []RecoveryLineageMember{}}
+	if a.catalogRebuilding.Load() {
+		out.State = "repairing"
+		return out
+	}
 	catalog := a.sessionCatalog.Load()
 	if catalog == nil {
 		return out
@@ -79,20 +87,33 @@ func (a *App) GetRecoveryLineage(key ProjectTopicKey) RecoveryLineageView {
 	if err != nil {
 		return out
 	}
-	members := []sessioncatalog.SessionRecord{}
 	for _, group := range groups {
 		if group.ID == groupID {
-			members = group.Members
 			out.State = group.State
 			break
 		}
 	}
 	out.GroupID = groupID
 	_, overlays := a.catalogRuntimeOverlays()
-	for _, record := range members {
+	for _, record := range topic.Sessions {
+		if record.RecoveryGroupID != groupID && (record.Recovered || agent.BranchID(record.Path) != groupID) {
+			continue
+		}
 		overlay := overlays[sessionRuntimeKey(record.Path)]
-		out.Members = append(out.Members, RecoveryLineageMember{Path: record.Path, Role: record.RecoveryRole,
-			Canonical: record.RecoveryCanonical, Turns: record.Turns, Open: overlay.open, Running: overlay.running})
+		versionNote := record.CustomTitle
+		if meta, ok, err := agent.LoadBranchMeta(record.Path); err == nil && ok {
+			versionNote = meta.CustomTitle
+		}
+		canonical := record.RecoveryCanonical
+		if topic.RepresentativePath != "" {
+			canonical = sessionRuntimeKey(record.Path) == sessionRuntimeKey(topic.RepresentativePath)
+		}
+		out.Members = append(out.Members, RecoveryLineageMember{
+			Path: record.Path, Role: record.RecoveryRole, Canonical: canonical,
+			Turns: record.Turns, Open: overlay.open, Running: overlay.running,
+			VersionNote: versionNote, Preview: record.Preview,
+			CreatedAt: record.CreatedAt, LastActivityAt: record.LastActivityAt,
+		})
 		out.BranchCount++
 		if record.RecoveryRole == sessioncatalog.RecoveryRoleDiverged {
 			out.Unresolved++
@@ -101,13 +122,33 @@ func (a *App) GetRecoveryLineage(key ProjectTopicKey) RecoveryLineageView {
 			out.CleanupEligible++
 		}
 	}
-	if out.State == "" {
+	if topic.RecoveryState == "preferred" {
+		out.State = topic.RecoveryState
+	} else if out.State == "" {
 		out.State = topic.RecoveryState
 	}
 	if out.State == "preferred" {
 		out.Unresolved = 0
 	}
+	// The lower-level group API historically calls an all-covered lineage
+	// "repairing". Expose its stable state so event consumers can clear pending
+	// recovery notifications without polling forever.
+	if recoveryLineageIsCovered(out) {
+		out.State = "covered"
+	}
 	return out
+}
+
+func recoveryLineageIsCovered(view RecoveryLineageView) bool {
+	if view.State != "repairing" || view.CleanupEligible == 0 {
+		return false
+	}
+	for _, member := range view.Members {
+		if member.Role != sessioncatalog.RecoveryRoleNormal && member.Role != sessioncatalog.RecoveryRoleCoveredCopy {
+			return false
+		}
+	}
+	return true
 }
 
 // ChooseRecoveryBranch changes only the default open target. Diverged content
@@ -134,15 +175,23 @@ func (a *App) ChooseRecoveryBranch(req RecoveryPreferenceRequest) error {
 	}
 	paths := []string{}
 	chosen := ""
+	foundGroup := false
 	for _, group := range groups {
-		if group.ID != groupID {
+		if group.ID == groupID {
+			foundGroup = true
+			break
+		}
+	}
+	if !foundGroup {
+		return errors.New("recovery lineage is unavailable")
+	}
+	for _, member := range topic.Sessions {
+		if member.RecoveryGroupID != groupID && (member.Recovered || agent.BranchID(member.Path) != groupID) {
 			continue
 		}
-		for _, member := range group.Members {
-			paths = append(paths, member.Path)
-			if sessionRuntimeKey(member.Path) == sessionRuntimeKey(req.Path) && member.RecoveryRole != sessioncatalog.RecoveryRoleCoveredCopy {
-				chosen = member.Path
-			}
+		paths = append(paths, member.Path)
+		if sessionRuntimeKey(member.Path) == sessionRuntimeKey(req.Path) && member.RecoveryRole != sessioncatalog.RecoveryRoleCoveredCopy {
+			chosen = member.Path
 		}
 	}
 	if chosen == "" {

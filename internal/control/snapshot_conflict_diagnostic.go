@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"reasonix/internal/agent"
@@ -26,11 +27,18 @@ type snapshotConflictDiagnostic struct {
 	DiskRevision     int64     `json:"disk_revision,omitempty"`
 	RecoveryBranchID string    `json:"recovery_branch_id,omitempty"`
 	ExistingRecovery bool      `json:"existing_recovery,omitempty"`
+	Occurrence       int       `json:"occurrence,omitempty"`
+	Repeated         bool      `json:"repeated_in_process,omitempty"`
 }
 
 // conflictDiagDedup bounds repeated conflict event log lines for the same
 // {path, disk revision} key within a process.
 var conflictDiagDedup sync.Map // key -> struct{}
+
+// conflictDiagOccurrences counts recovery/conflict outcomes by logical topic
+// for this process. Only the count is persisted; the topic ID is never written
+// to the diagnostic record.
+var conflictDiagOccurrences sync.Map // logical topic key -> *atomic.Int64
 
 func appendSnapshotConflictDiagnostic(path, mode, outcome string, saveErr error, recoveryPath string, existing bool) {
 	path = strings.TrimSpace(path)
@@ -51,6 +59,16 @@ func appendSnapshotConflictDiagnostic(path, mode, outcome string, saveErr error,
 		BranchID: agent.BranchID(path),
 		Mode:     mode,
 		Outcome:  outcome,
+	}
+	if diagnosticCreatesPhysicalRecovery(outcome) {
+		logicalKey := rec.BranchID
+		if meta, ok, err := agent.LoadBranchMeta(path); err == nil && ok && strings.TrimSpace(meta.TopicID) != "" {
+			logicalKey = strings.Join([]string{meta.Scope, meta.WorkspaceRoot, meta.TopicID}, "\x00")
+		}
+		value, _ := conflictDiagOccurrences.LoadOrStore(logicalKey, &atomic.Int64{})
+		occurrence := int(value.(*atomic.Int64).Add(1))
+		rec.Occurrence = occurrence
+		rec.Repeated = occurrence > 1
 	}
 	if conflict != nil {
 		rec.Kind = string(conflict.Kind)
@@ -77,4 +95,13 @@ func appendSnapshotConflictDiagnostic(path, mode, outcome string, saveErr error,
 	}
 	defer f.Close()
 	_, _ = f.Write(append(data, '\n'))
+}
+
+func diagnosticCreatesPhysicalRecovery(outcome string) bool {
+	switch strings.TrimSpace(outcome) {
+	case "moved_to_stable_recovery", "forked_recovery_branch", "forked_file_lock_recovery":
+		return true
+	default:
+		return false
+	}
 }
