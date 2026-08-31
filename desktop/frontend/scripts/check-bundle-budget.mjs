@@ -291,7 +291,8 @@ const rawInitialBytes = [...initialJS, ...initialCSS, ...appShellCSS]
 // the smallest one-decimal headroom without widening unrelated chunk ceilings.
 // Latest-base transcript settle ownership brings the measured path to
 // 2452.773 KiB; isolated conversation forks bring the combined tree to
-// 2454.679 KiB. Retain 0.021 KiB with the smallest one-decimal ratchet.
-const rawInitialBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 2_454.7 : 2_454.7;
+// 2454.719 KiB on the release toolchain. Retain 0.081 KiB with the smallest
+// one-decimal ratchet.
+const rawInitialBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 2_454.8 : 2_454.8;
 assertBudget("initial raw JavaScript and CSS", rawInitialBytes, rawInitialBudgetKiB * 1024);
 assertBudget("largest initial JavaScript chunk raw", largestInitialJSRaw, 1_000 * 1024);
