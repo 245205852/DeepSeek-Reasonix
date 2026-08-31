@@ -493,10 +493,6 @@ func mapKeys(values map[string]struct{}) []string {
 	}
 	return out
 }
-func (c *Catalog) listTopicSessions(ctx context.Context, key TopicKey) ([]SessionRecord, error) {
-	key.Scope, key.WorkspaceRoot = normalizeScope(key.Scope, key.WorkspaceRoot)
-	return c.listTopicSessionsByRootKey(ctx, key, c.workspaceRootKey(key.Scope, key.WorkspaceRoot))
-}
 
 func (c *Catalog) listTopicSessionsByRootKey(ctx context.Context, key TopicKey, rootKey string) ([]SessionRecord, error) {
 	out := []SessionRecord{}
