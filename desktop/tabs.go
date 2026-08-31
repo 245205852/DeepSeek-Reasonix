@@ -6177,8 +6177,7 @@ func (a *App) handleTabSessionRecovered(tab *WorkspaceTab) func(control.SessionR
 				_ = saveTelemetry(info.RecoveryPath+".telemetry.json", tab.telemetrySnapshot())
 			}
 		}
-		a.emitProjectTreeChangedForSessionDirs(sessionDirectoryForPath(info.RecoveryPath))
-		a.emitRuntimeEvent("session:recovered", sessionRecoveryEvent{
+		a.emitSessionRecoveredAndRefresh(sessionDirectoryForPath(info.RecoveryPath), sessionRecoveryEvent{
 			OriginalPath:     info.OriginalPath,
 			RecoveryPath:     info.RecoveryPath,
 			Scope:            scope,
@@ -6193,6 +6192,13 @@ func (a *App) handleTabSessionRecovered(tab *WorkspaceTab) func(control.SessionR
 		a.invalidatePromptHistoryCache()
 		return nil
 	}
+}
+
+// emitSessionRecoveredAndRefresh registers the frontend pending item before a
+// catalog reconcile can publish the revision that classifies it.
+func (a *App) emitSessionRecoveredAndRefresh(dir string, recovered sessionRecoveryEvent) {
+	a.emitRuntimeEvent("session:recovered", recovered)
+	a.emitProjectTreeChangedForSessionDirs(dir)
 }
 
 func setTopicTitle(workspaceRoot, topicID, title string) error {

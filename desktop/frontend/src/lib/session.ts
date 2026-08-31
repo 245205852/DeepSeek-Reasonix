@@ -1,4 +1,4 @@
-import type { ProjectNode, SessionMeta } from "./types";
+import type { HistorySearchHit, ProjectNode, SessionMeta } from "./types";
 
 export function sessionActivityTime(session: SessionMeta): number {
   return session.lastActivityAt ?? session.modTime;
@@ -6,6 +6,12 @@ export function sessionActivityTime(session: SessionMeta): number {
 
 export function historySessionDisplayTitle(session: Pick<SessionMeta, "preview" | "title" | "topicTitle">, fallback: string): string {
   return session.topicTitle?.trim() || session.title?.trim() || session.preview?.trim() || fallback;
+}
+
+export function historySearchHitDisplayTitle(
+  hit: Pick<HistorySearchHit, "sessionPath" | "sessionTitle" | "topicTitle">,
+): string {
+  return hit.topicTitle?.trim() || hit.sessionTitle?.trim() || hit.sessionPath;
 }
 
 export function paletteSessionDisplayTitle(session: Pick<SessionMeta, "preview" | "title" | "topicTitle">, fallback: string): string {

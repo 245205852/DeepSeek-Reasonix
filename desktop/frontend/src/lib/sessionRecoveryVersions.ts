@@ -44,7 +44,9 @@ export function userVisibleRecoveryVersions(view: Pick<RecoveryLineageView, "mem
 
 export function recoveryLineageResolution(view: RecoveryLineageView): RecoveryLineageResolution {
   if (!view.groupId || view.state === "repairing") return "wait";
-  if (view.state === "diverged" && view.unresolved > 0 && userVisibleRecoveryVersions(view).length > 1) return "notify";
+  const visibleVersions = userVisibleRecoveryVersions(view);
+  if (view.state === "diverged" && view.unresolved > 0 && visibleVersions.length > 1) return "notify";
+  if (visibleVersions.length <= 1 && asArray(view.members).length > 0) return "clear";
   if (view.state === "covered" || view.state === "adopted" || view.state === "preferred") return "clear";
   if (view.unresolved === 0 && asArray(view.members).length > 0) return "clear";
   return "wait";
@@ -59,7 +61,7 @@ export function pendingSessionRecovery(event: SessionRecoveryEvent): PendingSess
   const parent = text(event.recoveryParentId);
   return {
     eventKey: [scope, workspaceRoot, topicId, parent, recoveryPath].join("\u0000"),
-    topic: { scope, workspaceRoot: workspaceRoot || undefined, topicId },
+    topic: { scope, workspaceRoot: workspaceRoot || undefined, topicId, path: recoveryPath },
   };
 }
 

@@ -32,8 +32,9 @@ type snapshotConflictDiagnostic struct {
 }
 
 // conflictDiagDedup bounds repeated conflict event log lines for the same
-// {path, disk revision} key within a process.
-var conflictDiagDedup sync.Map // key -> struct{}
+// {path, disk revision} key within a process. Physical recovery outcomes keep
+// the first repeat so doctor can observe the concurrent-writer signal.
+var conflictDiagDedup sync.Map // key -> *atomic.Int64
 
 // conflictDiagOccurrences counts recovery/conflict outcomes by logical topic
 // for this process. Only the count is persisted; the topic ID is never written
@@ -50,17 +51,14 @@ func appendSnapshotConflictDiagnostic(path, mode, outcome string, saveErr error,
 	if errors.As(saveErr, &conflict) && conflict != nil {
 		diskRev = conflict.DiskRevision
 	}
-	dedupKey := path + "\x00" + outcome + "\x00" + strconv.FormatInt(diskRev, 10)
-	if _, loaded := conflictDiagDedup.LoadOrStore(dedupKey, struct{}{}); loaded {
-		return
-	}
 	rec := snapshotConflictDiagnostic{
 		At:       time.Now(),
 		BranchID: agent.BranchID(path),
 		Mode:     mode,
 		Outcome:  outcome,
 	}
-	if diagnosticCreatesPhysicalRecovery(outcome) {
+	createsPhysicalRecovery := diagnosticCreatesPhysicalRecovery(outcome)
+	if createsPhysicalRecovery {
 		logicalKey := rec.BranchID
 		if meta, ok, err := agent.LoadBranchMeta(path); err == nil && ok && strings.TrimSpace(meta.TopicID) != "" {
 			logicalKey = strings.Join([]string{meta.Scope, meta.WorkspaceRoot, meta.TopicID}, "\x00")
@@ -69,6 +67,16 @@ func appendSnapshotConflictDiagnostic(path, mode, outcome string, saveErr error,
 		occurrence := int(value.(*atomic.Int64).Add(1))
 		rec.Occurrence = occurrence
 		rec.Repeated = occurrence > 1
+	}
+	dedupKey := path + "\x00" + outcome + "\x00" + strconv.FormatInt(diskRev, 10)
+	dedupValue, _ := conflictDiagDedup.LoadOrStore(dedupKey, &atomic.Int64{})
+	dedupOccurrence := dedupValue.(*atomic.Int64).Add(1)
+	dedupLimit := int64(1)
+	if createsPhysicalRecovery {
+		dedupLimit = 2
+	}
+	if dedupOccurrence > dedupLimit {
+		return
 	}
 	if conflict != nil {
 		rec.Kind = string(conflict.Kind)

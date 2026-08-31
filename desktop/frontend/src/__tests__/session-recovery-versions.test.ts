@@ -35,6 +35,12 @@ assert.equal(pendingRecoveryMatchesRoots({ eventKey: "e", topic: { scope: "proje
 assert.equal(recoveryLineageResolution(view({ state: "adopted", unresolved: 0 })), "clear", "adopted lineages stay silent");
 assert.equal(recoveryLineageResolution(view({ state: "preferred", unresolved: 0 })), "clear", "preferred lineages stay silent");
 assert.equal(recoveryLineageResolution(view({ state: "", unresolved: 0 })), "clear", "classified covered lineages stay silent");
+assert.equal(recoveryLineageResolution(view({
+  branchCount: 1,
+  unresolved: 1,
+  cleanupEligible: 0,
+  members: [{ path: "/s/only.jsonl", role: "diverged", canonical: true, turns: 4, open: false, running: false }],
+})), "clear", "a unique rootless recovery version clears instead of leaking a pending check");
 
 const event: SessionRecoveryEvent = {
   recoveryPath: "/s/fork.jsonl",
@@ -44,7 +50,9 @@ const event: SessionRecoveryEvent = {
   recoveryParentId: "root",
   recoveryReason: "snapshot_conflict",
 };
-assert.ok(pendingSessionRecovery(event), "valid recovery events produce a pending catalog check");
+const pending = pendingSessionRecovery(event);
+assert.ok(pending, "valid recovery events produce a pending catalog check");
+assert.equal(pending?.topic.path, event.recoveryPath, "pending checks bind lineage reads to the recovered physical group");
 assert.equal(pendingSessionRecovery({ recoveryPath: "/s/fork.jsonl" }), null, "legacy events without a topic cannot be misrouted");
 assert.equal(sanitizedRecoveryReason("snapshot_conflict"), "snapshot_conflict");
 assert.equal(sanitizedRecoveryReason("shutdown file lock"), "shutdown_lock");

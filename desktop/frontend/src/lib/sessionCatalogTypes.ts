@@ -49,6 +49,7 @@ export interface ProjectTopicKey {
   scope: "global" | "project" | string;
   workspaceRoot?: string;
   topicId: string;
+  path?: string;
 }
 
 export interface ProjectTreeChangedV2 {

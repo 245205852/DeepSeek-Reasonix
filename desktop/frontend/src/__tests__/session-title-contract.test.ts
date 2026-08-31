@@ -1,6 +1,7 @@
 // Run: tsx src/__tests__/session-title-contract.test.ts
 
 import {
+  historySearchHitDisplayTitle,
   historySessionDisplayTitle,
   paletteSessionDisplayTitle,
   paletteSessionHint,
@@ -52,6 +53,24 @@ function session(overrides: Partial<SessionMeta> = {}): SessionMeta {
 }
 
 console.log("\nsession title contracts");
+
+{
+  const hit = {
+    sessionPath: "/sessions/version.jsonl",
+    sessionTitle: "Private version note",
+    topicTitle: "Shared topic",
+  };
+  eq(
+    historySearchHitDisplayTitle(hit),
+    "Shared topic",
+    "History content search keeps physical-version notes out of the logical title",
+  );
+  eq(
+    historySearchHitDisplayTitle({ ...hit, topicTitle: "" }),
+    "Private version note",
+    "Legacy search hits without a topic title retain the session-title fallback",
+  );
+}
 
 {
   const item = session();

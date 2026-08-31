@@ -57,6 +57,7 @@ export function SessionRecoveryVersionsHost({ sessions, onResumeSession, onRecov
       scope: session.scope || (session.workspaceRoot ? "project" : "global"),
       workspaceRoot: session.workspaceRoot || undefined,
       topicId: session.topicId,
+      path: session.path,
     }, view);
   }, [showVersions]);
   useEffect(() => bindSessionVersionInspector(inspectVersions), [inspectVersions]);

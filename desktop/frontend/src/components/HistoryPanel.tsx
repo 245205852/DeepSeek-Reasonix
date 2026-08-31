@@ -3,7 +3,7 @@ import type { MouseEvent as ReactMouseEvent } from "react";
 import { Archive, GitBranch, Pencil, Search, Trash2, RotateCcw } from "lucide-react";
 import { app } from "../lib/bridge";
 import { t, useT } from "../lib/i18n";
-import { historySessionDisplayTitle, sessionActivityTime } from "../lib/session";
+import { historySearchHitDisplayTitle, historySessionDisplayTitle, sessionActivityTime } from "../lib/session";
 import type { HistoryMessage, HistorySearchContextLine, HistorySearchHit, RecoveryLineageView, SessionMeta } from "../lib/types";
 import { historyMessagesToItems, type Item } from "../lib/useController";
 import { useHistoryCatalog } from "../lib/useHistoryCatalog";
@@ -227,6 +227,7 @@ export function HistoryPanel({
       scope: selectedSession.scope || "global",
       workspaceRoot: selectedSession.workspaceRoot || undefined,
       topicId: selectedSession.topicId,
+      path: selectedSession.path,
     };
     void app.GetRecoveryLineage(topic)
       .then((value) => {
@@ -573,7 +574,7 @@ export function HistoryPanel({
                   {searchHits.map((hit) => (
                     <div className="hist-item" key={`${hit.sessionPath}:${hit.messageIndex}:${hit.kind}:${hit.toolName ?? ""}`}>
                       <button className="hist-item__main" type="button" onClick={() => void loadSearchContext(hit)}>
-                        <div className="hist-item__preview">{hit.sessionTitle || hit.topicTitle || hit.sessionPath}</div>
+                        <div className="hist-item__preview">{historySearchHitDisplayTitle(hit)}</div>
                         <div className="hist-item__meta">
                           <span className="hist-item__badge">{hit.role} · {hit.kind}</span>
                           {hit.toolName && <span className="hist-item__scope">{hit.toolName}</span>}
@@ -630,7 +631,7 @@ export function HistoryPanel({
               <>
                 <div className="history-preview__head">
                   <div className="history-preview__copy">
-                    <div className="history-preview__title">{searchContext.hit.sessionTitle || searchContext.hit.topicTitle || searchContext.hit.sessionPath}</div>
+                    <div className="history-preview__title">{historySearchHitDisplayTitle(searchContext.hit)}</div>
                     <div className="history-preview__meta">{searchContext.hit.role} · {searchContext.hit.kind}</div>
                   </div>
                 </div>

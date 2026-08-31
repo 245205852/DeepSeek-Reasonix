@@ -83,6 +83,9 @@ type ProjectTopicKey struct {
 	Scope         string `json:"scope"`
 	WorkspaceRoot string `json:"workspaceRoot,omitempty"`
 	TopicID       string `json:"topicId"`
+	// Path optionally binds topic-wide recovery actions to one physical lineage.
+	// Older frontends omit it and remain compatible when the topic has one group.
+	Path string `json:"path,omitempty"`
 }
 
 type ProjectTopicPage struct {

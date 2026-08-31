@@ -73,30 +73,36 @@ func (a *App) GetRecoveryLineage(key ProjectTopicKey) RecoveryLineageView {
 	if err != nil || !ok {
 		return out
 	}
-	groupID, directory := "", ""
-	for _, record := range topic.Sessions {
-		if record.Recovered && record.RecoveryGroupID != "" {
-			groupID, directory = record.RecoveryGroupID, filepath.Dir(record.Path)
-			break
-		}
-	}
-	if groupID == "" || directory == "" {
+	groupID, directory, ok := recoveryLineageSelection(topic, key.Path)
+	if !ok {
 		return out
 	}
 	groups, err := catalog.ListRecoveryGroups(a.bootContext(), directory)
 	if err != nil {
 		return out
 	}
+	groupFound := false
 	for _, group := range groups {
 		if group.ID == groupID {
 			out.State = group.State
+			groupFound = true
 			break
 		}
 	}
+	if !groupFound {
+		return RecoveryLineageView{Members: []RecoveryLineageMember{}}
+	}
 	out.GroupID = groupID
 	_, overlays := a.catalogRuntimeOverlays()
+	representativeInGroup := false
 	for _, record := range topic.Sessions {
-		if record.RecoveryGroupID != groupID && (record.Recovered || agent.BranchID(record.Path) != groupID) {
+		if recoveryRecordBelongsToGroup(record, groupID) && sameRecoveryLineagePath(record.Path, topic.RepresentativePath) {
+			representativeInGroup = true
+			break
+		}
+	}
+	for _, record := range topic.Sessions {
+		if !recoveryRecordBelongsToGroup(record, groupID) {
 			continue
 		}
 		overlay := overlays[sessionRuntimeKey(record.Path)]
@@ -105,8 +111,8 @@ func (a *App) GetRecoveryLineage(key ProjectTopicKey) RecoveryLineageView {
 			versionNote = meta.CustomTitle
 		}
 		canonical := record.RecoveryCanonical
-		if topic.RepresentativePath != "" {
-			canonical = sessionRuntimeKey(record.Path) == sessionRuntimeKey(topic.RepresentativePath)
+		if representativeInGroup {
+			canonical = sameRecoveryLineagePath(record.Path, topic.RepresentativePath)
 		}
 		out.Members = append(out.Members, RecoveryLineageMember{
 			Path: record.Path, Role: record.RecoveryRole, Canonical: canonical,
@@ -122,9 +128,7 @@ func (a *App) GetRecoveryLineage(key ProjectTopicKey) RecoveryLineageView {
 			out.CleanupEligible++
 		}
 	}
-	if topic.RecoveryState == "preferred" {
-		out.State = topic.RecoveryState
-	} else if out.State == "" {
+	if out.State == "" {
 		out.State = topic.RecoveryState
 	}
 	if out.State == "preferred" {
@@ -137,6 +141,59 @@ func (a *App) GetRecoveryLineage(key ProjectTopicKey) RecoveryLineageView {
 		out.State = "covered"
 	}
 	return out
+}
+
+func recoveryLineageSelection(topic sessioncatalog.TopicRecord, selectedPath string) (string, string, bool) {
+	if sessioncatalog.PathIdentityKey(selectedPath) != "" {
+		for _, record := range topic.Sessions {
+			if !sameRecoveryLineagePath(record.Path, selectedPath) {
+				continue
+			}
+			groupID := record.RecoveryGroupID
+			if !record.Recovered {
+				groupID = agent.BranchID(record.Path)
+			}
+			if groupID != "" && recoveryTopicHasGroup(topic, groupID) {
+				return groupID, filepath.Dir(record.Path), true
+			}
+			return "", "", false
+		}
+		return "", "", false
+	}
+
+	groupID, directory := "", ""
+	for _, record := range topic.Sessions {
+		if !record.Recovered || record.RecoveryGroupID == "" {
+			continue
+		}
+		if groupID != "" && groupID != record.RecoveryGroupID {
+			// An older frontend cannot safely choose between multiple groups.
+			return "", "", false
+		}
+		groupID, directory = record.RecoveryGroupID, filepath.Dir(record.Path)
+	}
+	return groupID, directory, groupID != "" && directory != ""
+}
+
+func sameRecoveryLineagePath(left, right string) bool {
+	leftKey := sessioncatalog.PathIdentityKey(left)
+	return leftKey != "" && leftKey == sessioncatalog.PathIdentityKey(right)
+}
+
+func recoveryTopicHasGroup(topic sessioncatalog.TopicRecord, groupID string) bool {
+	for _, record := range topic.Sessions {
+		if record.Recovered && record.RecoveryGroupID == groupID {
+			return true
+		}
+	}
+	return false
+}
+
+func recoveryRecordBelongsToGroup(record sessioncatalog.SessionRecord, groupID string) bool {
+	if record.Recovered {
+		return record.RecoveryGroupID == groupID
+	}
+	return agent.BranchID(record.Path) == groupID
 }
 
 func recoveryLineageIsCovered(view RecoveryLineageView) bool {
@@ -162,12 +219,9 @@ func (a *App) ChooseRecoveryBranch(req RecoveryPreferenceRequest) error {
 	if err != nil || !ok {
 		return errors.New("recovery lineage is unavailable")
 	}
-	groupID, dir := "", ""
-	for _, record := range topic.Sessions {
-		if record.Recovered && record.RecoveryGroupID != "" {
-			groupID, dir = record.RecoveryGroupID, filepath.Dir(record.Path)
-			break
-		}
+	groupID, dir, ok := recoveryLineageSelection(topic, req.Path)
+	if !ok {
+		return errors.New("selected branch is outside the recovery lineage")
 	}
 	groups, err := catalog.ListRecoveryGroups(a.bootContext(), dir)
 	if err != nil {
@@ -186,11 +240,11 @@ func (a *App) ChooseRecoveryBranch(req RecoveryPreferenceRequest) error {
 		return errors.New("recovery lineage is unavailable")
 	}
 	for _, member := range topic.Sessions {
-		if member.RecoveryGroupID != groupID && (member.Recovered || agent.BranchID(member.Path) != groupID) {
+		if !recoveryRecordBelongsToGroup(member, groupID) {
 			continue
 		}
 		paths = append(paths, member.Path)
-		if sessionRuntimeKey(member.Path) == sessionRuntimeKey(req.Path) && member.RecoveryRole != sessioncatalog.RecoveryRoleCoveredCopy {
+		if sameRecoveryLineagePath(member.Path, req.Path) && member.RecoveryRole != sessioncatalog.RecoveryRoleCoveredCopy {
 			chosen = member.Path
 		}
 	}
