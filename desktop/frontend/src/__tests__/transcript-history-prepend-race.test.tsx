@@ -162,6 +162,28 @@ const prependWrites = scrollWrites.filter((write) => write.owner === "reader-sta
 check(arbiter?.historyPrependLease.pendingRef.current === false, "full stable coverage releases within the wall-clock budget");
 check(prependWrites.length === 1 && prependWrites[0].kind === "scrollBy", "the stable key gets exactly one final correction");
 
+const competingOwners: [string, () => void][] = [
+  ["selection", () => arbiter!.setMode("selection")],
+  ["user resize", () => arbiter!.setMode("user-resize")],
+  ["programmatic navigation", () => arbiter!.setMode("restoring")],
+  ["jump bottom", () => arbiter!.scrollToBottom()],
+  ["indexed jump", () => arbiter!.scrollToDataIndex(0)],
+];
+for (const [owner, takeOwnership] of competingOwners) {
+  await act(async () => arbiter!.reset());
+  await act(async () => arbiter!.onWheelIntent({
+    ctrlKey: false, deltaX: 0, deltaY: -40, target: scrollElement,
+  } as React.WheelEvent<HTMLElement>));
+  const interruptedGeneration = arbiter!.historyPrependLease.begin(2);
+  arbiter!.historyPrependLease.noteCoverage(interruptedGeneration, pageTwo.length, pageTwo.length);
+  await act(async () => takeOwnership());
+  check(!arbiter!.historyPrependLease.pendingRef.current, `${owner} cancels the covered prepend lease`);
+}
+await act(async () => arbiter!.reset());
+arbiter!.historyPrependLease.begin(2);
+await act(async () => arbiter!.setMode("selection"));
+check(!arbiter!.historyPrependLease.pendingRef.current, "an explicit owner cancels a prepend without an active reader");
+
 await act(async () => root.unmount());
 restoreClock();
 dom.window.close();

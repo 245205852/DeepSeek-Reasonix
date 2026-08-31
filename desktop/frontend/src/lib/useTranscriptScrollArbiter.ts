@@ -130,10 +130,9 @@ export function useTranscriptScrollArbiter({
     onStabilitySample: (_transaction, stable, tailEligible) => dispatchRef.current({ type: "READER_STABILITY_SAMPLE", stable, tailEligible }),
     onTailHandoff: () => dispatchRef.current({ type: "READER_TAIL_HANDOFF" }),
     onGeometryCommitReady: historyPrependCoordinator.noteGeometryCommitReady,
-    onEnd: (transaction, reason) => {
-      // A competing owner cancels stale prepend ownership; a natural terminal
-      // may still settle the covered generation.
-      historyPrependCoordinator.noteReaderTerminal(reason === "cancelled");
+    onCancel: () => historyPrependCoordinator.noteReaderTerminal(true),
+    onEnd: (transaction) => {
+      historyPrependCoordinator.noteReaderTerminal(false);
       const anchor = transaction.anchor;
       const element = scrollRef.current;
       const nearPhysicalTail = transaction.direction > 0
