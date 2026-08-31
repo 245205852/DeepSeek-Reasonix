@@ -87,13 +87,21 @@ type SessionsReport struct {
 // copies session paths, topic IDs, titles, previews, or message content from
 // the per-session conflict logs into a shareable doctor report.
 type RecoveryLifecycleReport struct {
-	Events                  int `json:"events"`
-	PhysicalVersionsCreated int `json:"physical_versions_created"`
-	DiskAdoptions           int `json:"disk_adoptions"`
-	ShutdownRecoveries      int `json:"shutdown_recoveries"`
-	RepeatedEvents          int `json:"repeated_events"`
-	MaxTopicOccurrences     int `json:"max_topic_occurrences"`
-	InvalidRecords          int `json:"invalid_records"`
+	Events                    int `json:"events"`
+	PhysicalVersionsCreated   int `json:"physical_versions_created"`
+	DiskAdoptions             int `json:"disk_adoptions"`
+	ShutdownRecoveries        int `json:"shutdown_recoveries"`
+	ClassifiedCovered         int `json:"classified_covered"`
+	ClassifiedAdopted         int `json:"classified_adopted"`
+	ClassifiedPreferred       int `json:"classified_preferred"`
+	ClassifiedDiverged        int `json:"classified_diverged"`
+	CleanupMoved              int `json:"cleanup_moved"`
+	CleanupKept               int `json:"cleanup_kept"`
+	CleanupSkippedInUse       int `json:"cleanup_skipped_in_use"`
+	CleanupRevalidationFailed int `json:"cleanup_revalidation_failed"`
+	RepeatedEvents            int `json:"repeated_events"`
+	MaxTopicOccurrences       int `json:"max_topic_occurrences"`
+	InvalidRecords            int `json:"invalid_records"`
 }
 
 type SandboxReport struct {
@@ -303,6 +311,18 @@ func RenderText(r Report) string {
 	fmt.Fprintf(&b, "  recovery     %d events, %d versions created, %d disk adoptions, %d shutdown recoveries\n",
 		r.Sessions.Recovery.Events, r.Sessions.Recovery.PhysicalVersionsCreated,
 		r.Sessions.Recovery.DiskAdoptions, r.Sessions.Recovery.ShutdownRecoveries)
+	if classified := r.Sessions.Recovery.ClassifiedCovered + r.Sessions.Recovery.ClassifiedAdopted +
+		r.Sessions.Recovery.ClassifiedPreferred + r.Sessions.Recovery.ClassifiedDiverged; classified > 0 {
+		fmt.Fprintf(&b, "  recovery classifications  covered:%d adopted:%d preferred:%d diverged:%d\n",
+			r.Sessions.Recovery.ClassifiedCovered, r.Sessions.Recovery.ClassifiedAdopted,
+			r.Sessions.Recovery.ClassifiedPreferred, r.Sessions.Recovery.ClassifiedDiverged)
+	}
+	if cleanup := r.Sessions.Recovery.CleanupMoved + r.Sessions.Recovery.CleanupKept +
+		r.Sessions.Recovery.CleanupSkippedInUse + r.Sessions.Recovery.CleanupRevalidationFailed; cleanup > 0 {
+		fmt.Fprintf(&b, "  recovery cleanup  moved:%d kept:%d in-use:%d revalidation-failed:%d\n",
+			r.Sessions.Recovery.CleanupMoved, r.Sessions.Recovery.CleanupKept,
+			r.Sessions.Recovery.CleanupSkippedInUse, r.Sessions.Recovery.CleanupRevalidationFailed)
+	}
 	if r.Sessions.Recovery.RepeatedEvents > 0 {
 		fmt.Fprintf(&b, "  recovery concurrency signal  %d repeated events (max topic occurrence %d)\n",
 			r.Sessions.Recovery.RepeatedEvents, r.Sessions.Recovery.MaxTopicOccurrences)
@@ -371,9 +391,10 @@ func collectSessions(dir string) SessionsReport {
 }
 
 type recoveryLifecycleRecord struct {
-	Outcome    string `json:"outcome"`
-	Occurrence int    `json:"occurrence"`
-	Repeated   bool   `json:"repeated_in_process"`
+	Outcome          string `json:"outcome"`
+	ExistingRecovery bool   `json:"existing_recovery"`
+	Occurrence       int    `json:"occurrence"`
+	Repeated         bool   `json:"repeated_in_process"`
 }
 
 func collectRecoveryLifecycle(dir string) RecoveryLifecycleReport {
@@ -397,9 +418,28 @@ func collectRecoveryLifecycle(dir string) RecoveryLifecycleReport {
 			report.Events++
 			switch record.Outcome {
 			case "forked_recovery_branch", "forked_file_lock_recovery", "moved_to_stable_recovery":
-				report.PhysicalVersionsCreated++
+				if !record.ExistingRecovery {
+					report.PhysicalVersionsCreated++
+				}
+			case "classified_covered":
+				report.ClassifiedCovered++
+			case "classified_adopted":
+				report.ClassifiedAdopted++
+			case "classified_preferred":
+				report.ClassifiedPreferred++
+			case "classified_diverged":
+				report.ClassifiedDiverged++
+			case "cleanup_moved":
+				report.CleanupMoved++
+			case "cleanup_kept":
+				report.CleanupKept++
+			case "cleanup_skipped_in_use":
+				report.CleanupSkippedInUse++
+			case "cleanup_revalidation_failed":
+				report.CleanupRevalidationFailed++
 			}
-			if strings.Contains(record.Outcome, "adopted") && !strings.Contains(record.Outcome, "failed") {
+			if record.Outcome == "adopted_newer_disk_transcript" ||
+				record.Outcome == "recovery_not_needed_adopted_disk_transcript" {
 				report.DiskAdoptions++
 			}
 			if record.Outcome == "forked_file_lock_recovery" {

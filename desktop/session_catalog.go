@@ -86,6 +86,9 @@ type ProjectTopicKey struct {
 	// Path optionally binds topic-wide recovery actions to one physical lineage.
 	// Older frontends omit it and remain compatible when the topic has one group.
 	Path string `json:"path,omitempty"`
+	// RecordClassification is set only by the recovery-event coordinator after
+	// a catalog revision. Ordinary History reads remain diagnostic-free.
+	RecordClassification bool `json:"recordClassification,omitempty"`
 }
 
 type ProjectTopicPage struct {

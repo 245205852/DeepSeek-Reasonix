@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 
 	"reasonix/internal/agent"
+	"reasonix/internal/control"
 	"reasonix/internal/sessioncatalog"
 )
 
@@ -140,7 +141,31 @@ func (a *App) GetRecoveryLineage(key ProjectTopicKey) RecoveryLineageView {
 	if recoveryLineageIsCovered(out) {
 		out.State = "covered"
 	}
+	if key.RecordClassification {
+		recordRecoveryLineageClassification(key.Path, out)
+	}
 	return out
+}
+
+func recordRecoveryLineageClassification(selectedPath string, view RecoveryLineageView) {
+	outcome := ""
+	switch view.State {
+	case "covered", "adopted", "preferred", "diverged":
+		outcome = "classified_" + view.State
+	default:
+		return
+	}
+	path := ""
+	for _, member := range view.Members {
+		if sameRecoveryLineagePath(member.Path, selectedPath) {
+			path = member.Path
+			break
+		}
+		if path == "" || member.Canonical {
+			path = member.Path
+		}
+	}
+	control.RecordRecoveryLifecycle(path, outcome)
 }
 
 func recoveryLineageSelection(topic sessioncatalog.TopicRecord, selectedPath string) (string, string, bool) {

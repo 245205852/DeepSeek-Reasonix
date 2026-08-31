@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { app } from "../lib/bridge";
 import { useT } from "../lib/i18n";
 import type { ProjectTopicKey } from "../lib/sessionCatalogTypes";
@@ -32,24 +32,32 @@ export function SessionRecoveryVersionsHost({ sessions, onResumeSession, onRecov
     }
   }, [showToast]);
 
+  const runtimeCallbacks = useRef({ onRecoveryCreated, showToast, showVersions, t });
+  useEffect(() => {
+    runtimeCallbacks.current = { onRecoveryCreated, showToast, showVersions, t };
+  }, [onRecoveryCreated, showToast, showVersions, t]);
+
   useEffect(() => {
     let stop: (() => void) | undefined;
     let cancelled = false;
     void import("../lib/sessionRecoveryRuntime").then(({ startSessionRecoveryRuntime }) => {
       if (cancelled) return;
       stop = startSessionRecoveryRuntime({
-        onRecovered: onRecoveryCreated,
-        onDiverged: (topic, view) => showToast(t("recovery.divergedToast"), "warn", {
-          actionLabel: t("recovery.inspectLineage"),
-          onAction: () => { void showVersions(topic, view); },
-        }),
+        onRecovered: () => runtimeCallbacks.current.onRecoveryCreated(),
+        onDiverged: (topic, view) => {
+          const current = runtimeCallbacks.current;
+          current.showToast(current.t("recovery.divergedToast"), "warn", {
+            actionLabel: current.t("recovery.inspectLineage"),
+            onAction: () => { void current.showVersions(topic, view); },
+          });
+        },
       });
     });
     return () => {
       cancelled = true;
       stop?.();
     };
-  }, [onRecoveryCreated, showToast, showVersions, t]);
+  }, []);
 
   const inspectVersions = useCallback((session: SessionMeta, view: RecoveryLineageView) => {
     if (!session.topicId) return;

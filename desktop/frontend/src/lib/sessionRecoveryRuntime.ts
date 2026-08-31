@@ -27,7 +27,10 @@ export function startSessionRecoveryRuntime(options: SessionRecoveryRuntimeOptio
     if (stopped || inFlight.has(pending.eventKey)) return;
     inFlight.add(pending.eventKey);
     try {
-      const view = normalizeRecoveryLineageView(await app.GetRecoveryLineage(pending.topic));
+      const view = normalizeRecoveryLineageView(await app.GetRecoveryLineage({
+        ...pending.topic,
+        recordClassification: true,
+      }));
       if (stopped) return;
       const resolution = tracker.resolve(pending.eventKey, view);
       if (resolution === "wait") return;

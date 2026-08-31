@@ -50,6 +50,7 @@ export interface ProjectTopicKey {
   workspaceRoot?: string;
   topicId: string;
   path?: string;
+  recordClassification?: boolean;
 }
 
 export interface ProjectTreeChangedV2 {

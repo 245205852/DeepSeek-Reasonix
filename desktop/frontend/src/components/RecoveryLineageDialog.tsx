@@ -5,6 +5,7 @@ import { app } from "../lib/bridge";
 import type { ProjectTopicKey } from "../lib/sessionCatalogTypes";
 import type { RecoveryLineageMember, RecoveryLineageView } from "../lib/types";
 import { useT } from "../lib/i18n";
+import { useToast } from "../lib/toast";
 import { normalizeRecoveryLineageView, userVisibleRecoveryVersions } from "../lib/sessionRecoveryVersions";
 
 interface RecoveryLineageDialogProps {
@@ -21,6 +22,7 @@ function versionActivityAt(member: RecoveryLineageMember): number {
 
 export function RecoveryLineageDialog({ topic, initial, onClose, onChanged, onOpenVersion }: RecoveryLineageDialogProps) {
   const t = useT();
+  const { showToast } = useToast();
   const [view, setView] = useState(() => normalizeRecoveryLineageView(initial));
   const [busy, setBusy] = useState(false);
   const [editingPath, setEditingPath] = useState("");
@@ -71,6 +73,8 @@ export function RecoveryLineageDialog({ topic, initial, onClose, onChanged, onOp
       await app.RenameSession(member.path, noteDraft.trim());
       setEditingPath("");
       await refresh();
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : String(error), "error");
     } finally {
       setBusy(false);
     }

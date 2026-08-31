@@ -9,6 +9,7 @@ import (
 
 	"reasonix/internal/agent"
 	"reasonix/internal/config"
+	"reasonix/internal/control"
 	"reasonix/internal/sessioncatalog"
 )
 
@@ -74,6 +75,9 @@ func (a *App) sweepRecoveryGroupCopies(group sessioncatalog.RecoveryGroup, now t
 		}
 		return copies[i].Path < copies[j].Path
 	})
+	for _, kept := range copies[:recoveryCopySweepKeep] {
+		recordRecoveryCleanupOutcome(group, kept.Path, "cleanup_kept")
+	}
 	moved := 0
 	for _, copy := range copies[recoveryCopySweepKeep:] {
 		if grace > 0 {
@@ -98,6 +102,7 @@ func (a *App) trashSweptRecoveryCopy(group sessioncatalog.RecoveryGroup, path st
 	a.sessionRemovalMu.Lock()
 	defer a.sessionRemovalMu.Unlock()
 	if a.sessionOpenInAnyTab(path) || agent.SessionLeaseHeld(path) {
+		recordRecoveryCleanupOutcome(group, path, "cleanup_skipped_in_use")
 		return false
 	}
 	var err error
@@ -107,10 +112,20 @@ func (a *App) trashSweptRecoveryCopy(group sessioncatalog.RecoveryGroup, path st
 		err = agent.TrashCoveredRecoveryBranch(path, group.Directory)
 	}
 	if err != nil {
+		recordRecoveryCleanupOutcome(group, path, "cleanup_revalidation_failed")
 		slog.Debug("desktop: sweep skipped recovery copy", "reason", err)
 		return false
 	}
+	recordRecoveryCleanupOutcome(group, path, "cleanup_moved")
 	a.removeSessionCatalogPath(path, "recovery_copy_sweep")
 	slog.Info("desktop: swept excess recovery copy to trash")
 	return true
+}
+
+func recordRecoveryCleanupOutcome(group sessioncatalog.RecoveryGroup, path, outcome string) {
+	anchor := group.CanonicalPath
+	if anchor == "" {
+		anchor = path
+	}
+	control.RecordRecoveryLifecycle(anchor, outcome)
 }

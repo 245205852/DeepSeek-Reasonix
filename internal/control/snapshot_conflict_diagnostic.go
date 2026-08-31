@@ -41,6 +41,22 @@ var conflictDiagDedup sync.Map // key -> *atomic.Int64
 // to the diagnostic record.
 var conflictDiagOccurrences sync.Map // logical topic key -> *atomic.Int64
 
+// RecordRecoveryLifecycle appends one content-free catalog or cleanup outcome
+// to the existing per-session recovery ledger. The closed outcome set prevents
+// callers from persisting user-controlled text as diagnostic metadata.
+func RecordRecoveryLifecycle(path, outcome string) {
+	mode := ""
+	switch outcome {
+	case "classified_covered", "classified_adopted", "classified_preferred", "classified_diverged":
+		mode = "catalog"
+	case "cleanup_moved", "cleanup_kept", "cleanup_skipped_in_use", "cleanup_revalidation_failed":
+		mode = "cleanup"
+	default:
+		return
+	}
+	appendSnapshotConflictDiagnostic(path, mode, outcome, nil, "", false)
+}
+
 func appendSnapshotConflictDiagnostic(path, mode, outcome string, saveErr error, recoveryPath string, existing bool) {
 	path = strings.TrimSpace(path)
 	if path == "" {
