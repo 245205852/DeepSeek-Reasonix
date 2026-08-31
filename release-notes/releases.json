@@ -2,6 +2,434 @@
   "schemaVersion": 1,
   "releases": [
     {
+      "version": "1.35.0",
+      "date": "2026-08-31",
+      "channel": "stable",
+      "targetingVersion": 1,
+      "title": {
+        "en": "Reasonix 1.35: Isolated Worktree Forks, Session Recovery Versions, and Stability Fixes",
+        "zh": "Reasonix 1.35：隔离 Worktree 分叉、会话恢复版本与稳定性修复"
+      },
+      "summary": {
+        "en": "This release introduces isolated Git worktree forks for conversations, simplifies session recovery into versions, improves transcript scrolling stability, and fixes several agent and CLI issues.",
+        "zh": "此版本为会话引入隔离 Git Worktree 分叉，将会话恢复简化为版本，提升转录滚动稳定性，并修复了多个代理与 CLI 问题。"
+      },
+      "surfaces": [
+        "desktop",
+        "cli"
+      ],
+      "guides": [
+        {
+          "title": {
+            "en": "Session Ownership",
+            "zh": "会话所有权"
+          },
+          "body": {
+            "en": "Learn how isolated worktree forks and session ownership work.",
+            "zh": "了解隔离 Worktree 分叉与会话所有权的工作原理。"
+          },
+          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/a15dbcb2bc4f81b9e600c8a779fcd0571b55a900/docs/SESSION_OWNERSHIP.md"
+        },
+        {
+          "title": {
+            "en": "Session Ownership (Chinese)",
+            "zh": "会话所有权（中文）"
+          },
+          "body": {
+            "en": "Chinese guide for session ownership and isolated worktree forks.",
+            "zh": "会话所有权与隔离 Worktree 分叉的中文指南。"
+          },
+          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/a15dbcb2bc4f81b9e600c8a779fcd0571b55a900/docs/SESSION_OWNERSHIP.zh-CN.md"
+        },
+        {
+          "title": {
+            "en": "Session Catalog",
+            "zh": "会话目录"
+          },
+          "body": {
+            "en": "Details on session catalog path identity and recovery versions.",
+            "zh": "会话目录路径身份与恢复版本的详细信息。"
+          },
+          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/a15dbcb2bc4f81b9e600c8a779fcd0571b55a900/docs/SESSION_CATALOG.md"
+        },
+        {
+          "title": {
+            "en": "Session Catalog (Chinese)",
+            "zh": "会话目录（中文）"
+          },
+          "body": {
+            "en": "Chinese guide for session catalog path identity and recovery versions.",
+            "zh": "会话目录路径身份与恢复版本的中文指南。"
+          },
+          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/a15dbcb2bc4f81b9e600c8a779fcd0571b55a900/docs/SESSION_CATALOG.zh-CN.md"
+        },
+        {
+          "title": {
+            "en": "Configuration Paths",
+            "zh": "配置路径"
+          },
+          "body": {
+            "en": "Configuration path identity and workspace-root handling.",
+            "zh": "配置路径身份与工作区根目录处理。"
+          },
+          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/a15dbcb2bc4f81b9e600c8a779fcd0571b55a900/docs/CONFIG_PATHS.md"
+        },
+        {
+          "title": {
+            "en": "Configuration Paths (Chinese)",
+            "zh": "配置路径（中文）"
+          },
+          "body": {
+            "en": "Chinese guide for configuration path identity and workspace-root handling.",
+            "zh": "配置路径身份与工作区根目录处理的中文指南。"
+          },
+          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/a15dbcb2bc4f81b9e600c8a779fcd0571b55a900/docs/CONFIG_PATHS.zh-CN.md"
+        },
+        {
+          "title": {
+            "en": "Guide",
+            "zh": "指南"
+          },
+          "body": {
+            "en": "General usage guide including /clear behavior in YOLO mode.",
+            "zh": "通用使用指南，包括 YOLO 模式下的 /clear 行为。"
+          },
+          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/a15dbcb2bc4f81b9e600c8a779fcd0571b55a900/docs/GUIDE.md"
+        },
+        {
+          "title": {
+            "en": "Guide (Chinese)",
+            "zh": "指南（中文）"
+          },
+          "body": {
+            "en": "Chinese general usage guide including /clear behavior in YOLO mode.",
+            "zh": "中文通用使用指南，包括 YOLO 模式下的 /clear 行为。"
+          },
+          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/a15dbcb2bc4f81b9e600c8a779fcd0571b55a900/docs/GUIDE.zh-CN.md"
+        },
+        {
+          "title": {
+            "en": "Tool Approval Modes",
+            "zh": "工具审批模式"
+          },
+          "body": {
+            "en": "Details on YOLO mode and /clear fast path.",
+            "zh": "YOLO 模式与 /clear 快速路径的详细信息。"
+          },
+          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/a15dbcb2bc4f81b9e600c8a779fcd0571b55a900/docs/TOOL_APPROVAL_MODES.md"
+        },
+        {
+          "title": {
+            "en": "Tool Approval Modes (Chinese)",
+            "zh": "工具审批模式（中文）"
+          },
+          "body": {
+            "en": "Chinese details on YOLO mode and /clear fast path.",
+            "zh": "YOLO 模式与 /clear 快速路径的中文详细信息。"
+          },
+          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/a15dbcb2bc4f81b9e600c8a779fcd0571b55a900/docs/TOOL_APPROVAL_MODES.zh-CN.md"
+        }
+      ],
+      "highlights": [
+        {
+          "kind": "new",
+          "targets": [
+            "desktop"
+          ],
+          "title": {
+            "en": "Fork conversations into isolated Git worktrees",
+            "zh": "将会话分叉至隔离 Git Worktree"
+          },
+          "body": {
+            "en": "You can now fork a conversation from any message turn into a new tab backed by a dedicated Git worktree. This keeps exploratory or concurrent work from modifying your source checkout. The existing shared-workspace fork remains available.",
+            "zh": "现在您可以从任意消息轮次将会话分叉到由专用 Git Worktree 支持的新标签页。这可以避免探索性或并发工作修改源工作区。原有的共享工作区分叉仍然可用。"
+          },
+          "refs": [
+            9645
+          ]
+        },
+        {
+          "kind": "improved",
+          "targets": [
+            "desktop"
+          ],
+          "title": {
+            "en": "Session recovery simplified into versions",
+            "zh": "会话恢复简化为版本"
+          },
+          "body": {
+            "en": "Recovery copies are now hidden from ordinary history and grouped under a collapsed System recovery data section in Trash. A new Session versions dialog lets you view and manage divergent versions without changing your default.",
+            "zh": "恢复副本现在从普通历史中隐藏，并归入回收站中折叠的“系统恢复数据”部分。新的“会话版本”对话框让您查看和管理分叉版本，而不会更改默认版本。"
+          },
+          "refs": [
+            9630
+          ]
+        },
+        {
+          "kind": "fixed",
+          "targets": [
+            "desktop"
+          ],
+          "title": {
+            "en": "Stabilized transcript scrolling and history rendering",
+            "zh": "稳定转录滚动与历史渲染"
+          },
+          "body": {
+            "en": "Multiple fixes prevent visible jumps when older history is prepended, ensure historical markdown renders without waiting for bottom scroll, and stabilize tail confirmation and same-tab takeover.",
+            "zh": "多项修复防止加载更早历史时出现可见跳动，确保历史 Markdown 无需等待滚动到底即可渲染，并稳定尾部确认与同标签页接管。"
+          },
+          "refs": [
+            9585,
+            9584,
+            9653,
+            9655,
+            9643
+          ]
+        },
+        {
+          "kind": "fixed",
+          "targets": [
+            "desktop",
+            "cli"
+          ],
+          "title": {
+            "en": "Agent compaction and summary fixes",
+            "zh": "代理压缩与摘要修复"
+          },
+          "body": {
+            "en": "Automatic summary requests are now capped at the configured context window, manual compaction can escape over-ceiling deadlocks, and /compact recovers over-length sessions via chunked-summary fallback.",
+            "zh": "自动摘要请求现在按配置的上下文窗口封顶，手动压缩可以摆脱超顶死锁，/compact 通过分块摘要回退恢复超长会话。"
+          },
+          "refs": [
+            9582,
+            9474,
+            9632
+          ]
+        },
+        {
+          "kind": "fixed",
+          "targets": [
+            "desktop"
+          ],
+          "title": {
+            "en": "Failed sessions can be archived without restart loops",
+            "zh": "失败会话可归档且不再重启循环"
+          },
+          "body": {
+            "en": "Terminally failed sessions no longer cause restart loops and can be archived through the regular TrashTopic path without bypassing active-work protection.",
+            "zh": "彻底失败的会话不再导致重启循环，并可通过常规 TrashTopic 路径归档，而不会绕过活动工作保护。"
+          },
+          "refs": [
+            9591
+          ]
+        },
+        {
+          "kind": "fixed",
+          "targets": [
+            "desktop",
+            "cli"
+          ],
+          "title": {
+            "en": "Unified filesystem path identity for session catalog",
+            "zh": "会话目录统一文件系统路径身份"
+          },
+          "body": {
+            "en": "Session catalog now uses filesystem-aware identity keys, preventing duplicate sessions on case-insensitive filesystems and preserving distinct paths on case-sensitive ones.",
+            "zh": "会话目录现在使用文件系统感知的身份键，防止在大小写不敏感的文件系统上出现重复会话，并在大小写敏感的文件系统上保留不同路径。"
+          },
+          "refs": [
+            9618
+          ]
+        },
+        {
+          "kind": "fixed",
+          "targets": [
+            "cli"
+          ],
+          "title": {
+            "en": "YOLO mode skips /clear confirmation",
+            "zh": "YOLO 模式跳过 /clear 确认"
+          },
+          "body": {
+            "en": "In YOLO mode, /clear now clears the session immediately without opening the confirmation overlay. Non-YOLO modes keep the existing confirmation.",
+            "zh": "在 YOLO 模式下，/clear 现在立即清除会话，不再打开确认覆盖层。非 YOLO 模式保留原有确认。"
+          },
+          "refs": [
+            9488
+          ]
+        }
+      ],
+      "changes": {
+        "new": [
+          {
+            "targets": [
+              "desktop"
+            ],
+            "title": {
+              "en": "Isolated worktree forks",
+              "zh": "隔离 Worktree 分叉"
+            },
+            "body": {
+              "en": "Fork conversations into isolated Git worktrees from any message turn.",
+              "zh": "从任意消息轮次将会话分叉到隔离 Git Worktree。"
+            },
+            "refs": [
+              9645
+            ]
+          }
+        ],
+        "improved": [
+          {
+            "targets": [
+              "desktop"
+            ],
+            "title": {
+              "en": "Session recovery versions",
+              "zh": "会话恢复版本"
+            },
+            "body": {
+              "en": "Recovery copies are hidden from ordinary history and managed through a Session versions dialog.",
+              "zh": "恢复副本从普通历史中隐藏，并通过会话版本对话框管理。"
+            },
+            "refs": [
+              9630
+            ]
+          },
+          {
+            "targets": [
+              "desktop"
+            ],
+            "title": {
+              "en": "Transcript scrolling stability",
+              "zh": "转录滚动稳定性"
+            },
+            "body": {
+              "en": "Improved handling of history prepends, tail confirmation, and same-tab takeover to prevent jumps.",
+              "zh": "改进历史预置、尾部确认和同标签页接管的处理，防止跳动。"
+            },
+            "refs": [
+              9585,
+              9584,
+              9653,
+              9655,
+              9643
+            ]
+          },
+          {
+            "targets": [
+              "desktop",
+              "cli"
+            ],
+            "title": {
+              "en": "Agent compaction improvements",
+              "zh": "代理压缩改进"
+            },
+            "body": {
+              "en": "Capped automatic summary requests, manual compaction rescue, and chunked-summary fallback for /compact.",
+              "zh": "自动摘要请求封顶、手动压缩救援以及 /compact 的分块摘要回退。"
+            },
+            "refs": [
+              9582,
+              9474,
+              9632
+            ]
+          },
+          {
+            "targets": [
+              "desktop",
+              "cli"
+            ],
+            "title": {
+              "en": "Session catalog path identity",
+              "zh": "会话目录路径身份"
+            },
+            "body": {
+              "en": "Unified filesystem path identity to prevent duplicate sessions.",
+              "zh": "统一文件系统路径身份，防止重复会话。"
+            },
+            "refs": [
+              9618
+            ]
+          },
+          {
+            "targets": [
+              "cli"
+            ],
+            "title": {
+              "en": "YOLO /clear fast path",
+              "zh": "YOLO /clear 快速路径"
+            },
+            "body": {
+              "en": "Skip confirmation for /clear in YOLO mode.",
+              "zh": "在 YOLO 模式下跳过 /clear 确认。"
+            },
+            "refs": [
+              9488
+            ]
+          }
+        ],
+        "fixed": [
+          {
+            "targets": [
+              "desktop"
+            ],
+            "title": {
+              "en": "Failed session archiving",
+              "zh": "失败会话归档"
+            },
+            "body": {
+              "en": "Terminally failed sessions can be archived without restart loops.",
+              "zh": "彻底失败的会话可以归档，不再重启循环。"
+            },
+            "refs": [
+              9591
+            ]
+          },
+          {
+            "targets": [
+              "desktop",
+              "cli"
+            ],
+            "title": {
+              "en": "kill_shell classification",
+              "zh": "kill_shell 分类"
+            },
+            "body": {
+              "en": "kill_shell is now classified as host-state-only, preventing self-blocking lifecycle operations.",
+              "zh": "kill_shell 现在归类为仅主机状态变更，防止自阻塞生命周期操作。"
+            },
+            "refs": [
+              9587
+            ]
+          }
+        ]
+      },
+      "upgrade": [],
+      "risks": [],
+      "contributors": [
+        "mchenziyi",
+        "Linearl",
+        "SivanCola",
+        "XTLine",
+        "BuGlessRB",
+        "dependabot[bot]"
+      ],
+      "links": {
+        "github": "https://github.com/esengine/DeepSeek-Reasonix/releases/tag/desktop-v1.35.0",
+        "compare": "https://github.com/esengine/DeepSeek-Reasonix/compare/desktop-v1.34.0...desktop-v1.35.0",
+        "download": "https://reasonix.io/?download=desktop&channel=stable#start"
+      },
+      "releaseId": "1.35.0",
+      "baseVersion": "1.35.0",
+      "status": "reviewed",
+      "previousRelease": "1.34.0",
+      "builds": {
+        "cli": "v1.35.0",
+        "desktop": "v1.35.0",
+        "npm": "1.35.0"
+      }
+    },
+    {
       "version": "1.34.0",
       "date": "2026-08-30",
       "channel": "stable",
