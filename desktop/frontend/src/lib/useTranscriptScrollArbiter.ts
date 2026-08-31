@@ -130,9 +130,8 @@ export function useTranscriptScrollArbiter({
     onStabilitySample: (_transaction, stable, tailEligible) => dispatchRef.current({ type: "READER_STABILITY_SAMPLE", stable, tailEligible }),
     onTailHandoff: () => dispatchRef.current({ type: "READER_TAIL_HANDOFF" }),
     onGeometryCommitReady: historyPrependCoordinator.noteGeometryCommitReady,
-    onCancel: () => historyPrependCoordinator.noteReaderTerminal(true),
-    onEnd: (transaction) => {
-      historyPrependCoordinator.noteReaderTerminal(false);
+    onEnd: (transaction, reason) => {
+      historyPrependCoordinator.noteReaderTerminal(reason === "cancelled");
       const anchor = transaction.anchor;
       const element = scrollRef.current;
       const nearPhysicalTail = transaction.direction > 0
@@ -280,7 +279,7 @@ export function useTranscriptScrollArbiter({
     if (
       transcriptScrollEventCancelsReaderExtentGuard(event.type)
       && !(event.type === "SCROLL_TO_OFFSET" && (event.owner === "anchor-compensation" || event.owner === "block-window-prepend"))
-    ) cancelReaderTransaction(false);
+    ) { historyPrependCoordinator.noteReaderTerminal(true); cancelReaderTransaction(false); }
     if (event.type === "RESET") lastGoodAnchorRef.current = null;
     if (event.type === "USER_SCROLL_INTENT") {
       const element = scrollRef.current;
@@ -302,7 +301,7 @@ export function useTranscriptScrollArbiter({
     // the new state.
     anchorCompensationRef.current?.noteEvent(event);
     return result;
-  }, [cancelReaderTransaction, publishState, runCommand, tailSettle]);
+  }, [cancelReaderTransaction, historyPrependCoordinator, publishState, runCommand, tailSettle]);
   dispatchRef.current = dispatch;
 
   // All controller inputs are stable refs plus dispatch (itself stable: every
