@@ -471,6 +471,12 @@ func (a *Agent) compactToProjectionLocked(ctx context.Context, trigger, instruct
 		a.emitCompactionAborted(trigger)
 		return CompactionNoop, nil
 	}
+	if mustFree || trigger != CompactionTriggerManual {
+		if err := a.validateSafeSummaryRequest(fold, instructions); err != nil {
+			a.emitCompactionAborted(trigger)
+			return CompactionNoop, err
+		}
+	}
 
 	sourceTokens := a.estimatedVisibleRequestTokens(msgs)
 	inputMode := SummaryInputCachePrefix
@@ -592,23 +598,12 @@ func (a *Agent) planFoldRegion(msgs []provider.Message, force bool) (head, start
 // whose exact summary request leaves the collector's minimum output budget.
 // The remaining middle and tail stay verbatim in the projection.
 func (a *Agent) maximumSafeSummaryPrefixEnd(msgs []provider.Message, head, end int, instructions string) int {
-	window := a.effectiveContextWindow()
-	if window <= 0 || head < 0 || end <= head || end > len(msgs) {
+	if head < 0 || end <= head || end > len(msgs) {
 		return end
 	}
-	policy := contextBudgetPolicyOf(a.svc.prov)
-	if policy.WindowMode == provider.ContextWindowIndependent {
+	maxPromptTokens, enforce := a.safeSummaryPromptTokenLimit()
+	if !enforce {
 		return end
-	}
-	if policy.WindowMode == provider.ContextWindowUnknown {
-		// Unknown gateways still honor the effective configured-or-learned
-		// window (#9572). The learned value survives SetSession even though the
-		// per-transcript admission snapshot does not.
-		policy.WindowMode = provider.ContextWindowShared
-	}
-	maxPromptTokens := a.hardInputCeiling()
-	if policy.WindowMode == provider.ContextWindowShared {
-		maxPromptTokens = window - outputBudgetReserve - 256
 	}
 	if maxPromptTokens <= 0 {
 		return head
@@ -638,6 +633,30 @@ func (a *Agent) maximumSafeSummaryPrefixEnd(msgs []provider.Message, head, end i
 		best--
 	}
 	return best
+}
+
+// safeSummaryPromptTokenLimit is shared by prefix planning and the final
+// post-extension guard. Unknown gateways conservatively honor the configured
+// or learned window; explicitly independent providers retain the full fold.
+func (a *Agent) safeSummaryPromptTokenLimit() (int, bool) {
+	window := a.effectiveContextWindow()
+	if window <= 0 || contextBudgetPolicyOf(a.svc.prov).WindowMode == provider.ContextWindowIndependent {
+		return 0, false
+	}
+	return window - a.summaryOutputBudget() - protocolReserveTokens, true
+}
+
+func (a *Agent) validateSafeSummaryRequest(fold []provider.Message, instructions string) error {
+	maxPromptTokens, enforce := a.safeSummaryPromptTokenLimit()
+	if !enforce {
+		return nil
+	}
+	requestTokens := a.estimatedRequestTokens(a.summaryRequest(fold, instructions))
+	if maxPromptTokens <= 0 || requestTokens > maxPromptTokens {
+		return fmt.Errorf("%w: prepared summary request (%d tokens) exceeds safe prompt budget (%d)",
+			errCheckpointRejected, requestTokens, maxPromptTokens)
+	}
+	return nil
 }
 
 type userTurnRetention struct {
