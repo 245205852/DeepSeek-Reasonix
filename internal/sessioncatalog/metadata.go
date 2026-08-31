@@ -102,6 +102,11 @@ func (c *Catalog) skipFoldedRecoveryShell(ctx context.Context, tx *sql.Tx, topic
 // instead of) the authoritative session rows.
 func (c *Catalog) upsertTopicMetadata(ctx context.Context, tx *sql.Tx, topic TopicMetadata) error {
 	rootKey := c.workspaceRootKey(topic.Scope, topic.WorkspaceRoot)
+	if err := removeRemappedTopicIdentity(ctx, tx, TopicKey{
+		Scope: topic.Scope, WorkspaceRoot: topic.WorkspaceRoot, TopicID: topic.TopicID,
+	}, rootKey); err != nil {
+		return err
+	}
 	_, err := tx.ExecContext(ctx, `INSERT INTO catalog_topics(
 			scope,workspace_root,workspace_root_key,topic_id,title,title_source,pinned,sort_order,
 			turns,turns_state,created_at,last_activity_at,recovery_state,health,metadata_present
@@ -247,8 +252,14 @@ func (c *Catalog) rememberFoldedTopic(ctx context.Context, tx *sql.Tx, key Topic
 	if strings.TrimSpace(key.TopicID) == "" {
 		return nil
 	}
-	_, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO catalog_folded_topics(scope,workspace_root,workspace_root_key,topic_id,folded_at)
-		VALUES(?,?,?,?,?)`, key.Scope, key.WorkspaceRoot, c.workspaceRootKey(key.Scope, key.WorkspaceRoot), key.TopicID, foldedAt)
+	rootKey := c.workspaceRootKey(key.Scope, key.WorkspaceRoot)
+	if err := removeRemappedFoldedTopicIdentity(ctx, tx, key, rootKey); err != nil {
+		return err
+	}
+	_, err := tx.ExecContext(ctx, `INSERT INTO catalog_folded_topics(scope,workspace_root,workspace_root_key,topic_id,folded_at)
+		VALUES(?,?,?,?,?) ON CONFLICT(scope,workspace_root_key,topic_id) DO UPDATE SET
+		workspace_root=excluded.workspace_root,folded_at=excluded.folded_at`,
+		key.Scope, key.WorkspaceRoot, rootKey, key.TopicID, foldedAt)
 	return err
 }
 

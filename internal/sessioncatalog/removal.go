@@ -21,11 +21,19 @@ func (c *Catalog) RemoveSession(ctx context.Context, path, reason string) error 
 	pathKey := c.pathKey(path)
 	// Immediate query overlay: ListTopics/ListSessions/GetSession filter this
 	// map even when the durable DELETE has not committed yet.
-	c.removedPaths.Store(pathKey, c.mutationSeq.Add(1))
+	removalSequence := c.mutationSeq.Add(1)
+	c.removedPaths.Store(pathKey, removalSequence)
 	c.writeMu.Lock()
-	delete(c.writeQueued, queuePathKey(path))
+	queueKey := queuePathKey(path)
+	if queued, ok := c.writeQueued[queueKey]; ok && queued.enqueueSequence <= removalSequence {
+		delete(c.writeQueued, queueKey)
+	}
 	c.writeMu.Unlock()
-	c.pathQueued.Delete(queuePathKey(path))
+	c.pathQueueMu.Lock()
+	if queued, ok := c.pathQueued.Load(queueKey); ok && queued.(sessionPathRequest).sequence <= removalSequence {
+		c.pathQueued.CompareAndDelete(queueKey, queued)
+	}
+	c.pathQueueMu.Unlock()
 	c.repairQueued.Delete(pathKey)
 	// Wake listeners without SQLite. Equal revision identifies an overlay change;
 	// empty roots refresh every expanded folder without querying the busy DB for
@@ -118,8 +126,8 @@ func (c *Catalog) applySessionRemovalLocked(ctx context.Context, path, reason st
 	}
 	var key TopicKey
 	pathKey := c.pathKey(path)
-	err = tx.QueryRowContext(sqlCtx, `SELECT scope,workspace_root,topic_id FROM catalog_sessions WHERE path_key=?`, pathKey).
-		Scan(&key.Scope, &key.WorkspaceRoot, &key.TopicID)
+	err = tx.QueryRowContext(sqlCtx, `SELECT scope,workspace_root,workspace_root_key,topic_id FROM catalog_sessions WHERE path_key=?`, pathKey).
+		Scan(&key.Scope, &key.WorkspaceRoot, &key.workspaceKey, &key.TopicID)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		_ = tx.Rollback()
 		return err

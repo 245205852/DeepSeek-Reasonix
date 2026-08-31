@@ -89,6 +89,7 @@ type DirectoryTarget struct {
 	Path          string `json:"path"`
 	Scope         string `json:"scope"`
 	WorkspaceRoot string `json:"workspaceRoot,omitempty"`
+	mutationSeq   uint64
 }
 
 type ProjectRecord struct {
@@ -167,6 +168,7 @@ type TopicKey struct {
 	Scope         string `json:"scope"`
 	WorkspaceRoot string `json:"workspaceRoot,omitempty"`
 	TopicID       string `json:"topicId"`
+	workspaceKey  string
 }
 
 type TopicRecord struct {

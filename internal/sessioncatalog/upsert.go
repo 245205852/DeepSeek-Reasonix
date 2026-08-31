@@ -7,7 +7,9 @@ import (
 )
 
 func (c *Catalog) UpsertSession(ctx context.Context, record SessionRecord) error {
-	return c.upsertSessions(ctx, []SessionRecord{normalizeSessionRecord(record)}, nil, "write")
+	record = normalizeSessionRecord(record)
+	record.enqueueSequence = c.mutationSeq.Add(1)
+	return c.upsertSessions(ctx, []SessionRecord{record}, nil, "write")
 }
 
 func (c *Catalog) upsertSessions(ctx context.Context, records []SessionRecord, generations map[string]int64, reason string) error {
@@ -30,13 +32,7 @@ func (c *Catalog) upsertSessionsWithNotification(ctx context.Context, records []
 	filtered := records[:0]
 	for _, record := range records {
 		pathKey := c.pathKey(record.Path)
-		removedAt, removed := c.removedPaths.Load(pathKey)
-		if !removed {
-			filtered = append(filtered, record)
-			continue
-		}
-		if sequence, ok := removedAt.(uint64); ok && record.enqueueSequence > sequence {
-			c.removedPaths.Delete(pathKey)
+		if c.pathMutationAllowed(pathKey, record.enqueueSequence) {
 			filtered = append(filtered, record)
 		}
 	}
@@ -76,9 +72,17 @@ func (c *Catalog) upsertSessionsWithNotification(ctx context.Context, records []
 		record := normalizeSessionRecord(raw)
 		pathKey := c.pathKey(record.Path)
 		directoryKey := c.pathKey(record.Directory)
+		remapped, err := removeRemappedSessionIdentity(ctx, tx, record.Path, pathKey)
+		if err != nil {
+			_ = tx.Rollback()
+			return dirtyDirectories, err
+		}
+		for _, key := range remapped {
+			affected[key] = struct{}{}
+		}
 		var previous TopicKey
-		if err := tx.QueryRowContext(ctx, `SELECT scope,workspace_root,topic_id FROM catalog_sessions WHERE path_key=?`, pathKey).
-			Scan(&previous.Scope, &previous.WorkspaceRoot, &previous.TopicID); err == nil && previous.TopicID != "" {
+		if err := tx.QueryRowContext(ctx, `SELECT scope,workspace_root,workspace_root_key,topic_id FROM catalog_sessions WHERE path_key=?`, pathKey).
+			Scan(&previous.Scope, &previous.WorkspaceRoot, &previous.workspaceKey, &previous.TopicID); err == nil && previous.TopicID != "" {
 			affected[previous] = struct{}{}
 		} else if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			_ = tx.Rollback()
@@ -98,7 +102,8 @@ func (c *Catalog) upsertSessionsWithNotification(ctx context.Context, records []
 			return dirtyDirectories, err
 		}
 		if record.TopicID != "" {
-			affected[TopicKey{Scope: record.Scope, WorkspaceRoot: record.WorkspaceRoot, TopicID: record.TopicID}] = struct{}{}
+			affected[TopicKey{Scope: record.Scope, WorkspaceRoot: record.WorkspaceRoot,
+				workspaceKey: c.workspaceRootKey(record.Scope, record.WorkspaceRoot), TopicID: record.TopicID}] = struct{}{}
 		}
 		if err := c.updateFoldedTopicTombstones(ctx, tx, previous, record, c.opts.Now().UnixMilli()); err != nil {
 			_ = tx.Rollback()

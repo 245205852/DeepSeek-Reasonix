@@ -266,12 +266,20 @@ func TestCatalogPathIdentityPreservesCaseDistinctSessions(t *testing.T) {
 
 func TestWorkspaceRootIdentityJoinsRegistryAndSidecarSpellings(t *testing.T) {
 	ctx := context.Background()
-	catalog, err := Open(ctx, Options{Path: filepath.Join(t.TempDir(), "catalog.sqlite"), DisableRepair: true})
+	revisionRoots := [][]string{}
+	catalog, err := Open(ctx, Options{
+		Path: filepath.Join(t.TempDir(), "catalog.sqlite"), DisableRepair: true,
+		OnRevision: func(_ uint64, roots []string, _ string) {
+			revisionRoots = append(revisionRoots, append([]string(nil), roots...))
+		},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = catalog.Close(context.Background()) })
+	identityCalls := 0
 	catalog.pathIdentity = func(path string) string {
+		identityCalls++
 		return strings.ToLower(filepath.Clean(path))
 	}
 
@@ -290,7 +298,19 @@ func TestWorkspaceRootIdentityJoinsRegistryAndSidecarSpellings(t *testing.T) {
 	); err != nil {
 		t.Fatal(err)
 	}
+	revisionRoots = nil
+	if err := catalog.UpsertSession(ctx, SessionRecord{
+		Path: filepath.Join(lowerRoot, "sessions", "one.jsonl"), Directory: filepath.Join(lowerRoot, "sessions"),
+		Scope: "project", WorkspaceRoot: lowerRoot, TopicID: "topic", Preview: "updated sidecar",
+		LastActivityAt: 2, TurnsState: TurnsValid, Health: HealthOK,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(revisionRoots) != 1 || len(revisionRoots[0]) != 1 || revisionRoots[0][0] != upperRoot {
+		t.Fatalf("sidecar revision roots = %#v, want registry spelling %q", revisionRoots, upperRoot)
+	}
 
+	identityCalls = 0
 	topics, err := catalog.ListTopics(ctx, TopicPageRequest{Scope: "project", WorkspaceRoot: upperRoot, Limit: 10})
 	if err != nil {
 		t.Fatal(err)
@@ -298,12 +318,74 @@ func TestWorkspaceRootIdentityJoinsRegistryAndSidecarSpellings(t *testing.T) {
 	if len(topics.Items) != 1 || len(topics.Items[0].Sessions) != 1 {
 		t.Fatalf("registry spelling topics = %#v, want joined sidecar session", topics.Items)
 	}
+	if identityCalls != 1 {
+		t.Fatalf("ListTopics workspace identity calls = %d, want one per request", identityCalls)
+	}
 	sessions, err := catalog.ListSessions(ctx, SessionPageRequest{Scope: "project", WorkspaceRoot: upperRoot, Limit: 10})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(sessions.Items) != 1 || sessions.Items[0].WorkspaceRoot != lowerRoot {
 		t.Fatalf("registry spelling sessions = %#v, want original sidecar access spelling", sessions.Items)
+	}
+}
+
+func TestCatalogIdentityRemapReplacesSameAccessSpelling(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.jsonl")
+	root := filepath.Join(dir, "workspace-link")
+	if err := os.WriteFile(path, []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := agent.SaveBranchMeta(path, agent.BranchMeta{
+		Scope: "project", WorkspaceRoot: root, TopicID: "topic", Preview: "first identity",
+		SchemaVersion: agent.BranchMetaCountsVersion, Turns: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	catalog, err := Open(ctx, Options{Path: filepath.Join(t.TempDir(), "catalog.sqlite"), DisableRepair: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = catalog.Close(context.Background()) })
+	generation := "identity-a:"
+	catalog.pathIdentity = func(value string) string {
+		return generation + filepath.Clean(value)
+	}
+	target := DirectoryTarget{Path: dir, Scope: "project", WorkspaceRoot: root}
+	if err := catalog.ReconcileDirectory(ctx, target); err != nil {
+		t.Fatal(err)
+	}
+
+	generation = "identity-b:"
+	if err := agent.UpdateBranchMeta(path, false, func(meta *agent.BranchMeta) error {
+		meta.Preview = "second identity after remap"
+		meta.Turns = 2
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := catalog.ReconcileDirectory(ctx, target); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, table := range []string{"catalog_directories", "catalog_sessions", "catalog_topics"} {
+		var count int
+		if err := catalog.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM `+table).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count != 1 {
+			t.Fatalf("%s rows after identity remap = %d, want one", table, count)
+		}
+	}
+	got, ok, err := catalog.GetSession(ctx, path)
+	if err != nil || !ok || got.Preview != "second identity after remap" || got.Turns != 2 {
+		t.Fatalf("remapped session = %#v, %v, %v", got, ok, err)
+	}
+	page, err := catalog.ListTopics(ctx, TopicPageRequest{Scope: "project", WorkspaceRoot: root, Limit: 10})
+	if err != nil || len(page.Items) != 1 || len(page.Items[0].Sessions) != 1 {
+		t.Fatalf("remapped topics = %#v, %v", page.Items, err)
 	}
 }
 

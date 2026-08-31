@@ -42,6 +42,7 @@ type Catalog struct {
 	reconcileDirtyMu sync.Mutex
 	reconcileDirty   map[string]DirectoryTarget
 	pathCh           chan sessionPathRequest
+	pathQueueMu      sync.Mutex
 	pathQueued       sync.Map
 	directoryLocksMu sync.Mutex
 	directoryLocks   map[string]*sync.Mutex
@@ -58,12 +59,16 @@ type Catalog struct {
 	// testRepairLockHook reports before and after repair acquires the directory
 	// lock. Production catalogs leave it nil.
 	testRepairLockHook func(acquired bool)
+	// testPathMutationLoadedHook pauses after reading a removal generation.
+	// Production catalogs leave it nil.
+	testPathMutationLoadedHook func(string)
 }
 
 type sessionPathRequest struct {
 	target   DirectoryTarget
 	path     string
 	queueKey string
+	sequence uint64
 }
 
 type pageCursor struct {
@@ -365,13 +370,19 @@ func (c *Catalog) writerLoop() {
 
 func (c *Catalog) recomputeTopic(ctx context.Context, tx *sql.Tx, key TopicKey) error {
 	key.Scope, key.WorkspaceRoot = normalizeScope(key.Scope, key.WorkspaceRoot)
-	rootKey := c.workspaceRootKey(key.Scope, key.WorkspaceRoot)
+	rootKey := key.workspaceKey
+	if key.Scope == "project" && rootKey == "" {
+		rootKey = c.workspaceRootKey(key.Scope, key.WorkspaceRoot)
+	}
 	var count int
 	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM catalog_sessions WHERE scope=? AND workspace_root_key=? AND topic_id=?`, key.Scope, rootKey, key.TopicID).Scan(&count); err != nil {
 		return err
 	}
 	if count == 0 {
 		_, err := tx.ExecContext(ctx, `DELETE FROM catalog_topics WHERE scope=? AND workspace_root_key=? AND topic_id=?`, key.Scope, rootKey, key.TopicID)
+		return err
+	}
+	if err := removeRemappedTopicIdentity(ctx, tx, key, rootKey); err != nil {
 		return err
 	}
 	// Covered copies skip turn/health totals but still update recency. Adopted
@@ -441,8 +452,31 @@ func bumpRevision(ctx context.Context, tx *sql.Tx) (uint64, error) {
 func (c *Catalog) publishRevision(revision uint64, roots []string, reason string) {
 	c.rememberRevision(revision)
 	if c.opts.OnRevision != nil {
-		c.opts.OnRevision(revision, roots, reason)
+		c.opts.OnRevision(revision, c.registeredRevisionRoots(roots), reason)
 	}
+}
+
+func (c *Catalog) registeredRevisionRoots(roots []string) []string {
+	out := make([]string, 0, len(roots))
+	seen := make(map[string]struct{}, len(roots))
+	for _, root := range roots {
+		_, root = normalizeScope("project", root)
+		rootKey := c.workspaceRootKey("project", root)
+		if _, ok := seen[rootKey]; ok {
+			continue
+		}
+		seen[rootKey] = struct{}{}
+		registered := root
+		if rootKey != "" && c.db != nil {
+			var candidate string
+			if err := c.db.QueryRowContext(context.Background(), `SELECT workspace_root FROM catalog_projects
+				WHERE scope='project' AND workspace_root_key=?`, rootKey).Scan(&candidate); err == nil && candidate != "" {
+				registered = candidate
+			}
+		}
+		out = append(out, registered)
+	}
+	return out
 }
 
 func (c *Catalog) rememberRevision(revision uint64) {
@@ -461,7 +495,10 @@ func mapKeys(values map[string]struct{}) []string {
 }
 func (c *Catalog) listTopicSessions(ctx context.Context, key TopicKey) ([]SessionRecord, error) {
 	key.Scope, key.WorkspaceRoot = normalizeScope(key.Scope, key.WorkspaceRoot)
-	rootKey := c.workspaceRootKey(key.Scope, key.WorkspaceRoot)
+	return c.listTopicSessionsByRootKey(ctx, key, c.workspaceRootKey(key.Scope, key.WorkspaceRoot))
+}
+
+func (c *Catalog) listTopicSessionsByRootKey(ctx context.Context, key TopicKey, rootKey string) ([]SessionRecord, error) {
 	out := []SessionRecord{}
 	var cursor *sessionPageCursor
 	for len(out) < MaxLimit {
@@ -511,13 +548,14 @@ func (c *Catalog) listTopicSessions(ctx context.Context, key TopicKey) ([]Sessio
 func (c *Catalog) GetTopic(ctx context.Context, key TopicKey) (TopicRecord, bool, error) {
 	key.Scope, key.WorkspaceRoot = normalizeScope(key.Scope, key.WorkspaceRoot)
 	key.TopicID = strings.TrimSpace(key.TopicID)
+	rootKey := c.workspaceRootKey(key.Scope, key.WorkspaceRoot)
 	item := TopicRecord{Sessions: []SessionRecord{}}
 	err := c.db.QueryRowContext(ctx, `SELECT scope,workspace_root,topic_id,title,title_source,pinned,
 		CASE WHEN metadata_present=1 THEN sort_order ELSE -1 END,
-        turns,turns_state,created_at,last_activity_at,recovery_state,recovery_branch_count,
-        recovery_unresolved_count,recovery_cleanup_eligible_count,health
+		turns,turns_state,created_at,last_activity_at,recovery_state,recovery_branch_count,
+		recovery_unresolved_count,recovery_cleanup_eligible_count,health
 		FROM catalog_topics WHERE scope=? AND workspace_root_key=? AND topic_id=?`,
-		key.Scope, c.workspaceRootKey(key.Scope, key.WorkspaceRoot), key.TopicID).Scan(
+		key.Scope, rootKey, key.TopicID).Scan(
 		&item.Scope, &item.WorkspaceRoot, &item.TopicID, &item.Title, &item.TitleSource,
 		&item.Pinned, &item.SortOrder, &item.Turns, &item.TurnsState,
 		&item.CreatedAt, &item.LastActivityAt, &item.RecoveryState, &item.RecoveryBranchCount,
@@ -528,7 +566,7 @@ func (c *Catalog) GetTopic(ctx context.Context, key TopicKey) (TopicRecord, bool
 	if err != nil {
 		return item, false, err
 	}
-	item.Sessions, err = c.listTopicSessions(ctx, key)
+	item.Sessions, err = c.listTopicSessionsByRootKey(ctx, key, rootKey)
 	if err != nil {
 		return TopicRecord{Sessions: []SessionRecord{}}, false, err
 	}
