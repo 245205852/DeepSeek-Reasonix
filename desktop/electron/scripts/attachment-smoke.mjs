@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, openSync, ftruncateSync, closeSync, statSync, writeFileSync, readFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, openSync, ftruncateSync, closeSync, statSync, writeFileSync, readFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -7,6 +7,7 @@ import { _electron } from "playwright";
 
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const home = mkdtempSync(join(tmpdir(), "reasonix-attachment-native-"));
+writeFileSync(join(home, "config.toml"), "");
 const workspace = join(home, "workspace");
 mkdirSync(workspace);
 const nativeFiles = ["large app.apk", "pasted app.apk", "dropped app.apk"].map(name => {
@@ -34,6 +35,7 @@ const shell = await _electron.launch({ executablePath: process.env.REASONIX_TEST
 }, timeout: 60000 });
 try {
   const page = await shell.firstWindow();
+  page.setDefaultTimeout(30000);
   page.on("pageerror", error => report.errors.push(error.message));
   await page.waitForURL("reasonix://app/index.html", { waitUntil: "domcontentloaded", timeout: 60000 });
   await page.waitForFunction(() => Boolean(window.reasonixDesktop) && !document.querySelector(".boot-shell"), null, { timeout: 60000 });
@@ -109,13 +111,51 @@ try {
   assert.equal(uploads, 1);
   assert.equal(readFileSync(stored).every(byte => byte === 37), true);
   check("80 MiB pathless File streams through the real Electron protocol and Go service byte-for-byte");
+  writeFileSync(join(home, "config.toml"), "[attachments]\nmax_stream_bytes = 4\n");
+  const rejected = page.waitForResponse(response => response.url().includes("/__reasonix_attachment_upload") && response.status() === 413);
+  await page.evaluate(() => {
+    const transfer = new DataTransfer();
+    transfer.items.add(new File(["12345"], "oversize.apk"));
+    const input = document.querySelector(".composer-content-file-input");
+    input.files = transfer.files;
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  const failure = await (await rejected).json();
+  assert.equal(failure.code, "attachment.too_large");
+  assert.equal(failure.limit_bytes, 4);
+  assert.equal(failure.limit_source, "user");
+  try {
+    const notice = page.locator(".toast--warn").filter({ hasText: "oversize.apk" });
+    await notice.waitFor({ state: "visible" });
+    assert.ok((await notice.innerText()).includes(String(failure.limit_bytes / (1024 * 1024))));
+  } catch (error) {
+    writeFileSync(join(home, "limit-failure-dom.txt"), await page.locator("body").innerText());
+    await page.screenshot({ path: join(home, "limit-failure.png") });
+    throw error;
+  }
+  assert.equal(readdirSync(join(workspace, ".reasonix", "attachments")).length, 1);
+  check("user byte ceiling returns typed 413, displays its reason, and removes the partial file");
+  writeFileSync(join(home, "config.toml"), "[attachments]\nmax_stream_bytes = 0\n");
+  await page.evaluate(() => {
+    const transfer = new DataTransfer();
+    transfer.items.add(new File(["123456"], "unlimited.apk"));
+    const input = document.querySelector(".composer-content-file-input");
+    input.files = transfer.files;
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  await until(async () => {
+    const state = await invoke(page, "GetSessionComposerState", [creation.ref]);
+    return JSON.parse(state.contentJson).attachments?.some(item => item.displayName === "unlimited.apk");
+  });
+  assert.equal(uploads, 3);
+  check("explicit user zero disables the ordinary stream ceiling without restarting");
   assert.equal(typeof await invoke(page, "Version"), "string");
   assert.equal(report.errors.length, 0, report.errors.join("\n"));
   assert.equal(await page.locator("[data-crash-overlay], .error-boundary").count(), 0);
   await page.locator("#composer-input").fill("Attachment smoke remains responsive");
   assert.equal(await page.locator("#composer-input").inputValue(), "Attachment smoke remains responsive");
   await page.screenshot({ path: join(home, "attachments.png") });
-  check("renderer and service remain responsive with all four large files attached");
+  check("renderer and service remain responsive after large-file uploads and limit rejection");
 } finally {
   await shell.close();
   writeFileSync(join(home, "attachment-smoke-results.json"), JSON.stringify(report, null, 2));

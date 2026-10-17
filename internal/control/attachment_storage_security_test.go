@@ -10,6 +10,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"reasonix/internal/config"
 )
 
 type attachmentSecurityReader func([]byte) (int, error)
@@ -61,7 +63,7 @@ func TestAttachmentStorageRejectsSymlinkedReasonixParent(t *testing.T) {
 
 func TestAttachmentStorageCleanupKeepsOriginalDirectoryOwner(t *testing.T) {
 	attachmentStorageDirectoryLink(t, t.TempDir(), filepath.Join(t.TempDir(), "probe"))
-	for _, failure := range []string{"read-error", "cancel"} {
+	for _, failure := range []string{"read-error", "cancel", "stream-limit"} {
 		t.Run(failure, func(t *testing.T) {
 			root, outside := t.TempDir(), t.TempDir()
 			directory := filepath.Join(root, ".reasonix", "attachments")
@@ -119,11 +121,23 @@ func TestAttachmentStorageCleanupKeepsOriginalDirectoryOwner(t *testing.T) {
 				if failure == "cancel" {
 					cancel()
 				}
+				if failure == "stream-limit" {
+					return copy(p, "x"), nil
+				}
 				return 0, wantErr
 			})
 
-			path, err := SaveAttachmentStreamInRoot(ctx, root, "app.apk", reader)
-			if path != "" || !errors.Is(err, wantErr) {
+			limit := (*config.Config)(nil).AttachmentStreamLimit()
+			if failure == "stream-limit" {
+				limit = config.AttachmentLimit{Bytes: int64(len("partially uploaded apk")), Source: "user"}
+			}
+			path, err := SaveAttachmentStreamInRoot(ctx, root, "app.apk", reader, limit)
+			matches := errors.Is(err, wantErr)
+			if failure == "stream-limit" {
+				var limitErr *AttachmentStreamLimitError
+				matches = errors.As(err, &limitErr) && limitErr.LimitBytes == limit.Bytes && limitErr.LimitSource == "user"
+			}
+			if path != "" || !matches {
 				t.Errorf("failed upload result: path=%q error=%v; want %v", path, err, wantErr)
 			}
 			if reads != 2 || basename == "" {

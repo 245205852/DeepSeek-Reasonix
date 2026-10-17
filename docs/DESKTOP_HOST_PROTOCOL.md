@@ -293,8 +293,20 @@ with an `application/octet-stream` body. The shell forwards the body stream and
 cancellation signal to the authenticated resource origin. The service validates
 the captured attachment-target token, writes in 64 KiB chunks, and removes partial
 files on failure or cancellation. It returns `{"path":".reasonix/attachments/…"}`.
-Streaming bounds memory use, not total stored bytes. This route has no fixed
-file-size cap; storage availability still applies. Image
+Streaming bounds memory use. To protect disk space, each streamed file defaults
+to a 1 GiB ceiling, counted from actual bytes read even without Content-Length.
+
+Only the user config may set `[attachments] max_stream_bytes = N` in bytes;
+`0` explicitly disables this ceiling, while unset or negative values use the
+default. Project `reasonix.toml` cannot override it. Configuration read failures
+reject uploads.
+
+An exceeded limit removes the partial file and returns HTTP 413:
+`{"code":"attachment.too_large","message":"…","limit_bytes":1073741824,"limit_source":"default"}`.
+The source is `default` or `user`. Native path references do not copy bytes and
+are unaffected by this upload ceiling. Available storage still applies.
+
+Image
 intake retains its 64 MiB limit, and legacy Base64 file APIs retain 25 MiB. The
 shell rejects oversized outgoing RPC frames locally without closing the service.
 

@@ -17,6 +17,11 @@ import (
 
 func uploadFixture(t *testing.T) (*App, string, string) {
 	t.Helper()
+	home := t.TempDir()
+	t.Setenv("REASONIX_HOME", home)
+	if err := os.WriteFile(filepath.Join(home, "config.toml"), nil, 0600); err != nil {
+		t.Fatal(err)
+	}
 	root := t.TempDir()
 	c := control.New(control.Options{WorkspaceRoot: root})
 	t.Cleanup(c.Close)

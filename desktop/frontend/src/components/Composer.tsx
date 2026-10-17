@@ -2449,7 +2449,6 @@ export function Composer({
 		}
 	};
 
-  // Ordinary files use native path references or a raw streaming upload.
   const attachOtherFiles = async (files: File[], sourceDraftKey: string) => {
     const owner = persistentTargetsByDraftRef.current[sourceDraftKey];
     if (!attachmentInputEnabled) return;
@@ -2471,11 +2470,12 @@ export function Composer({
         } else {
           addAttachmentToDraft(sourceDraftKey, { path: item.path, displayName: file.name }, key, owner);
         }
-      } catch {
+      } catch (error) {
         console.warn("[composer] failed to attach pasted file");
-        if (owner?.onTaskError) owner.onTaskError(owner.draftId, owner.generation, t("composer.attachFileFailed"));
-        else if (sourceDraftKey === activeDraftKeyRef.current) showToast(t("composer.attachFileFailed"), "warn");
-        // non-fatal: a failed attach must not block normal text input
+        const message = attachmentSubmit.attachmentUploadFailure(error, t("composer.attachFileFailed"), bytes => t("composer.attachTooLarge", { name: file.name, limit: String(bytes / (1024 * 1024)) }));
+        if (sourceDraftKey === activeDraftKeyRef.current && attachmentSubmit.isAttachmentUploadLimitError(error)) showToast(message, "warn", { summary: message });
+        else if (owner?.onTaskError) owner.onTaskError(owner.draftId, owner.generation, message);
+        else if (sourceDraftKey === activeDraftKeyRef.current) showToast(message, "warn");
       } finally {
         updatePendingPasteForDraft(sourceDraftKey, -1);
 			}

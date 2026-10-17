@@ -25,6 +25,15 @@ export function isExternalWorkspaceReference(ref: WorkspaceReference): boolean {
 const pendingImageSubmissions = new Map<string, { fingerprint: string; id: string }>();
 
 // Native files remain path references; pathless files send a raw HTTP body.
+export function attachmentUploadFailure(error: unknown, fallback: string, formatLimit?: (bytes: number) => string): string {
+  return isAttachmentUploadLimitError(error) ? formatLimit?.(error.limit_bytes) ?? error.message : fallback;
+}
+
+export function isAttachmentUploadLimitError(error: unknown): error is Error & { code: "attachment.too_large"; limit_bytes: number } {
+  return error instanceof Error && "code" in error && error.code === "attachment.too_large"
+    && "limit_bytes" in error && typeof error.limit_bytes === "number" && Number.isFinite(error.limit_bytes) && error.limit_bytes > 0;
+}
+
 export async function attachOrdinaryFile(
   app: AppBindings, token: string, file: File,
   getPathForFile?: (file: File) => string, fetcher: typeof fetch = fetch,
@@ -38,7 +47,16 @@ export async function attachOrdinaryFile(
   const response = await fetcher(`/__reasonix_attachment_upload?${query}`, {
     method: "POST", headers: { "content-type": "application/octet-stream" }, body: file,
   });
-  if (!response.ok) throw new Error(`File upload failed (${response.status})`);
+  if (!response.ok) {
+    const error: unknown = await response.json().catch(() => null);
+    if (error && typeof error === "object" && "code" in error && error.code === "attachment.too_large"
+      && "message" in error && typeof error.message === "string"
+      && "limit_bytes" in error && typeof error.limit_bytes === "number"
+      && "limit_source" in error && typeof error.limit_source === "string") {
+      throw Object.assign(new Error(error.message), { code: error.code, limit_bytes: error.limit_bytes, limit_source: error.limit_source });
+    }
+    throw new Error(`File upload failed (${response.status})`);
+  }
   const value: unknown = await response.json();
   if (!value || typeof value !== "object" || !("path" in value) || typeof value.path !== "string" || !value.path) {
     throw new Error("File upload returned no attachment path");

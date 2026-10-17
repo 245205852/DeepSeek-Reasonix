@@ -3,8 +3,10 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 
+	"reasonix/internal/config"
 	"reasonix/internal/control"
 )
 
@@ -32,18 +34,35 @@ func (a *App) attachmentUploadMiddleware() func(http.Handler) http.Handler {
 				http.Error(w, "attachment target is unavailable", http.StatusConflict)
 				return
 			}
+			limit, err := config.LoadAttachmentStreamLimit()
+			if err != nil {
+				http.Error(w, "attachment upload configuration could not be read", http.StatusInternalServerError)
+				return
+			}
 			ctx, cancel := context.WithCancel(r.Context())
 			defer cancel()
 			stop := context.AfterFunc(a.attachmentOperationContext(target), func() { cancel(); _ = r.Body.Close() })
 			defer stop()
-			rel, err := control.SaveAttachmentStreamInRoot(ctx, target.root, r.URL.Query().Get("name"), r.Body)
+			rel, err := control.SaveAttachmentStreamInRoot(ctx, target.root, r.URL.Query().Get("name"), r.Body, limit)
 			rel, err = a.finishAttachmentWrite(target, rel, err)
 			if err != nil {
-				status := http.StatusInternalServerError
 				if !a.attachmentTargetCurrent(target) {
-					status = http.StatusConflict
+					http.Error(w, "attachment upload could not be saved", http.StatusConflict)
+					return
 				}
-				http.Error(w, "attachment upload could not be saved", status)
+				var limitErr *control.AttachmentStreamLimitError
+				if errors.As(err, &limitErr) {
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusRequestEntityTooLarge)
+					_ = json.NewEncoder(w).Encode(struct {
+						Code        string `json:"code"`
+						Message     string `json:"message"`
+						LimitBytes  int64  `json:"limit_bytes"`
+						LimitSource string `json:"limit_source"`
+					}{"attachment.too_large", limitErr.Error(), limitErr.LimitBytes, limitErr.LimitSource})
+					return
+				}
+				http.Error(w, "attachment upload could not be saved", http.StatusInternalServerError)
 				return
 			}
 			w.Header().Set("Content-Type", "application/json")
