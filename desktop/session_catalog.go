@@ -252,26 +252,24 @@ func (a *App) stopSessionCatalog(timeout time.Duration) bool {
 	a.catalogInitialReconcileDone = nil
 	a.catalogMetadataRequests = nil
 	a.catalogClosing = closing
+	a.catalogLifecycleMu.Unlock()
 	if cancel != nil {
 		cancel()
 	}
 	catalog := a.sessionCatalog.Swap(nil)
-	// Pair nil publication with the request-side locked recheck. Keep the
-	// lifecycle lock through detachment so replacement publication cannot
-	// enter this retired-job snapshot.
+	// Pair the nil publication with the request-side locked recheck. Once this
+	// barrier passes, the snapshot contains every reconcile that can use catalog
+	// and no new one can be added.
 	a.catalogReconcileMu.Lock()
 	reconcileDone := make([]<-chan struct{}, 0, len(a.catalogReconcileJobs))
 	for _, job := range a.catalogReconcileJobs {
-		job.cancel()
 		reconcileDone = append(reconcileDone, job.done)
 	}
-	clear(a.catalogReconcileJobs)
 	a.catalogReconcileMu.Unlock()
-	a.catalogLifecycleMu.Unlock()
 	go func() {
 		defer close(closing.done)
-		// Cancellation releases queued discovery waits. Bound any synchronous
-		// admission still in flight by the original close deadline.
+		// A reconcile may wait on discovery that stopping has paused, so it
+		// only defers the close until the deadline, never past it.
 		for _, reconciled := range reconcileDone {
 			if !waitChannelBefore(reconciled, deadline) {
 				break
@@ -419,12 +417,9 @@ func (a *App) emitProjectTreeChangedV2(revision uint64, roots []string, reason s
 }
 
 type desktopCatalogReconcileJob struct {
-	target  sessioncatalog.DirectoryTarget
-	dirty   bool
-	catalog *sessioncatalog.Catalog
-	ctx     context.Context
-	cancel  context.CancelFunc
-	done    chan struct{}
+	target sessioncatalog.DirectoryTarget
+	dirty  bool
+	done   chan struct{}
 }
 
 func (a *App) requestSessionCatalogReconcile(dir string) bool {
@@ -449,69 +444,62 @@ func (a *App) requestSessionCatalogReconcile(dir string) bool {
 	if a.catalogReconcileJobs == nil {
 		a.catalogReconcileJobs = map[string]*desktopCatalogReconcileJob{}
 	}
-	if job := a.catalogReconcileJobs[key]; job != nil && job.catalog == catalog && job.ctx.Err() == nil {
+	if job := a.catalogReconcileJobs[key]; job != nil {
 		job.target = target
 		job.dirty = true
 		a.catalogReconcileMu.Unlock()
 		return true
 	}
-	ctx, cancel := context.WithCancel(a.bootContext())
-	job := &desktopCatalogReconcileJob{target: target, catalog: catalog, ctx: ctx, cancel: cancel, done: make(chan struct{})}
-	a.catalogReconcileJobs[key] = job
+	done := make(chan struct{})
+	a.catalogReconcileJobs[key] = &desktopCatalogReconcileJob{target: target, done: done}
 	a.catalogReconcileMu.Unlock()
-	go a.runSessionCatalogReconcile(key, job)
+	go a.runSessionCatalogReconcile(key, done)
 	return true
 }
 
-func (a *App) runSessionCatalogReconcile(key string, job *desktopCatalogReconcileJob) {
-	defer func() {
-		job.cancel()
-		a.catalogReconcileMu.Lock()
-		if a.catalogReconcileJobs[key] == job {
-			delete(a.catalogReconcileJobs, key)
-		}
-		a.catalogReconcileMu.Unlock()
-		close(job.done)
-	}()
+func (a *App) runSessionCatalogReconcile(key string, done chan struct{}) {
+	defer close(done)
 	for {
 		a.catalogReconcileMu.Lock()
-		if a.catalogReconcileJobs[key] != job || job.ctx.Err() != nil || a.shuttingDown.Load() {
+		job := a.catalogReconcileJobs[key]
+		if job == nil {
 			a.catalogReconcileMu.Unlock()
 			return
 		}
 		target := job.target
 		job.dirty = false
 		a.catalogReconcileMu.Unlock()
+		catalog := a.sessionCatalog.Load()
+		if catalog == nil || a.shuttingDown.Load() {
+			a.catalogReconcileMu.Lock()
+			delete(a.catalogReconcileJobs, key)
+			a.catalogReconcileMu.Unlock()
+			return
+		}
+
 		if a.catalogReconcileHook != nil {
 			a.catalogReconcileHook(target)
 		}
-		// Discovery projects metadata only. Retired or invalidated owners cannot
-		// settle paused tokens, so bind scheduling and completion to this job.
-		if job.ctx.Err() == nil && a.sessionCatalog.Load() == job.catalog {
+		// Discovery projects metadata without rewriting organization sidecars or
+		// proving recovery ancestry through transcript reads.
+		if settled, accepted := catalog.ScheduleReconcile(target); accepted {
 			select {
-			case <-job.catalog.Invalidated():
-				job.cancel()
-			default:
-				if settled, accepted := job.catalog.ScheduleReconcile(target); accepted {
-					select {
-					case <-settled:
-					case <-job.ctx.Done():
-					case <-job.catalog.Invalidated():
-						job.cancel()
-					}
-				}
+			case <-settled:
+			case <-a.bootContext().Done():
 			}
 		}
 
 		a.catalogReconcileMu.Lock()
-		if a.catalogReconcileJobs[key] == job && job.dirty && job.ctx.Err() == nil &&
-			a.sessionCatalog.Load() == job.catalog && !a.shuttingDown.Load() {
+		job = a.catalogReconcileJobs[key]
+		if job == nil {
+			a.catalogReconcileMu.Unlock()
+			return
+		}
+		if job.dirty && !a.shuttingDown.Load() {
 			a.catalogReconcileMu.Unlock()
 			continue
 		}
-		if a.catalogReconcileJobs[key] == job {
-			delete(a.catalogReconcileJobs, key)
-		}
+		delete(a.catalogReconcileJobs, key)
 		a.catalogReconcileMu.Unlock()
 		if a.catalogReconcileDoneHook != nil {
 			a.catalogReconcileDoneHook(target)
