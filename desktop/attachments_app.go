@@ -168,7 +168,7 @@ func (a *App) finishAttachmentWrite(target attachmentTarget, rel string, err err
 		return rel, nil
 	}
 	if isAttachmentRefPath(rel) {
-		_ = os.Remove(filepath.Join(target.root, filepath.FromSlash(rel)))
+		_ = control.RemoveStoredAttachment(target.root, rel)
 	}
 	return "", fmt.Errorf("attachment workspace changed while saving; please retry")
 }
@@ -442,7 +442,7 @@ func (a *App) attachDroppedForTarget(target attachmentTarget, path string) (Drop
 			}
 			preview, previewErr := a.attachmentDataURLForTarget(target, rel)
 			if previewErr != nil {
-				_ = os.Remove(filepath.Join(target.root, filepath.FromSlash(rel)))
+				_ = control.RemoveStoredAttachment(target.root, rel)
 				return DroppedItem{}, previewErr
 			}
 			return DroppedItem{Kind: "attachment", Path: rel, PreviewURL: preview}, nil

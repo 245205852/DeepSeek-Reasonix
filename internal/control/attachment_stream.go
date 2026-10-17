@@ -4,38 +4,26 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"os"
 	"path/filepath"
 	"strings"
 )
 
 // SaveAttachmentStreamInRoot stores ordinary file bytes without the legacy
 // data-URL size cap. A 64 KiB buffer bounds memory, not total stored bytes.
-func SaveAttachmentStreamInRoot(ctx context.Context, root, name string, source io.Reader) (path string, err error) {
+func SaveAttachmentStreamInRoot(ctx context.Context, root, name string, source io.Reader) (string, error) {
 	if err := ctx.Err(); err != nil {
-		return "", err
-	}
-	abs, err := filepath.Abs(root)
-	if err != nil {
-		return "", err
-	}
-	if err := ensureAttachmentRootIn(abs); err != nil {
 		return "", err
 	}
 	ext := strings.ToLower(filepath.Ext(name))
 	if !safeAttachmentExt.MatchString(ext) {
 		ext = ".bin"
 	}
-	rel, f, err := createAttachmentFileIn(abs, ext)
+	owned, err := createOwnedAttachmentFile(root, ext)
 	if err != nil {
 		return "", err
 	}
-	defer func() {
-		_ = f.Close()
-		if err != nil {
-			_ = os.Remove(filepath.Join(abs, rel))
-		}
-	}()
+	defer owned.cleanup()
+
 	buf := make([]byte, 64<<10)
 	var total int64
 	for {
@@ -47,7 +35,7 @@ func SaveAttachmentStreamInRoot(ctx context.Context, root, name string, source i
 			if err := ctx.Err(); err != nil {
 				return "", err
 			}
-			if written, err := f.Write(buf[:n]); err != nil {
+			if written, err := owned.Write(buf[:n]); err != nil {
 				return "", err
 			} else if written != n {
 				return "", io.ErrShortWrite
@@ -67,8 +55,8 @@ func SaveAttachmentStreamInRoot(ctx context.Context, root, name string, source i
 	if total == 0 {
 		return "", fmt.Errorf("attachment is empty")
 	}
-	if err := f.Close(); err != nil {
+	if err := owned.finish(); err != nil {
 		return "", err
 	}
-	return filepath.ToSlash(rel), nil
+	return filepath.ToSlash(owned.rel), nil
 }
