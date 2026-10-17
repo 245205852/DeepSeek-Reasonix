@@ -123,3 +123,30 @@ func TestLegacyRootlessRecoveryGroupUsesOneRepresentativeIdentity(t *testing.T) 
 		}
 	}
 }
+
+func TestExplicitRecoveryPrefixedTopicIdentityIsPreserved(t *testing.T) {
+	rootPath := filepath.Join(t.TempDir(), "root.jsonl")
+	group := agent.BranchID(rootPath)
+	oldTopic := "recovery:" + group
+	root := SessionRecord{Path: rootPath}
+	leaf := SessionRecord{Path: filepath.Join(filepath.Dir(rootPath), "leaf.jsonl"), Recovered: true, ParentID: group, RecoveryGroupID: group, RecoveryCanonical: true}
+	for _, placement := range []string{"root", "member", "rootless"} {
+		t.Run(placement, func(t *testing.T) {
+			parent, recovery := root, leaf
+			if placement == "root" {
+				parent.TopicID, parent.TopicTitle = oldTopic, "Persisted title"
+			} else {
+				recovery.TopicID, recovery.TopicTitle = oldTopic, "Persisted title"
+			}
+			records := []SessionRecord{parent, recovery}
+			if placement == "rootless" {
+				records = records[1:]
+			}
+			for _, got := range projectLogicalSessions(records) {
+				if got.TopicID != oldTopic || got.LogicalTopicID != oldTopic || got.TopicTitle != "Persisted title" {
+					t.Fatalf("explicit recovery-prefixed authority changed: %+v", got)
+				}
+			}
+		})
+	}
+}
