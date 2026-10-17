@@ -28,9 +28,9 @@ async function until(predicate) {
   }
   throw new Error("Attachment smoke condition timed out");
 }
-const shell = await _electron.launch({ args: [root, `--user-data-dir=${join(home, "electron")}`], env: {
+const shell = await _electron.launch({ executablePath: process.env.REASONIX_TEST_ELECTRON, args: [root, `--user-data-dir=${join(home, "electron")}`], env: {
   ...process.env, REASONIX_HOME: home, REASONIX_STATE_HOME: home, REASONIX_CACHE_HOME: join(home, "cache"),
-  REASONIX_DEV: "1", REASONIX_DESKTOP_SERVICE: resolve(root, "../build/bin/reasonix-desktop-service"),
+  REASONIX_DEV: "1", REASONIX_DESKTOP_SERVICE: process.env.REASONIX_DESKTOP_SERVICE || resolve(root, "../build/bin/reasonix-desktop-service" + (process.platform === "win32" ? ".exe" : "")),
 }, timeout: 60000 });
 try {
   const page = await shell.firstWindow();

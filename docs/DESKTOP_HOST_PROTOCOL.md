@@ -293,7 +293,8 @@ with an `application/octet-stream` body. The shell forwards the body stream and
 cancellation signal to the authenticated resource origin. The service validates
 the captured attachment-target token, writes in 64 KiB chunks, and removes partial
 files on failure or cancellation. It returns `{"path":".reasonix/attachments/…"}`.
-This route has no fixed file-size cap; storage availability still applies. Image
+Streaming bounds memory use, not total stored bytes. This route has no fixed
+file-size cap; storage availability still applies. Image
 intake retains its 64 MiB limit, and legacy Base64 file APIs retain 25 MiB. The
 shell rejects oversized outgoing RPC frames locally without closing the service.
 

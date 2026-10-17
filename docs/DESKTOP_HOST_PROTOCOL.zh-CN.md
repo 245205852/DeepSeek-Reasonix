@@ -240,7 +240,8 @@ Wails 实现已随 Electron 壳落地删除。
 没有原生路径的文件使用 `POST /__reasonix_attachment_upload?target=…&name=…`，
 请求体类型为 `application/octet-stream`。Shell 将请求体流和取消信号转发到经过鉴权
 的资源源；服务校验捕获的附件目标凭证，按 64 KiB 分块写盘，失败或取消时清理未完成
-文件，返回 `{"path":".reasonix/attachments/…"}`。该入口不设固定文件大小上限，仍受
+文件，返回 `{"path":".reasonix/attachments/…"}`。流式传输约束内存占用，不限制最终落盘总量。
+该入口不设固定文件大小上限，仍受
 可用存储空间约束。图片保留 64 MiB 限制，旧 Base64 文件接口保留 25 MiB 限制。
 超大的出站 RPC 帧由 Shell 本地拒绝，不会导致服务断连。
 
