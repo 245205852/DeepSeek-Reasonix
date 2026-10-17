@@ -4,21 +4,47 @@ import type { ComposerTarget } from "../generated/desktopContract.generated";
 import type { WorkspaceReference } from "./composerDraftTypes";
 
 export async function restoreExternalFolderReferences(app: AppBindings, target: ComposerTarget, refs: WorkspaceReference[]) {
-  const external = refs.filter(ref => ref.isDir && ref.path.startsWith("__reasonix_external_folder/"));
+  const external = refs.filter(isExternalWorkspaceReference);
   if (!external.length) return;
   const token = await captureAttachmentTarget(app, target, ["AttachDroppedForTarget"]);
   try {
     for (const ref of external) {
       if (!ref.displayPath) throw new Error("External folder source is unavailable; reattach the folder before sending");
       const restored = await app.AttachDroppedForTarget!(token, ref.displayPath);
-      if (restored.kind !== "workspace" || !restored.isDir || restored.path !== ref.path) {
+      if (restored.kind !== "workspace" || Boolean(restored.isDir) !== Boolean(ref.isDir) || restored.path !== ref.path) {
         throw new Error("External folder changed; reattach the folder before sending");
       }
     }
   } finally { await app.ReleaseAttachmentTarget?.(token); }
 }
 
+export function isExternalWorkspaceReference(ref: WorkspaceReference): boolean {
+  return ref.path.startsWith("__reasonix_external_folder/") || Boolean(!ref.isDir && ref.displayPath && /^(?:\/|[a-zA-Z]:[\\/]|\\\\)/.test(ref.path));
+}
+
 const pendingImageSubmissions = new Map<string, { fingerprint: string; id: string }>();
+
+// Native files remain path references; pathless files send a raw HTTP body.
+export async function attachOrdinaryFile(
+  app: AppBindings, token: string, file: File,
+  getPathForFile?: (file: File) => string, fetcher: typeof fetch = fetch,
+): Promise<{ kind: string; path: string; isDir?: boolean; displayPath?: string }> {
+  const nativePath = getPathForFile?.(file);
+  if (nativePath) {
+    if (!app.AttachDroppedForTarget) throw new Error("unsupported: attachments-v2");
+    return app.AttachDroppedForTarget(token, nativePath);
+  }
+  const query = new URLSearchParams({ target: token, name: file.name });
+  const response = await fetcher(`/__reasonix_attachment_upload?${query}`, {
+    method: "POST", headers: { "content-type": "application/octet-stream" }, body: file,
+  });
+  if (!response.ok) throw new Error(`File upload failed (${response.status})`);
+  const value: unknown = await response.json();
+  if (!value || typeof value !== "object" || !("path" in value) || typeof value.path !== "string" || !value.path) {
+    throw new Error("File upload returned no attachment path");
+  }
+  return { kind: "attachment", path: value.path };
+}
 
 export function imageSubmissionIdentity(draft: string, fingerprint: string): string {
   const previous = pendingImageSubmissions.get(draft);

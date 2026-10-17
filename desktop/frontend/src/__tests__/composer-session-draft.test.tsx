@@ -941,12 +941,20 @@ console.log("\ncomposer session draft");
   const saveStarted = deferred<void>();
   const savePastedFile = deferred<string>();
   const sent: string[] = [];
-  installBridgeApp({
-    SavePastedFileForTarget: async () => {
-      saveStarted.resolve();
-      return savePastedFile.promise;
-    },
-  });
+  installBridgeApp({});
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init = {}) => {
+    const url = new URL(String(input), "http://localhost/");
+    eq(url.pathname, "/__reasonix_attachment_upload", "pending attachment uses raw upload route");
+    eq(url.searchParams.get("target"), "test-attachment-target", "pending upload retains source target");
+    eq(url.searchParams.get("name"), "draft.txt", "pending upload preserves the filename");
+    eq(init.method, "POST", "pending upload uses POST");
+    ok(init.body instanceof File, "pending upload sends a File body");
+    eq(new Headers(init.headers).get("content-type"), "application/octet-stream", "pending upload sends raw bytes");
+    saveStarted.resolve();
+    const path = await savePastedFile.promise;
+    return new Response(JSON.stringify({ path }), { status: 201, headers: { "content-type": "application/json" } });
+  };
   const { root, rerender } = await renderComposer({
     onSend: (text) => {
       sent.push(text);
@@ -993,6 +1001,7 @@ console.log("\ncomposer session draft");
     root.unmount();
   });
   dom.window.close();
+  globalThis.fetch = originalFetch;
 }
 
 {

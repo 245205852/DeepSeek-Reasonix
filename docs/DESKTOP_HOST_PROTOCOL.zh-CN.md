@@ -233,8 +233,27 @@ Wails 实现已随 Electron 壳落地删除。
 
 ## 资源源
 
+桌面端选择、粘贴或拖入普通文件时，优先使用原生路径。工作区内文件保留相对引用，
+外部文件保留精确到单个文件的引用，不复制内容，也不授权其父目录。提交前按捕获的
+输入区归属恢复引用。
+
+没有原生路径的文件使用 `POST /__reasonix_attachment_upload?target=…&name=…`，
+请求体类型为 `application/octet-stream`。Shell 将请求体流和取消信号转发到经过鉴权
+的资源源；服务校验捕获的附件目标凭证，按 64 KiB 分块写盘，失败或取消时清理未完成
+文件，返回 `{"path":".reasonix/attachments/…"}`。该入口不设固定文件大小上限，仍受
+可用存储空间约束。图片保留 64 MiB 限制，旧 Base64 文件接口保留 25 MiB 限制。
+超大的出站 RPC 帧由 Shell 本地拒绝，不会导致服务断连。
+
+保存的输入区、会话 JSON 字段和附件路径格式保持不变。原生文件引用沿用绝对路径
+语法，旧版仍能看到源路径；新版运行时负责恢复精确文件引用。不改变模型系统前缀
+或工具定义。
+
+构建前端、Shell 和 Go 服务后，可运行
+`cd desktop/electron && node scripts/attachment-smoke.mjs`，在临时数据目录中通过
+真实 Electron 应用验证 120 MiB 原生文件和 80 MiB 无路径文件。
+
 服务在回环端口上监听，承载现有的授权资源处理器（`/__reasonix_workspace_media/…`、
-`/__reasonix_theme_asset/…`、远程 markdown 图片代理）。壳从受限的 `reasonix://app/`
+`/__reasonix_theme_asset/…`、远程 markdown 图片代理）和精确匹配的附件上传入口。壳从受限的 `reasonix://app/`
 scheme 提供打包界面，只把上述前缀转发到资源源，并在主进程中附加
 `Authorization: Bearer <token>`。token 从不到达渲染进程、网站视图、远程窗口或
 MCP App 框架。Go 保留今天的全部文件身份与 TTL 检查。
