@@ -120,6 +120,7 @@ func TestRuntimeConfigClassificationRejectsAddedFields(t *testing.T) {
 		{"top level", "", reflect.TypeFor[config.Config]()},
 		{"nested runtime", "Agent", reflect.TypeFor[config.AgentConfig]()},
 		{"nested excluded", "UI", reflect.TypeFor[config.UIConfig]()},
+		{"upload admission", "Attachments", reflect.TypeFor[config.AttachmentsConfig]()},
 		{"slice element", "Providers", reflect.TypeFor[config.ProviderEntry]()},
 	}
 	for _, tc := range cases {
