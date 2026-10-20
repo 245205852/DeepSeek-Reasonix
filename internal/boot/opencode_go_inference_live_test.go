@@ -22,6 +22,17 @@ import (
 // each capped at 768 output tokens/60 seconds, plus shared-model discovery.
 // No credentials or generated text are logged.
 func TestLiveOpenCodeGoInferenceV41(t *testing.T) {
+	runLiveOpenCodeGoInferenceV41(t, false)
+}
+
+// A focused rerun keeps one conversation in memory through three dependent
+// requests, with at most five explicit 503-only probe retries shared across it.
+// This is test orchestration, not a change to the production retry policy.
+func TestLiveOpenCodeGoInferenceV41ToolReplay(t *testing.T) {
+	runLiveOpenCodeGoInferenceV41(t, true)
+}
+
+func runLiveOpenCodeGoInferenceV41(t *testing.T, replayOnly bool) {
 	key := os.Getenv("OPENCODE_GO_API_KEY")
 	if key == "" {
 		t.Skip("OPENCODE_GO_API_KEY is required")
@@ -51,7 +62,12 @@ func TestLiveOpenCodeGoInferenceV41(t *testing.T) {
 	}
 	sessions := map[string]string{}
 	probeSession := provider.NewCacheSessionID()
-	collect := func(label string, p provider.Provider, req provider.Request) provider.Message {
+	probeRetries := 0
+	if replayOnly {
+		probeRetries = 5
+	}
+	var collect func(string, provider.Provider, provider.Request) provider.Message
+	collect = func(label string, p provider.Provider, req provider.Request) provider.Message {
 		t.Helper()
 		requests++
 		if requests > 8 {
@@ -64,7 +80,13 @@ func TestLiveOpenCodeGoInferenceV41(t *testing.T) {
 		if strings.HasPrefix(label, "new-default-") {
 			conversation = "default-tool-history"
 		}
-		ctx = provider.WithIndependentRequestAttemptCounter(provider.WithCacheSession(ctx, probeSession+"/"+conversation))
+		identity := probeSession + "/" + conversation
+		// An explicit synthetic identity permits an affinity-control probe.
+		// Never use a real user's conversation identity in this live fixture.
+		if pinned := os.Getenv("REASONIX_OPENCODE_LIVE_SESSION"); pinned != "" {
+			identity = pinned
+		}
+		ctx = provider.WithIndependentRequestAttemptCounter(provider.WithCacheSession(ctx, identity))
 		var mu sync.Mutex
 		var status int
 		var path, session, userAgent string
@@ -134,6 +156,18 @@ func TestLiveOpenCodeGoInferenceV41(t *testing.T) {
 			if len(detail) > 1024 {
 				detail = detail[:1024]
 			}
+			if replayOnly && gotStatus == 503 && probeRetries > 0 {
+				probeRetries--
+				t.Logf("explicit_probe_retry case=%s remaining=%d delay=10s error=%s", label, probeRetries, detail)
+				timer := time.NewTimer(10 * time.Second)
+				defer timer.Stop()
+				select {
+				case <-t.Context().Done():
+					t.Fatal(t.Context().Err())
+				case <-timer.C:
+				}
+				return collect(label, p, req)
+			}
 			if gotStatus == 401 || gotStatus == 403 {
 				t.Fatal(detail)
 			}
@@ -157,7 +191,9 @@ func TestLiveOpenCodeGoInferenceV41(t *testing.T) {
 	}
 	chat := newModel("openai", provider.OpenCodeGoChatBaseURL, "deepseek-v4.1-flash")
 	smoke := provider.Request{Messages: []provider.Message{{Role: provider.RoleSystem, Content: "You are Reasonix, a coding assistant running a small integration test. Follow instructions briefly."}, {Role: provider.RoleUser, Content: "Reply with only OK."}}, EffortOverride: "disabled"}
-	collect("new-disabled", chat, smoke)
+	if !replayOnly {
+		collect("new-disabled", chat, smoke)
+	}
 	tools := []provider.ToolSchema{{Name: "get_marker", Description: "Return the synthetic coding integration marker. Call exactly once when requested.", Parameters: json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`)}}
 	messages := []provider.Message{{Role: provider.RoleSystem, Content: "You are Reasonix, a coding assistant. Call get_marker exactly once when asked. After a tool result, reply with only the returned marker. Never call it again unless asked."}, {Role: provider.RoleUser, Content: "Call get_marker now."}}
 	first := collect("new-default-tool", chat, provider.Request{Messages: messages, Tools: tools})
@@ -175,6 +211,9 @@ func TestLiveOpenCodeGoInferenceV41(t *testing.T) {
 				t.Error("multi-turn reasoning/history replay failed")
 			}
 		}
+	}
+	if replayOnly {
+		return
 	}
 	for _, effort := range []string{"low", "max"} {
 		smoke.EffortOverride = effort
