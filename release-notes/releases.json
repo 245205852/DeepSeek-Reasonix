@@ -72,6 +72,24 @@
           "refs": [
             12501
           ]
+        },
+        {
+          "kind": "fixed",
+          "targets": [
+            "desktop"
+          ],
+          "title": {
+            "en": "Sessions no longer become unreadable when their integrity index files are lost",
+            "zh": "会话的完整性索引文件丢失后，不再让所有会话打不开"
+          },
+          "body": {
+            "en": "Each stored attachment or history block has a small integrity index next to it. If those index files went missing (for example after a cleanup or another program removed them) while the content itself was intact, every conversation failed to load with a transport error. The index is now rebuilt from the content on the first read, and only when both the content and the rebuilt index match the checksums recorded with the session; damaged content is still refused.",
+            "zh": "每个附件或历史块旁边都有一个很小的完整性索引文件。如果这些索引文件丢失（比如清理之后，或被其他程序删除），而内容本身完好，所有会话都会因为传输错误而打不开。现在第一次读取时会从内容重建索引，并且只有内容和重建出的索引都与会话里记录的校验值一致才会接受；内容损坏时仍然拒绝。"
+          },
+          "refs": [
+            14018,
+            14019
+          ]
         }
       ],
       "changes": {
