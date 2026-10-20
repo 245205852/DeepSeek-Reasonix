@@ -22,6 +22,7 @@ export const zh: Record<DictKey, string> = {
   "error.tooLarge": "请求内容过大，请减少内容或附件大小后再试。",
   "error.invalidInput": "请求格式或参数有误，请检查输入和相关配置。",
   "error.empty": "服务未返回任何内容，可手动重新发送。",
+  "error.noDeliverable": "本轮未完成：模型未生成有效答复，自动恢复也未成功。可发送消息继续，或切换模型后重试。",
   "error.permission": "权限不足，请检查文件、目录或操作权限。",
   "error.fileMissing": "文件或目录不存在，请确认是否已移动或删除。",
   "error.diskFull": "磁盘空间不足，请清理空间后再继续。",

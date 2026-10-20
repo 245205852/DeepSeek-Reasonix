@@ -12,6 +12,7 @@ build request
   -> provider stream
   -> clean final: done
   -> tool call: execute, next step
+  -> reasoning-only terminal: one continuation; fail if no answer follows
   -> transport/service/empty-response failure: return error, user may retry
   -> unhandled error: explicit failure
 ```
@@ -26,8 +27,11 @@ build request
   protocol/context repairs remain bounded and separate from transport retries.
 
 - Normal requests are executor-only; the planner is opt-in (`planner_model`).
-- Normal agents ship with synthetic continuation disabled; Goal, review,
-  guardian, and typed-report flows keep their own constraints.
+- A terminal response without visible answer text gets at most one continuation
+  per Run, preserving completed tool results and the existing request prefix.
+  A second no-answer terminal fails with `no_deliverable_output`; intervening
+  tools do not reset this allowance. Cancellation and budgets still win.
+  Structured finalizers such as `submit_plan` retain their own completion contract.
 - Compaction defaults to a single summary; chunked/tree-reduce recovery is
   explicit only (manual `/compact` and marked recovery workflows).
 - Final readiness, tool safety, cancellation, budgets, and explicit whole-file
@@ -79,7 +83,9 @@ New consolidated suite: `internal/agent/agent_contract_test.go`.
 | provider failure stops after one request in every agent role | `TestProviderFailureReturnsWithoutWaitingOrRetrying` |
 | interrupted output survives until the user retries | `TestInterruptedStreamStopsUntilUserRetries` |
 | clean final adds no synthetic continuation | `TestContractCleanFinalAddsNoSyntheticContinuation` |
-| reasoning-only clean stop completes | `TestRunAcceptsReasoningOnlyFinalAnswer` |
+| reasoning-only stop recovers once, then fails without delivery | `TestRunRecoversReasoningOnlyFinalAnswer`, `TestNoDeliverableFailsWithoutProviderSpecificPolicy` |
+| tool progress cannot replenish recovery; cancellation and budgets win | `TestNoDeliverableRecoveryDoesNotResetAfterTools`, `TestNoDeliverableRecoveryHonorsCancellationAndBudget` |
+| failed delivery and response metadata survive reopen/export | `TestNoDeliverableSettlementAndColdExport` |
 | empty response leaves retry to the user | `TestEmptyResponseLeavesRetryToUser` |
 | zero content returns an error without committing an empty message | `TestRunStopsOnZeroContentWithoutCommittingEmptyMessages` |
 | strict-provider missing reasoning: one frozen-request retry | `TestRunSilentlyRecoversMissingToolCallReasoning` and the replay suites in `loop_e2e_test.go`/`retry_e2e_test.go` (#9776 repair) |
