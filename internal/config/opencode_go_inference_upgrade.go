@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"reflect"
+	"slices"
 	"strings"
 
 	"github.com/BurntSushi/toml"
@@ -92,20 +93,16 @@ func rewriteOpenCodeGoInferenceUpgrade(body string) (string, bool, error) {
 		}
 		// The new SKU is recommended on Chat Completions. Keep existing model
 		// selections and search-capable alternate routes intact.
-		if route == provider.OpenCodeGoRouteChat && !p.HasModel("deepseek-v4.1-flash") {
-			for _, model := range p.ModelList() {
-				if provider.OpenCodeGoDeepSeekModel(model) {
-					p.Models = append(append([]string(nil), p.ModelList()...), "deepseek-v4.1-flash")
-					if p.Price != nil && p.Prices["deepseek-v4.1-flash"] == nil {
-						if p.Prices == nil {
-							p.Prices = map[string]*provider.Pricing{}
-						}
-						// Go's documented USD peak list rate; never inherit a
-						// singular custom/Pro price for the newly added Flash SKU.
-						p.Prices["deepseek-v4.1-flash"] = deepSeekV4FlashPriceUSD()
-					}
-					break
+		if route == provider.OpenCodeGoRouteChat && !p.HasModel("deepseek-v4.1-flash") &&
+			slices.ContainsFunc(p.ModelList(), provider.OpenCodeGoDeepSeekModel) {
+			p.Models = append(append([]string(nil), p.ModelList()...), "deepseek-v4.1-flash")
+			if p.Price != nil && p.Prices["deepseek-v4.1-flash"] == nil {
+				if p.Prices == nil {
+					p.Prices = map[string]*provider.Pricing{}
 				}
+				// Go's documented USD peak list rate; never inherit a
+				// singular custom/Pro price for the newly added Flash SKU.
+				p.Prices["deepseek-v4.1-flash"] = deepSeekV4FlashPriceUSD()
 			}
 		}
 		fields := tables[i].(map[string]any)
