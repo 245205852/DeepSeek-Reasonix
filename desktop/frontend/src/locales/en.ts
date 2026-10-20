@@ -21,6 +21,7 @@ export const en = {
   "error.tooLarge": "The request is too large. Reduce its content or attachments.",
   "error.invalidInput": "The request format or parameters were rejected. Check the input and configuration.",
   "error.empty": "The service returned no content. You can send the request again.",
+  "error.noDeliverable": "This turn did not complete: the model produced no answer, even after recovery. Send a message to continue, or switch models and try again.",
   "error.permission": "Permission was denied. Check access to the file, directory or operation.",
   "error.fileMissing": "The file or directory was not found. Check whether it was moved or deleted.",
   "error.diskFull": "There is not enough disk space. Free some space before continuing.",
