@@ -45,7 +45,9 @@ func TestLoginEnvironmentFallsBackWhenShellFails(t *testing.T) {
 }
 
 func TestMergePathRemovesEmptyAndDuplicateEntries(t *testing.T) {
-	if got := mergePath("/a::/b:/a", "/b:/c"); got != "/a:/b:/c" {
-		t.Fatalf("mergePath = %q", got)
+	sep := string(os.PathListSeparator)
+	join := func(parts ...string) string { return strings.Join(parts, sep) }
+	if got, want := mergePath(join("/a", "", "/b", "/a"), join("/b", "/c")), join("/a", "/b", "/c"); got != want {
+		t.Fatalf("mergePath = %q, want %q", got, want)
 	}
 }
