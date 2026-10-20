@@ -10,7 +10,7 @@ func runtimeConfigCoreClassification() []configTypeClassification {
 		classifyConfigType[config.Config](configFieldClasses{
 			runtime: "DefaultModel Language CredentialsStore Desktop Billing Agent Providers Tools Checkpoints " +
 				"Permissions Sandbox Network Environment Plugins Skills LSP Browser Bot Secrets Remote",
-			excluded: "ConfigVersion UI CLI Telemetry Notifications Statusline Serve",
+			excluded: "ConfigVersion UI CLI Telemetry Notifications Statusline Serve Attachments",
 		}),
 		classifyConfigType[config.AgentConfig](configFieldClasses{
 			runtime: "SystemPrompt SystemPromptFile Temperature PlannerModel WebSearchModel VisionModel " +

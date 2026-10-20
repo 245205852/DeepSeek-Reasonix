@@ -4,6 +4,8 @@ import "reasonix/internal/config"
 
 func runtimeConfigHostClassification() []configTypeClassification {
 	return []configTypeClassification{
+		// Upload admission reads this policy per request, outside controller assembly.
+		classifyConfigType[config.AttachmentsConfig](configFieldClasses{excluded: "MaxStreamBytes"}),
 		classifyConfigType[config.DesktopConfig](configFieldClasses{
 			runtime: "Currency ProviderAccess",
 			excluded: "Language LayoutStyle Theme ThemeStyle TerminalTheme ExternalOpener CloseBehavior DisplayMode " +
