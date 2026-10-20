@@ -31,6 +31,9 @@ build request
   per Run, preserving completed tool results and the existing request prefix.
   A second no-answer terminal fails with `no_deliverable_output`; intervening
   tools do not reset this allowance. Cancellation and budgets still win.
+  Cancellation wins until the Run returns, even after a clean answer has been
+  committed, matching DeepSeek Harness: the turn ends cancelled and the answer
+  stays in history for display under the existing cancelled-turn replay policy.
   Structured finalizers such as `submit_plan` retain their own completion contract.
 - Compaction defaults to a single summary; chunked/tree-reduce recovery is
   explicit only (manual `/compact` and marked recovery workflows).
@@ -84,7 +87,8 @@ New consolidated suite: `internal/agent/agent_contract_test.go`.
 | interrupted output survives until the user retries | `TestInterruptedStreamStopsUntilUserRetries` |
 | clean final adds no synthetic continuation | `TestContractCleanFinalAddsNoSyntheticContinuation` |
 | reasoning-only stop recovers once, then fails without delivery | `TestRunRecoversReasoningOnlyFinalAnswer`, `TestNoDeliverableFailsWithoutProviderSpecificPolicy` |
-| tool progress cannot replenish recovery; cancellation and budgets win | `TestNoDeliverableRecoveryDoesNotResetAfterTools`, `TestNoDeliverableRecoveryHonorsCancellationAndBudget` |
+| tool progress cannot replenish recovery; cancellation and budgets win | `TestNoDeliverableRecoveryDoesNotResetAfterTools`, `TestNoDeliverableRecoveryHonorsCancellationAndBudget`, `TestNoDeliverableBudgetSpentDuringRecoveryPauses` |
+| cancellation after a committed answer still ends the Run cancelled | `TestCancelAfterCommittedAnswerEndsRunCancelled` |
 | failed delivery and response metadata survive reopen/export | `TestNoDeliverableSettlementAndColdExport` |
 | empty response leaves retry to the user | `TestEmptyResponseLeavesRetryToUser` |
 | zero content returns an error without committing an empty message | `TestRunStopsOnZeroContentWithoutCommittingEmptyMessages` |

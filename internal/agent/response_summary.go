@@ -7,8 +7,10 @@ func (a *Agent) responseSummary(s streamedTurn) *event.ResponseSummary {
 		Provider: a.svc.prov.Name(), ModelRef: a.modelRef,
 		FinishReason: "unknown", TextBytes: len(s.text), ReasoningBytes: len(s.reasoning),
 		ToolCalls: len(s.calls), ServerSearches: len(s.serverSearch),
-		StreamComplete:   s.err == nil && !s.interrupted,
-		RecoveryAttempts: a.turn.terminal.emptyFinalBlocks,
+		StreamComplete: s.err == nil && !s.interrupted,
+	}
+	if a.turn.terminal.answeringRecovery {
+		summary.RecoveryAttempts = a.turn.terminal.emptyFinalBlocks
 	}
 	if u := s.usage; u != nil {
 		if u.FinishReason != "" {

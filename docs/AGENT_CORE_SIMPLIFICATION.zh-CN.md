@@ -26,6 +26,8 @@
 - 没有可见答复的结束响应，每个 Run 最多续接一次，保留已完成的工具结果和
   原有请求前缀。再次无答复则以 `no_deliverable_output` 失败；中间调用工具
   不重置恢复额度，取消和预算仍优先。`submit_plan` 等结构化交付保留自身结束契约。
+  与 DeepSeek Harness 一致，Run 返回前取消始终优先，即使完整答复已提交：
+  本轮以取消结束，答复保留在历史中供展示，并沿用现有已取消回合的回放策略。
 - compaction 默认单次摘要;chunked/tree-reduce 高级恢复仅限显式场景
   (手动 `/compact` 与明确标记的 recovery workflow)。
 - final readiness、工具安全、取消、预算和显式全文读取的有界暂停继续作为硬边界；
@@ -75,7 +77,8 @@
 | 流中断保留部分内容，等待用户决定重试 | `TestInterruptedStreamStopsUntilUserRetries` |
 | clean final 不追加 synthetic continuation | `TestContractCleanFinalAddsNoSyntheticContinuation` |
 | 只有思考时恢复一次，仍无交付则失败 | `TestRunRecoversReasoningOnlyFinalAnswer`, `TestNoDeliverableFailsWithoutProviderSpecificPolicy` |
-| 工具不重置恢复额度；取消和预算优先 | `TestNoDeliverableRecoveryDoesNotResetAfterTools`, `TestNoDeliverableRecoveryHonorsCancellationAndBudget` |
+| 工具不重置恢复额度；取消和预算优先 | `TestNoDeliverableRecoveryDoesNotResetAfterTools`, `TestNoDeliverableRecoveryHonorsCancellationAndBudget`, `TestNoDeliverableBudgetSpentDuringRecoveryPauses` |
+| 答复提交后取消，Run 仍以取消结束 | `TestCancelAfterCommittedAnswerEndsRunCancelled` |
 | 无答复失败及响应摘要在重开和导出后仍保留 | `TestNoDeliverableSettlementAndColdExport` |
 | 空响应由用户决定是否重试 | `TestEmptyResponseLeavesRetryToUser` |
 | 空响应直接报错，不提交空消息 | `TestRunStopsOnZeroContentWithoutCommittingEmptyMessages` |

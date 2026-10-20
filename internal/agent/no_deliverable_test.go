@@ -39,9 +39,13 @@ func TestNoDeliverableRecoveryDoesNotResetAfterTools(t *testing.T) {
 		t.Fatal("recovery rewrote the provider-visible prefix")
 	}
 	if summaries[0].FinishReason != "stop" || summaries[0].TextBytes != 0 || summaries[0].ReasoningBytes == 0 ||
-		summaries[0].ModelRef != "p/test" || !summaries[0].StreamComplete ||
-		summaries[0].RecoveryAttempts != 0 || summaries[2].RecoveryAttempts != 1 {
-		t.Fatalf("incomplete response diagnostics: %+v / %+v", summaries[0], summaries[2])
+		summaries[0].ModelRef != "p/test" || !summaries[0].StreamComplete {
+		t.Fatalf("incomplete response diagnostics: %+v", summaries[0])
+	}
+	// Only the reply to the recovery prompt is attributed to it; later rounds
+	// in the same Run are ordinary responses.
+	if got := []int{summaries[0].RecoveryAttempts, summaries[1].RecoveryAttempts, summaries[2].RecoveryAttempts}; !reflect.DeepEqual(got, []int{0, 1, 0}) {
+		t.Fatalf("recovery attribution = %v, want [0 1 0]", got)
 	}
 	toolResults := 0
 	for _, m := range a.Session().Snapshot() {
@@ -85,6 +89,44 @@ func TestNoDeliverableRecoveryHonorsCancellationAndBudget(t *testing.T) {
 				t.Fatalf("recovery bypassed stop: calls=%d", prov.call)
 			}
 		})
+	}
+}
+
+func TestCancelAfterCommittedAnswerEndsRunCancelled(t *testing.T) {
+	prov := &scriptedProvider{name: "p", turns: [][]provider.Chunk{
+		{{Type: provider.ChunkText, Text: "complete answer"}, {Type: provider.ChunkDone}},
+		{{Type: provider.ChunkText, Text: "must not run"}, {Type: provider.ChunkDone}},
+	}}
+	ctx, stop := context.WithCancel(t.Context())
+	defer stop()
+	a := New(prov, tool.NewRegistry(), NewSession(""), Options{}, event.FuncSink(func(e event.Event) {
+		if e.Kind == event.StreamAttempt && e.StreamAttempt.Action == event.StreamAttemptCommit {
+			stop()
+		}
+	}))
+	if err := a.Run(ctx, "answer"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run=%v, want cancellation to win after commit", err)
+	}
+	if prov.call != 1 || lastAssistantContent(a.Session()) != "complete answer" {
+		t.Fatalf("calls=%d, committed answer=%q", prov.call, lastAssistantContent(a.Session()))
+	}
+}
+
+func TestNoDeliverableBudgetSpentDuringRecoveryPauses(t *testing.T) {
+	stop := func() []provider.Chunk {
+		return []provider.Chunk{
+			{Type: provider.ChunkReasoning, Text: "thinking"},
+			{Type: provider.ChunkUsage, Usage: &provider.Usage{PromptTokens: 8, CompletionTokens: 2, TotalTokens: 10, FinishReason: "stop"}},
+			{Type: provider.ChunkDone},
+		}
+	}
+	prov := &scriptedProvider{name: "p", turns: [][]provider.Chunk{stop(), stop()}}
+	// The first stop stays under budget; the recovery round crosses it.
+	a := New(prov, tool.NewRegistry(), NewSession(""), Options{TaskBudget: TaskBudget{Tokens: 15}}, event.Discard)
+	err := a.Run(t.Context(), "answer")
+	var budget *taskBudgetPause
+	if !errors.As(err, &budget) || errors.Is(err, provider.ErrNoDeliverableOutput) || prov.call != 2 {
+		t.Fatalf("Run=%v, calls=%d, want resumable budget pause", err, prov.call)
 	}
 }
 

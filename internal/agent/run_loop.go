@@ -317,6 +317,8 @@ func newStreamAttemptID(_ int) string {
 // and final compaction. cont=true continues the tool loop; cont=false returns
 // err from Run (err may be nil for a clean final answer).
 func (a *Agent) handleFinalResponse(ctx context.Context, state *turnRuntime, text, reasoning string, usage *provider.Usage) (cont bool, err error) {
+	// Cancellation wins until Run returns, even after a committed answer; the
+	// answer stays in history for display (DeepSeek Harness turn semantics).
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
@@ -328,13 +330,17 @@ func (a *Agent) handleFinalResponse(ctx context.Context, state *turnRuntime, tex
 		return false, a.gracePause(state)
 	}
 	if !hasVisibleFinalAnswer(text) {
-		// Transport completion is not delivery. Structured finalizers already
-		// end in handleToolRound; every other caller needs a visible answer.
+		// Transport completion is not delivery; structured finalizers end in
+		// handleToolRound. A spent budget is a resumable boundary, so it wins
+		// over both another recovery round and the exhaustion failure.
+		if axis, detail := a.task.budget.exceeded(a.taskBudgetLimit(ctx)); axis != "" {
+			return false, &taskBudgetPause{axis: axis, detail: detail}
+		}
 		state.terminal.emptyFinalBlocks++
 		if state.terminal.emptyFinalBlocks >= maxEmptyFinalBlocks {
-			// This is a clean stream, so the interrupted-stream recorder did
-			// not run. Persist a local-only failure marker for reopened history
-			// and the existing termination cleanup, without replaying it.
+			// Clean streams skip the interrupted-stream recorder. This local-only
+			// marker drives reopened history and the controller's failed-turn
+			// cleanup, which owns any recovery facts replayed to the model.
 			failure := provider.ErrNoDeliverableOutput
 			record := interruptedDisplayRecord("", "", "", nil, true, failure)
 			if err := a.appendCommittedMessages(ctx, "no-deliverable-output", record); err != nil {
@@ -342,9 +348,7 @@ func (a *Agent) handleFinalResponse(ctx context.Context, state *turnRuntime, tex
 			}
 			return false, failure
 		}
-		if axis, detail := a.task.budget.exceeded(a.taskBudgetLimit(ctx)); axis != "" {
-			return false, &taskBudgetPause{axis: axis, detail: detail}
-		}
+		state.terminal.answeringRecovery = true
 		return a.retryEmptyFinal(ctx, reasoning, usage)
 	}
 	a.emitTurnShadows(a.turn.turnInput)
@@ -442,4 +446,5 @@ func (a *Agent) publishCommittedSample(streamed streamedTurn) {
 	if streamed.settledAttemptID != "" {
 		a.emitStreamAttempt(streamed.settledAttemptID, event.StreamAttemptCommit, streamed.settledAttempt, "", nil, a.responseSummary(streamed))
 	}
+	a.turn.terminal.answeringRecovery = false
 }

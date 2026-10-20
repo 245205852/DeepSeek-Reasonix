@@ -63,6 +63,9 @@ type terminalProtocolState struct {
 	// emptyFinalBlocks counts no-answer stops across the entire Run, including
 	// intervening tool rounds. Tool progress must not replenish recovery.
 	emptyFinalBlocks int
+	// answeringRecovery marks the next committed response as the reply to a
+	// synthetic no-answer recovery, so diagnostics attribute only that one.
+	answeringRecovery bool
 }
 
 // pendingTurn is what someone outside the Run arms for the next one: a
