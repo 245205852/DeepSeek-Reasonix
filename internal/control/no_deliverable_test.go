@@ -33,7 +33,7 @@ func (r *noDeliverableTransport) RoundTrip(req *http.Request) (*http.Response, e
 	body := `data: {"choices":[{"delta":{` + delta + `},"finish_reason":null}]}` + "\n\n" +
 		`data: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":20,"completion_tokens":3,"total_tokens":23}}` + "\n\n" +
 		"data: [DONE]\n\n"
-	return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"text/event-stream"}},
+	return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"text/event-stream"}},
 		Body: io.NopCloser(strings.NewReader(body)), Request: req}, nil
 }
 
