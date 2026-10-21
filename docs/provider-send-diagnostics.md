@@ -53,6 +53,23 @@ This is bounded compatibility handling, not proof that HTTP/2 or DeepSeek was
 the original cause. It cannot guarantee that an upstream or network fault will
 disappear over HTTP/1.1.
 
+## Reading diagnostics
+
+`FailureDiagnostic` retains its existing field structure. New safe kinds are
+`request_send_timeout`, `transport_eof`, `transport_reset`, `transport_timeout`
+and `transport_dns`. HTTP/2 errors retain `transport_protocol` and
+`transportCode`. Unknown causes retain the generic presentation.
+
+Optional `diagnostic/provider` schema version 2 adds `errorCode`, `errorPhase`,
+`timeoutSource`, `sendTimeoutMs`, and `sendElapsedMs` to request observations.
+Older readers skip this optional event; older records without the fields remain
+valid. The send elapsed value describes the latest send stage, not total model
+runtime. `requestBytes` is declared body length, **not bytes actually uploaded**.
+Missing `writtenAt` means successful write completion was not observed, not
+that no bytes were sent. Normal response-body EOF is not a transport failure.
+Error prose, bodies, credentials, and URL query parameters are not diagnostic
+fields. Records still pass through JSON-aware secret redaction.
+
 ## 中文说明
 
 每次模型 HTTP 请求的发送阶段最多等待 300 秒，覆盖等待连接、建立连接与
@@ -70,3 +87,8 @@ HTTP/2 连接。发送超时说明请求正文未上传完，服务端不可能�
 空闲连接重发分支，并暂停该路径的兼容尝试直到过期。用户取消不算协议失败。
 正常共享 HTTP/2 流不受影响。诊断中的 `protocolFallbackReason` 表示此前触发
 兼容选择的原因，`httpProtocol` 表示实际响应协议；这不等于已经确认现场根因。
+
+必需恢复记录的字段结构不变。新增原因与阶段证据存入可选的
+`diagnostic/provider` 第 2 版事件，旧客户端可以跳过。`requestBytes` 是声明的
+正文长度，不是实际上传量；缺少 `writtenAt` 不能解释为完全没有上传。
+诊断只记录白名单原因码，不保存完整错误文本、正文、密钥或 URL 查询参数。

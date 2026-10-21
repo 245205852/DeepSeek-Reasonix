@@ -132,7 +132,13 @@ func TestProtocolCompatibilityFailureDoesNotStackResends(t *testing.T) {
 			if HTTP2TransportCode(err) != "INTERNAL_ERROR" {
 				t.Fatal(err)
 			}
-			ctx := WithRequestAttemptCounter(t.Context())
+			var mu sync.Mutex
+			var last RequestObservation
+			ctx := WithRequestAttemptCounter(WithRequestObserver(t.Context(), func(v RequestObservation) {
+				mu.Lock()
+				last = v
+				mu.Unlock()
+			}))
 			_, err = sendWithResends(ctx, client, SendOptions{}, func(ctx context.Context) (*http.Request, error) {
 				body := "small"
 				if stall {
@@ -148,6 +154,19 @@ func TestProtocolCompatibilityFailureDoesNotStackResends(t *testing.T) {
 			}
 			if requests.Load() != 2 || RequestAttemptCount(ctx) != 1 {
 				t.Fatalf("stacked retry: server=%d count=%d", requests.Load(), RequestAttemptCount(ctx))
+			}
+			mu.Lock()
+			evidence := last
+			mu.Unlock()
+			if evidence.ProtocolFallbackReason != "INTERNAL_ERROR" || evidence.TransportCode != "" || evidence.SendTimeoutMs != 500 || evidence.Phase != "request_error" {
+				t.Fatalf("lost compatibility/transport evidence: %+v", evidence)
+			}
+			if stall {
+				if evidence.ErrorCode != "request_send_timeout" || evidence.ErrorPhase != "request_write" || evidence.TimeoutSource != "send_guard" || evidence.SendElapsedMs < 500 {
+					t.Fatalf("lost guarded send failure evidence: %+v", evidence)
+				}
+			} else if evidence.ErrorCode != "eof" {
+				t.Fatalf("lost EOF cause under compatibility marker: %+v", evidence)
 			}
 			// The failed H1 probe disables compatibility until the original expiry.
 			_, err = compatibilityPost(t.Context(), client, server.URL)

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
@@ -23,12 +24,16 @@ import (
 type diagnosticFailureTransport struct {
 	calls         int
 	beforeFailure func()
+	cause         error
 }
 
 func (r *diagnosticFailureTransport) RoundTrip(*http.Request) (*http.Response, error) {
 	r.calls++
 	if r.beforeFailure != nil {
 		r.beforeFailure()
+	}
+	if r.cause != nil {
+		return nil, r.cause
 	}
 	return nil, http2.ConnectionError(http2.ErrCodeProtocol)
 }
@@ -45,7 +50,17 @@ func TestProviderFailureSurvivesCleanupAndColdExport(t *testing.T) {
 	}
 }
 
-func testProviderFailureColdExport(t *testing.T, async, broken bool) {
+func TestSendTimeoutSurvivesCleanupAndColdExport(t *testing.T) {
+	for _, async := range []bool{false, true} {
+		for _, broken := range []bool{false, true} {
+			t.Run(fmt.Sprintf("async=%v/broken=%v", async, broken), func(t *testing.T) {
+				testProviderFailureColdExport(t, async, broken, &provider.RequestSendTimeoutError{Budget: 300 * time.Second})
+			})
+		}
+	}
+}
+
+func testProviderFailureColdExport(t *testing.T, async, broken bool, causes ...error) {
 	service, err := session.NewService("local", session.NewFilesystemPersistence(t.TempDir()))
 	if err != nil {
 		t.Fatal(err)
@@ -55,6 +70,12 @@ func testProviderFailureColdExport(t *testing.T, async, broken bool) {
 		t.Fatal(err)
 	}
 	transport := &diagnosticFailureTransport{}
+	wantKind, wantCode, wantErrorCode, evidence, wantCalls := "transport_protocol", "PROTOCOL_ERROR", "http2_protocol", "PROTOCOL_ERROR", 1
+	if len(causes) > 0 {
+		transport.cause = causes[0]
+		// An unfinished upload is resent once; both attempts are evidence.
+		wantKind, wantCode, wantErrorCode, evidence, wantCalls = "request_send_timeout", "", "request_send_timeout", "request_send_timeout", 2
+	}
 	p, err := openai.New(provider.Config{Name: "test", Protocol: "openai", Model: "test-model", APIKey: "private-key", BaseURL: "https://provider.test/v1", HTTPClient: &http.Client{Transport: transport}})
 	if err != nil {
 		t.Fatal(err)
@@ -83,7 +104,7 @@ func testProviderFailureColdExport(t *testing.T, async, broken bool) {
 	} else if err := c.RunTurn(t.Context(), "hello"); err == nil {
 		t.Fatal("expected transport failure")
 	}
-	if transport.calls != 1 {
+	if transport.calls != wantCalls {
 		t.Fatalf("request count=%d", transport.calls)
 	}
 	var recovery *provider.InterruptedTurnRecovery
@@ -92,7 +113,7 @@ func testProviderFailureColdExport(t *testing.T, async, broken bool) {
 			recovery = m.InterruptedTurn
 		}
 	}
-	if recovery == nil || recovery.TerminalStatus != "failed" || recovery.FailureDiagnostic == nil || recovery.FailureDiagnostic.TransportCode != "PROTOCOL_ERROR" {
+	if recovery == nil || recovery.TerminalStatus != "failed" || recovery.FailureDiagnostic == nil || recovery.FailureDiagnostic.Kind != wantKind || recovery.FailureDiagnostic.TransportCode != wantCode {
 		t.Fatalf("cleanup lost failure: %+v", recovery)
 	}
 	commits := terminationCommitHistory(t, c)
@@ -118,7 +139,7 @@ func testProviderFailureColdExport(t *testing.T, async, broken bool) {
 			if err := json.Unmarshal(e.Payload, &payload); err != nil {
 				t.Fatal(err)
 			}
-			if payload.Failure == nil || payload.Failure.TransportCode != "PROTOCOL_ERROR" || len(payload.Requests) != 1 {
+			if payload.Failure == nil || payload.Failure.Kind != wantKind || payload.Failure.TransportCode != wantCode || len(payload.Requests) != wantCalls {
 				t.Fatalf("incomplete durable evidence: %s", e.Payload)
 			}
 			if bytes.Contains(e.Payload, []byte(`"transportError"`)) {
@@ -127,9 +148,10 @@ func testProviderFailureColdExport(t *testing.T, async, broken bool) {
 			if payload.Dropped == nil || *payload.Dropped != 0 || payload.Truncated {
 				t.Fatalf("fresh turn lost completeness: %s", e.Payload)
 			}
-			r := payload.Requests[0]
-			if r.Host != "provider.test" || r.RequestPath != "/v1/chat/completions" || r.Phase != "request_error" || r.TransportCode != "PROTOCOL_ERROR" || r.RequestBytes <= 0 {
-				t.Fatalf("request evidence: %+v", r)
+			for _, r := range payload.Requests {
+				if r.Host != "provider.test" || r.RequestPath != "/v1/chat/completions" || r.Phase != "request_error" || r.TransportCode != wantCode || r.ErrorCode != wantErrorCode || r.RequestBytes <= 0 || r.SendTimeoutMs != 300000 {
+					t.Fatalf("request evidence: %+v", r)
+				}
 			}
 		}
 	}
@@ -154,7 +176,7 @@ func testProviderFailureColdExport(t *testing.T, async, broken bool) {
 	if err := WriteColdSessionDiagnostics(t.Context(), &out, service.Query(), snapshot, GoalDiagnosticMetadata{}, nil); err != nil {
 		t.Fatal(err)
 	}
-	if !json.Valid(out.Bytes()) || !strings.Contains(out.String(), "PROTOCOL_ERROR") || strings.Contains(out.String(), "diagnostic/provider") == broken || strings.Contains(out.String(), "private-key") {
+	if !json.Valid(out.Bytes()) || !strings.Contains(out.String(), evidence) || strings.Contains(out.String(), "diagnostic/provider") == broken || strings.Contains(out.String(), "private-key") {
 		t.Fatalf("invalid cold export: %s", out.String())
 	}
 }

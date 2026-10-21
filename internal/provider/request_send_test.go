@@ -104,7 +104,7 @@ func TestRequestSendGuardStalledUpload(t *testing.T) {
 				if !errors.As(err, &timeout) || errors.Is(err, context.Canceled) || ctx.Err() != nil {
 					t.Fatalf("send error=%v parent=%v", err, ctx.Err())
 				}
-				if ClassifyRecovery(err).Code != "request_send_timeout" || ClassifyRecovery(err).Retryable || IsConnReset(err) {
+				if DiagnoseFailure(err).Kind != "request_send_timeout" || ClassifyRecovery(err).Retryable || IsConnReset(err) {
 					t.Fatalf("wrong timeout classification: %v", err)
 				}
 				want := int32(1)
@@ -118,7 +118,7 @@ func TestRequestSendGuardStalledUpload(t *testing.T) {
 					mu.Lock()
 					v := last
 					mu.Unlock()
-					if v.Phase == "canceled" || !v.WrittenAt.IsZero() {
+					if v.ErrorCode != "request_send_timeout" || v.TimeoutSource != "send_guard" || v.Phase == "canceled" || v.SendTimeoutMs != 300 || !v.WrittenAt.IsZero() {
 						t.Fatalf("observation: %+v", v)
 					}
 				}
@@ -175,8 +175,7 @@ func TestRequestSendGuardHandsOffAfterWrite(t *testing.T) {
 			if !stream {
 				mu.Lock()
 				defer mu.Unlock()
-				var netErr net.Error
-				if !errors.As(err, &netErr) || !netErr.Timeout() || errors.As(err, new(*RequestSendTimeoutError)) {
+				if err == nil || DiagnoseFailure(err).Kind != "transport_timeout" || v.ErrorPhase != "response_headers" || v.TimeoutSource != "transport" {
 					t.Fatalf("err=%v observation=%+v", err, v)
 				}
 				return
@@ -189,7 +188,7 @@ func TestRequestSendGuardHandsOffAfterWrite(t *testing.T) {
 			body, err := io.ReadAll(resp.Body)
 			mu.Lock()
 			defer mu.Unlock()
-			if err != nil || string(body) != "data: ok\n\n" || v.Phase != "body_eof" {
+			if err != nil || string(body) != "data: ok\n\n" || v.ErrorCode != "" || v.Phase != "body_eof" {
 				t.Fatalf("body=%q err=%v observation=%+v", body, err, v)
 			}
 		})
@@ -344,7 +343,7 @@ func TestSendWithRetryResendsOnceAfterSendTimeout(t *testing.T) {
 				}
 			case tc.timeout:
 				var failure *RequestFailure
-				if !errors.As(err, &failure) || !errors.As(err, new(*RequestSendTimeoutError)) || ClassifyRecovery(err).Code != "request_send_timeout" {
+				if !errors.As(err, &failure) || !errors.As(err, new(*RequestSendTimeoutError)) || DiagnoseFailure(err).Kind != "request_send_timeout" {
 					t.Fatalf("err=%v", err)
 				}
 			default:

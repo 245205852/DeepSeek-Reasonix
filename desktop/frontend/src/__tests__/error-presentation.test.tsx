@@ -44,6 +44,16 @@ for (const locale of ["en", "zh", "zh-TW"] as const) {
   assert.deepEqual(presentError("saved failure", translate, locale, { kind: "no_deliverable_output" }), {
     summary: dict["error.noDeliverable"], detail: "saved failure",
   });
+  for (const [kind, key] of [
+    ["request_send_timeout", "error.requestSendTimeout"],
+    ["transport_eof", "error.transportEOF"],
+    ["transport_reset", "error.transportReset"],
+    ["transport_timeout", "error.timeout"],
+    ["transport_dns", "error.dns"],
+  ] as const) {
+    assert.equal(presentError("saved provider failure", translate, locale, { kind }).summary, dict[key]);
+  }
+  assert.deepEqual(presentError("unknown provider failure", translate, locale, { kind: "future_transport_reason" }), presentError("unknown provider failure", translate, locale));
   assert.notEqual(presentError("connection error: PROTOCOL_ERROR", translate, locale).summary, dict["error.transportProtocol"], "untyped wording is not transport evidence");
   if (locale !== "en") {
     for (const raw of ["unknown backend failure", "read /tmp/timeout/404.txt: unsupported format", "read /tmp/中文文件: unsupported format", "<img src=x onerror=alert(1)>"]) {
