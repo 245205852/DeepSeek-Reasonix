@@ -310,6 +310,7 @@ func sendAttemptWithTimeout(ctx context.Context, httpClient *http.Client, newReq
 	// without being cancelled; AfterFunc still carries ctx to an open one.
 	requestCtx, cancel := context.WithCancelCause(context.WithoutCancel(requestCtx))
 	stop := context.AfterFunc(ctx, func() { cancel(context.Cause(ctx)) })
+	observation.sendTiming(budget, 0)
 	probe := &connectionProbe{}
 	req, err := newReq(probe.attach(requestCtx))
 	if err != nil {
@@ -328,7 +329,8 @@ func sendAttemptWithTimeout(ctx context.Context, httpClient *http.Client, newReq
 	}
 	client.Transport = requestSendTransport{base: transport, guard: guard}
 	resp, err = client.Do(req)
-	guard.finish()
+	elapsed := guard.finish()
+	observation.sendTiming(budget, elapsed)
 	// Only the caller's context identifies user cancellation or task deadline.
 	// Internal cancellation from the send guard has a distinct terminal cause.
 	if ctx.Err() != nil {
