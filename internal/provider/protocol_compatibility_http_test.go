@@ -2,7 +2,6 @@ package provider
 
 import (
 	"context"
-	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -22,6 +21,22 @@ func compatibilityTestClient(t *testing.T, server *httptest.Server) *http.Client
 	tr.hints = freshProtocolHints()
 	t.Cleanup(c.CloseIdleConnections)
 	return c
+}
+
+// primeCompatibility fails two separate requests with INTERNAL_ERROR, the
+// evidence a route needs before a later request may try HTTP/1.1.
+func primeCompatibility(t *testing.T, client *http.Client, endpoint string) {
+	t.Helper()
+	for range 2 {
+		resp, err := compatibilityPost(t.Context(), client, endpoint)
+		if resp != nil {
+			_, err = io.ReadAll(resp.Body)
+			resp.Body.Close()
+		}
+		if HTTP2TransportCode(err) != "INTERNAL_ERROR" {
+			t.Fatalf("missing typed HTTP/2 failure: %v", err)
+		}
+	}
 }
 
 func compatibilityPost(ctx context.Context, client *http.Client, endpoint string) (*http.Response, error) {
@@ -63,16 +78,18 @@ func TestProtocolCompatibilityUsesOnlySubsequentRequests(t *testing.T) {
 			if bodyFailure {
 				baseCtx = WithRequestObserver(baseCtx, func(v RequestObservation) { mu.Lock(); last = v; mu.Unlock() })
 			}
-			for attempt := 1; attempt <= 3; attempt++ {
+			for attempt := 1; attempt <= 4; attempt++ {
 				ctx := WithRequestAttemptCounter(baseCtx)
 				resp, err := compatibilityPost(ctx, client, server.URL+"/chat")
 				if resp != nil {
 					_, err = io.ReadAll(resp.Body)
 					resp.Body.Close()
 				}
-				if attempt == 1 {
+				if attempt <= 2 {
+					// One INTERNAL_ERROR is a server's generic stream reset as often
+					// as an incompatibility; only a later request failing confirms it.
 					if HTTP2TransportCode(err) != "INTERNAL_ERROR" {
-						t.Fatalf("missing typed HTTP/2 failure: %v", err)
+						t.Fatalf("attempt %d did not stay on HTTP/2: %v", attempt, err)
 					}
 				} else if err != nil || resp.ProtoMajor != 1 {
 					t.Fatalf("subsequent request did not use HTTP/1.1: resp=%v err=%v", resp, err)
@@ -87,31 +104,33 @@ func TestProtocolCompatibilityUsesOnlySubsequentRequests(t *testing.T) {
 			}
 			mu.Unlock()
 			// Another endpoint remains HTTP/2, even with the same client and provider.
-			resp, err := compatibilityPost(t.Context(), client, server.URL+"/other")
-			if resp != nil {
-				_, err = io.ReadAll(resp.Body)
-				resp.Body.Close()
-			}
-			if HTTP2TransportCode(err) != "INTERNAL_ERROR" {
-				t.Fatalf("compatibility escaped endpoint scope: %v", err)
-			}
+			primeCompatibility(t, client, server.URL+"/other")
 		})
 	}
 }
 
-func TestProtocolCompatibilityFailureDoesNotStackResends(t *testing.T) {
-	for _, stall := range []bool{false, true} {
-		t.Run(map[bool]string{false: "eof", true: "send-timeout"}[stall], func(t *testing.T) {
+func TestProtocolCompatibilityFailureKeepsExistingRecovery(t *testing.T) {
+	for _, failure := range []string{"headers-eof", "body-eof", "send-timeout"} {
+		t.Run(failure, func(t *testing.T) {
 			var requests atomic.Int32
+			var primed atomic.Bool
 			release := make(chan struct{})
 			server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				requests.Add(1)
 				if r.ProtoMajor == 2 {
 					panic(http.ErrAbortHandler)
 				}
-				if stall {
+				if !primed.Load() {
+					t.Error("HTTP/1.1 selected before the route was confirmed")
+					return
+				}
+				switch failure {
+				case "send-timeout":
 					<-release
 					return
+				case "body-eof":
+					_, _ = io.WriteString(w, "data: partial\n\n")
+					w.(http.Flusher).Flush()
 				}
 				conn, _, _ := w.(http.Hijacker).Hijack()
 				conn.Close()
@@ -128,49 +147,60 @@ func TestProtocolCompatibilityFailureDoesNotStackResends(t *testing.T) {
 				return conn, err
 			}
 			client := compatibilityTestClient(t, server)
-			_, err := compatibilityPost(t.Context(), client, server.URL)
-			if HTTP2TransportCode(err) != "INTERNAL_ERROR" {
-				t.Fatal(err)
-			}
+			primeCompatibility(t, client, server.URL)
+			primed.Store(true)
 			var mu sync.Mutex
-			var last RequestObservation
+			observed := map[uint64]RequestObservation{}
 			ctx := WithRequestAttemptCounter(WithRequestObserver(t.Context(), func(v RequestObservation) {
 				mu.Lock()
-				last = v
+				observed[v.ID] = v
 				mu.Unlock()
 			}))
-			_, err = sendWithResends(ctx, client, SendOptions{}, func(ctx context.Context) (*http.Request, error) {
+			resp, err := sendWithResends(ctx, client, SendOptions{}, func(ctx context.Context) (*http.Request, error) {
 				body := "small"
-				if stall {
+				if failure == "send-timeout" {
 					body = strings.Repeat("x", 3_248_572)
 				}
 				return http.NewRequestWithContext(ctx, http.MethodPost, server.URL, strings.NewReader(body))
 			}, 500*time.Millisecond, 1)
-			if !errors.As(err, new(*protocolCompatibilityError)) || ClassifyRecovery(err).Retryable {
-				t.Fatalf("lost terminal compatibility marker: %v", err)
+			if resp != nil {
+				_, err = io.ReadAll(resp.Body)
+				resp.Body.Close()
 			}
-			if stall && !errors.As(err, new(*RequestSendTimeoutError)) {
-				t.Fatalf("lost timeout cause: %v", err)
-			}
-			if requests.Load() != 2 || RequestAttemptCount(ctx) != 1 {
-				t.Fatalf("stacked retry: server=%d count=%d", requests.Load(), RequestAttemptCount(ctx))
-			}
+			var probe RequestObservation
 			mu.Lock()
-			evidence := last
-			mu.Unlock()
-			if evidence.ProtocolFallbackReason != "INTERNAL_ERROR" || evidence.TransportCode != "" || evidence.SendTimeoutMs != 500 || evidence.Phase != "request_error" {
-				t.Fatalf("lost compatibility/transport evidence: %+v", evidence)
-			}
-			if stall {
-				if evidence.ErrorCode != "request_send_timeout" || evidence.ErrorPhase != "request_write" || evidence.TimeoutSource != "send_guard" || evidence.SendElapsedMs < 500 {
-					t.Fatalf("lost guarded send failure evidence: %+v", evidence)
+			for _, v := range observed {
+				if v.ProtocolFallbackReason != "" {
+					probe = v
 				}
-			} else if evidence.ErrorCode != "eof" {
-				t.Fatalf("lost EOF cause under compatibility marker: %+v", evidence)
 			}
+			mu.Unlock()
+			if probe.ProtocolFallbackReason != "INTERNAL_ERROR" || probe.TransportCode != "" {
+				t.Fatalf("lost compatibility evidence: %+v", probe)
+			}
+			if failure == "send-timeout" {
+				// The upload never finished, so the existing resend allowance still
+				// owns it; the failed probe has already returned the route to HTTP/2.
+				if RequestAttemptCount(ctx) != 2 || requests.Load() != 4 {
+					t.Fatalf("send timeout lost its resend: server=%d count=%d err=%v", requests.Load(), RequestAttemptCount(ctx), err)
+				}
+				if probe.ErrorCode != "request_send_timeout" || probe.TimeoutSource != "send_guard" {
+					t.Fatalf("lost guarded send failure evidence: %+v", probe)
+				}
+			} else {
+				if RequestAttemptCount(ctx) != 1 || requests.Load() != 3 {
+					t.Fatalf("fresh-connection failure was resent: server=%d count=%d", requests.Load(), RequestAttemptCount(ctx))
+				}
+				// A dropped HTTP/1.1 connection is the same recoverable reset the
+				// stream owners already handle, not a protocol failure.
+				if recovery := ClassifyRecovery(err); !IsConnReset(err) || recovery.Phase == "protocol" || !recovery.Retryable {
+					t.Fatalf("connection failure reclassified: phase=%q retryable=%t err=%v", recovery.Phase, recovery.Retryable, err)
+				}
+			}
+			before := requests.Load()
 			// The failed H1 probe disables compatibility until the original expiry.
 			_, err = compatibilityPost(t.Context(), client, server.URL)
-			if HTTP2TransportCode(err) != "INTERNAL_ERROR" || requests.Load() != 3 {
+			if HTTP2TransportCode(err) != "INTERNAL_ERROR" || requests.Load() != before+1 {
 				t.Fatalf("failed compatibility looped: requests=%d err=%v", requests.Load(), err)
 			}
 		})

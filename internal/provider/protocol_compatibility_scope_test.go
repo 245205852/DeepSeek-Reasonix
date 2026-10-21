@@ -51,6 +51,10 @@ func TestProtocolCompatibilityPreservesSiblingAndProviderScope(t *testing.T) {
 	if HTTP2TransportCode(err) != "INTERNAL_ERROR" || !reused {
 		t.Fatalf("failure did not share sibling connection: reused=%t err=%v", reused, err)
 	}
+	_, err = compatibilityPost(ctx, c, server.URL)
+	if HTTP2TransportCode(err) != "INTERNAL_ERROR" {
+		t.Fatalf("one INTERNAL_ERROR switched protocol: %v", err)
+	}
 	resp, err := compatibilityPost(ctx, c, server.URL)
 	if err != nil || resp.ProtoMajor != 1 {
 		t.Fatalf("compatibility failed: %v", err)
@@ -89,10 +93,7 @@ func TestProtocolCompatibilityProxyChangesDoNotInheritHints(t *testing.T) {
 	server.StartTLS()
 	defer server.Close()
 	c := compatibilityTestClient(t, server)
-	_, err := compatibilityPost(t.Context(), c, server.URL)
-	if HTTP2TransportCode(err) != "INTERNAL_ERROR" {
-		t.Fatal(err)
-	}
+	primeCompatibility(t, c, server.URL)
 	tr := c.Transport.(*protocolTransport)
 	dead, _ := url.Parse("http://127.0.0.1:1")
 	tr.proxy = func(*http.Request) (*url.URL, error) { return dead, nil }
@@ -101,7 +102,7 @@ func TestProtocolCompatibilityProxyChangesDoNotInheritHints(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 	defer cancel()
 	ctx = WithRequestObserver(ctx, func(o RequestObservation) { mu.Lock(); reason = o.ProtocolFallbackReason; mu.Unlock() })
-	_, err = compatibilityPost(ctx, c, server.URL)
+	_, err := compatibilityPost(ctx, c, server.URL)
 	if err == nil {
 		t.Fatal("expected dead proxy failure")
 	}
@@ -116,17 +117,17 @@ func TestProtocolCompatibilityCancellationDoesNotPoisonHint(t *testing.T) {
 	hints := freshProtocolHints()
 	key := [32]byte{}
 	now := time.Now()
-	hints.failedHTTP2(key, "INTERNAL_ERROR", now)
+	hints.failedHTTP2(key, "PROTOCOL_ERROR", now, now)
 	h := hints.selectHTTP1(key, now)
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	tr := &protocolTransport{hints: hints}
-	tr.failed(ctx, key, h, ctx.Err())
+	tr.failed(ctx, key, h, now, ctx.Err())
 	if hints.selectHTTP1(key, now) == nil {
 		t.Fatal("caller cancellation disabled compatibility")
 	}
 	// Cancellation without HTTP/2 evidence must not install a new hint.
-	tr.failed(ctx, [32]byte{1}, nil, ctx.Err())
+	tr.failed(ctx, [32]byte{1}, nil, now, ctx.Err())
 	if len(hints.entries) != 1 {
 		t.Fatal("caller cancellation created a hint")
 	}
@@ -140,7 +141,7 @@ func TestProtocolCompatibilityUserCancelIsNotRetried(t *testing.T) {
 		if r.ProtoMajor == 2 {
 			panic(http.ErrAbortHandler)
 		}
-		if n == 2 {
+		if n == 3 {
 			close(arrived)
 			<-release
 		}
@@ -151,10 +152,7 @@ func TestProtocolCompatibilityUserCancelIsNotRetried(t *testing.T) {
 	defer s.Close()
 	defer close(release)
 	c := compatibilityTestClient(t, s)
-	_, err := compatibilityPost(t.Context(), c, s.URL)
-	if HTTP2TransportCode(err) != "INTERNAL_ERROR" {
-		t.Fatal(err)
-	}
+	primeCompatibility(t, c, s.URL)
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 	ctx = WithRequestAttemptCounter(ctx)
@@ -165,12 +163,12 @@ func TestProtocolCompatibilityUserCancelIsNotRetried(t *testing.T) {
 		case <-ctx.Done():
 		}
 	}()
-	_, err = compatibilityPost(ctx, c, s.URL)
-	if !errors.Is(err, context.Canceled) || RequestAttemptCount(ctx) != 1 || calls.Load() != 2 {
+	_, err := compatibilityPost(ctx, c, s.URL)
+	if !errors.Is(err, context.Canceled) || RequestAttemptCount(ctx) != 1 || calls.Load() != 3 {
 		t.Fatalf("cancel was retried or misclassified: calls=%d err=%v", calls.Load(), err)
 	}
 	resp, err := compatibilityPost(t.Context(), c, s.URL)
-	if err != nil || resp.ProtoMajor != 1 || calls.Load() != 3 {
+	if err != nil || resp.ProtoMajor != 1 || calls.Load() != 4 {
 		t.Fatalf("cancellation poisoned hint: calls=%d err=%v", calls.Load(), err)
 	}
 	resp.Body.Close()

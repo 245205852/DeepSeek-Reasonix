@@ -243,8 +243,8 @@ func readErrorBody(resp *http.Response) []byte {
 // connection closed first (see staleIdleConnection), or the body never finished
 // uploading (RequestSendTimeoutError). Every other failure returns to the
 // caller without backoff; the user decides whether to try again.
-// Protocol errors and failed HTTP/1.1 compatibility attempts are terminal and
-// never consume this resend allowance, even when wrapping EOF/reset/timeout.
+// A peer's INTERNAL_ERROR, PROTOCOL_ERROR or HTTP_1_1_REQUIRED reset never
+// consumes this allowance, because the peer may already have processed it.
 func SendWithRetry(ctx context.Context, httpClient *http.Client, opts SendOptions, newReq func(context.Context) (*http.Request, error)) (*http.Response, error) {
 	return sendWithResends(ctx, httpClient, opts, newReq, requestSendTimeout, 1)
 }
@@ -333,16 +333,12 @@ func sendAttemptWithTimeout(ctx context.Context, httpClient *http.Client, newReq
 	resp, err = client.Do(req)
 	elapsed := guard.finish()
 	observation.sendTiming(budget, elapsed)
-	compatibilityRequest := errors.As(err, new(*protocolCompatibilityError))
 	// Only the caller's context identifies user cancellation or task deadline.
 	// Internal cancellation from the send guard has a distinct terminal cause.
 	if ctx.Err() != nil {
 		err = ctx.Err()
 	} else if cause := context.Cause(requestCtx); cause != nil {
 		err = cause
-	}
-	if err != nil && compatibilityRequest && !errors.As(err, new(*protocolCompatibilityError)) {
-		err = &protocolCompatibilityError{err}
 	}
 	if err != nil {
 		if resp != nil && resp.Body != nil {
