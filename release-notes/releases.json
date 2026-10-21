@@ -2,6 +2,105 @@
   "schemaVersion": 1,
   "releases": [
     {
+      "version": "1.39.10",
+      "date": "2026-10-21",
+      "channel": "stable",
+      "targetingVersion": 1,
+      "title": {
+        "en": "Reasonix 1.39.10",
+        "zh": "Reasonix 1.39.10"
+      },
+      "summary": {
+        "en": "Rebuilt with Go 1.26.10 for a certificate-verification fix, and OpenCode Go connections now use the documented endpoints and support DeepSeek V4.1 Flash.",
+        "zh": "用 Go 1.26.10 重新构建以修复证书验证的问题，并且 OpenCode Go 连接改用官方文档里的接口地址、支持 DeepSeek V4.1 Flash。"
+      },
+      "surfaces": [
+        "desktop",
+        "cli"
+      ],
+      "guides": [],
+      "highlights": [
+        {
+          "kind": "security",
+          "targets": [
+            "desktop",
+            "cli"
+          ],
+          "title": {
+            "en": "Go toolchain updated to 1.26.10 for a certificate-verification fix",
+            "zh": "Go 工具链升级到 1.26.10，修复证书验证对不再受信任的中间证书的处理"
+          },
+          "body": {
+            "en": "Go 1.26.10 fixes crypto/x509 certificate verification so that it returns an error when it meets known intermediate certificates that are no longer trusted (GO-2026-6809). Reasonix is rebuilt with it; the vulnerability scan reports nothing reachable from Reasonix afterwards.",
+            "zh": "Go 1.26.10 修复了标准库 crypto/x509 的证书验证：遇到已知的、不再受信任的中间证书时会报错（GO-2026-6809）。Reasonix 已用它重新构建；升级之后，漏洞扫描没有再报出 Reasonix 可达的漏洞。"
+          },
+          "refs": [
+            14051
+          ]
+        },
+        {
+          "kind": "fixed",
+          "targets": [
+            "desktop",
+            "cli"
+          ],
+          "title": {
+            "en": "OpenCode Go connections use the documented endpoints, and DeepSeek V4.1 Flash works through them",
+            "zh": "OpenCode Go 连接改用官方文档里的接口地址，DeepSeek V4.1 Flash 也能正常使用"
+          },
+          "body": {
+            "en": "OpenCode Go's documented inference URLs and deepseek-v4.1-flash were missing from Reasonix, so a V4.1 Flash connection could lose DeepSeek thinking and tool-history replay, and the new URLs lacked Go's client headers and model discovery. Both are in now; the older routes keep working. Saved standard OpenCode Go connections are updated once, keeping your selected models, credential references, prices and custom fields, and V4.1 Flash is added once to eligible connections (a model you delete stays deleted). Connections with a custom request address or body are left for you to review.",
+            "zh": "OpenCode Go 文档里新的推理接口地址和 deepseek-v4.1-flash 之前没有收录，所以 V4.1 Flash 连接可能丢失 DeepSeek 的思考和工具历史回放，新地址也缺少 Go 的客户端请求头和模型发现。现在都已支持，旧的路径继续可用。已保存的标准 OpenCode Go 连接会一次性更新，保留你选的模型、凭据引用、价格和自定义字段，并给符合条件的连接添加一次 V4.1 Flash（你删掉的模型不会被加回来）；带自定义请求地址或请求体的连接留给你自己检查。"
+          },
+          "refs": [
+            14029
+          ]
+        }
+      ],
+      "changes": {
+        "new": [],
+        "improved": [],
+        "fixed": []
+      },
+      "upgrade": [],
+      "risks": [
+        {
+          "targets": [
+            "desktop",
+            "cli"
+          ],
+          "title": {
+            "en": "The configuration file's version moves to 13",
+            "zh": "配置文件的版本号升到 13"
+          },
+          "body": {
+            "en": "The first start after upgrading rewrites saved standard OpenCode Go connections and records configuration version 13. The rewrite keeps the file's encoding, line endings and unknown fields, and a downgrade followed by an upgrade keeps a model you deleted deleted.",
+            "zh": "升级后第一次启动会改写已保存的标准 OpenCode Go 连接，并把配置版本记为 13。改写会保留文件的编码、换行和未知字段；降级再升级之后，你删掉的模型仍然保持删除。"
+          },
+          "refs": [
+            14029
+          ]
+        }
+      ],
+      "contributors": [
+        "SivanCola"
+      ],
+      "links": {
+        "github": "https://github.com/esengine/DeepSeek-Reasonix/releases/tag/desktop-v1.39.10",
+        "compare": "https://github.com/esengine/DeepSeek-Reasonix/compare/desktop-v1.39.9...desktop-v1.39.10",
+        "download": "https://reasonix.io/?download=desktop&channel=stable#start"
+      },
+      "releaseId": "1.39.10",
+      "baseVersion": "1.39.10",
+      "status": "reviewed",
+      "previousRelease": "1.39.9",
+      "builds": {
+        "cli": "v1.39.10",
+        "desktop": "v1.39.10",
+        "npm": "1.39.10"
+      }
+    },
+    {
       "version": "1.39.9",
       "date": "2026-10-20",
       "channel": "stable",
