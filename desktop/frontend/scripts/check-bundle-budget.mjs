@@ -317,7 +317,9 @@ for (const path of localeChunks) {
   // Studio discovery adds 532 / 540 B of localized introduction and data-safety
   // copy: 64700 / 65714 B measured. zh fits its existing ceiling; allow bounded
   // cross-platform headroom for zh-TW; compressed initial budgets stay fixed.
-  const budget = name.startsWith("zh-TW-") ? 64.3 * 1024 : 63.3 * 1024;
+  // Typed transport-failure kinds measure 64826 / 65838 B under Node 24.20's
+  // zlib; zh takes the next one-decimal ceiling and zh-TW still fits its own.
+  const budget = name.startsWith("zh-TW-") ? 64.3 * 1024 : 63.4 * 1024;
   assertBudget(`${name} gzip`, gzipBytes(path), budget);
 }
 
@@ -567,6 +569,9 @@ const rawInitialBytes = [...initialJS, ...initialCSS, ...appShellCSS]
 // Studio introduction copy and styles measure 2107327 B in the initial raw
 // boundary. Add 1 KiB to the ceiling, retaining 269 B of producer headroom;
 // compressed initial JS, per-chunk and CSS ceilings remain unchanged.
-const rawInitialBudgetKiB = 2_058.2;
+// Typed transport-failure kinds measure 2107767 B locally; with the established
+// 186 B Linux producer difference (2107953 B) the smallest one-decimal ceiling
+// is 2058.6 KiB. Every other bundle budget stays fixed.
+const rawInitialBudgetKiB = 2_058.6;
 assertBudget("initial raw JavaScript and CSS", rawInitialBytes, rawInitialBudgetKiB * 1024);
 assertBudget("largest initial JavaScript chunk raw", largestInitialJSRaw, 1_000 * 1024);
