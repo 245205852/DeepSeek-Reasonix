@@ -53,7 +53,7 @@ func (c *Controller) providerDiagnosticEvent(e event.Event) (*session.Event, err
 		Requests      []providerDiagnostic        `json:"requests"`
 		Dropped       *uint64                     `json:"dropped,omitempty"`
 		Truncated     bool                        `json:"truncated"`
-	}{1, failure, 128, requests, dropped, truncated})
+	}{2, failure, 128, requests, dropped, truncated})
 	if err != nil {
 		return nil, err
 	}

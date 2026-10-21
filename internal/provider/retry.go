@@ -178,7 +178,7 @@ func RetryableStatus(s int) bool {
 // closed socket) from protocol or caller errors for failure reporting. A common
 // trigger is a proxy idle-closing SSE during a reasoner's first-token gap.
 func IsConnReset(err error) bool {
-	if err == nil {
+	if err == nil || protocolFailureIsTerminal(err) {
 		return false
 	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, ErrNonStreamingResponse) {
@@ -243,6 +243,8 @@ func readErrorBody(resp *http.Response) []byte {
 // connection closed first (see staleIdleConnection), or the body never finished
 // uploading (RequestSendTimeoutError). Every other failure returns to the
 // caller without backoff; the user decides whether to try again.
+// Protocol errors and failed HTTP/1.1 compatibility attempts are terminal and
+// never consume this resend allowance, even when wrapping EOF/reset/timeout.
 func SendWithRetry(ctx context.Context, httpClient *http.Client, opts SendOptions, newReq func(context.Context) (*http.Request, error)) (*http.Response, error) {
 	return sendWithResends(ctx, httpClient, opts, newReq, requestSendTimeout, 1)
 }
@@ -256,7 +258,7 @@ func SendOnce(ctx context.Context, httpClient *http.Client, opts SendOptions, ne
 func sendWithResends(ctx context.Context, httpClient *http.Client, opts SendOptions, newReq func(context.Context) (*http.Request, error), budget time.Duration, resends int) (*http.Response, error) {
 	identity := RequestIdentity{Provider: opts.Provider, DisplayName: opts.ProviderDisplayName, Protocol: opts.Protocol}
 	resp, stale, err := sendAttemptWithTimeout(ctx, httpClient, newReq, budget)
-	if resends > 0 && (stale || errors.As(err, new(*RequestSendTimeoutError))) {
+	if resends > 0 && !protocolFailureIsTerminal(err) && (stale || errors.As(err, new(*RequestSendTimeoutError))) {
 		httpClient.CloseIdleConnections()
 		resp, _, err = sendAttemptWithTimeout(ctx, httpClient, newReq, budget)
 	}
@@ -329,12 +331,16 @@ func sendAttemptWithTimeout(ctx context.Context, httpClient *http.Client, newReq
 	client.Transport = requestSendTransport{base: transport, guard: guard}
 	resp, err = client.Do(req)
 	guard.finish()
+	compatibilityRequest := errors.As(err, new(*protocolCompatibilityError))
 	// Only the caller's context identifies user cancellation or task deadline.
 	// Internal cancellation from the send guard has a distinct terminal cause.
 	if ctx.Err() != nil {
 		err = ctx.Err()
 	} else if cause := context.Cause(requestCtx); cause != nil {
 		err = cause
+	}
+	if err != nil && compatibilityRequest && !errors.As(err, new(*protocolCompatibilityError)) {
+		err = &protocolCompatibilityError{err}
 	}
 	if err != nil {
 		if resp != nil && resp.Body != nil {

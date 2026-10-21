@@ -14,32 +14,34 @@ import (
 // bytes include SSE comments/heartbeats, not just model output. It deliberately
 // excludes URL userinfo/query/fragment, headers and request/response bodies.
 type RequestObservation struct {
-	ID               uint64    `json:"id"`
-	StartedAt        time.Time `json:"startedAt"`
-	ObservedAt       time.Time `json:"observedAt"`
-	Phase            string    `json:"phase"`
-	LastPhase        string    `json:"lastPhase,omitempty"`
-	ConnectedAt      time.Time `json:"connectedAt,omitempty"`
-	WrittenAt        time.Time `json:"writtenAt,omitempty"`
-	HeadersAt        time.Time `json:"headersAt,omitempty"`
-	FirstBodyAt      time.Time `json:"firstBodyAt,omitempty"`
-	LastBodyAt       time.Time `json:"lastBodyAt,omitempty"`
-	FinishedAt       time.Time `json:"finishedAt,omitempty"`
-	Status           int       `json:"status,omitempty"`
-	BodyBytes        int64     `json:"bodyBytes"`
-	Method           string    `json:"method,omitempty"`
-	Host             string    `json:"host,omitempty"`
-	RequestPath      string    `json:"requestPath,omitempty"`
-	RequestBytes     int64     `json:"requestBytes,omitempty"`
-	Network          string    `json:"network,omitempty"`
-	DialAddress      string    `json:"dialAddress,omitempty"`
-	RemoteAddress    string    `json:"remoteAddress,omitempty"`
-	HTTPProtocol     string    `json:"httpProtocol,omitempty"`
-	ConnectionReused bool      `json:"connectionReused,omitempty"`
-	TransportCode    string    `json:"transportCode,omitempty"`
+	ID                     uint64    `json:"id"`
+	StartedAt              time.Time `json:"startedAt"`
+	ObservedAt             time.Time `json:"observedAt"`
+	Phase                  string    `json:"phase"`
+	LastPhase              string    `json:"lastPhase,omitempty"`
+	ConnectedAt            time.Time `json:"connectedAt,omitempty"`
+	WrittenAt              time.Time `json:"writtenAt,omitempty"`
+	HeadersAt              time.Time `json:"headersAt,omitempty"`
+	FirstBodyAt            time.Time `json:"firstBodyAt,omitempty"`
+	LastBodyAt             time.Time `json:"lastBodyAt,omitempty"`
+	FinishedAt             time.Time `json:"finishedAt,omitempty"`
+	Status                 int       `json:"status,omitempty"`
+	BodyBytes              int64     `json:"bodyBytes"`
+	Method                 string    `json:"method,omitempty"`
+	Host                   string    `json:"host,omitempty"`
+	RequestPath            string    `json:"requestPath,omitempty"`
+	RequestBytes           int64     `json:"requestBytes,omitempty"`
+	Network                string    `json:"network,omitempty"`
+	DialAddress            string    `json:"dialAddress,omitempty"`
+	RemoteAddress          string    `json:"remoteAddress,omitempty"`
+	HTTPProtocol           string    `json:"httpProtocol,omitempty"`
+	ConnectionReused       bool      `json:"connectionReused,omitempty"`
+	TransportCode          string    `json:"transportCode,omitempty"`
+	ProtocolFallbackReason string    `json:"protocolFallbackReason,omitempty"`
 }
 
 type requestObserverKey struct{}
+type protocolObservationKey struct{}
 
 var observedRequestID atomic.Uint64
 
@@ -65,7 +67,7 @@ func observeRequest(ctx context.Context) (context.Context, *requestObservationSt
 	now := time.Now().UTC()
 	s := &requestObservationState{ctx: ctx, observe: observe, value: RequestObservation{ID: observedRequestID.Add(1), StartedAt: now}}
 	s.update("request_started", nil)
-	return s.traceContext(ctx), s
+	return s.traceContext(context.WithValue(ctx, protocolObservationKey{}, s)), s
 }
 
 func (s *requestObservationState) update(phase string, edit func(*RequestObservation)) {
