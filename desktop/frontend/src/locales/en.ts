@@ -5,6 +5,9 @@
 
 export const en = {
   "error.unknown": "An error occurred. Open details to view the reported cause.",
+  "error.requestSendTimeout": "Send timed out (300s) after one resend; turn stopped. See error details and session diagnostics.",
+  "error.transportEOF": "Connection ended unexpectedly (EOF). See session diagnostics.",
+  "error.transportReset": "Connection reset or closed. See session diagnostics.",
   "error.connection": "Could not connect. Check the network, proxy and service address.",
   "error.transportProtocol": "The HTTP/2 connection failed with a protocol error. Check the service or proxy compatibility; expand the details for error information.",
   "error.dns": "The server address could not be resolved. Check the address and DNS settings.",

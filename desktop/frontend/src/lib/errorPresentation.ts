@@ -26,6 +26,11 @@ const codeKeys: Record<string, DictKey> = {
   stream_interrupted: "error.interrupted", empty_response: "error.empty", stale_generation: "error.conflict",
   provider_connection: "error.connection", cancelled: "error.cancelled",
   transport_protocol: "error.transportProtocol",
+  request_send_timeout: "error.requestSendTimeout",
+  transport_eof: "error.transportEOF",
+  transport_reset: "error.transportReset",
+  transport_timeout: "error.timeout",
+  transport_dns: "error.dns",
   no_deliverable_output: "error.noDeliverable",
 };
 
@@ -67,11 +72,11 @@ function statusKey(status: number): DictKey | undefined {
 
 export function presentError(error: unknown, translate: Translator = t, locale: Locale = getLocale(), diagnostic?: WireEvent["diagnostic"]): ErrorPresentation {
   const detail = errorDetail(error).trim();
-  if (diagnostic?.kind === "no_deliverable_output") {
-    return { summary: translate("error.noDeliverable"), detail };
-  }
   if (diagnostic?.kind === "transport_protocol") {
     return { summary: translate("error.transportProtocol"), detail: [detail, diagnostic.transportCode ? `HTTP/2: ${diagnostic.transportCode}` : ""].filter(Boolean).join("\n") };
+  }
+  if (diagnostic?.kind && codeKeys[diagnostic.kind]) {
+    return { summary: translate(codeKeys[diagnostic.kind]), detail };
   }
   const structured = error && typeof error === "object" ? error as { code?: unknown; status?: unknown } : undefined;
   const code = typeof structured?.code === "string" ? structured.code : detail;
