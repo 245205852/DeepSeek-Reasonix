@@ -172,8 +172,52 @@ func TestPinnedPanelFollowsElicitationFieldsAndSubmit(t *testing.T) {
 		}
 		m = updateComposerMouseTestTUI(t, m, tea.KeyPressMsg{Code: tea.KeyDown})
 	}
-	if !strings.Contains(ansi.Strip(m.View().Content), "› ["+i18n.M.ElicitSubmit+"]") {
+	if !strings.Contains(ansi.Strip(m.View().Content), "  ["+i18n.M.ElicitSubmit+"]") {
 		t.Fatal("elicitation Submit is off screen")
+	}
+}
+
+func TestPinnedPanelIgnoresTodoSelectionPrefixes(t *testing.T) {
+	for _, marker := range []string{"› ", "❯ ", "▶ "} {
+		t.Run(marker, func(t *testing.T) {
+			m := longPanelTestTUI(t)
+			// A continuation line is displayed without the todo status icon.
+			// Its content must never become the panel's selected row.
+			m.todos[0].Content = marker + "ordinary todo\n" + marker + "not selected\n" + strings.Repeat("detail\n", 30)
+			m.todos[3].Content = "ACTIVE-TASK"
+			m.todos[3].Status = "in_progress"
+			m = updateComposerMouseTestTUI(t, m, tea.WindowSizeMsg{Width: 80, Height: 18})
+			p := m.pinnedPanelView()
+			if !strings.Contains(ansi.Strip(p.lines[p.focus]), "ACTIVE-TASK") || !strings.Contains(ansi.Strip(m.View().Content), "ACTIVE-TASK") {
+				t.Fatalf("todo text stole focus from the active task:\n%s", ansi.Strip(m.View().Content))
+			}
+			// Wording changes must not cancel a deliberate manual scroll.
+			m.scrollPinnedPanel(-p.offset)
+			m.todos[3].Content = "RENAMED-TASK"
+			if m.pinnedPanelView().offset != 0 {
+				t.Fatal("renaming the active task reset manual scrolling")
+			}
+		})
+	}
+}
+
+func TestPinnedPanelFollowsWindowedSelectionAtSameRow(t *testing.T) {
+	m := longPanelTestTUI(t)
+	m.todos = nil
+	m.quickPick = &quickPicker{title: "Models", selected: 8}
+	for i := range 24 {
+		m.quickPick.items = append(m.quickPick.items, quickPickerItem{ID: fmt.Sprint(i), Label: "Same label"})
+	}
+	m = updateComposerMouseTestTUI(t, m, tea.WindowSizeMsg{Width: 80, Height: 13})
+	before := m.pinnedPanelContent().focus
+	m.scrollPinnedPanel(-1000)
+	m = updateComposerMouseTestTUI(t, m, tea.KeyPressMsg{Code: tea.KeyDown})
+	p := m.pinnedPanelView()
+	if p.focus != before {
+		t.Fatal("fixture did not keep the selected item on the same row")
+	}
+	if !strings.Contains(ansi.Strip(p.render(m.width)), "❯ 10. Same label") {
+		t.Fatal("selection change at the same row did not restore focus after manual scrolling")
 	}
 }
 

@@ -9,13 +9,15 @@ import (
 )
 
 type pinnedPanelScroll struct {
-	owner, focusText        string
+	owner                   string
+	focus, selection        int
 	offset, width, capacity int
 }
 
 type pinnedPanelView struct {
 	lines                          []string
-	owner, focusText               string
+	owner                          string
+	selection                      int
 	start, focus, offset, capacity int
 }
 
@@ -60,7 +62,7 @@ func (m chatTUI) pinnedPanelView() pinnedPanelView {
 	if m.pinnedScroll.owner != p.owner || m.pinnedScroll.width != m.width {
 		p.offset = min(p.start, maximum)
 	}
-	if m.pinnedScroll.owner != p.owner || m.pinnedScroll.focusText != p.focusText || m.pinnedScroll.width != m.width || m.pinnedScroll.capacity != p.capacity {
+	if m.pinnedScroll.owner != p.owner || m.pinnedScroll.focus != p.focus || m.pinnedScroll.selection != p.selection || m.pinnedScroll.width != m.width || m.pinnedScroll.capacity != p.capacity {
 		if p.focus < p.offset {
 			p.offset = p.focus
 		} else if p.focus >= p.offset+p.capacity {
@@ -73,51 +75,39 @@ func (m chatTUI) pinnedPanelView() pinnedPanelView {
 
 func (m chatTUI) pinnedPanelContent() pinnedPanelView {
 	var p pinnedPanelView
-	add := func(owner, content string) {
-		if content == "" {
+	add := func(owner string, content panelContent) {
+		if content.text == "" {
 			return
 		}
-		rows := strings.Split(wrapTerminalText(content, max(m.width, 10)), "\n")
-		focus := 0
-		// The shared rowLine helper and the elicitation/todo renderers mark
-		// keyboard selection or the active task at the start of a visual row.
-		for i, row := range rows {
-			plain := ansi.Strip(row)
-			trimmed := strings.TrimLeft(plain, " ")
-			indent := len(plain) - len(trimmed)
-			if (indent <= 1 && (strings.HasPrefix(trimmed, "❯ ") || strings.HasPrefix(trimmed, "› "))) || (indent <= 3 && strings.HasPrefix(trimmed, "▶ ")) {
-				focus = i
-				break
-			}
-		}
-		p.owner, p.start, p.focus = owner, len(p.lines), len(p.lines)+focus
-		p.focusText = fmt.Sprintf("%d:%s", p.focus, ansi.Strip(rows[focus]))
+		rows := strings.Split(wrapTerminalText(content.text, max(m.width, 10)), "\n")
+		p.owner, p.start, p.focus = owner, len(p.lines), len(p.lines)+content.focus
+		p.selection = content.selection
 		p.lines = append(p.lines, rows...)
 	}
-	add("todos", m.renderTodoPanel())
-	add(fmt.Sprintf("approval:%p", m.pendingApproval), m.renderApprovalBanner())
+	add("todos", m.renderTodoContent())
+	add(fmt.Sprintf("approval:%p", m.pendingApproval), m.renderApprovalBannerPanel())
 	chooserKey := fmt.Sprintf("chooser:%p", m.chooser)
 	if m.chooser != nil {
 		chooserKey += fmt.Sprintf(":%d", m.chooser.tab)
 	}
-	add(chooserKey, m.renderChooser())
-	add(fmt.Sprintf("elicit:%p", m.elicit), m.renderElicit())
-	add(fmt.Sprintf("rewind:%p", m.rewind), m.renderRewind())
-	add(fmt.Sprintf("import:%p", m.mcpImport), m.renderMCPImport())
-	add(fmt.Sprintf("resume:%p", m.resumePick), m.renderResumePicker())
-	add(fmt.Sprintf("quick:%p", m.quickPick), m.renderQuickPicker())
-	add(fmt.Sprintf("setup:%p", m.setup), m.renderConnectionSetup())
-	add(fmt.Sprintf("copy:%p", m.copyPick), m.renderCopyPicker())
-	add("completion", m.renderCompletion())
+	add(chooserKey, m.renderChooserPanel())
+	add(fmt.Sprintf("elicit:%p", m.elicit), m.renderElicitPanel())
+	add(fmt.Sprintf("rewind:%p", m.rewind), m.renderRewindPanel())
+	add(fmt.Sprintf("import:%p", m.mcpImport), m.renderMCPImportPanel())
+	add(fmt.Sprintf("resume:%p", m.resumePick), m.renderResumePickerPanel())
+	add(fmt.Sprintf("quick:%p", m.quickPick), m.renderQuickPickerPanel())
+	add(fmt.Sprintf("setup:%p", m.setup), m.renderConnectionSetupPanel())
+	add(fmt.Sprintf("copy:%p", m.copyPick), m.renderCopyPickerPanel())
+	add("completion", m.renderCompletionPanel())
 	if m.nativeScrollback {
-		add("manager", m.renderMainManager())
+		add("manager", m.renderMainManagerPanel())
 	}
 	return p
 }
 
 func (m *chatTUI) syncPinnedPanelScroll() {
 	p := m.pinnedPanelView()
-	m.pinnedScroll = pinnedPanelScroll{owner: p.owner, focusText: p.focusText, offset: p.offset, width: m.width, capacity: p.capacity}
+	m.pinnedScroll = pinnedPanelScroll{owner: p.owner, focus: p.focus, selection: p.selection, offset: p.offset, width: m.width, capacity: p.capacity}
 }
 
 func (m *chatTUI) scrollPinnedPanel(delta int) bool {
@@ -126,7 +116,7 @@ func (m *chatTUI) scrollPinnedPanel(delta int) bool {
 		return false
 	}
 	m.pinnedScroll = pinnedPanelScroll{
-		owner: p.owner, focusText: p.focusText, width: m.width, capacity: p.capacity,
+		owner: p.owner, focus: p.focus, selection: p.selection, width: m.width, capacity: p.capacity,
 		offset: min(max(0, p.offset+delta), len(p.lines)-p.capacity),
 	}
 	return true

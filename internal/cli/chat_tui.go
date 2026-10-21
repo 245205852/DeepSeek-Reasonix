@@ -2250,13 +2250,17 @@ func (m chatTUI) transcriptHeight() int {
 }
 
 func (m chatTUI) renderMainManager() string {
-	if card := m.renderMCPManager(); card != "" {
+	return m.renderMainManagerPanel().text
+}
+
+func (m chatTUI) renderMainManagerPanel() panelContent {
+	if card := m.renderMCPManagerPanel(); card.text != "" {
 		return card
 	}
-	if card := m.renderClearConfirm(); card != "" {
+	if card := m.renderClearConfirmPanel(); card.text != "" {
 		return card
 	}
-	return m.renderSkillPicker()
+	return m.renderSkillPickerPanel()
 }
 
 func managerContentPanelStyle(width int) lipgloss.Style {
@@ -3588,12 +3592,16 @@ func completionSummaryWarning(c *event.CompletionSummaryInfo) string {
 // renderApprovalBanner is the slim notice shown above the input while a tool
 // call (or a plan) awaits the user's decision.
 func (m chatTUI) renderApprovalBanner() string {
+	return m.renderApprovalBannerPanel().text
+}
+
+func (m chatTUI) renderApprovalBannerPanel() panelContent {
 	w := max(m.width, 10)
 	if m.pendingApproval == nil {
-		return ""
+		return panelContent{}
 	}
 	if isRecoveryApprovalEvent(m.pendingApproval) {
-		return choicePanelStyle.Width(w).Render("ℹ Historical recovery record (retired). It cannot confirm or replay an operation.\n" + dim("Esc/n dismiss"))
+		return panelContent{text: choicePanelStyle.Width(w).Render("ℹ Historical recovery record (retired). It cannot confirm or replay an operation.\n" + dim("Esc/n dismiss"))}
 	}
 	var text string
 	var planDetails []string
@@ -3630,13 +3638,14 @@ func (m chatTUI) renderApprovalBanner() string {
 	if len(planDetails) > 0 {
 		text += "\n" + strings.Join(planDetails, "\n")
 	}
-	var b strings.Builder
+	var b panelBuilder
 	b.WriteString("⏸ " + text + "\n")
 	for i, choice := range approvalChoices(m.pendingApproval) {
+		b.MarkFocus(i == m.approvalSelection, i)
 		b.WriteString(rowLine(i == m.approvalSelection, i+1, "", choice.label, false) + "\n")
 	}
 	b.WriteString(dim("↑/↓ navigate · Enter select · y/a/p/n shortcuts"))
-	return choicePanelStyle.Width(w).Render(b.String())
+	return b.render(choicePanelStyle.Width(w), m.width)
 }
 
 // maxApprovalSubjectLines bounds the expanded command so a heredoc cannot push
@@ -3720,8 +3729,12 @@ const todoPanelMaxRows = 8
 // renderTodoPanel renders the committed current-turn task list above the input.
 // Completed lists remain inspectable until the next host turn boundary.
 func (m chatTUI) renderTodoPanel() string {
+	return m.renderTodoContent().text
+}
+
+func (m chatTUI) renderTodoContent() panelContent {
 	if m.todosDismissed || len(m.todos) == 0 {
-		return ""
+		return panelContent{}
 	}
 	done := 0
 	for _, t := range m.todos {
@@ -3730,13 +3743,14 @@ func (m chatTUI) renderTodoPanel() string {
 		}
 	}
 
-	var b strings.Builder
+	var b panelBuilder
 	fmt.Fprintf(&b, "%s %s\n", accent("To-dos"), dim(fmt.Sprintf("%d/%d", done, len(m.todos))))
 	start, end := todoPanelWindow(m.todos)
 	if start > 0 {
 		b.WriteString(dim(fmt.Sprintf("  +%d above", start)) + "\n")
 	}
-	for _, t := range m.todos[start:end] {
+	for i, t := range m.todos[start:end] {
+		b.MarkFocus(t.Status == "in_progress", start+i)
 		indent := "  "
 		switch t.Status {
 		case "completed":
@@ -3750,7 +3764,7 @@ func (m chatTUI) renderTodoPanel() string {
 	if end < len(m.todos) {
 		b.WriteString(dim(fmt.Sprintf("  +%d more", len(m.todos)-end)) + "\n")
 	}
-	return todoPanelStyle.Width(max(m.width, 10)).Render(strings.TrimRight(b.String(), "\n"))
+	return b.body().trimTrailingNewlines().render(todoPanelStyle.Width(max(m.width, 10)), m.width)
 }
 
 func todoPanelWindow(todos []event.Todo) (int, int) {
