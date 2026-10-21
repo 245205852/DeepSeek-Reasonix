@@ -74,14 +74,30 @@ jobs:
           node scripts/verify-release-artifact-archive.mjs "$RUNNER_TEMP/payload-artifact.json" "$RUNNER_TEMP/payload.zip"
           mkdir payload
           unzip -q "$RUNNER_TEMP/payload.zip" -d payload
-          # One provenance check per payload file; each is a network round trip,
-          # so they run eight at a time and any single failure fails the step.
           signer_digest="$CONTROL_SHA"
-          find payload -type f -print0 | xargs -0 -P 8 -I{} \
-            gh attestation verify {} --repo "$GITHUB_REPOSITORY" \
-            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release-candidate.yml" \
-            --signer-digest "$signer_digest" --source-ref refs/heads/main-v2 \
-            --deny-self-hosted-runners >/dev/null
+          # The first check builds the trust cache the others read, so it runs
+          # alone and may retry; the remaining checks then run eight at a time
+          # and any single failure fails the step.
+          verify_provenance() {
+            gh attestation verify "$1" --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release-candidate.yml" \
+              --signer-digest "$signer_digest" --source-ref refs/heads/main-v2 \
+              --deny-self-hosted-runners >/dev/null
+          }
+          export -f verify_provenance
+          export signer_digest
+          files=()
+          while IFS= read -r -d '' file; do files+=("$file"); done < <(find payload -type f -print0)
+          test "${#files[@]}" -gt 0
+          attempt=1
+          until verify_provenance "${files[0]}"; do
+            test "$attempt" -lt 3
+            attempt=$((attempt + 1))
+            sleep 10
+          done
+          if [ "${#files[@]}" -gt 1 ]; then
+            printf '%s\0' "${files[@]:1}" | xargs -0 -P 8 -I{} bash -c 'verify_provenance "$1"' _ {}
+          fi
           node scripts/release-candidate.mjs verify-rehearsal payload record/record.json >/dev/null
           git fetch origin main-v2
           git merge-base --is-ancestor "${{ steps.inspected.outputs.source_sha }}" origin/main-v2

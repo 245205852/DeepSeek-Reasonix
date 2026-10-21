@@ -130,6 +130,14 @@ grep -Fq 'node scripts/release-candidate.mjs verify-rehearsal' "$rehearsal_verif
 grep -Fq 'node scripts/verify-release-artifact-archive.mjs' "$rehearsal_verify"
 ! grep -Eq 'environment: release|release-candidate-tags\.sh activate|publish-(desktop|homebrew)|npm publish' "$rehearsal_verify"
 grep -Fq 'gh attestation verify' "$promote"
+for attestation_workflow in "$promote" "$repo_root/.github/workflows/release-candidate-verify.yml"; do
+	prime_line="$(grep -nF 'until verify_provenance "${files[0]}"; do' "$attestation_workflow" | cut -d: -f1)"
+	parallel_line="$(grep -nF "xargs -0 -P 8 -I{} bash -c 'verify_provenance \"\$1\"' _ {}" "$attestation_workflow" | cut -d: -f1)"
+	if [ -z "$prime_line" ] || [ -z "$parallel_line" ] || [ "$prime_line" -ge "$parallel_line" ]; then
+		echo "$attestation_workflow must verify one payload alone before the parallel provenance checks" >&2
+		exit 1
+	fi
+done
 grep -Fq 'bash scripts/release-candidate-tags.sh check' "$promote"
 grep -Fq 'bash scripts/release-candidate-tags.sh activate' "$promote"
 grep -Fq 'git push --atomic "$remote"' "$repo_root/scripts/release-candidate-tags.sh"
