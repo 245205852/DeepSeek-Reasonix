@@ -144,6 +144,7 @@ jobs:
             sleep 10
           done
           if [ "${#files[@]}" -gt 1 ]; then
+            # shellcheck disable=SC2016 # the child shell must expand "$1" itself
             printf '%s\0' "${files[@]:1}" | xargs -0 -P 8 -I{} bash -c 'verify_provenance "$1"' _ {}
           fi
           node scripts/release-candidate.mjs verify payload record/record.json >/dev/null
