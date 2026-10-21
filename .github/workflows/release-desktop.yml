@@ -1499,6 +1499,12 @@ jobs:
           if [ -n "$existing_keys" ] && [ "$existing_keys" != "None" ]; then
             aws s3 cp "s3://${R2_BUCKET}/${TAG}/" "$existing_directory/" \
               --recursive --endpoint-url "$ENDPOINT"
+            # A signature whose payload never finished uploading is an unfinished
+            # write, not published content: the candidate's pair fills it below.
+            # A signature that has its payload is never touched.
+            while IFS= read -r -d '' signature; do
+              [ -f "${signature%.minisig}" ] || rm -f -- "$signature"
+            done < <(find "$existing_directory" -type f -name '*.minisig' -print0)
             verify_signature_directory "$existing_directory"
             if [ -f "$existing_directory/latest.json" ]; then
               existing_manifest=true
