@@ -312,7 +312,7 @@ func wrapTranscript(s string, width int) string {
 	if width <= 0 {
 		return s
 	}
-	return lipgloss.NewStyle().Width(width).Render(s)
+	return wrapTerminalText(s, width)
 }
 
 type clipboardCopyMsg struct {
