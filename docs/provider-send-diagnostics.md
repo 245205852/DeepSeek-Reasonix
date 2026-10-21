@@ -33,6 +33,55 @@ that no bytes were sent. Normal response-body EOF is not a transport failure.
 Error prose, bodies, credentials, and URL query parameters are not diagnostic
 fields. Records still pass through JSON-aware secret redaction.
 
+Run `bash scripts/check-provider-diagnostic-compatibility.sh` to exercise both
+directions of real framed-store compatibility with the v1.39.8/v1.39.9 source
+readers, continued writes, and reopening. No installed user application or
+session data is modified.
+
+## Isolated network comparison
+
+Build `go build -o provider-network-probe ./cmd/provider-network-probe`.
+Set `REASONIX_PROBE_API_KEY` securely in the environment; do not put a key in a
+command argument or record it in an exported shell transcript. The program
+makes at most one application request per invocation, follows no redirects,
+does not replay a request body, invokes no tools, and uses `max_tokens: 1`.
+Each invocation can still incur input-token charges, especially the large case.
+Run only the agreed matrix; the program does not loop or run it automatically.
+
+Example for **one** case:
+
+```sh
+./provider-network-probe -endpoint https://api.deepseek.com/chat/completions \
+  -model deepseek-v4-flash -protocol h2 -body-bytes 3248572 -timeout 360s \
+  > probe-current-h2-large.json
+```
+
+Keep endpoint, model, timeout, and synthetic request size fixed when comparing:
+
+| Axis | Cases |
+| --- | --- |
+| Network | Current path / alternative path, on the affected machine |
+| Protocol | `-protocol h1` / `-protocol h2` |
+| Declared JSON length | `-body-bytes 1024` / `-body-bytes 3248572` |
+| Expect behavior | Default / `-expect-continue` as an independent experiment |
+
+Start with the 8 network/protocol/size cases. Add the 8 Expect cases only if
+needed and agreed. Repeated comparisons require another explicit call budget.
+The synthetic padding is deterministic for the same model and size, but is not
+a reproduction of the user's private conversation. The program exports only
+safe observation fields, actual negotiated protocol when observed, status,
+typed failure and a validated provider trace ID. If HTTP/2 cannot negotiate,
+record that failure; do not silently treat an HTTP/1.1 result as HTTP/2 evidence.
+Proxy settings follow Go's standard environment handling. Label the network
+route externally without including proxy credentials.
+
+An isolated local regression proves bounded client behavior. Only stable
+comparisons on the affected machine can attribute the original failure to a
+network, proxy, protocol, or service mechanism. Neither a large request nor an
+`INTERNAL_ERROR` alone establishes a request-size limit or an Expect defect.
+
+Release wording: “修复模型请求在发送阶段可能长时间等待的问题，并增强传输失败诊断。”
+
 ## 中文说明
 
 每次模型 HTTP 请求的发送阶段最多等待 300 秒，覆盖等待连接、建立连接与
@@ -47,3 +96,18 @@ HTTP/2 连接。发送超时说明请求正文未上传完，服务端不可能�
 `diagnostic/provider` 第 2 版事件，旧客户端可以跳过。`requestBytes` 是声明的
 正文长度，不是实际上传量；缺少 `writtenAt` 不能解释为完全没有上传。
 诊断只记录白名单原因码，不保存完整错误文本、正文、密钥或 URL 查询参数。
+运行 `bash scripts/check-provider-diagnostic-compatibility.sh` 可用 v1.39.8 和
+v1.39.9 的实际源码验证双向读取、继续写入和重新打开。
+
+现场工具通过 `REASONIX_PROBE_API_KEY` 环境变量读取密钥，每次启动最多发起
+一次调用，禁用工具、重定向和正文重放，输出上限为 1 token。大请求仍可能
+产生输入费用。先比较当前/替代网络、HTTP/1.1/HTTP/2、小/大合成请求共 8 组；
+必要时在约定调用预算内独立比较 `-expect-continue`，不自动循环。每组固定
+端点、模型、正文大小和超时，实际协商协议以输出为准。合成正文不包含用户
+会话，也不能证明已复现现场故障。只有用户机器上的稳定对照结果才可用于
+归因；请求大小和 HTTP/2 错误本身不能证明服务端大小限制或 Expect 缺陷。
+
+打包后可运行 `node desktop/packaging/provider-diagnostic-smoke.mjs /path/Reasonix.app`
+验证停止操作、历史超时详情、实时 EOF、重启与诊断导出。该测试只访问本地
+合成服务，并使用隔离数据目录；发送保护本身由缩短预算的真实 HTTP/1.1、
+HTTP/2 单元回归覆盖。设置 `REASONIX_SMOKE_ARTIFACTS` 可指定截图与诊断输出目录。
