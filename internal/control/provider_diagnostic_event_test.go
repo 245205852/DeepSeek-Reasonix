@@ -185,7 +185,7 @@ func TestProviderDiagnosticEventIsBoundedAndTurnScoped(t *testing.T) {
 	c := &Controller{}
 	c.beginProviderDiagnosticTurn("current")
 	for id := uint64(1); id <= 130; id++ {
-		c.recordProviderRequest("current", provider.RequestObservation{ID: id, Phase: "request_started"})
+		c.recordProviderRequest("current", provider.RequestObservation{ID: id, Phase: "request_started", ProtocolFallbackReason: "INTERNAL_ERROR"})
 	}
 	c.recordProviderRequest("other", provider.RequestObservation{ID: 131, Phase: "request_started"})
 	e, err := c.providerDiagnosticEvent(event.Event{TurnID: "current", Err: context.Canceled})
@@ -193,18 +193,25 @@ func TestProviderDiagnosticEventIsBoundedAndTurnScoped(t *testing.T) {
 		t.Fatal(err)
 	}
 	var payload struct {
-		Failure   *provider.FailureDiagnostic
-		Requests  []providerDiagnostic
-		Dropped   uint64
-		Truncated bool
+		SchemaVersion int
+		Failure       *provider.FailureDiagnostic
+		Requests      []providerDiagnostic
+		Dropped       uint64
+		Truncated     bool
 	}
 	if err := json.Unmarshal(e.Payload, &payload); err != nil {
 		t.Fatal(err)
+	}
+	if !e.Optional || payload.SchemaVersion != 2 {
+		t.Fatal("compatibility evidence must remain an optional versioned extension")
 	}
 	if len(payload.Requests) != 127 || payload.Failure.Kind != provider.FailureKindCancelled || payload.Dropped != 3 || !payload.Truncated {
 		t.Fatalf("bounded evidence: %+v", payload)
 	}
 	for _, request := range payload.Requests {
+		if request.ProtocolFallbackReason != "INTERNAL_ERROR" {
+			t.Fatal("lost compatibility selection evidence")
+		}
 		if request.TurnID != "current" {
 			t.Fatal("cross-turn evidence")
 		}

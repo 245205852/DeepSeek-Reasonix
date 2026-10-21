@@ -178,7 +178,7 @@ func RetryableStatus(s int) bool {
 // closed socket) from protocol or caller errors for failure reporting. A common
 // trigger is a proxy idle-closing SSE during a reasoner's first-token gap.
 func IsConnReset(err error) bool {
-	if err == nil {
+	if err == nil || protocolFailureIsTerminal(err) {
 		return false
 	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, ErrNonStreamingResponse) {
@@ -243,6 +243,8 @@ func readErrorBody(resp *http.Response) []byte {
 // connection closed first (see staleIdleConnection), or the body never finished
 // uploading (RequestSendTimeoutError). Every other failure returns to the
 // caller without backoff; the user decides whether to try again.
+// A peer's INTERNAL_ERROR, PROTOCOL_ERROR or HTTP_1_1_REQUIRED reset never
+// consumes this allowance, because the peer may already have processed it.
 func SendWithRetry(ctx context.Context, httpClient *http.Client, opts SendOptions, newReq func(context.Context) (*http.Request, error)) (*http.Response, error) {
 	return sendWithResends(ctx, httpClient, opts, newReq, requestSendTimeout, 1)
 }
@@ -256,7 +258,7 @@ func SendOnce(ctx context.Context, httpClient *http.Client, opts SendOptions, ne
 func sendWithResends(ctx context.Context, httpClient *http.Client, opts SendOptions, newReq func(context.Context) (*http.Request, error), budget time.Duration, resends int) (*http.Response, error) {
 	identity := RequestIdentity{Provider: opts.Provider, DisplayName: opts.ProviderDisplayName, Protocol: opts.Protocol}
 	resp, stale, err := sendAttemptWithTimeout(ctx, httpClient, newReq, budget)
-	if resends > 0 && (stale || errors.As(err, new(*RequestSendTimeoutError))) {
+	if resends > 0 && !protocolFailureIsTerminal(err) && (stale || errors.As(err, new(*RequestSendTimeoutError))) {
 		httpClient.CloseIdleConnections()
 		resp, _, err = sendAttemptWithTimeout(ctx, httpClient, newReq, budget)
 	}

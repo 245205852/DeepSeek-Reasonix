@@ -16,6 +16,51 @@ resend fails the turn. Explicit user cancellation and the outer task deadline re
 priority and are never resent. Worst case before the turn fails is two send
 budgets (600 seconds).
 
+## Automatic protocol compatibility
+
+For the built-in Chat Completions, Responses and Anthropic HTTP clients, a
+typed HTTP/2 `PROTOCOL_ERROR` or `HTTP_1_1_REQUIRED` records a temporary
+compatibility hint. `INTERNAL_ERROR` is also what servers and gateways send for
+a generic upstream failure, so it records a hint only when a request that
+started after the first one fails with it again; concurrent streams reset by
+the same event count once. The failed request still returns its original
+error. It is **not replayed**, because the peer may already have processed it,
+and these three codes never consume the send-timeout/stale-connection resend
+allowance or become stream retries. Other HTTP/2 codes keep their existing
+handling. No tool execution or agent turn is restarted by this mechanism.
+
+Only a subsequent new request tries HTTP/1.1. Hints are isolated by configured
+provider identity, adapter, exact request endpoint and the actual resolved proxy
+route. One concurrent request probes an unproven route; after response headers
+arrive, subsequent requests may use HTTP/1.1. A transport failure on that route
+disables compatibility until the hint expires, including failures while reading
+the response body. The failure itself is reported and recovered by its real
+cause: an EOF, reset or send timeout on HTTP/1.1 is owed the same resend or
+stream recovery as on HTTP/2, which then uses normal protocol negotiation.
+User cancellation does not mark the route incompatible. HTTP status errors
+retain their existing handling.
+
+Hints expire 10 minutes after the HTTP/2 failure that confirmed them and are
+capped at 256 entries. Success does not extend them, so a route whose HTTP/2
+path stays broken fails one request after each expiry before switching again. They survive provider reconstruction in the same process, but not an
+application restart. Expiry returns to normal protocol negotiation; it does not
+start a background request. Custom injected clients and credential tunnels keep
+their existing transport contracts. TLS verification, proxy routing, request
+bodies, model selection and prompt-cache inputs are unchanged. Other HTTP/2
+streams continue on their original connection.
+
+Request diagnostics expose the actual `httpProtocol` and the allowlisted
+`protocolFallbackReason` when compatibility was selected. The latter is a hint
+from an earlier request, not the current error code. Optional
+`diagnostic/provider` events use schema version 2; required recovery records and
+session schema versions are unchanged. Old observations simply omit the field,
+and older session readers skip the optional event. No URL, proxy credential or
+raw error text is added by compatibility tracking.
+
+This is bounded compatibility handling, not proof that HTTP/2 or DeepSeek was
+the original cause. It cannot guarantee that an upstream or network fault will
+disappear over HTTP/1.1.
+
 ## Reading diagnostics
 
 `FailureDiagnostic` retains its existing field structure. New safe kinds are
@@ -91,6 +136,18 @@ Release wording: “修复模型请求在发送阶段可能长时间等待的问
 HTTP/2 连接。发送超时说明请求正文未上传完，服务端不可能已作答，因此与“空闲连接已失效”共用同一次
 重发额度：关闭空闲连接后重发一次，重发仍超时才判定本轮失败（最坏 600 秒）。用户停止
 和外层任务预算优先，且不会触发重发。
+
+内置模型客户端遇到明确的 HTTP/2 `PROTOCOL_ERROR` 或 `HTTP_1_1_REQUIRED`
+时，当前请求仍然失败，不重放请求、不重新执行工具，也不进入发送超时、空闲连接
+重发或流重试。`INTERNAL_ERROR` 也是服务端和网关表示通用上游故障的错误码，
+因此只有在第一次之后才开始的另一个请求再次遇到它，才记录兼容提示；同一事件
+重置的并发流只算一次。其他 HTTP/2 错误码保持原有处理。只有后续新请求才尝试
+HTTP/1.1；选择按供应商、协议适配器、请求端点和实际代理路径隔离，从确认时起
+保留 10 分钟，成功不会续期。兼容请求发生传输失败时，暂停该路径的兼容尝试直到
+过期，但该失败仍按真实原因（EOF、连接重置、发送超时）处理，照常享有原有的
+重发或流恢复，重发走正常协议协商。用户取消不算协议失败。
+正常共享 HTTP/2 流不受影响。诊断中的 `protocolFallbackReason` 表示此前触发
+兼容选择的原因，`httpProtocol` 表示实际响应协议；这不等于已经确认现场根因。
 
 必需恢复记录的字段结构不变。新增原因与阶段证据存入可选的
 `diagnostic/provider` 第 2 版事件，旧客户端可以跳过。`requestBytes` 是声明的
