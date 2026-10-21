@@ -123,26 +123,27 @@ jobs:
         run: |
           set -euo pipefail
           signer_digest="${{ steps.record.outputs.candidate_control_sha }}"
-          # The first check builds the trust cache the others read, so it runs
-          # alone and may retry; the remaining checks then run eight at a time
-          # and any single failure fails the step.
+          # Each check retries on its own, because the public-good verifier can fail
+          # to initialise on a shared runner; the first runs alone so the others
+          # find the trust cache built, then the rest run eight at a time and any
+          # single failure fails the step.
           verify_provenance() {
-            gh attestation verify "$1" --repo "$GITHUB_REPOSITORY" \
+            local attempt=1
+            until gh attestation verify "$1" --repo "$GITHUB_REPOSITORY" \
               --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release-candidate.yml" \
               --signer-digest "$signer_digest" --source-ref refs/heads/main-v2 \
-              --deny-self-hosted-runners >/dev/null
+              --deny-self-hosted-runners >/dev/null; do
+              test "$attempt" -lt 5 || return 1
+              attempt=$((attempt + 1))
+              sleep 6
+            done
           }
           export -f verify_provenance
           export signer_digest
           files=()
           while IFS= read -r -d '' file; do files+=("$file"); done < <(find payload -type f -print0)
           test "${#files[@]}" -gt 0
-          attempt=1
-          until verify_provenance "${files[0]}"; do
-            test "$attempt" -lt 3
-            attempt=$((attempt + 1))
-            sleep 10
-          done
+          verify_provenance "${files[0]}"
           if [ "${#files[@]}" -gt 1 ]; then
             # shellcheck disable=SC2016 # the child shell must expand "$1" itself
             printf '%s\0' "${files[@]:1}" | xargs -0 -P 8 -I{} bash -c 'verify_provenance "$1"' _ {}
