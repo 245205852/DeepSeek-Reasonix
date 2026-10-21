@@ -2,7 +2,7 @@ module reasonix/desktop
 
 go 1.26.0
 
-toolchain go1.26.9
+toolchain go1.26.10
 
 // The desktop service is a nested module so its CGO build never touches the
 // CLI's CGO_ENABLED=0 single-static-binary guarantee. The replace lets it import
