@@ -290,7 +290,7 @@ func (m chatTUI) renderElicit() string {
 		fmt.Fprintf(&b, "%s%s: %s\n", marker, label, value)
 	}
 	if c.onSubmitRow() {
-		fmt.Fprintf(&b, "%s\n", accent("  ["+i18n.M.ElicitSubmit+"]"))
+		fmt.Fprintf(&b, "%s\n", accent("› ["+i18n.M.ElicitSubmit+"]"))
 		b.WriteString(dim(i18n.M.ElicitSubmitHint))
 	} else {
 		fmt.Fprintf(&b, "%s\n", dim("  ["+i18n.M.ElicitSubmit+"]"))

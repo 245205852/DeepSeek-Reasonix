@@ -74,9 +74,10 @@ type chatTUI struct {
 	// since the terminal no longer forwards those events to Reasonix.
 	mouseCaptureOff bool
 
-	input       textarea.Model
-	composerSel composerSelection
-	composerMap composerLayoutCache
+	input        textarea.Model
+	composerSel  composerSelection
+	composerMap  composerLayoutCache
+	pinnedScroll pinnedPanelScroll
 	// composerScrollOffset is an independent view offset used after the user
 	// wheels inside an overflowing composer. The textarea keeps ownership of the
 	// real insertion cursor; a subsequent edit or cursor key reattaches the view
@@ -978,6 +979,7 @@ func (m chatTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// absolute row cap crowd the transcript and fixed status rows on short
 	// windows. Textarea remains the owner of the scroll offset and caret reveal.
 	cm.syncInputHeightLimit()
+	cm.syncPinnedPanelScroll()
 	cm.viewport.SetHeight(cm.transcriptHeight())
 	widthChanged := cm.width != prevWidth
 	if widthChanged {
@@ -1093,6 +1095,9 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.MouseWheelMsg:
+		if m.scrollPinnedPanelMouse(msg) {
+			return m, nil
+		}
 		if m.mouseOverComposer(msg.X, msg.Y) {
 			delta := 0
 			switch msg.Button {
@@ -1271,6 +1276,9 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.applyComposerPaste(msg, true)
 
 	case tea.KeyPressMsg:
+		if m.scrollPinnedPanelKey(msg) {
+			return m, nil
+		}
 		// Any keystroke dismisses a finished selection (copy is a right-click),
 		// with a few exceptions: Ctrl/Super/Meta+C and Ctrl+Insert copy the
 		// selection, the paste shortcuts keep it so the async clipboard result
@@ -2167,10 +2175,7 @@ func clampWidth(s string, width int) string {
 	if width <= 0 {
 		return s
 	}
-	// ansi.Hardwrap breaks any line over `width` visible cols on grapheme
-	// boundaries, preserving ANSI and counting wide chars — exactly what we want,
-	// and lines already within width pass through unchanged.
-	return ansi.Hardwrap(s, width, false)
+	return hardwrapTerminalText(s, width)
 }
 
 // commitLine queues one finalized block for the next scrollback flush.
@@ -2194,38 +2199,21 @@ func (m *chatTUI) commitSpacer() {
 // and skills normally render inside the main transcript area; in native
 // scrollback mode they join the bottom rail because there is no main viewport.
 func (m chatTUI) bottomRows() int {
+	return m.pinnedPanelView().height() + m.protectedBottomRows()
+}
+
+// protectedBottomRows is shared by panel sizing and transcript/composer sizing.
+// The status count already includes the independently wrapped working line.
+func (m chatTUI) protectedBottomRows() int {
 	rows := 0
-	for _, s := range []string{
-		m.renderTodoPanel(),
-		m.renderApprovalBanner(),
-		m.renderChooser(),
-		m.renderElicit(),
-		m.renderRewind(),
-		m.renderMCPImport(),
-		m.renderResumePicker(),
-		m.renderQuickPicker(),
-		m.renderConnectionSetup(),
-		m.renderCopyPicker(),
-		m.renderCompletion(),
-	} {
-		if s != "" {
-			rows += strings.Count(s, "\n") + 1
-		}
-	}
-	// Remove the hardcoded working-line increment — it is counted inside
-	// statusLineCount via computeStatusLineCount, which also accounts for
-	// wrapping. The fallback to 2 (unwrapped) covers the initial frame and
-	// tests that don't call Update first.
-	if m.nativeScrollback {
-		if main := m.renderMainManager(); main != "" {
-			rows += strings.Count(main, "\n") + 1
-		}
-	}
 	if footer := m.renderMainManagerFooter(); footer != "" {
 		rows += strings.Count(footer, "\n") + 1
 	}
 	if !m.hideComposer() {
 		rows += m.input.Height() + 2
+		if queue := m.renderQueueIndicator(); queue != "" {
+			rows += strings.Count(queue, "\n") + 1
+		}
 	}
 	if m.statusLineCount > 0 {
 		return rows + m.statusLineCount
@@ -3278,56 +3266,10 @@ func (m chatTUI) frame() tea.View {
 	// composer when visible, then the two status rows. Its height feeds
 	// transcriptHeight so the viewport above fills exactly the rest of the screen.
 	var parts []string
-	rowsAboveBox := 0 // terminal rows occupied by panels/working line before the composer
-	if todo := m.renderTodoPanel(); todo != "" {
-		parts = append(parts, todo)
-		rowsAboveBox += strings.Count(todo, "\n") + 1
-	}
-	if banner := m.renderApprovalBanner(); banner != "" {
-		parts = append(parts, banner)
-		rowsAboveBox += strings.Count(banner, "\n") + 1
-	}
-	if card := m.renderChooser(); card != "" {
-		parts = append(parts, card)
-		rowsAboveBox += strings.Count(card, "\n") + 1
-	}
-	if card := m.renderElicit(); card != "" {
-		parts = append(parts, card)
-		rowsAboveBox += strings.Count(card, "\n") + 1
-	}
-	if card := m.renderRewind(); card != "" {
-		parts = append(parts, card)
-		rowsAboveBox += strings.Count(card, "\n") + 1
-	}
-	if card := m.renderMCPImport(); card != "" {
-		parts = append(parts, card)
-		rowsAboveBox += strings.Count(card, "\n") + 1
-	}
-	if card := m.renderResumePicker(); card != "" {
-		parts = append(parts, card)
-		rowsAboveBox += strings.Count(card, "\n") + 1
-	}
-	if card := m.renderQuickPicker(); card != "" {
-		parts = append(parts, card)
-		rowsAboveBox += strings.Count(card, "\n") + 1
-	}
-	if card := m.renderConnectionSetup(); card != "" {
-		parts = append(parts, card)
-		rowsAboveBox += strings.Count(card, "\n") + 1
-	}
-	if card := m.renderCopyPicker(); card != "" {
-		parts = append(parts, card)
-		rowsAboveBox += strings.Count(card, "\n") + 1
-	}
-	if menu := m.renderCompletion(); menu != "" {
-		parts = append(parts, menu)
-		rowsAboveBox += strings.Count(menu, "\n") + 1
-	}
-	if m.nativeScrollback {
-		if card := m.renderMainManager(); card != "" {
-			parts = append(parts, card)
-			rowsAboveBox += strings.Count(card, "\n") + 1
-		}
+	panels := m.pinnedPanelView()
+	rowsAboveBox := panels.height()
+	if content := panels.render(boxW); content != "" {
+		parts = append(parts, content)
 	}
 	// Layout: the working spinner (when running), then the composer when visible,
 	// then the persistent status block. Wide terminals keep two information rows
@@ -3850,7 +3792,7 @@ func wrapStatusLine(s string, width int) string {
 	if width <= 0 || s == "" {
 		return s
 	}
-	return ansi.Hardwrap(s, width, true)
+	return hardwrapTerminalText(s, width)
 }
 
 // workingLineRows returns the number of terminal rows the working (spinner)
